@@ -1,0 +1,297 @@
+---
+title: "Build and Publish Fluid Droplets"
+sidebarTitle: "Creating Droplets"
+description: "Learn how to create, configure, and publish a Fluid Droplet — including the installation webhook flow, credential exchange, and Marketplace submission."
+---
+
+Droplets are third-party integrations that merchants install directly from the Fluid Marketplace. When a merchant installs your Droplet, Fluid sends a signed webhook to your server, and you exchange a short-lived token for long-lived credentials scoped to that merchant's account. This guide walks through building, testing, and submitting a Droplet from start to finish.
+
+<Steps>
+
+  <Step title="Create the Droplet via API">
+    Register your Droplet with Fluid by sending a `POST` request to `/api/droplets`. The payload defines your Droplet's name, the URL Fluid will load in the merchant dashboard, and the webhook endpoints Fluid calls during installation and uninstallation.
+
+    ```bash
+    curl -X POST https://api.fluid.app/api/droplets \
+      -H "Authorization: Bearer <your_company_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "My Droplet",
+        "embed_url": "https://app.example.com/droplet",
+        "install_webhook_url": "https://app.example.com/webhooks/install",
+        "uninstall_webhook_url": "https://app.example.com/webhooks/uninstall",
+        "active": true,
+        "settings": {
+          "marketplace_page": {
+            "tagline": "Supercharge your Fluid store",
+            "description": "My Droplet adds powerful features to your Fluid account."
+          },
+          "details_page": {
+            "support_url": "https://app.example.com/support",
+            "documentation_url": "https://docs.example.com"
+          }
+        }
+      }'
+    ```
+
+    Fluid returns a Droplet object including your Droplet's ID. Save this — you'll need it to manage the Droplet later.
+  </Step>
+
+  <Step title="Implement the Install Webhook Handler">
+    When a merchant installs your Droplet, Fluid sends a signed `POST` request to your `install_webhook_url`. Your handler must verify the signature and then exchange the included `exchange_token` for long-lived credentials.
+
+    ```javascript
+    const express = require('express');
+    const crypto = require('crypto');
+    const app = express();
+    app.use(express.raw({ type: 'application/json' }));
+
+    app.post('/webhooks/install', async (req, res) => {
+      const timestamp = req.headers['x-fluid-timestamp'];
+      const signature = req.headers['x-fluid-signature'];
+      const shop = req.headers['x-fluid-shop'];
+      const rawBody = req.body.toString();
+
+      // Verify the signature before proceeding
+      const expected = crypto
+        .createHmac('sha256', process.env.WEBHOOK_SECRET)
+        .update(`${timestamp}.${rawBody}`)
+        .digest('hex');
+
+      if (signature !== expected) {
+        return res.status(401).send('Invalid signature');
+      }
+
+      // Reject requests older than 5 minutes
+      const age = Date.now() / 1000 - parseInt(timestamp, 10);
+      if (age > 300) {
+        return res.status(401).send('Request expired');
+      }
+
+      const { exchange_token } = JSON.parse(rawBody);
+
+      // Exchange the token for credentials
+      const credResponse = await fetch(
+        'https://api.fluid.app/api/droplet_installations/exchange',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exchange_token })
+        }
+      );
+
+      const credentials = await credResponse.json();
+      // Store credentials securely — see Step 4
+      await saveCredentials(shop, credentials);
+
+      res.sendStatus(200);
+    });
+    ```
+  </Step>
+
+  <Step title="Exchange the Token for Credentials">
+    The `exchange_token` included in the install webhook is single-use and expires after 10 minutes. Exchange it immediately for long-lived credentials:
+
+    ```bash
+    curl -X POST https://api.fluid.app/api/droplet_installations/exchange \
+      -H "Content-Type: application/json" \
+      -d '{
+        "exchange_token": "<exchange_token_from_webhook>"
+      }'
+    ```
+
+    The response contains two tokens you must store securely:
+
+    ```json
+    {
+      "authentication_token": "dit_live_xxxxxxxxxxxx",
+      "webhook_verification_token": "wvt_xxxxxxxxxxxx",
+      "installation_id": "dri_xxxxxxxxxxxx",
+      "shop": "merchant-name.fluid.app"
+    }
+    ```
+
+    | Field | Prefix | Purpose |
+    |---|---|---|
+    | `authentication_token` | `dit_` | Use as a bearer token in all API calls for this merchant |
+    | `webhook_verification_token` | `wvt_` | Verify incoming webhooks from this merchant's installation |
+  </Step>
+
+  <Step title="Store Credentials and Register Webhooks">
+    Store the `authentication_token` and `webhook_verification_token` in your database, keyed by shop domain or installation ID. These credentials represent one merchant's installation — each merchant who installs your Droplet gets their own set.
+
+    After storing credentials, optionally register webhooks or drop zones for the merchant:
+
+    ```javascript
+    async function saveCredentials(shop, credentials) {
+      await db.installations.upsert({
+        shop,
+        authentication_token: credentials.authentication_token,
+        webhook_verification_token: credentials.webhook_verification_token,
+        installation_id: credentials.installation_id
+      });
+
+      // Register webhooks for this merchant
+      await fetch('https://api.fluid.app/api/company/webhooks', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${credentials.authentication_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          webhook: {
+            resource: 'order',
+            event: 'order_created',
+            url: 'https://app.example.com/webhooks/orders',
+            active: true,
+            http_method: 'post'
+          }
+        })
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Implement the Uninstall Handler">
+    When a merchant uninstalls your Droplet, Fluid sends a signed webhook to your `uninstall_webhook_url`. Verify the signature the same way as the install handler, then clean up the merchant's credentials and any associated resources.
+
+    ```javascript
+    app.post('/webhooks/uninstall', (req, res) => {
+      const timestamp = req.headers['x-fluid-timestamp'];
+      const signature = req.headers['x-fluid-signature'];
+      const shop = req.headers['x-fluid-shop'];
+      const rawBody = req.body.toString();
+
+      const expected = crypto
+        .createHmac('sha256', process.env.WEBHOOK_SECRET)
+        .update(`${timestamp}.${rawBody}`)
+        .digest('hex');
+
+      if (signature !== expected) {
+        return res.status(401).send('Invalid signature');
+      }
+
+      const age = Date.now() / 1000 - parseInt(timestamp, 10);
+      if (age > 300) {
+        return res.status(401).send('Request expired');
+      }
+
+      // Remove stored credentials for this merchant
+      db.installations.delete({ shop });
+
+      res.sendStatus(200);
+    });
+    ```
+  </Step>
+
+  <Step title="Test Locally with ngrok">
+    Fluid must be able to reach your webhook endpoints over HTTPS. During development, use [ngrok](https://ngrok.com) to expose your local server:
+
+    ```bash
+    ngrok http 3000
+    ```
+
+    ngrok prints a public HTTPS URL such as `https://a1b2c3d4.ngrok.io`. Update your Droplet's `install_webhook_url` and `uninstall_webhook_url` to use this URL while testing:
+
+    ```bash
+    curl -X PATCH https://api.fluid.app/api/droplets/<droplet_id> \
+      -H "Authorization: Bearer <your_company_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "install_webhook_url": "https://a1b2c3d4.ngrok.io/webhooks/install",
+        "uninstall_webhook_url": "https://a1b2c3d4.ngrok.io/webhooks/uninstall"
+      }'
+    ```
+
+    Remember to swap back to your production URLs before submitting for Marketplace approval.
+  </Step>
+
+  <Step title="Submit for Marketplace Approval">
+    Once your Droplet is working end-to-end, contact Fluid to begin the Marketplace review process. Fluid will review your Droplet's functionality, security, and listing content before making it available to merchants.
+
+    <Note>
+      Your Droplet will not appear in the Fluid Marketplace until it has been reviewed and approved by Fluid. Keep your `active` field set to `true` and ensure your listing metadata in `settings.marketplace_page` is complete before submitting.
+    </Note>
+  </Step>
+
+</Steps>
+
+## Verifying Webhook Signatures
+
+Every webhook Fluid sends is signed with HMAC-SHA256. Verify the signature on every incoming request to ensure it genuinely came from Fluid. Reject any request where the timestamp is more than 5 minutes old to prevent replay attacks.
+
+Fluid includes three headers on every webhook:
+
+| Header | Description |
+|---|---|
+| `X-Fluid-Shop` | The shop domain of the merchant |
+| `X-Fluid-Timestamp` | Unix timestamp when the request was sent |
+| `X-Fluid-Signature` | HMAC-SHA256 of `"#{timestamp}.#{raw_body}"` using your webhook secret |
+
+**Node.js**
+
+```javascript
+const crypto = require('crypto');
+
+function verifySignature(rawBody, timestamp, signature, secret) {
+  const age = Date.now() / 1000 - parseInt(timestamp, 10);
+  if (age > 300) throw new Error('Webhook timestamp too old');
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.${rawBody}`)
+    .digest('hex');
+
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    throw new Error('Invalid webhook signature');
+  }
+}
+```
+
+**Ruby**
+
+```ruby
+require 'openssl'
+
+def verify_signature(raw_body, timestamp, signature, secret)
+  age = Time.now.to_i - timestamp.to_i
+  raise 'Webhook timestamp too old' if age > 300
+
+  expected = OpenSSL::HMAC.hexdigest('SHA256', secret, "#{timestamp}.#{raw_body}")
+  raise 'Invalid webhook signature' unless Rack::Utils.secure_compare(signature, expected)
+end
+```
+
+## Identifying Merchants in Your Embed
+
+Fluid appends the Droplet installation UUID as a `dri` query parameter to your `embed_url` whenever it loads the Droplet inside the merchant's dashboard. Use this value to look up the correct `authentication_token` for the current merchant:
+
+```
+https://app.example.com/droplet?dri=dri_xxxxxxxxxxxx
+```
+
+```javascript
+const params = new URLSearchParams(window.location.search);
+const installationId = params.get('dri');
+
+const credentials = await db.installations.findBy({ installation_id: installationId });
+// Use credentials.authentication_token for API calls on behalf of this merchant
+```
+
+## Token Scopes
+
+When you exchange the install token, your `authentication_token` has access to the following scopes:
+
+| Scope | Description |
+|---|---|
+| `main` | Core account data |
+| `prospects` | Leads and prospect records |
+| `members` | Member and customer data |
+| `web` | Web presence and pages |
+| `settings` | Account configuration |
+| `products` | Product catalog |
+| `orders` | Order management |
+| `users` | Admin user accounts |
+| `website` | Website builder resources |
+| `header_menus` | Navigation menu configuration |
+| `payments` | Payment settings and transactions |

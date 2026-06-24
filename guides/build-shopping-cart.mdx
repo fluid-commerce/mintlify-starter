@@ -1,0 +1,193 @@
+---
+title: "Build a Shopping Cart with Fluid APIs"
+sidebarTitle: "Shopping Cart"
+description: "Learn how to build a shopping cart using Fluid's cart API and FairShare SDK — including products, cart creation, real-time updates, and checkout."
+---
+
+Fluid gives you everything you need to build a fully functional shopping cart — a product catalog API, a cart API for managing line items, the FairShare SDK for client-side interactions, and webhooks for real-time event handling. Follow the steps below to go from fetching your first product to completing a checkout.
+
+<Tip>
+  Use the built-in `<fluid-cart-widget>` custom element for a zero-code cart UI. Drop it anywhere in your HTML and it renders a fully styled cart drawer with no additional configuration required.
+</Tip>
+
+<Steps>
+
+  <Step title="Fetch Product Details">
+    Before adding anything to a cart, retrieve the product you want to sell. Use the product ID from your Fluid catalog:
+
+    ```javascript
+    const response = await fetch(
+      'https://api.fluid.app/api/company/v1/products/prod_abc123',
+      {
+        headers: {
+          'Authorization': 'Bearer <your_public_token>'
+        }
+      }
+    );
+
+    const product = await response.json();
+    console.log(product.name, product.variants);
+    ```
+
+    The response includes variant IDs, pricing, inventory status, and media. You'll use the variant ID when adding items to the cart.
+  </Step>
+
+  <Step title="Create a Cart">
+    Create a new cart for the current session. You can optionally associate the cart with a customer at creation time.
+
+    ```bash
+    curl -X POST https://api.fluid.app/api/carts \
+      -H "Authorization: Bearer <your_public_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "currency": "USD"
+      }'
+    ```
+
+    The response includes a `cart_token` — store this in the user's session or local storage. You'll use it for all subsequent cart operations.
+
+    ```json
+    {
+      "cart_token": "cart_7x9mK2pLqN",
+      "items": [],
+      "subtotal": 0,
+      "checkout_url": "https://checkout.fluid.app/cart_7x9mK2pLqN"
+    }
+    ```
+  </Step>
+
+  <Step title="Add Items to the Cart">
+    You have two approaches for adding items to a cart.
+
+    **Option A — FairShare SDK (recommended for client-side apps)**
+
+    Call `addCartItems()` with the cart token, variant ID, and quantity:
+
+    ```javascript
+    await window.FairShareSDK.addCartItems({
+      cartToken: 'cart_7x9mK2pLqN',
+      items: [
+        {
+          variant_id: 'var_xyz789',
+          quantity: 2
+        }
+      ]
+    });
+    ```
+
+    **Option B — Declarative HTML attribute**
+
+    Add a `data-fluid-add-to-cart` attribute to any button. The SDK intercepts clicks and handles the API call automatically:
+
+    ```html
+    <button
+      data-fluid-add-to-cart
+      data-variant-id="var_xyz789"
+      data-quantity="1"
+    >
+      Add to Cart
+    </button>
+    ```
+
+    **Option C — Direct API call**
+
+    Use `PATCH /api/carts/{cart_token}` to update the cart server-side:
+
+    ```bash
+    curl -X PATCH https://api.fluid.app/api/carts/cart_7x9mK2pLqN \
+      -H "Authorization: Bearer <your_public_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "items": [
+          {
+            "variant_id": "var_xyz789",
+            "quantity": 2
+          }
+        ]
+      }'
+    ```
+  </Step>
+
+  <Step title="Display the Cart Count">
+    Render a live item count anywhere on the page using the `fluid-cart-count` element. The SDK keeps it in sync automatically as items are added or removed:
+
+    ```html
+    <span class="fluid-cart-count"></span>
+    ```
+
+    You can style this element freely with CSS. The SDK sets its `textContent` to the current total item count whenever the cart changes.
+  </Step>
+
+  <Step title="Handle Checkout">
+    When the customer is ready to purchase, send them to checkout using the SDK or the URL returned in the cart response.
+
+    **Via the FairShare SDK:**
+
+    ```javascript
+    // Redirect to the hosted checkout page
+    window.FairShareSDK.checkout({ cartToken: 'cart_7x9mK2pLqN' });
+
+    // Or retrieve the URL to build your own checkout button
+    const url = await window.FairShareSDK.getCheckoutUrl({ cartToken: 'cart_7x9mK2pLqN' });
+    window.location.href = url;
+    ```
+
+    **Via the cart response:**
+
+    The `checkout_url` field returned when you created the cart is always valid. Redirect the user directly to that URL at any point.
+  </Step>
+
+</Steps>
+
+## Real-Time Cart Updates
+
+Subscribe to cart events using Fluid webhooks to trigger downstream actions — send abandonment emails, update inventory, or sync to your CRM in real time.
+
+### Register a Webhook
+
+```bash
+curl -X POST https://api.fluid.app/api/company/webhooks \
+  -H "Authorization: Bearer <your_company_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook": {
+      "resource": "cart",
+      "event": "cart_updated",
+      "url": "https://yourapp.com/webhooks/cart",
+      "active": true,
+      "http_method": "post"
+    }
+  }'
+```
+
+Register a second webhook for `cart_abandoned` the same way, pointing to the URL that handles your recovery flow.
+
+### Handle Incoming Events
+
+```javascript
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+app.post('/webhooks/cart', (req, res) => {
+  const { event, data } = req.body;
+
+  if (event === 'cart_updated') {
+    const { cart_token, items, subtotal } = data;
+    console.log(`Cart ${cart_token} updated — ${items.length} items, subtotal $${subtotal}`);
+    // Sync to your database or analytics pipeline
+  }
+
+  if (event === 'cart_abandoned') {
+    const { cart_token, customer_email } = data;
+    console.log(`Cart ${cart_token} abandoned by ${customer_email}`);
+    // Enqueue an abandonment email
+  }
+
+  res.sendStatus(200);
+});
+
+app.listen(3000);
+```
+
+Fluid also supports **WebSockets** and **Server-Sent Events (SSE)** if you need real-time updates pushed directly to the browser rather than your server.

@@ -1,0 +1,189 @@
+---
+title: "Receive Real-Time Events with Fluid Webhooks"
+sidebarTitle: "Webhooks"
+description: "Learn how to register, verify, and handle Fluid webhook events for real-time updates on orders, carts, payments, and more."
+---
+
+Webhooks let your server receive instant notifications when things happen in Fluid — a cart is abandoned, an order is placed, or a Droplet is installed. Instead of polling the API repeatedly, you register an HTTPS endpoint and Fluid calls it automatically whenever a matching event occurs. This guide covers everything from registering your first webhook to retrying failed deliveries.
+
+## Create a Webhook
+
+Register a webhook by sending a `POST` request to `/api/company/webhooks`. You must specify the `resource` (the object type), the `event` (the action), and the `url` where Fluid will send the payload.
+
+```bash
+curl -X POST https://api.fluid.app/api/company/webhooks \
+  -H "Authorization: Bearer <your_company_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook": {
+      "resource": "cart",
+      "event": "cart_abandoned",
+      "url": "https://yourapp.com/webhooks/cart-abandoned",
+      "active": true,
+      "http_method": "post",
+      "auth_token": "your_secret_token"
+    }
+  }'
+```
+
+<Note>
+  The `url` field must begin with `https://`. Fluid will not deliver events to plain HTTP endpoints.
+</Note>
+
+Retrieve a list of your registered webhooks at any time:
+
+```bash
+curl https://api.fluid.app/api/company/webhooks \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+Retrieve, update, or delete a specific webhook by ID:
+
+```bash
+# Get a single webhook
+curl https://api.fluid.app/api/company/webhooks/<webhook_id> \
+  -H "Authorization: Bearer <your_company_token>"
+
+# Update a webhook
+curl -X PUT https://api.fluid.app/api/company/webhooks/<webhook_id> \
+  -H "Authorization: Bearer <your_company_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"webhook": {"active": false}}'
+
+# Delete a webhook
+curl -X DELETE https://api.fluid.app/api/company/webhooks/<webhook_id> \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+## Webhook Object Fields
+
+Every webhook object contains the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Unique identifier for the webhook |
+| `company_id` | string | The company this webhook belongs to |
+| `url` | string | The HTTPS endpoint Fluid calls when the event fires |
+| `active` | boolean | Whether the webhook is currently enabled |
+| `resource` | string | The object type that triggers the event (e.g. `cart`, `order`) |
+| `event` | string | The action that triggers the event (e.g. `cart_abandoned`) |
+| `event_identifier` | string | A combined slug used to reference the event schema (e.g. `cart.abandoned`) |
+| `http_method` | string | The HTTP method Fluid uses: `post`, `put`, or `get` |
+| `auth_token` | string | A token Fluid includes so you can verify the request came from Fluid |
+
+## Common Webhook Events
+
+| Event | Description |
+|---|---|
+| `cart_updated` | A cart's contents changed (item added, removed, or quantity updated) |
+| `cart_abandoned` | A cart was left inactive and is considered abandoned |
+| `droplet_installed` | A merchant installed one of your Droplets |
+| `droplet_uninstalled` | A merchant uninstalled one of your Droplets |
+| `order_created` | A new order was placed |
+| `order_updated` | An existing order was modified |
+| `order_fulfilled` | An order was marked as fulfilled |
+| `order_refunded` | A refund was issued against an order |
+
+## Handling Webhook Payloads
+
+Your endpoint must respond with a `2xx` status code within a reasonable time window. If Fluid does not receive a successful response, it marks the delivery as failed and you can retrigger it manually (see below).
+
+```javascript
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+app.post('/webhooks/fluid', (req, res) => {
+  const { event, data } = req.body;
+  const receivedToken = req.headers['x-auth-token'];
+
+  // Verify authenticity before processing
+  if (receivedToken !== process.env.FLUID_WEBHOOK_AUTH_TOKEN) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  switch (event) {
+    case 'cart_abandoned': {
+      const { cart_token, customer_email, subtotal } = data;
+      console.log(`Abandoned cart ${cart_token} from ${customer_email} — $${subtotal}`);
+      // Enqueue abandonment recovery email
+      break;
+    }
+    case 'order_created': {
+      const { order_id, total, line_items } = data;
+      console.log(`New order ${order_id} — $${total} with ${line_items.length} items`);
+      // Sync to fulfillment system
+      break;
+    }
+    default:
+      console.log(`Unhandled event: ${event}`);
+  }
+
+  res.sendStatus(200);
+});
+
+app.listen(3000);
+```
+
+## Verifying Authenticity
+
+When you create a webhook, set the `auth_token` field to a secret value only you know. Fluid includes this value in every delivery — use it to confirm that the request came from Fluid and not an untrusted third party.
+
+Check the token on every inbound request before processing the payload:
+
+```javascript
+app.post('/webhooks/fluid', (req, res) => {
+  const incomingToken = req.headers['x-auth-token'];
+
+  if (!incomingToken || incomingToken !== process.env.FLUID_WEBHOOK_AUTH_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Safe to process the event
+  res.sendStatus(200);
+});
+```
+
+Use a randomly generated value with at least 32 characters of entropy for your `auth_token`. Rotate it periodically, especially if you suspect it has been compromised.
+
+## Retrying Failed Events
+
+Fluid logs every webhook delivery attempt. If your endpoint was unavailable or returned a non-`2xx` status, you can view the failed event and retrigger it manually.
+
+**View event history:**
+
+```bash
+curl https://api.fluid.app/api/company/webhook_events \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+The response lists recent deliveries with their status, response code, and timestamp.
+
+**Retry a specific event:**
+
+```bash
+curl -X POST https://api.fluid.app/api/company/webhook_events/<event_id>/retrigger \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+Fluid replays the original payload to your registered endpoint. This is useful for recovering from outages or debugging handler logic during development.
+
+## Webhook Event Schemas
+
+Every Fluid event type has a defined schema describing the shape of its payload. Use the schema endpoints to introspect available events or validate incoming payloads against the expected structure.
+
+**List all event schemas:**
+
+```bash
+curl https://api.fluid.app/api/webhooks/schemas \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+**Get the schema for a specific event:**
+
+```bash
+curl https://api.fluid.app/api/webhooks/schemas/cart.abandoned \
+  -H "Authorization: Bearer <your_company_token>"
+```
+
+The response describes every field in the event payload, including types and whether each field is required. Reference these schemas when building handlers or writing integration tests for your webhook endpoints.
