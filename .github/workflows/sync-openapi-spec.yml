@@ -1,0 +1,86 @@
+name: Sync OpenAPI spec
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-openapi-spec
+  cancel-in-progress: false
+
+env:
+  SPEC_PATH: api-reference/storefront-v2026-04.yaml
+  SPEC_URL: https://storage.googleapis.com/fluid-public/docs/api/storefront-v2026-04.yaml
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch latest spec from GCS mirror
+        run: curl -fsSL "$SPEC_URL" -o "$SPEC_PATH"
+
+      - name: Exit early if unchanged
+        id: diff
+        run: |
+          if git diff --quiet -- "$SPEC_PATH"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No spec changes detected; nothing to sync."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Spec changed; proceeding to validate."
+          fi
+
+      - name: Setup Node
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate updated spec and docs config
+        if: steps.diff.outputs.changed == 'true'
+        id: validate
+        continue-on-error: true
+        run: npx --yes mint@latest validate
+
+      - name: Configure git identity
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit and push to main (validation passed)
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
+        run: |
+          git add "$SPEC_PATH"
+          git commit -m "chore: sync storefront-v2026-04 spec from GCS mirror"
+          git push origin main
+
+      - name: Open blocked PR (validation failed)
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add "$SPEC_PATH"
+          git commit -m "chore: BLOCKED spec sync — mint validate failed"
+          git push --force origin HEAD:spec-sync-blocked
+          gh pr create \
+            --base main \
+            --head spec-sync-blocked \
+            --title "chore: BLOCKED spec sync — mint validate failed" \
+            --body "Automated spec sync from the GCS mirror failed \`mint validate\`. The hosted docs remain on the last-good spec. Review the failing validation output in the workflow run and fix the spec or docs config before merging." \
+            || echo "PR already exists; leaving it open."
+
+      - name: Fail run if validation failed
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+        run: exit 1
