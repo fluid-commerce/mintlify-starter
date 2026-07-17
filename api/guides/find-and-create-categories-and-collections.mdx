@@ -1,0 +1,248 @@
+---
+title: "Find and create categories and collections"
+description: "Browse the public catalog, look up categories and collections by slug or id, and create new ones with the company API."
+---
+
+Categories and collections are the two storefront grouping resources in the Fluid Storefront `v2026-04` API. Both expose two surfaces: a **public**, unauthenticated catalog you read to render storefront pages, and a **company**, token-authenticated surface you use to manage every row regardless of whether it is live. This guide covers finding existing categories and collections on both surfaces and creating new ones.
+
+Categories and collections share almost the same shape and the same operations. Examples below show categories in full and note where collections differ.
+
+## Base URLs and authentication
+
+Public catalog reads resolve the company from the request subdomain, so call them against your company subdomain — for example `https://acme.fluid.app`. They take no credentials.
+
+Company operations require a Bearer token and are called against `https://api.fluid.app`. Read operations need the `storefront.view` scope; writes need `storefront.update`. Legacy per-resource grants (such as `categories.update`) are still accepted during the migration.
+
+<Note>
+  Public operations under `/api/v202604/categories`, `/api/v202604/categories/{slug}`, and the collection equivalents are unauthenticated. Sending a token to them is unnecessary. Every `/api/v202604/company/...` operation requires the token.
+</Note>
+
+## Browse the public catalog
+
+`GET /api/v202604/categories` returns a page of **live** categories only — rows that are active, resolved-published, country-eligible, and language-eligible. Draft, scheduled, archived, and inactive rows never appear here.
+
+```bash
+curl "https://acme.fluid.app/api/v202604/categories"
+```
+
+The response wraps the rows in a `categories` array alongside a top-level `status` and a `meta` block:
+
+```json
+{
+  "status": 200,
+  "categories": [
+    {
+      "id": 4821,
+      "slug": "summer-sale",
+      "title": "Summer Sale",
+      "description": "Hand-picked categories for the July clearance.",
+      "active": true,
+      "status": "published",
+      "publish_at": null,
+      "countries": ["GB", "US"],
+      "languages": ["en", "fr"],
+      "parent_id": null,
+      "position": 1,
+      "source_type": "product",
+      "has_children": false
+    }
+  ],
+  "meta": {
+    "request_id": "7f3c2a90-1c2b-4d5e-9aaa-112233445566",
+    "timestamp": "2026-07-15T12:34:56Z",
+    "pagination": {
+      "cursor": null,
+      "next_cursor": "eyJpZCI6NDgyMn0",
+      "prev_cursor": null,
+      "limit": 25
+    }
+  }
+}
+```
+
+### Filter, search, and sort
+
+The public catalog accepts these query parameters:
+
+<ParamField query="q" type="string">
+  Free-text search over the translation-aware `title` and `description` fields.
+</ParamField>
+
+<ParamField query="filter[country]" type="string">
+  ISO-2 country code. Restricts results to categories available in that country. Unrestricted categories (those with no country list) match every country. See [Control country availability](/api/guides/country-availability).
+</ParamField>
+
+<ParamField query="filter[language]" type="string">
+  ISO locale. Restricts results to categories translated in that locale.
+</ParamField>
+
+<ParamField query="filter[source_type]" type="string">
+  One of `product`, `medium`, `page`, `library`, or `promotion`. Categories only.
+</ParamField>
+
+<ParamField query="filter[parent_id]" type="string">
+  A category id (as a string), or `"root"` for top-level categories only. Categories only. See [Work with the category hierarchy](/api/guides/category-hierarchy).
+</ParamField>
+
+<ParamField query="sort" type="string">
+  One sort key: `position`, `title`, or `created_at`. Prefix with `-` for descending (for example `-created_at`). Defaults to `position` then `id`.
+</ParamField>
+
+<ParamField query="lang" type="string">
+  Response locale as an ISO code (for example `fr`). Omit to use the company default. On the public surface, any field missing in the requested locale falls back to `en`.
+</ParamField>
+
+```bash
+curl "https://acme.fluid.app/api/v202604/categories?q=sale&filter[country]=GB&sort=-created_at"
+```
+
+### Paginate with cursors
+
+Paging is cursor-based. `meta.pagination.next_cursor` and `prev_cursor` carry the cursor for the adjacent page; pass it back as `page[cursor]`. `page[limit]` sets the page size (default `25`, max `100` — a larger value returns `422`).
+
+```bash
+curl "https://acme.fluid.app/api/v202604/categories?page[limit]=50&page[cursor]=eyJpZCI6NDgyMn0"
+```
+
+### Collections
+
+`GET /api/v202604/collections` mirrors the category catalog and accepts the same `q`, `filter[country]`, `filter[language]`, `sort`, `lang`, and pagination parameters. Collections have no hierarchy, so they do **not** accept `filter[parent_id]` or `filter[source_type]`, and their rows omit `parent_id`, `position`, `source_type`, and `has_children`.
+
+```bash
+curl "https://acme.fluid.app/api/v202604/collections?filter[country]=GB"
+```
+
+## Look up one by slug
+
+The slug is the canonical public identifier and matches the row's `canonical_url`. Fetch a single category with `GET /api/v202604/categories/{slug}`:
+
+```bash
+curl "https://acme.fluid.app/api/v202604/categories/summer-sale"
+```
+
+The category is returned under a `category` key inside the standard envelope.
+
+<Warning>
+  The public show endpoints behave differently for non-live rows. A category slug returns `404` for **any** non-live row, so unlisted categories never reveal their existence. A collection slug returns `404` **only** for an archived row — draft, scheduled, and inactive collections still resolve here so preview and pre-launch links load (the theme renders them `noindex`). To inspect a non-public category, use the company surface below.
+</Warning>
+
+## Find any row as an admin
+
+`GET /api/v202604/company/categories` returns **every** category for the calling company, in any lifecycle state (draft, scheduled, published, or archived), so you can manage rows that are not publicly visible.
+
+```bash
+curl "https://api.fluid.app/api/v202604/company/categories" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+It accepts the same pagination, `q`, `filter[country]`, `filter[language]`, `sort`, and `lang` parameters as the public catalog, plus two admin-only filters:
+
+<ParamField query="filter[status]" type="string">
+  One of `draft`, `scheduled`, `published`, or `archived`. Restricts to a single lifecycle state.
+</ParamField>
+
+<ParamField query="filter[active]" type="string">
+  `"true"` or `"false"` to restrict to active or inactive rows. A blank value (`filter[active]=`) means no filter.
+</ParamField>
+
+```bash
+curl "https://api.fluid.app/api/v202604/company/categories?filter[status]=draft&filter[active]=true" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+To fetch a single row as an admin, use the numeric id (the canonical company identifier) with `GET /api/v202604/company/categories/{id}`. This returns the category in any lifecycle state:
+
+```bash
+curl "https://api.fluid.app/api/v202604/company/categories/4821" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+Collections expose the identical company surface at `/api/v202604/company/collections` and `/api/v202604/company/collections/{id}`.
+
+## Create a category
+
+`POST /api/v202604/company/categories` creates a category. The request body nests fields under a `category` key. `title` is the only required field.
+
+```bash
+curl -X POST "https://api.fluid.app/api/v202604/company/categories" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "category": {
+      "title": "Summer Sale"
+    }
+  }'
+```
+
+A full create can set the description, slug behavior, lifecycle, country availability, metafields, and SEO in one call:
+
+```bash
+curl -X POST "https://api.fluid.app/api/v202604/company/categories" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "category": {
+      "title": "Summer Sale",
+      "description": "Hand-picked categories for the July clearance.",
+      "slug": "summer-sale",
+      "custom_slug": true,
+      "active": true,
+      "status": "scheduled",
+      "publish_at": "2026-07-01T08:00:00Z",
+      "parent_id": null,
+      "position": 1,
+      "source_type": "product",
+      "country_isos": ["GB", "US"],
+      "metafields_attributes": [
+        {
+          "namespace": "custom",
+          "key": "theme_accent",
+          "value": "#f5a623",
+          "value_type": "single_line_text_field"
+        }
+      ],
+      "search_engine_optimizer_attributes": {
+        "title": "Summer Sale — Up to 40% Off",
+        "description": "Shop the July clearance event before it ends.",
+        "image_path": "seo/9215.png",
+        "block_crawler": false
+      }
+    }
+  }'
+```
+
+A successful create returns `201` with the new category under the `category` key.
+
+A few things worth knowing at create time:
+
+- **Slug management.** Send `slug` together with `custom_slug: true` to pin a permanent, merchant-set slug. Without `custom_slug: true`, the slug is auto-generated from `title` and regenerates whenever the title changes. See [Rename, publish, and schedule](/api/guides/rename-publish-and-schedule).
+- **Lifecycle.** `status` defaults control whether the category is publicly visible. Setting `status: "scheduled"` with a future `publish_at` schedules it to go live. See [Rename, publish, and schedule](/api/guides/rename-publish-and-schedule).
+- **Country availability.** `country_isos` restricts availability; an empty array means available everywhere the company sells. See [Control country availability](/api/guides/country-availability).
+- **Nesting.** Set `parent_id` to nest a category under another. See [Work with the category hierarchy](/api/guides/category-hierarchy).
+
+<Note>
+  Creating (and later updating) a category automatically queues fresh Lighthouse and compliance scans. Their results become available asynchronously on the company Lighthouse and compliance endpoints — the create response itself does not wait for them.
+</Note>
+
+## Create a collection
+
+`POST /api/v202604/company/collections` mirrors category creation. The body nests under a `collection` key, and `title` is again the only required field. Because collections have no hierarchy, the body accepts no `parent_id`, `position`, or `source_type`.
+
+```bash
+curl -X POST "https://api.fluid.app/api/v202604/company/collections" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection": {
+      "title": "Wellness Essentials",
+      "description": "Hand-picked supplements and recovery gear.",
+      "country_isos": ["GB", "US"]
+    }
+  }'
+```
+
+## Next steps
+
+- [Rename, publish, and schedule](/api/guides/rename-publish-and-schedule) — change a title, control visibility, and schedule go-live.
+- [Control country availability](/api/guides/country-availability) — set and query which countries a row is available in.
+- [Work with the category hierarchy](/api/guides/category-hierarchy) — nest categories and traverse parents and children.
