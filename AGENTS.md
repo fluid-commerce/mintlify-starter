@@ -4,6 +4,20 @@
 
 # Documentation project instructions
 
+## Guide truth gate (read before editing `api/guides/` or `api-reference/`)
+
+The task guides in `api/guides/*.mdx` are bound to a claims registry
+(`eval/guide-claims.json`) enforced by a deterministic checker in CI
+(`eval/check-guide-claims.mjs`). Editing a guide without updating the registry — or
+vice versa — fails CI. Read `eval/guide-truth.md` first: it defines the claim
+schema, the checker's semantics, the durable verification decisions (accepted
+omissions, low-confidence claims, upstream spec gaps), and the adoption procedure
+for new guides. The OpenAPI spec is synced hourly from a GCS mirror
+(`.github/synced-specs.json` controls which specs); endpoint reference pages are
+auto-generated from it. Do not store run reports or logs in the repo — post run
+records on the relevant Linear issue and record durable decisions in
+`eval/guide-truth.md`.
+
 ## About this project
 
 - This is a documentation site built on [Mintlify](https://mintlify.com)

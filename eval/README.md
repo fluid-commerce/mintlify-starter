@@ -3,6 +3,13 @@
 This directory holds the agent-eval harness for the **Categories/Collections pilot on
 Mintlify** (Linear CURRENT-2424).
 
+It also holds the **guide truth gate** (Linear CURRENT-2587): `guide-claims.json`
+(claims registry for the task guides) and `check-guide-claims.mjs` (deterministic
+checker that runs in CI). See [guide-truth.md](guide-truth.md) for how the mechanism
+works, the durable verification decisions, and how new guides adopt it. One-off run
+records (adversarial verification, omission sweeps) live on the phase's Linear
+issue, not in the repo.
+
 ## Purpose
 
 The bet behind CURRENT-2424 is that publishing the Fluid Storefront API docs to a
@@ -131,9 +138,29 @@ errors), the prompt is marked **ERRORED** (not failed) and the run continues.
   - `pass rate >= 90%: yes/no`
   - `legacy answers == 0: yes/no`
 - **`results/<timestamp>-<mode>.json`** — full per-prompt detail (raw JSON, reasons,
-  stop reason). `results/` is git-ignored (`eval/.gitignore`).
+  stop reason). `results/` is git-ignored (root `.gitignore`).
 - **exit code** — `0` only when pass rate ≥ 90% **and** legacy answers == 0 **and**
   no prompt ERRORED; `1` otherwise.
+
+## Unit tests
+
+The pure grading and parsing helpers in `run-eval.mjs` (`normalizePath`,
+`isParamSegment`, `pathMatches`, `flattenNames`, `normalizeAuth`, `scanLegacy`,
+`gradeOne`, `extractJson`, `parseAnyObject`, `extractFinalText`, `isRetryableStatus`)
+are exported and characterized by `run-eval.test.mjs` using Node's built-in test
+runner (`node:test` + `node:assert/strict`) — zero dependencies. `run-eval.mjs` only
+runs its `main()` when executed directly, so importing it for tests has no side
+effects.
+
+```bash
+cd eval && node --test               # scans eval/, runs only *.test.mjs
+node --test eval/run-eval.test.mjs   # or target the file directly
+```
+
+CI runs this in `validate.yml` (with `eval/` as the working directory — a bare
+`node --test eval/` directory positional is not supported on Node 22.x). The
+network/orchestration layer (Anthropic requests, MCP connector, retry pool) is
+deliberately untested here — it needs a live deploy and is exercised by real eval runs.
 
 ## Growing to the full 25-prompt set
 
