@@ -53,34 +53,42 @@ jobs:
         continue-on-error: true
         run: npx --yes mint@latest validate
 
+      - name: Check guide claims against synced spec
+        if: steps.diff.outputs.changed == 'true'
+        id: claims
+        continue-on-error: true
+        run: node eval/check-guide-claims.mjs
+
       - name: Configure git identity
         if: steps.diff.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit and push to main (validation passed)
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
+      - name: Commit and push to main (all gates passed)
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success' && steps.claims.outcome == 'success'
         run: |
           git add "$SPEC_PATH"
           git commit -m "chore: sync storefront-v2026-04 spec from GCS mirror"
           git push origin main
 
-      - name: Open blocked PR (validation failed)
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+      - name: Open blocked PR (a gate failed)
+        if: steps.diff.outputs.changed == 'true' && (steps.validate.outcome == 'failure' || steps.claims.outcome == 'failure')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          CLAIMS_OUTCOME: ${{ steps.claims.outcome }}
         run: |
           git add "$SPEC_PATH"
-          git commit -m "chore: BLOCKED spec sync — mint validate failed"
+          git commit -m "chore: BLOCKED spec sync — validation gate failed"
           git push --force origin HEAD:spec-sync-blocked
           gh pr create \
             --base main \
             --head spec-sync-blocked \
-            --title "chore: BLOCKED spec sync — mint validate failed" \
-            --body "Automated spec sync from the GCS mirror failed \`mint validate\`. The hosted docs remain on the last-good spec. Review the failing validation output in the workflow run and fix the spec or docs config before merging." \
+            --title "chore: BLOCKED spec sync — validation gate failed" \
+            --body "Automated spec sync from the GCS mirror was blocked (mint validate: ${VALIDATE_OUTCOME}, guide-claims check: ${CLAIMS_OUTCOME}). The hosted docs remain on the last-good spec. A claims failure means the synced spec now contradicts a published task guide — fix the guide + \`eval/guide-claims.json\` (see \`eval/guide-truth.md\`) or revert the spec change upstream before merging. Review the failing output in the workflow run." \
             || echo "PR already exists; leaving it open."
 
-      - name: Fail run if validation failed
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
+      - name: Fail run if a gate failed
+        if: steps.diff.outputs.changed == 'true' && (steps.validate.outcome == 'failure' || steps.claims.outcome == 'failure')
         run: exit 1
