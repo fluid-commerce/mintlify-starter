@@ -161,13 +161,45 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
 
 ## CI wiring
 
-- **`validate.yml`** — runs the checker on every PR and push to `main`. A PR that
-  edits a guide without updating the registry (or vice versa) fails.
-- **`sync-openapi-spec.yml`** — runs the checker against the freshly synced spec
-  before committing it to `main`. A synced spec change that contradicts a guide
-  claim follows the same quarantine path as a spec that fails `mint validate`: the
-  sync is blocked, a `spec-sync-blocked` PR is opened for a human, and the hosted
-  docs stay on the last-good spec.
+- **`validate.yml`** — on every PR and push to `main`, runs `mint validate`, the
+  checker self-test, the eval-harness unit tests, and the checker itself
+  (`node eval/check-guide-claims.mjs`). A PR that edits a guide without updating the
+  registry (or vice versa) fails here — this is the hard gate for human-authored
+  changes.
+- **`sync-openapi-spec.yml`** — hourly, **manifest-driven** and **flow-and-flag**.
+  `.github/synced-specs.json` is the control surface for *which* specs sync (each
+  entry pulled from its mirror into its repo path); spec truth then flows to the
+  docs/MCP unconditionally — **additions and removals both publish** on the sync,
+  because the reference pages are *auto-generated* from the spec (docs.json points a
+  navigation group at the spec with no explicit page list).
+  - **Hard gate — `mint validate` (quarantine).** A broken spec would break the
+    auto-generated build, so `mint validate` still gates. On failure the invalid
+    spec is parked on the `spec-sync-blocked` branch behind a PR and the run exits
+    non-zero; `main` and the hosted docs stay on the last-good spec. That PR is now
+    strictly about build validation — guide-claim conflicts are no longer a reason
+    for it.
+  - **Flow.** Once the spec validates, it is committed and pushed to `main`
+    **unconditionally**, whatever the claims outcome — the docs never fall behind
+    the backend.
+  - **Flag.** The checker then runs against the just-pushed spec as a *non-gating*
+    step (the sync run itself exits `0`). On a conflict it opens — or comments on
+    the existing open — a single labeled issue (`guide-spec-conflict`) carrying the
+    failing `[FAIL]` lines. The spec is **not** rolled back.
+
+  While a conflict is open, `main`'s CI is **deliberately red**: the same
+  `validate.yml` run (above) fails on the synced commit because a published guide now
+  contradicts the published reference. That red build, plus the issue, is the signal.
+
+### Resolving a conflict
+
+1. Open the `guide-spec-conflict` issue — it names each failing claim (`claim-id`,
+   `guide:line`, reason) from the checker output.
+2. Decide which side is right:
+   - **Spec change is correct** → update the guide prose and the affected claims in
+     `eval/guide-claims.json` (quotes, lines, anchors) in a PR.
+   - **Spec change is an upstream mistake** → correct it in the backend; the next
+     hourly sync republishes the fixed spec and heals `main`.
+3. Merge the fix. `validate.yml` goes green on `main`; close the issue.
 
 ## Adversarial semantic verification (one-off, never in CI)
 

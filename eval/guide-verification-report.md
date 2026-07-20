@@ -106,10 +106,17 @@ failures:                  1
 VERDICT: FAIL — see failures above
 ```
 
-Exit code 1 → in `sync-openapi-spec.yml` the sync takes the blocked-PR quarantine path
-(same as a `mint validate` failure): `main` keeps the last-good spec, hosted docs never
-publish guidance the spec contradicts. In `validate.yml` the same check blocks PRs that
-edit a guide without updating the registry (quote-presence) or contradict the spec.
+Exit code 1 → the checker detects the contradiction and names the exact claim. In
+`validate.yml` this blocks PRs that edit a guide without updating the registry
+(quote-presence) or contradict the spec — that PR-level blocking is unchanged.
+*Routing note:* at verification time the hourly spec sync also **quarantined** on
+this failure. The sync has since moved to a **flow-and-flag** model — a valid spec
+now commits and publishes to `main` unconditionally, and a claim conflict is
+surfaced as a `guide-spec-conflict` issue plus a deliberately-red `main` CI (the
+`validate.yml` run above, failing on the synced commit) rather than blocking the
+sync. Only a `mint validate` failure still quarantines (on `spec-sync-blocked`). See
+`eval/guide-truth.md` for current semantics; the detection demonstrated above is
+unchanged.
 
 ## Upstream spec flags (for the backend contract owners)
 
