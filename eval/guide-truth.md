@@ -194,6 +194,21 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   `validate.yml` run (above) fails on the synced commit because a published guide now
   contradicts the published reference. That red build, plus the issue, is the signal.
 
+### Future: replacing the cron with Mintlify-native sync
+
+Mintlify can consume an OpenAPI spec directly by URL and re-deploy on demand via its
+trigger-deployment API (called from the backend's publish CI — the fluid repo's
+`docs.yml`, right after the GCS upload). That would eliminate this cron and the
+up-to-an-hour sync lag. We deliberately don't use it yet: a remote spec never lands
+as a commit, so there is no diff to review, no hook to run the claims checker, no
+`mint validate` gate, and no quarantine for a broken spec — every safety property
+above lives in the committed mirror. Revisit when either (a) Mintlify adds a
+pre-deploy validation hook, or (b) the claims check + validate move upstream into
+the fluid repo's `docs.yml` so they gate the GCS upload itself. If lag alone becomes
+the pain point, the cheaper fix is a `repository_dispatch` from `docs.yml` that
+triggers this workflow immediately after upload — push-based freshness, all gates
+intact.
+
 ### Resolving a conflict
 
 1. Open the `guide-spec-conflict` issue — it names each failing claim (`claim-id`,
