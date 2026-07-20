@@ -20,7 +20,7 @@
 //   EVAL_MODE=llms ANTHROPIC_API_KEY=... EVAL_DOCS_BASE_URL=... node eval/run-eval.mjs
 
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -568,7 +568,27 @@ async function main() {
   process.exit(success ? 0 : 1);
 }
 
-main().catch((err) => {
-  process.stderr.write(`FATAL: ${err.stack || err.message}\n`);
-  process.exit(1);
-});
+// Only run the harness when executed directly (`node eval/run-eval.mjs`), not when
+// imported — e.g. by eval/run-eval.test.mjs, which exercises the pure functions below.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  main().catch((err) => {
+    process.stderr.write(`FATAL: ${err.stack || err.message}\n`);
+    process.exit(1);
+  });
+}
+
+// Pure grading/parsing helpers — exported for unit testing (see run-eval.test.mjs).
+export {
+  isRetryableStatus,
+  extractFinalText,
+  extractJson,
+  parseAnyObject,
+  normalizePath,
+  isParamSegment,
+  pathMatches,
+  flattenNames,
+  normalizeAuth,
+  scanLegacy,
+  gradeOne,
+};

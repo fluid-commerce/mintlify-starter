@@ -137,9 +137,23 @@ errors), the prompt is marked **ERRORED** (not failed) and the run continues.
   - `pass rate >= 90%: yes/no`
   - `legacy answers == 0: yes/no`
 - **`results/<timestamp>-<mode>.json`** — full per-prompt detail (raw JSON, reasons,
-  stop reason). `results/` is git-ignored (`eval/.gitignore`).
+  stop reason). `results/` is git-ignored (root `.gitignore`).
 - **exit code** — `0` only when pass rate ≥ 90% **and** legacy answers == 0 **and**
   no prompt ERRORED; `1` otherwise.
+
+## Unit tests
+
+The grading and parsing helpers in `run-eval.mjs` (path/template matching, auth
+normalization, legacy scan, JSON extraction, `gradeOne`) are exported and covered by
+`run-eval.test.mjs` using Node's built-in test runner — zero dependencies:
+
+```bash
+node --test 'eval/**/*.test.mjs'
+```
+
+CI runs this in `validate.yml`. The network/orchestration layer (Anthropic requests,
+MCP connector, retry pool) is deliberately untested here — it needs a live deploy and
+is exercised by real eval runs.
 
 ## Growing to the full 25-prompt set
 
