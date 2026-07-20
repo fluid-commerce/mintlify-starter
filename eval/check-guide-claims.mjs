@@ -834,6 +834,239 @@ function validateValue(spec, schemaNode, value, path, claim, report, allowUnknow
 }
 
 // ---------------------------------------------------------------------------
+// Coverage lint — the reverse direction.
+//
+// Quote-presence binds existing claims to guide text; nothing forces NEW guide
+// prose to have a claim. This pass reads each guide's MDX directly, extracts
+// API-shaped tokens (endpoint paths, bracket/known query params, snake_case
+// identifiers, backticked status codes), and fails when a token has no covering
+// claim. A token is covered when it appears in a claim's anchor, in a claim's
+// quote, or on a guide line already owned by a claim (a claim's quote line-span,
+// or any fenced example/response block that contains a claim quote — its sibling
+// keys are not separate assertions). Honest limit: token-less behavioral prose
+// still relies on the authoring-time semantic pass, not this lint.
+// ---------------------------------------------------------------------------
+
+const KNOWN_QUERY_PARAMS = new Set(["sort", "lang", "q"]);
+const COVERAGE_STATUS_CODES = new Set(["200", "201", "202", "401", "403", "404", "422"]);
+const PATH_RE = /\/api\/v202604\/[A-Za-z0-9_\-/{}]+/g;
+const BACKTICK_RE = /`([^`]+)`/g;
+const BRACKET_PARAM_RE = /^(filter|page)\[[^\]]+\]$/;
+const SNAKE_RE = /^[a-z][a-z0-9_]*$/; // enforced only when it also contains "_"
+const IGNORE_NEXT_RE = /\{\/\*\s*truth-gate:\s*ignore-next-line\s*\*\/\}/;
+const IGNORE_TOKEN_RE = /\{\/\*\s*truth-gate:\s*ignore:\s*([^*]+?)\s*\*\/\}/;
+
+function stripPathPunct(s) {
+  return s.replace(/[).,;:]+$/, "").replace(/\/+$/, "");
+}
+
+// A path token matches an anchor path when segments line up and any `{...}`
+// template segment (on either side) matches a concrete segment.
+function pathTemplateEqual(p1, p2) {
+  const a = p1.split("/");
+  const b = p2.split("/");
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    if (/^\{.*\}$/.test(a[i]) || /^\{.*\}$/.test(b[i])) continue;
+    return false;
+  }
+  return true;
+}
+
+// Whole-token containment: `token` bounded by non-identifier chars (so bare `q`
+// matches `q=sale` or a backticked `q`, but not the q inside "required").
+function tokenInText(token, text) {
+  const isIdent = (ch) => ch !== "" && /[A-Za-z0-9_[\]]/.test(ch);
+  let from = 0;
+  while (true) {
+    const idx = text.indexOf(token, from);
+    if (idx === -1) return false;
+    const before = idx === 0 ? "" : text[idx - 1];
+    const after = idx + token.length >= text.length ? "" : text[idx + token.length];
+    if (!isIdent(before) && !isIdent(after)) return true;
+    from = idx + 1;
+  }
+}
+
+// Frontmatter block + fenced code-block ranges (1-based, inclusive of the ``` lines).
+function scanStructure(lines) {
+  let frontmatterEnd = 0;
+  if (lines[0] !== undefined && lines[0].trim() === "---") {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === "---") {
+        frontmatterEnd = i + 1;
+        break;
+      }
+    }
+  }
+  const fences = [];
+  let open = null;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*```(\w*)/);
+    if (!m) continue;
+    if (open === null) open = { start: i + 1, lang: m[1] || "" };
+    else {
+      fences.push({ start: open.start, end: i + 1, lang: open.lang });
+      open = null;
+    }
+  }
+  if (open !== null) fences.push({ start: open.start, end: lines.length, lang: open.lang });
+  return { frontmatterEnd, fences };
+}
+
+function claimQuoteSpans(guideText, claim) {
+  const needle = normalizeNeedle(claim.quote);
+  if (!needle) return [];
+  const { norm, lineMap } = normalizeWithMap(guideText);
+  const spans = [];
+  let from = 0;
+  while (true) {
+    const idx = norm.indexOf(needle, from);
+    if (idx === -1) break;
+    const endIdx = Math.min(idx + needle.length - 1, lineMap.length - 1);
+    spans.push([lineMap[idx], lineMap[endIdx]]);
+    from = idx + 1;
+  }
+  return spans;
+}
+
+// Lines already "owned" by a claim: every line a claim's quote spans, plus any
+// fenced block that contains a claim quote (covered wholesale).
+function computeCoveredLines(guideText, guideClaims, fences) {
+  const covered = new Set();
+  const addRange = (a, b) => {
+    for (let l = a; l <= b; l++) covered.add(l);
+  };
+  for (const c of guideClaims) {
+    if (typeof c.quote !== "string") continue;
+    for (const [s, e] of claimQuoteSpans(guideText, c)) {
+      addRange(s, e);
+      for (const f of fences) {
+        if (s >= f.start && s <= f.end) addRange(f.start, f.end);
+      }
+    }
+  }
+  return covered;
+}
+
+function anchorCoversToken(token, cls, guideClaims) {
+  for (const c of guideClaims) {
+    const a = c.anchor;
+    if (!a || typeof a !== "object") continue;
+    if (cls === "path") {
+      if (typeof a.path === "string" && pathTemplateEqual(token, a.path)) return true;
+    } else if (cls === "param") {
+      if (a.param === token) return true;
+    } else if (cls === "snake") {
+      if (typeof a.field === "string" && a.field.split(".").map((s) => s.replace(/\[\]/g, "")).includes(token)) return true;
+    } else if (cls === "status") {
+      if (a.status === token) return true;
+    }
+  }
+  return false;
+}
+
+function quoteCoversToken(token, guideClaims) {
+  for (const c of guideClaims) {
+    if (typeof c.quote === "string" && tokenInText(token, normalizeNeedle(c.quote))) return true;
+  }
+  return false;
+}
+
+const COVERAGE_CLASS_STAT = { path: "paths", param: "params", snake: "snake", status: "status" };
+
+// Scans every guide in registry.guides for API-shaped tokens and records a
+// failure for each token no claim covers. Appends to the shared report.
+function runCoverage(registry, getGuide, report) {
+  const guides = Array.isArray(registry && registry.guides) ? registry.guides : [];
+  const claims = Array.isArray(registry && registry.claims) ? registry.claims : [];
+  const byGuide = new Map();
+  for (const c of claims) {
+    if (typeof c.guide !== "string") continue;
+    if (!byGuide.has(c.guide)) byGuide.set(c.guide, []);
+    byGuide.get(c.guide).push(c);
+  }
+
+  const stats = { guides: 0, paths: 0, params: 0, snake: 0, status: 0, failures: 0 };
+
+  for (const guide of guides) {
+    const text = getGuide(guide);
+    if (text == null) {
+      report.failures.push({ id: "coverage", guide, line: null, reason: "guide file not found or unreadable" });
+      stats.failures += 1;
+      continue;
+    }
+    stats.guides += 1;
+    const guideClaims = byGuide.get(guide) || [];
+    const lines = text.split("\n");
+    const { frontmatterEnd, fences } = scanStructure(lines);
+    const coveredLines = computeCoveredLines(text, guideClaims, fences);
+
+    const fileWideIgnores = new Set();
+    for (const line of lines) {
+      const m = line.match(IGNORE_TOKEN_RE);
+      if (m) fileWideIgnores.add(m[1].trim());
+    }
+
+    const seen = new Set();
+    let ignoreNext = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1;
+      const raw = lines[i];
+      if (lineNo <= frontmatterEnd) continue;
+      if (IGNORE_NEXT_RE.test(raw)) {
+        ignoreNext = true;
+        continue;
+      }
+      if (IGNORE_TOKEN_RE.test(raw)) continue;
+      if (ignoreNext) {
+        ignoreNext = false;
+        continue;
+      }
+
+      const trimmed = raw.trim();
+      // Skip import statements and JSX-tag lines (their attributes aren't backticked
+      // assertions; the underlying facts live in the surrounding prose / claims).
+      if (trimmed.startsWith("<") || trimmed.startsWith("import ")) continue;
+
+      const found = [];
+      let pm;
+      PATH_RE.lastIndex = 0;
+      while ((pm = PATH_RE.exec(raw)) !== null) {
+        const tok = stripPathPunct(pm[0]);
+        if (tok.startsWith("/api/v202604/")) found.push({ token: tok, cls: "path" });
+      }
+      let bm;
+      BACKTICK_RE.lastIndex = 0;
+      while ((bm = BACKTICK_RE.exec(raw)) !== null) {
+        const inner = bm[1].trim();
+        if (BRACKET_PARAM_RE.test(inner) || KNOWN_QUERY_PARAMS.has(inner)) found.push({ token: inner, cls: "param" });
+        else if (SNAKE_RE.test(inner) && inner.includes("_")) found.push({ token: inner, cls: "snake" });
+        else if (COVERAGE_STATUS_CODES.has(inner)) found.push({ token: inner, cls: "status" });
+      }
+
+      for (const { token, cls } of found) {
+        if (fileWideIgnores.has(token)) continue;
+        const key = `${lineNo}:${cls}:${token}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        stats[COVERAGE_CLASS_STAT[cls]] += 1;
+
+        const covered =
+          coveredLines.has(lineNo) || anchorCoversToken(token, cls, guideClaims) || quoteCoversToken(token, guideClaims);
+        if (!covered) {
+          report.failures.push({ id: "coverage", guide, line: lineNo, reason: `\`${token}\` mentioned but no claim covers it` });
+          stats.failures += 1;
+        }
+      }
+    }
+  }
+  return stats;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch + orchestration
 // ---------------------------------------------------------------------------
 
@@ -849,35 +1082,41 @@ const MECHANICAL_DISPATCH = {
 
 // Runs every check against an already-parsed spec + registry. getGuide(path)
 // returns the guide's text or null. Returns { report, stats }.
-function checkAll(spec, registry, getGuide) {
+// opts.coverageOnly runs just the coverage lint (no spec/hygiene/quote/mechanical);
+// opts.coverage === false skips the coverage lint.
+function checkAll(spec, registry, getGuide, opts = {}) {
   const report = makeReport();
-  const wellFormed = checkHygiene(registry, report);
   const claims = Array.isArray(registry && registry.claims) ? registry.claims : [];
 
   let mechanicalValidated = 0;
   let semanticQuoteOnly = 0;
 
-  claims.forEach((claim, idx) => {
-    if (!claim || typeof claim !== "object") return;
+  if (!opts.coverageOnly) {
+    const wellFormed = checkHygiene(registry, report);
+    claims.forEach((claim, idx) => {
+      if (!claim || typeof claim !== "object") return;
 
-    checkQuote(claim, getGuide, report);
+      checkQuote(claim, getGuide, report);
 
-    if (claim.check === "mechanical" && MECHANICAL_TYPES.has(claim.type)) {
-      if (wellFormed.has(idx)) {
-        const fn = MECHANICAL_DISPATCH[claim.type];
-        if (fn) {
-          try {
-            fn(spec, claim, report);
-          } catch (err) {
-            report.fail(claim, `checker error: ${err.message}`);
+      if (claim.check === "mechanical" && MECHANICAL_TYPES.has(claim.type)) {
+        if (wellFormed.has(idx)) {
+          const fn = MECHANICAL_DISPATCH[claim.type];
+          if (fn) {
+            try {
+              fn(spec, claim, report);
+            } catch (err) {
+              report.fail(claim, `checker error: ${err.message}`);
+            }
+            mechanicalValidated += 1;
           }
-          mechanicalValidated += 1;
         }
+      } else if (claim.check === "semantic") {
+        semanticQuoteOnly += 1;
       }
-    } else if (claim.check === "semantic") {
-      semanticQuoteOnly += 1;
-    }
-  });
+    });
+  }
+
+  const coverage = opts.coverageOnly || opts.coverage !== false ? runCoverage(registry, getGuide, report) : null;
 
   return {
     report,
@@ -885,6 +1124,7 @@ function checkAll(spec, registry, getGuide) {
       claimsChecked: claims.length,
       mechanicalValidated,
       semanticQuoteOnly,
+      coverage,
       failures: report.failures.length,
       warnings: report.warnings.length,
     },
@@ -904,9 +1144,15 @@ function printReport(report, stats, out = process.stdout) {
   out.write(`claims checked:            ${stats.claimsChecked}\n`);
   out.write(`mechanical validated:      ${stats.mechanicalValidated}\n`);
   out.write(`semantic (quote-only):     ${stats.semanticQuoteOnly}\n`);
+  if (stats.coverage) {
+    const cv = stats.coverage;
+    const total = cv.paths + cv.params + cv.snake + cv.status;
+    out.write(`coverage tokens scanned:   ${total} across ${cv.guides} guide(s) — paths ${cv.paths}, params ${cv.params}, snake_case ${cv.snake}, status ${cv.status}\n`);
+    out.write(`coverage failures:         ${cv.failures}\n`);
+  }
   out.write(`warnings:                  ${stats.warnings}\n`);
   out.write(`failures:                  ${stats.failures}\n`);
-  out.write(`\nVERDICT: ${stats.failures === 0 ? "PASS — every claim holds against the spec" : "FAIL — see failures above"}\n`);
+  out.write(`\nVERDICT: ${stats.failures === 0 ? "PASS — every claim holds; guide prose is fully covered" : "FAIL — see failures above"}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1347,55 @@ function runSelfTest() {
   ];
   for (const [name, ok] of hygieneChecks) assertions.push({ id: name, ok, expected: "caught", got: ok ? "caught" : "MISSED" });
 
+  // Coverage lint fixtures (coverage-only run against an in-memory guide).
+  const COV_GUIDE = "cov/guide.mdx";
+  const COV_TEXT = [
+    "---", // 1
+    "title: Cov", // 2
+    "---", // 3
+    "Browse widgets at `/api/v202604/widgets`.", // 4  path — covered by anchor
+    "Filter results with `filter[kind]`.", // 5  param — covered by anchor
+    "The `country_isos` field restricts availability.", // 6  snake — covered by anchor field
+    "Paginate with `page[limit]` for page size.", // 7  param — covered by quote only
+    "Search with `q` across fields.", // 8  param q — covered by quote only
+    "A successful create returns `201`.", // 9  status — covered by anchor
+    "The `bogus_field` is undocumented.", // 10 snake — UNCOVERED
+    "Fetch orphans at `/api/v202604/orphans`.", // 11 path — UNCOVERED
+    "A stray `filter[nope]` param.", // 12 param — UNCOVERED
+    "Plain `title` and `slug` need no claim.", // 13 no underscore — not enforced
+    "{/* truth-gate: ignore-next-line */}", // 14
+    "The `filter[secret]` param is intentional.", // 15 suppressed by ignore-next-line
+    "{/* truth-gate: ignore: filter[ignored] */}", // 16
+    "A `filter[ignored]` param file-wide suppressed.", // 17 suppressed file-wide
+    "", // 18
+    "Anchor and quote sources live here.", // 19 (anchor claims quote here)
+  ].join("\n");
+  const covClaim = (id, type, check, anchor, quote) => ({ id, guide: COV_GUIDE, line: 19, quote, type, check, claim: id, anchor });
+  const covClaims = [
+    covClaim("cov-ep", "endpoint", "mechanical", { path: "/api/v202604/widgets", method: "get" }, "Anchor and quote sources live here."),
+    covClaim("cov-param", "parameter", "mechanical", { path: "/api/v202604/widgets", method: "get", param: "filter[kind]", in: "query" }, "Anchor and quote sources live here."),
+    covClaim("cov-field", "request-field", "mechanical", { path: "/api/v202604/widgets", method: "post", field: "widget.country_isos" }, "Anchor and quote sources live here."),
+    covClaim("cov-status", "status-code", "mechanical", { path: "/api/v202604/widgets", method: "post", status: "201" }, "Anchor and quote sources live here."),
+    covClaim("cov-quote", "behavior", "semantic", { topic: "params" }, "supported query params: page[limit], q"),
+  ];
+  const covGetGuide = (p) => (p === COV_GUIDE ? COV_TEXT : null);
+  const covRun = checkAll(null, { version: 1, guides: [COV_GUIDE], claims: covClaims }, covGetGuide, { coverageOnly: true });
+  const covFails = covRun.report.failures.filter((f) => f.id === "coverage");
+  const covLine = (n) => covFails.some((f) => f.line === n);
+  const covCoveredClean = (nums) => nums.every((n) => !covLine(n));
+  const covAsserts = [
+    ["coverage: uncovered path caught", covFails.some((f) => f.line === 11 && /\/api\/v202604\/orphans/.test(f.reason))],
+    ["coverage: uncovered param caught", covFails.some((f) => f.line === 12 && /filter\[nope\]/.test(f.reason))],
+    ["coverage: uncovered snake caught", covFails.some((f) => f.line === 10 && /bogus_field/.test(f.reason))],
+    ["coverage: covered-by-anchor passes", covCoveredClean([4, 5, 6, 9])],
+    ["coverage: covered-by-quote passes", covCoveredClean([7, 8])],
+    ["coverage: ignore-next-line suppresses", covCoveredClean([15])],
+    ["coverage: ignore-token suppresses file-wide", covCoveredClean([17])],
+    ["coverage: snake without underscore not enforced", covCoveredClean([13]) && !covFails.some((f) => /`(title|slug)`/.test(f.reason))],
+    ["coverage: exactly the three genuine gaps", covFails.length === 3],
+  ];
+  for (const [name, ok] of covAsserts) assertions.push({ id: name, ok, expected: "caught", got: ok ? "caught" : "MISSED" });
+
   // Report.
   let allOk = true;
   for (const a of assertions) {
@@ -1117,10 +1412,11 @@ function runSelfTest() {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const opts = { spec: DEFAULT_SPEC, claims: DEFAULT_CLAIMS, selfTest: false };
+  const opts = { spec: DEFAULT_SPEC, claims: DEFAULT_CLAIMS, selfTest: false, coverageOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--self-test") opts.selfTest = true;
+    else if (arg === "--coverage-only") opts.coverageOnly = true;
     else if (arg === "--spec") opts.spec = argv[++i];
     else if (arg === "--claims") opts.claims = argv[++i];
     else if (arg === "--help" || arg === "-h") opts.help = true;
@@ -1132,6 +1428,36 @@ function parseArgs(argv) {
   return opts;
 }
 
+// Loads and JSON-parses the claims registry, or exits(2) with a clear message.
+function loadRegistry(claimsPath) {
+  const claimsAbs = resolveFromRoot(claimsPath);
+  if (!existsSync(claimsAbs)) {
+    process.stderr.write(`ERROR: claims file not found: ${claimsAbs}\n`);
+    process.exit(2);
+  }
+  try {
+    return JSON.parse(readFileSync(claimsAbs, "utf8"));
+  } catch (err) {
+    process.stderr.write(`ERROR parsing claims JSON: ${err.message}\n`);
+    process.exit(2);
+  }
+}
+
+function makeGuideLoader() {
+  const cache = new Map();
+  return (guidePath) => {
+    if (cache.has(guidePath)) return cache.get(guidePath);
+    let text = null;
+    try {
+      text = readFileSync(resolveFromRoot(guidePath), "utf8");
+    } catch {
+      text = null;
+    }
+    cache.set(guidePath, text);
+    return text;
+  };
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
@@ -1141,6 +1467,7 @@ function main() {
         "  --spec <path>     OpenAPI spec (default api-reference/storefront-v2026-04.yaml)",
         "  --claims <path>   Claims registry (default eval/guide-claims.json)",
         "  --self-test       Run embedded fixtures proving each failure class is caught",
+        "  --coverage-only   Run only the coverage lint (no spec needed; for debugging)",
         "Paths are resolved relative to the repo root.",
       ].join("\n") + "\n",
     );
@@ -1152,6 +1479,14 @@ function main() {
     return;
   }
 
+  // Coverage-only needs neither the spec nor the npx YAML step.
+  if (opts.coverageOnly) {
+    const registry = loadRegistry(opts.claims);
+    const { report, stats } = checkAll(null, registry, makeGuideLoader(), { coverageOnly: true });
+    printReport(report, stats);
+    process.exit(stats.failures === 0 ? 0 : 1);
+  }
+
   let spec;
   try {
     spec = loadSpec(opts.spec);
@@ -1160,33 +1495,8 @@ function main() {
     process.exit(2);
   }
 
-  const claimsAbs = resolveFromRoot(opts.claims);
-  if (!existsSync(claimsAbs)) {
-    process.stderr.write(`ERROR: claims file not found: ${claimsAbs}\n`);
-    process.exit(2);
-  }
-  let registry;
-  try {
-    registry = JSON.parse(readFileSync(claimsAbs, "utf8"));
-  } catch (err) {
-    process.stderr.write(`ERROR parsing claims JSON: ${err.message}\n`);
-    process.exit(2);
-  }
-
-  const guideCache = new Map();
-  const getGuide = (guidePath) => {
-    if (guideCache.has(guidePath)) return guideCache.get(guidePath);
-    let text = null;
-    try {
-      text = readFileSync(resolveFromRoot(guidePath), "utf8");
-    } catch {
-      text = null;
-    }
-    guideCache.set(guidePath, text);
-    return text;
-  };
-
-  const { report, stats } = checkAll(spec, registry, getGuide);
+  const registry = loadRegistry(opts.claims);
+  const { report, stats } = checkAll(spec, registry, makeGuideLoader());
   printReport(report, stats);
   process.exit(stats.failures === 0 ? 0 : 1);
 }

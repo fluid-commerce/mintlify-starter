@@ -96,6 +96,7 @@ pinned `npx` one-shot). Exits `0` only when every check passes.
 node eval/check-guide-claims.mjs                 # spec + claims from repo defaults
 node eval/check-guide-claims.mjs --spec path/to/spec.yaml --claims path/to/claims.json
 node eval/check-guide-claims.mjs --self-test     # embedded fixtures prove each failure class is caught
+node eval/check-guide-claims.mjs --coverage-only # just the coverage lint (no spec needed)
 ```
 
 What it validates:
@@ -110,9 +111,53 @@ What it validates:
    (`type`, `required`, `enum`, `nullable`, arrays, nested objects; unknown
    properties fail unless allowed). Unsupported schema keywords produce a warning,
    never a silent pass.
+5. **Coverage lint** — the reverse direction (see below): guide prose that names
+   an API fact must have a covering claim.
 
 Failure output names the claim id, guide file:line, and the reason, so the fix
 (guide, registry, or spec) is obvious.
+
+### Coverage lint
+
+Quote presence binds *existing claims → guide text*. It cannot catch the reverse:
+new guide prose that asserts an API fact **without** a claim. The coverage lint
+closes that gap. It reads each guide in the registry's `guides` array directly and
+fails when an API-shaped token has no covering claim, so a guide edit that adds an
+endpoint, param, field, or status code can't ship without a registry entry.
+
+**Tokens enforced** (per guide):
+
+- **Endpoint paths** — any `/api/v202604/...` occurrence (trailing punctuation
+  stripped; `{id}`/`{slug}` templates and concrete segments match interchangeably).
+- **Query params** — backticked `filter[...]` / `page[...]`, plus backticked
+  `sort`, `lang`, `q`.
+- **snake_case identifiers** — backticked `^[a-z][a-z0-9_]*$` tokens that contain an
+  underscore (`country_isos`, `publish_at`, …). Plain backticked words without an
+  underscore (`title`, `slug`, `category`) are **not** enforced — too noisy.
+- **Status codes** — backticked `200` `201` `202` `401` `403` `404` `422`.
+
+**Coverage rule** — a token in guide *G* is covered when any claim with
+`guide === G` (guide-scoped on purpose) either:
+
+- names it in its anchor (`anchor.path` template-matches a path; `anchor.param`
+  equals a param; any dot-segment of `anchor.field` equals a snake_case token;
+  `anchor.status` equals a code), **or**
+- contains it in the claim's `quote` (whole-token, whitespace-normalized), **or**
+- owns the guide line it sits on — a line inside a claim's quote span, or inside a
+  fenced code block that contains any claim's quote (a request/response example
+  block's incidental sibling keys are not separate assertions).
+
+**Skips**: YAML frontmatter; `import` / JSX-tag lines; anything an ignore comment
+suppresses (below).
+
+**Escape hatches** (MDX comments):
+
+- `{/* truth-gate: ignore-next-line */}` — suppresses enforcement for the next line.
+- `{/* truth-gate: ignore: <token> */}` — suppresses one token for the whole file.
+
+**Honest limit**: the lint only sees *tokens*. Token-less behavioral prose ("resolves
+at read time", "PATCH semantics") carries no enforceable token and still relies on
+the authoring-time adversarial semantic pass — the lint does not claim to cover it.
 
 ## CI wiring
 
