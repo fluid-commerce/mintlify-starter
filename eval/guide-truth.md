@@ -209,6 +209,15 @@ the pain point, the cheaper fix is a `repository_dispatch` from `docs.yml` that
 triggers this workflow immediately after upload — push-based freshness, all gates
 intact.
 
+Progress on (b): fluid#19972 adds an upstream `mint validate` gate to the GCS
+upload itself — the fluid repo's `docs.yml` clones this repo, overlays each spec
+listed in `.github/synced-specs.json`, and runs `mint validate` before `rsync`ing
+to the mirror. Once that merges, a build-breaking spec should never reach the
+mirror, and this workflow's validate quarantine becomes rare defense-in-depth
+(it still guards docs.json edits and any other writer of the bucket). The claims
+check stays downstream **by design**: backend PRs must not fail on docs prose —
+guide conflicts are this repo's to reconcile, via flow-and-flag.
+
 ### Resolving a conflict
 
 1. Open the `guide-spec-conflict` issue — it names each failing claim (`claim-id`,
