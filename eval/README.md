@@ -4,10 +4,11 @@ This directory holds the agent-eval harness for the **Categories/Collections pil
 Mintlify** (Linear CURRENT-2424).
 
 It also holds the **guide truth gate** (Linear CURRENT-2587): `guide-claims.json`
-(claims registry for the task guides), `check-guide-claims.mjs` (deterministic
-checker that runs in CI), and `guide-verification-report.md` (the one-off
-adversarial verification + omission-sweep record). See [guide-truth.md](guide-truth.md)
-for how the mechanism works and how new guides adopt it.
+(claims registry for the task guides) and `check-guide-claims.mjs` (deterministic
+checker that runs in CI). See [guide-truth.md](guide-truth.md) for how the mechanism
+works, the durable verification decisions, and how new guides adopt it. One-off run
+records (adversarial verification, omission sweeps) live on the phase's Linear
+issue, not in the repo.
 
 ## Purpose
 

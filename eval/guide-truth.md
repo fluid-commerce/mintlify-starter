@@ -14,8 +14,12 @@ registry), **mechanically enforceable** (a deterministic checker in CI), and
 | ----- | ---- | ------------ |
 | Claims registry | `eval/guide-claims.json` | Committed; updated whenever a guide changes |
 | Mechanical checker | `eval/check-guide-claims.mjs` | CI: every PR/push (`validate.yml`) and every spec sync (`sync-openapi-spec.yml`) |
-| Adversarial semantic verification | procedure below, report in `eval/guide-verification-report.md` | One-off at guide authoring/major-edit time (LLM; never in CI) |
-| Reverse omission sweep | procedure below, findings in the report | One-off at guide authoring/major-edit time |
+| Adversarial semantic verification | procedure below; run record posted on the phase's Linear issue | One-off at guide authoring/major-edit time (LLM; never in CI) |
+| Reverse omission sweep | procedure below; durable decisions recorded in this doc | One-off at guide authoring/major-edit time |
+
+Run records (verdict tables, transcripts) are **not** stored in the repo — they go on
+the phase's Linear issue. Only *durable decisions* (accepted omissions, low-confidence
+claims, known upstream gaps) live here, in the sections at the end of this doc.
 
 ## Claims registry — `eval/guide-claims.json`
 
@@ -213,7 +217,8 @@ verified against the spec by refutation-prompted review:
 2. Disagreements and flagged-subtle claims get a third targeted vote; majority
    holds, with citations required.
 3. Guides (or the registry) are fixed until **zero REFUTED / UNSUPPORTED** remain.
-4. Verdicts + citations land in `eval/guide-verification-report.md`.
+4. Verdicts + citations are posted on the phase's Linear issue; claims that survive
+   on a split vote get an entry under *Low-confidence claims* below.
 
 ## Reverse omission sweep (one-off, never in CI)
 
@@ -221,7 +226,8 @@ Claims verification catches what guides *say*; the sweep catches what they *hide
 A spec-only reviewer (no guide access) lists reader-trapping facts per guide topic —
 422 conditions, limits, lifecycle edge cases, param gotchas. The list is then
 diffed against the guides; every finding is either fixed in the guide or explicitly
-accepted (with rationale) in the report.
+accepted — accepted findings are recorded (with rationale) under *Accepted omissions*
+below so they are not re-litigated on the next sweep.
 
 ## Adopting the mechanism for new guides (Phases 5–9)
 
@@ -232,9 +238,41 @@ accepted (with rationale) in the report.
 3. Run `node eval/check-guide-claims.mjs` — fix guide or registry until green.
    Mechanical failures at this point are usually real guide errors: the whole point.
 4. Run the adversarial semantic pass + omission sweep on the new guide; fix until
-   zero REFUTED/UNSUPPORTED; append the run to `eval/guide-verification-report.md`.
+   zero REFUTED/UNSUPPORTED; post the run record on the phase's Linear issue and add
+   any durable decisions to the sections below.
 5. Commit guide + registry together. CI keeps them honest from then on.
 
 Editing an existing guide: update the affected claims (quotes/lines/anchors) in the
 same PR; the quote-presence check fails until you do. Semantic re-verification is
 only needed when behavioral statements changed.
+
+## Accepted omissions (deliberate — do not re-litigate without cause)
+
+Facts the omission sweep surfaced that the guides intentionally do **not** cover:
+
+| Omitted fact | Rationale |
+| ------------ | --------- |
+| Delete semantics (category soft-delete vs collection hard-delete; child cascade) | Outside all four pilot guide topics; the spec itself doesn't document cascade behavior. Revisit when a delete guide is authored. |
+| `filter[status]` stored-vs-resolved matching for past-due scheduled rows | Spec is silent; guides must not assert either way. |
+| `sort=position` offered on collections (which expose no `position`) | Spec quirk, not a guide trap — guides already say collections omit position. |
+| Metafields `id` in CollectionWrite but not CategoryWrite | Spec asymmetry; guides don't document per-item metafield updates. |
+| Past `publish_at` + `status: scheduled` resolving published immediately | Implied by the read-time resolution rule the guides already state. |
+| ISO-code validation, cycle/self-parent protection, `source_type` enum-validation | Spec is silent — nothing assertable without inventing behavior. |
+| Envelope details (`seo` always present, nullable `meta.request_id`, 202 envelope quirks) | Outside the four topics' task flows. |
+
+## Low-confidence claims (survived on a split vote)
+
+- **`has_children` semantics** (hierarchy-010/-027/-030): CONFIRMED 2-1. The field
+  has no description anywhere in the spec; "true = ≥1 child" rests on the field name
+  alone, and a live-children-only reading is plausible on the public surface. If
+  upstream adds a description, re-verify these three claims first.
+
+## Known upstream spec gaps (flagged to the backend contract owners)
+
+1. `custom_slug` structurally present in public response schemas while prose says
+   it's omitted from the public surface (shared-schema modeling).
+2. `has_children` and `position` have no field descriptions.
+3. `filter[status]` stored-vs-resolved matching undefined for past-due scheduled rows.
+4. Delete behavior undocumented (child cascade; category soft- vs collection hard-delete).
+5. Metafields write asymmetry (CollectionWrite models `id`; CategoryWrite doesn't).
+6. `sort=position` offered on collections, which expose no `position` field.
