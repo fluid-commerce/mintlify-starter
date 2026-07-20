@@ -143,17 +143,23 @@ errors), the prompt is marked **ERRORED** (not failed) and the run continues.
 
 ## Unit tests
 
-The grading and parsing helpers in `run-eval.mjs` (path/template matching, auth
-normalization, legacy scan, JSON extraction, `gradeOne`) are exported and covered by
-`run-eval.test.mjs` using Node's built-in test runner — zero dependencies:
+The pure grading and parsing helpers in `run-eval.mjs` (`normalizePath`,
+`isParamSegment`, `pathMatches`, `flattenNames`, `normalizeAuth`, `scanLegacy`,
+`gradeOne`, `extractJson`, `parseAnyObject`, `extractFinalText`, `isRetryableStatus`)
+are exported and characterized by `run-eval.test.mjs` using Node's built-in test
+runner (`node:test` + `node:assert/strict`) — zero dependencies. `run-eval.mjs` only
+runs its `main()` when executed directly, so importing it for tests has no side
+effects.
 
 ```bash
-node --test 'eval/**/*.test.mjs'
+cd eval && node --test               # scans eval/, runs only *.test.mjs
+node --test eval/run-eval.test.mjs   # or target the file directly
 ```
 
-CI runs this in `validate.yml`. The network/orchestration layer (Anthropic requests,
-MCP connector, retry pool) is deliberately untested here — it needs a live deploy and
-is exercised by real eval runs.
+CI runs this in `validate.yml` (with `eval/` as the working directory — a bare
+`node --test eval/` directory positional is not supported on Node 22.x). The
+network/orchestration layer (Anthropic requests, MCP connector, retry pool) is
+deliberately untested here — it needs a live deploy and is exercised by real eval runs.
 
 ## Growing to the full 25-prompt set
 
