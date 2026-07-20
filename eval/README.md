@@ -3,6 +3,12 @@
 This directory holds the agent-eval harness for the **Categories/Collections pilot on
 Mintlify** (Linear CURRENT-2424).
 
+It also holds the **guide truth gate** (Linear CURRENT-2587): `guide-claims.json`
+(claims registry for the task guides), `check-guide-claims.mjs` (deterministic
+checker that runs in CI), and `guide-verification-report.md` (the one-off
+adversarial verification + omission-sweep record). See [guide-truth.md](guide-truth.md)
+for how the mechanism works and how new guides adopt it.
+
 ## Purpose
 
 The bet behind CURRENT-2424 is that publishing the Fluid Storefront API docs to a
