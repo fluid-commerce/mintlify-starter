@@ -308,7 +308,6 @@ components:
         - `title`         SEO title → resource title → company name
         - `description`   SEO desc → resource desc → company default → "Live Free."
         - `image_url`     SEO image → resource og_image → resource image → company default → hardcoded
-        - `image_path`    SEO image_path (null when no SEO row)
         - `block_crawler` SEO block_crawler (false when no SEO row)
 
         Frontends, AEO crawlers, and SDKs can render directly from these
@@ -316,7 +315,7 @@ components:
         and JSON API drifting. `id` is exposed only on the authenticated
         surface and distinguishes a merchant-configured SEO row from
         inherited defaults.
-      required: [title, description, image_url, image_path, block_crawler]
+      required: [title, description, image_url, block_crawler]
       properties:
         title:
           type: string
@@ -330,10 +329,6 @@ components:
           type: string
           example: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9215.png
           description: "Resolved OG-ready 1200×630 image URL. Never null."
-        image_path:
-          type: [string, "null"]
-          example: seo/9215.png
-          description: "Raw ImageKit path. Null when no SEO row exists."
         block_crawler:
           type: boolean
           example: false
@@ -583,8 +578,6 @@ components:
               type: string
             image_url:
               type: string
-            image_path:
-              type: string
             block_crawler:
               type: boolean
     CategoryCreateRequest:
@@ -824,8 +817,6 @@ components:
             description:
               type: string
             image_url:
-              type: string
-            image_path:
               type: string
             block_crawler:
               type: boolean
@@ -1760,11 +1751,15 @@ components:
           example: true
         status:
           type: string
-          enum: [active, draft, archived]
+          enum: [draft, scheduled, published, archived]
           description: |
-            The RAW Product enum key. `active` resolves to `published` (or
-            `scheduled` when `publish_at` is in the future) on read.
-          example: active
+            The canonical storefront vocabulary, unified across every
+            resource. `published` and `scheduled` map to the stored `active`
+            enum value (`scheduled` requires a future `publish_at`; an
+            explicit `published` with no publish_at clears a future
+            schedule); `draft` and `archived` store as-is. The raw enum key
+            `active` is still accepted for back-compat but is undocumented.
+          example: published
         public:
           type: boolean
           example: true
@@ -1883,9 +1878,6 @@ components:
               example: Single-origin beet concentrate, pressed within the hour.
             image_url:
               type: string
-            image_path:
-              type: string
-              example: seo/60311.png
             block_crawler:
               type: boolean
               example: false
@@ -2180,9 +2172,10 @@ components:
       description: |
         Storefront Enrollment Pack. The first thirteen fields are the
         canonical common top shared by every storefront resource in v202604.
-        Enrollment Packs have no scheduling or archived state, so `status`
-        is only ever `published` (active) or `draft` (inactive) and
-        `publish_at` is always null. The membership / subscription products
+        Enrollment Packs are schedulable but have no archived state: `status`
+        derives from the `active` toggle + `publish_at` (active + future
+        publish_at → `scheduled`; active + null/past publish_at →
+        `published`; inactive → `draft`). The membership / subscription products
         and agreements (`member_enrollable_products`,
         `subscription_enrollable_products`, `enrollment_pack_agreements`)
         are returned only on the SHOW response, not the catalog card.
@@ -2226,15 +2219,18 @@ components:
           example: true
         status:
           type: string
-          enum: [draft, published]
+          enum: [draft, scheduled, published]
           description: |
-            Lifecycle. Enrollment Packs have no scheduling or archived
-            state: `published` == active, `draft` == inactive. "Live" =
-            `active == true`.
+            Lifecycle, derived from `active` + `publish_at`. `published` =
+            active and live now; `scheduled` = active with a future
+            `publish_at` (auto-goes-live when it passes); `draft` =
+            inactive. Enrollment Packs have no archived state. "Live" =
+            `active == true` AND resolved `status == published`.
           example: published
         publish_at:
-          type: "null"
-          description: Always null — Enrollment Packs have no scheduled go-live.
+          type: [string, "null"]
+          format: date-time
+          description: When a scheduled pack goes live. null = no schedule.
           example: null
         seo:
           $ref: "#/components/schemas/Seo"
@@ -2335,8 +2331,15 @@ components:
           type: boolean
         status:
           type: string
-          enum: [draft, published]
-          description: Maps to the `active` boolean — `published` == active, `draft` == inactive.
+          enum: [draft, scheduled, published]
+          description: |
+            Maps back to the `active` toggle + `publish_at`. `draft` turns
+            the toggle off; `scheduled` / `published` turn it on (supply a
+            future `publish_at` for `scheduled`; an explicit `published`
+            with no publish_at clears a future schedule).
+        publish_at:
+          type: [string, "null"]
+          format: date-time
         enrollment_fee:
           type: [number, "null"]
         additional_volume:
@@ -2410,7 +2413,6 @@ components:
             title: { type: string }
             description: { type: string }
             image_url: { type: string }
-            image_path: { type: string }
             block_crawler: { type: boolean }
     EnrollmentPackCreateRequest:
       type: object
@@ -2638,7 +2640,6 @@ components:
             title: { type: string }
             description: { type: string }
             image_url: { type: string }
-            image_path: { type: string }
             block_crawler: { type: boolean }
     MediumCreateRequest:
       type: object
@@ -2656,14 +2657,219 @@ components:
       properties:
         medium:
           $ref: "#/components/schemas/MediumWrite"
+    Page:
+      type: object
+      description: |
+        Storefront Page — a METADATA surface. The page's rendered content
+        lives on the themed storefront page (`canonical_url`), not in the
+        API. The first thirteen fields are the canonical common top shared
+        by every storefront resource in v202604. Page has no stored status
+        column and no archived state: `status` is derived from the
+        `publish` toggle + `publish_at` (published toggle + future
+        `publish_at` → `scheduled`; toggle + null/past `publish_at` →
+        `published`; toggle off → `draft`). "Live" = `active == true` AND
+        resolved `status == published`.
+      required:
+        [id, slug, title, description, image_url, canonical_url, images,
+         active, status, publish_at, seo, metafields, languages,
+         countries]
+      properties:
+        id:
+          type: integer
+          example: 7412
+        slug:
+          type: string
+          example: our-story
+        title:
+          type: string
+          example: Our Story
+        description:
+          type: [string, "null"]
+          description: |
+            Longer-form copy describing the page. New in v202604 (the column
+            was added for the storefront contract) — existing pages return
+            null until edited. Translatable via `lang`.
+          example: How Primex went from a Provo garage to a global wellness brand.
+        image_url:
+          type: [string, "null"]
+          example: https://cdn.fluid.app/pages/7412.png
+        canonical_url:
+          type: string
+          example: https://acme.fluid.app/home/pages/our-story
+        images:
+          $ref: "#/components/schemas/ResponsiveImageSet"
+        active:
+          type: boolean
+          description: The merchant publish toggle (stored as `publish`).
+          example: true
+        status:
+          type: string
+          enum: [draft, scheduled, published]
+          description: |
+            Lifecycle, derived from the publish toggle + `publish_at`.
+            `published` = toggled on and live now; `scheduled` = toggled on
+            with a future `publish_at`; `draft` = toggled off. Page has no
+            archived state.
+          example: published
+        publish_at:
+          type: [string, "null"]
+          format: date-time
+          description: When a scheduled page goes live. null = no schedule.
+          example: null
+        seo:
+          $ref: "#/components/schemas/Seo"
+        metafields:
+          type: array
+          items:
+            $ref: "#/components/schemas/Metafield"
+        languages:
+          type: array
+          items:
+            type: string
+          example: [en, fr]
+        countries:
+          type: array
+          items:
+            type: string
+          description: |
+            ISO codes restricting availability. Empty array means available
+            in every country the company sells in (unrestricted).
+          example: [GB, US]
+        custom_slug:
+          type: boolean
+          description: |
+            COMPANY surface only. True when the merchant has pinned a custom
+            slug; false when it auto-generates from `title`. Omitted from the
+            public catalog/show.
+          example: false
+        application_theme_template_id:
+          type: [integer, "null"]
+          description: |
+            COMPANY show only (not the index card — it resolves through the
+            company's current theme per record). Theme template this page
+            renders through.
+          example: null
+    PageListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [pages]
+          properties:
+            pages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Page"
+            meta:
+              allOf:
+                - $ref: "#/components/schemas/Meta"
+                - required: [pagination]
+    PageShowResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [page]
+          properties:
+            page:
+              $ref: "#/components/schemas/Page"
+    PageWrite:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          example: Our Story
+        description:
+          type: [string, "null"]
+          example: How Primex went from a Provo garage to a global wellness brand.
+        slug:
+          type: string
+          description: |
+            Send together with `custom_slug: true` to pin a permanent
+            merchant-set slug; sent alone it persists only until the title
+            next changes.
+          example: our-story
+        custom_slug:
+          type: boolean
+        active:
+          type: boolean
+        status:
+          type: string
+          enum: [draft, scheduled, published]
+          description: |
+            Maps back to the `publish` toggle + `publish_at`. `draft` turns
+            the toggle off; `scheduled` / `published` turn it on (supply a
+            future `publish_at` for `scheduled`).
+        publish_at:
+          type: [string, "null"]
+          format: date-time
+        image_url:
+          type: [string, "null"]
+        image_path:
+          type: [string, "null"]
+        application_theme_template_id:
+          type: [integer, "null"]
+        application_theme_template_attributes:
+          type: [object, "null"]
+          description: |
+            Nested theme-template attributes, preserved from the legacy
+            surface. Passed through to the template model, which validates
+            its own shape.
+        country_isos:
+          type: array
+          items:
+            type: string
+          description: |
+            ISO codes restricting availability. `[]` clears restrictions;
+            key omitted leaves countries unchanged.
+        metafields_attributes:
+          type: array
+          items:
+            type: object
+            required: [namespace, key, value, value_type]
+            properties:
+              namespace: { type: string }
+              key: { type: string }
+              value: {}
+              value_type: { type: string }
+              description: { type: string }
+              _destroy: { type: boolean }
+        search_engine_optimizer_attributes:
+          type: [object, "null"]
+          description: |
+            The ONLY meta-write path on v202604 — the legacy
+            `open_graph_attributes` is not carried forward (the OG record is
+            a strict subset of the SEO record).
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            description: { type: string }
+            image_url: { type: string }
+            block_crawler: { type: boolean }
+    PageCreateRequest:
+      type: object
+      required: [page]
+      additionalProperties: false
+      properties:
+        page:
+          allOf:
+            - $ref: "#/components/schemas/PageWrite"
+            - required: [title]
+    PageUpdateRequest:
+      type: object
+      required: [page]
+      additionalProperties: false
+      properties:
+        page:
+          $ref: "#/components/schemas/PageWrite"
     Playlist:
       type: object
       description: |
         Storefront Playlist (backed by the Library model). The first thirteen
         fields are the canonical common top shared by every storefront resource
-        in v202604. Playlists have no scheduling or archived state, so `status`
-        is only ever `published` (active) or `draft` (inactive) and `publish_at`
-        is always null. `total_items_count` and the `library_items` array are
+        in v202604. Playlists are schedulable but have no archived state:
+        `status` derives from the `active` toggle + `publish_at` (active +
+        future publish_at → `scheduled`). `total_items_count` and the
+        `library_items` array are
         returned only on the SHOW response (`:detail` view), not the catalog
         card, so neither is in the schema-level required set.
       required:
@@ -2696,14 +2902,18 @@ components:
           example: true
         status:
           type: string
-          enum: [draft, published]
+          enum: [draft, scheduled, published]
           description: |
-            Lifecycle. Playlists have no scheduling or archived state:
-            `published` == active, `draft` == inactive. "Live" = `active == true`.
+            Lifecycle, derived from `active` + `publish_at`. `published` =
+            active and live now; `scheduled` = active with a future
+            `publish_at` (auto-goes-live when it passes); `draft` =
+            inactive. Playlists have no archived state. "Live" =
+            `active == true` AND resolved `status == published`.
           example: published
         publish_at:
-          type: "null"
-          description: Always null — Playlists have no scheduled go-live.
+          type: [string, "null"]
+          format: date-time
+          description: When a scheduled playlist goes live. null = no schedule.
           example: null
         seo:
           $ref: "#/components/schemas/Seo"
@@ -2792,8 +3002,15 @@ components:
           type: boolean
         status:
           type: string
-          enum: [draft, published]
-          description: Maps to the `active` boolean — `published` == active, `draft` == inactive.
+          enum: [draft, scheduled, published]
+          description: |
+            Maps back to the `active` toggle + `publish_at`. `draft` turns
+            the toggle off; `scheduled` / `published` turn it on (supply a
+            future `publish_at` for `scheduled`; an explicit `published`
+            with no publish_at clears a future schedule).
+        publish_at:
+          type: [string, "null"]
+          format: date-time
         kind:
           type: string
           enum: [manual, auto]
@@ -2826,7 +3043,6 @@ components:
             title: { type: string }
             description: { type: string }
             image_url: { type: string }
-            image_path: { type: string }
             block_crawler: { type: boolean }
     PlaylistCreateRequest:
       type: object
@@ -3037,8 +3253,6 @@ components:
             description:
               type: string
             image_url:
-              type: string
-            image_path:
               type: string
             block_crawler:
               type: boolean
@@ -3430,7 +3644,7 @@ components:
         resource_type:
           type: string
           description: PascalCase type name of the scanned resource.
-          enum: [Category, Collection, Product, Library, Medium, Post, EnrollmentPack]
+          enum: [Category, Collection, Product, Library, Medium, Post, EnrollmentPack, Page]
           example: Category
         resource_id:
           type: integer
@@ -3551,7 +3765,6 @@ paths:
                       title: Summer Sale — Up to 40% Off
                       description: Shop the July clearance event before it ends.
                       image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9215.png
-                      image_path: seo/9215.png
                       block_crawler: false
                     metafields: []
                     countries: [GB, US]
@@ -3574,7 +3787,6 @@ paths:
                       title: Clearance
                       description: Last-chance prices on overstock items.
                       image_url: https://ik.imagekit.io/fluid/980191006/images/VJBWJ3/VJBWJ3_QDwktuK8Ji.webp
-                      image_path: null
                       block_crawler: false
                     metafields: []
                     countries: []
@@ -3644,7 +3856,6 @@ paths:
                     title: Summer Sale — Up to 40% Off
                     description: Shop the July clearance event before it ends.
                     image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9215.png
-                    image_path: seo/9215.png
                     block_crawler: false
                   metafields:
                     - namespace: custom
@@ -3758,7 +3969,7 @@ paths:
                     search_engine_optimizer_attributes:
                       title: Summer Sale — Up to 40% Off
                       description: Shop the July clearance event before it ends.
-                      image_path: seo/9215.png
+                      image_url: https://ik.imagekit.io/fluid/seo/9215.png
                       block_crawler: false
       responses:
         "201":
@@ -3788,7 +3999,6 @@ paths:
                     title: Summer Sale — Up to 40% Off
                     description: Shop the July clearance event before it ends.
                     image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9215.png
-                    image_path: seo/9215.png
                     block_crawler: false
                   metafields:
                     - namespace: custom
@@ -4258,7 +4468,6 @@ paths:
                     title: Schrute Farms Beet Blend — Cold Pressed
                     description: Single-origin beet concentrate, pressed within the hour.
                     image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/60311.png
-                    image_path: seo/60311.png
                     block_crawler: false
                   metafields:
                     - namespace: custom
@@ -4450,7 +4659,7 @@ paths:
                     sku: SCRUTE-BEET-001
                     slug: scrute-farms-beet-blend
                     custom_slug: true
-                    status: active
+                    status: published
                     public: true
                     publish_at: null
                     bundle: false
@@ -4464,7 +4673,7 @@ paths:
                     search_engine_optimizer_attributes:
                       title: Schrute Farms Beet Blend — Cold Pressed
                       description: Single-origin beet concentrate, pressed within the hour.
-                      image_path: seo/60311.png
+                      image_url: https://ik.imagekit.io/fluid/seo/60311.png
                       block_crawler: false
                     product_subscription_plans_attributes:
                       - subscription_plan_id: 4410
@@ -4517,7 +4726,6 @@ paths:
                     title: Schrute Farms Beet Blend — Cold Pressed
                     description: Single-origin beet concentrate, pressed within the hour.
                     image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/60311.png
-                    image_path: seo/60311.png
                     block_crawler: false
                   metafields:
                     - namespace: custom
@@ -4964,7 +5172,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [draft, published]
+            enum: [draft, scheduled, published]
         - $ref: "#/components/parameters/FilterActive"
         - $ref: "#/components/parameters/SortNoPosition"
       responses:
@@ -5468,7 +5676,7 @@ paths:
                     search_engine_optimizer_attributes:
                       title: How We Shipped the Summer Line | Acme Blog
                       description: Three months of work compressed into 1,400 words.
-                      image_path: seo/post-7305.png
+                      image_url: https://ik.imagekit.io/fluid/seo/post-7305.png
                       block_crawler: false
       responses:
         "201":
@@ -6142,6 +6350,447 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v202604/pages:
+    get:
+      tags: [storefront]
+      summary: Public Pages catalog
+      operationId: storefrontPagesIndex
+      description: |
+        Unauthenticated. Company is resolved from the request subdomain.
+        Returns ONLY live pages (publish toggle on + resolved-published +
+        non-discarded), country- and language-eligible — non-public rows
+        never leak. A future-scheduled page appears automatically once its
+        `publish_at` passes. Pages are a METADATA surface — the rendered
+        content lives on the themed storefront page at `canonical_url`.
+        The same payload is served on the storefront domain at
+        `/home/pages.json` for AEO crawlers.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/FilterCountry"
+        - $ref: "#/components/parameters/FilterLanguage"
+        - $ref: "#/components/parameters/SortNoPosition"
+      responses:
+        "200":
+          description: A page of live storefront pages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/v202604/pages/{slug}:
+    get:
+      tags: [storefront]
+      summary: Public Page by slug
+      operationId: storefrontPageShow
+      description: |
+        Unauthenticated. Resolves by slug (the canonical public identifier;
+        matches `canonical_url`). Show is more permissive than the catalog:
+        a draft or future-scheduled page still resolves by direct slug
+        (rendered noindex on the HTML surface); only discarded pages return
+        404, never 403. The same payload is served on the storefront domain
+        at `/home/pages/{slug}.json`.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+      responses:
+        "200":
+          description: The Page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageShowResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/pages:
+    get:
+      tags: [company]
+      summary: Company Pages index
+      operationId: companyPagesIndex
+      description: |
+        Token-authenticated; requires `storefront.view` (legacy `pages.view`
+        accepted during the migration). Returns EVERY kept page for the
+        calling company regardless of lifecycle, so admins can manage draft /
+        scheduled rows. Same cursor / filter / sort / `q` contract as the
+        public catalog; adds `filter[status]` and `filter[active]`.
+      security:
+        - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/FilterCountry"
+        - $ref: "#/components/parameters/FilterLanguage"
+        - name: filter[status]
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, scheduled, published]
+        - $ref: "#/components/parameters/FilterActive"
+        - $ref: "#/components/parameters/SortNoPosition"
+      responses:
+        "200":
+          description: A page of pages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    post:
+      tags: [company]
+      summary: Create a Page
+      operationId: companyPagesCreate
+      description: |
+        Token-authenticated; requires `storefront.update`. Triggers fresh
+        Lighthouse + compliance scans automatically and fires the
+        `pages.created` webhook. With `lang`, translated fields (`title`,
+        `description`, `image_url`) are written for that locale.
+      security:
+        - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PageCreateRequest"
+            examples:
+              minimal:
+                summary: Minimal create
+                value:
+                  page:
+                    title: Our Story
+              full:
+                summary: Full create
+                value:
+                  page:
+                    title: Our Story
+                    description: How Primex went from a Provo garage to a global wellness brand.
+                    status: published
+                    slug: our-story
+                    custom_slug: true
+                    country_isos: [GB, US]
+                    metafields_attributes:
+                      - namespace: custom
+                        key: hero_variant
+                        value: full-bleed
+                        value_type: single_line_text_field
+                    search_engine_optimizer_attributes:
+                      title: Our Story — Primex
+                      description: How Primex went from a Provo garage to a global wellness brand.
+                      block_crawler: false
+      responses:
+        "201":
+          description: The created Page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageShowResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/v202604/company/pages/{id}:
+    get:
+      tags: [company]
+      summary: Company Page show
+      operationId: companyPageShow
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+      responses:
+        "200":
+          description: The Page, including its admin metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageShowResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [company]
+      summary: Update a Page
+      operationId: companyPageUpdate
+      description: |
+        Token-authenticated; requires `storefront.update`. Only the keys sent
+        are updated. Triggers fresh Lighthouse + compliance scans and fires
+        the `pages.updated` webhook. With `lang`, translated fields are
+        written for that locale only.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PageUpdateRequest"
+            example:
+              page:
+                status: scheduled
+                publish_at: "2026-08-01T09:00:00Z"
+      responses:
+        "200":
+          description: The updated Page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageShowResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      tags: [company]
+      summary: Destroy a Page
+      operationId: companyPageDestroy
+      description: |
+        Token-authenticated. Soft-deletes via Discard (sets `discarded_at`)
+        and fires the `pages.deleted` webhook.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted (soft).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/pages/{id}/clone:
+    post:
+      tags: [company]
+      summary: Clone a Page
+      operationId: companyPageClone
+      description: |
+        Token-authenticated; requires `storefront.update`. Deep-copies the
+        page together with its theme template. The clone lands unpublished
+        (`draft`) with a fresh auto-generated slug and title suffix, and
+        fires the `pages.created` webhook.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: The cloned Page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageShowResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/v202604/company/pages/{id}/shares:
+    get:
+      tags: [company]
+      summary: Share statistics for a Page
+      operationId: companyPageShares
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Share statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/pages/{id}/lighthouse:
+    get:
+      tags: [company]
+      summary: Latest Lighthouse result
+      operationId: companyPageLighthouseShow
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Latest Lighthouse result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LighthouseResult"
+        "202":
+          description: |
+            No Lighthouse scan existed yet; one was triggered
+            automatically. Poll `GET :id/lighthouse` for the result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LighthouseScanTriggered"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [company]
+      summary: Trigger a Lighthouse scan
+      operationId: companyPageLighthouseScan
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: Scan accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanQueued"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/pages/{id}/compliance:
+    get:
+      tags: [company]
+      summary: Latest compliance result
+      operationId: companyPageComplianceShow
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Latest compliance result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceResult"
+        "202":
+          description: |
+            No compliance scan existed yet; one was triggered
+            automatically. Poll `GET :id/compliance` for the result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceScanTriggered"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [company]
+      summary: Trigger a compliance scan
+      operationId: companyPageComplianceScan
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: Scan accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanQueued"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v202604/playlists:
     get:
       tags: [storefront]
@@ -6247,6 +6896,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/Lang"
         - name: page[cursor]
           in: query
           schema: { type: string }
@@ -6255,7 +6905,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
         - name: filter[status]
           in: query
-          schema: { type: string, enum: [draft, published] }
+          schema: { type: string, enum: [draft, scheduled, published] }
         - $ref: "#/components/parameters/FilterActive"
         - name: filter[country]
           in: query
@@ -6288,9 +6938,13 @@ paths:
         draft` sets `active: false`. Send `slug` + `custom_slug: true` to pin a
         permanent slug; without `custom_slug: true` the slug regenerates on title
         change. After creation, Lighthouse and compliance scans are queued
-        automatically.
+        automatically. With `lang`, the translatable fields (`title`,
+        `description`) are written for that locale; omitting `lang` writes the
+        default locale.
       security:
         - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
         content:
@@ -6323,6 +6977,9 @@ paths:
       tags: [company]
       summary: Show a playlist (company, by id)
       operationId: companyPlaylistShow
+      description: |
+        With `lang`, translated fields (`title`, `description`) render in that
+        locale — use it to read a specific translation before editing it.
       security:
         - bearer_auth: []
       parameters:
@@ -6330,6 +6987,7 @@ paths:
           in: path
           required: true
           schema: { type: integer }
+        - $ref: "#/components/parameters/Lang"
       responses:
         "200":
           description: Playlist detail.
@@ -6349,7 +7007,10 @@ paths:
       operationId: companyPlaylistUpdate
       description: |
         Partial update — only keys present in the payload are changed. After the
-        update, Lighthouse and compliance scans are queued automatically.
+        update, Lighthouse and compliance scans are queued automatically. With
+        `lang`, the translatable fields (`title`, `description`) are written
+        for that locale only — the default-locale copy is untouched; omitting
+        `lang` writes the default locale.
       security:
         - bearer_auth: []
       parameters:
@@ -6357,6 +7018,7 @@ paths:
           in: path
           required: true
           schema: { type: integer }
+        - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
         content:
@@ -6588,7 +7250,6 @@ paths:
                       title: Wellness Essentials — Curated Picks
                       description: Hand-picked supplements and recovery gear.
                       image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9302.png
-                      image_path: seo/9302.png
                       block_crawler: false
                     metafields: []
                     countries: [GB, US]
@@ -6656,7 +7317,6 @@ paths:
                     title: Wellness Essentials — Curated Picks
                     description: Hand-picked supplements and recovery gear.
                     image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/seo/9302.png
-                    image_path: seo/9302.png
                     block_crawler: false
                   metafields: []
                   countries: [GB, US]
@@ -6751,7 +7411,7 @@ paths:
                     search_engine_optimizer_attributes:
                       title: Wellness Essentials — Curated Picks
                       description: Hand-picked supplements and recovery gear.
-                      image_path: seo/9302.png
+                      image_url: https://ik.imagekit.io/fluid/seo/9302.png
                       block_crawler: false
       responses:
         "201":
