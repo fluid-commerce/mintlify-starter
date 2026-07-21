@@ -1,0 +1,1407 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Cart Payments API
+  version: v2026-04
+  description: Consumer-agnostic, cart-scoped payment endpoints under
+    /api/payments/v2026-04/carts/{cart_token}. The same endpoints serve checkout,
+    admin, and portal identically. Authentication is cart-token based (the token
+    in the path); no JWT or API key is required. This spec is the source of truth
+    for generated payment API clients and is intentionally separate from
+    payment-v2026-04.yaml, which documents the bearer-authenticated
+    gateway/transaction admin surface at /api/payment/v2026-04.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+tags:
+- name: payments
+  description: Cart-scoped payment method selection, VGS card tokenization, and
+    3D Secure verification.
+- name: paypal
+  description: PayPal checkout — client SDK token, order creation and
+    authorization, and shipping-change callbacks.
+- name: braintree
+  description: Braintree checkout — client token issuance and transaction
+    authorization.
+- name: klarna
+  description: Klarna checkout — payment session creation and updates.
+- name: apple-pay
+  description: Apple Pay checkout — merchant session validation.
+components:
+  schemas:
+    Meta:
+      description: Standard response metadata included on every response.
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - timestamp
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    JsonValue:
+      description: Any valid JSON value for provider-specific payloads (card
+        payloads, payment method payloads, Apple Pay token envelopes) whose keys
+        are not fixed by the API contract.
+      anyOf:
+      - type: string
+      - type: number
+      - type: boolean
+      - type: 'null'
+      - type: array
+        items:
+          "$ref": "#/components/schemas/JsonValue"
+      - type: object
+        additionalProperties:
+          "$ref": "#/components/schemas/JsonValue"
+    ErrorValue:
+      description: A validation or API error value.
+      anyOf:
+      - type: string
+      - type: array
+        items:
+          type: string
+      - type: object
+        additionalProperties:
+          "$ref": "#/components/schemas/JsonValue"
+    ErrorBag:
+      description: Validation errors keyed by field, a list of errors, a single
+        error message, or null when no structured error details are available.
+      anyOf:
+      - type: string
+      - type: array
+        items:
+          "$ref": "#/components/schemas/ErrorValue"
+      - type: object
+        additionalProperties:
+          "$ref": "#/components/schemas/ErrorValue"
+      - type: 'null'
+    ErrorResponse:
+      description: Standard error envelope — a human-readable error_message, a
+        structured errors object, and response meta.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    BareErrorResponse:
+      description: Legacy error body returned by certain payment-method creation
+        error paths. Carries errors (array or object) and sometimes error_message,
+        but no meta.
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      properties:
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        error_message:
+          type: string
+    ProcessedCartMeta:
+      description: Meta for the processed-cart guard. Carries the shop URL and the
+        full processed cart. The cart is returned as an open object here; its
+        fully-typed shape is documented in the checkout API.
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - timestamp
+      - shop_url
+      - cart
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+        shop_url:
+          type:
+          - string
+          - 'null'
+        cart:
+          type: object
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+    ProcessedCartResponse:
+      description: Returned with 410 Gone by every cart payment endpoint when the
+        cart has already been processed (converted to an order).
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          "$ref": "#/components/schemas/ProcessedCartMeta"
+    SetPaymentMethodResponse:
+      description: 'Success body for setting the cart payment method. The shape
+        varies by payment type: credit_card/apple_pay return card; saved payment
+        methods return card + payment_method; paypal returns order_id (Braintree
+        SDK PayPal also returns transaction_id); klarna returns
+        authorization_token; bread/affirm/platform payments return an empty
+        object.'
+      type: object
+      additionalProperties: false
+      properties:
+        order_id:
+          type: string
+          description: PayPal order id (paypal and decrypted Apple Pay-on-PayPal
+            flows).
+        transaction_id:
+          type: string
+          description: Braintree transaction id (Braintree SDK PayPal flow).
+        authorization_token:
+          type: string
+          description: Klarna authorization token (klarna flow).
+        card:
+          type: object
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+          description: Sanitized stored-card JSON (credit_card, apple_pay, and
+            saved payment method flows).
+        payment_method:
+          type: object
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+          description: Formatted payment method (saved payment method flow).
+    VgsVault:
+      description: VGS Collect vault credentials used to tokenize card data
+        client-side.
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      - environment
+      - route_id
+      - mode
+      - requires_3ds
+      properties:
+        vault_id:
+          type:
+          - string
+          - 'null'
+        environment:
+          type:
+          - string
+          - 'null'
+        route_id:
+          type:
+          - string
+          - 'null'
+        mode:
+          type: string
+        requires_3ds:
+          type: boolean
+    TokenizeResponse:
+      description: Success body for VGS vault provisioning.
+      type: object
+      additionalProperties: false
+      required:
+      - vault
+      - requires_3ds
+      - payment_account_id
+      - meta
+      properties:
+        vault:
+          "$ref": "#/components/schemas/VgsVault"
+        requires_3ds:
+          type: boolean
+        payment_account_id:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    VerifyResponse:
+      description: Success body for 3D Secure initialization.
+      type: object
+      additionalProperties: false
+      required:
+      - tds_method_content
+      - merchant_tx_id
+      - fingerprinting_required
+      - meta
+      properties:
+        tds_method_content:
+          type:
+          - string
+          - 'null'
+          description: HTML content for the 3DS method (device fingerprinting)
+            iframe.
+        merchant_tx_id:
+          type: string
+          description: Merchant transaction id (UUID) issued for this 3DS attempt.
+        fingerprinting_required:
+          type:
+          - boolean
+          - 'null'
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    PaypalClientSdkTokenResponse:
+      description: Success body for the PayPal client SDK token.
+      type: object
+      additionalProperties: false
+      required:
+      - client_sdk
+      - meta
+      properties:
+        client_sdk:
+          type: object
+          additionalProperties: false
+          required:
+          - token
+          properties:
+            token:
+              type: string
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    PaypalCreateOrderResponse:
+      description: Success body for PayPal order creation. authorization_id and
+        payment_uuid are present only for Fastlane orders (when payment_token_id
+        is supplied).
+      type: object
+      additionalProperties: false
+      required:
+      - success
+      - order_id
+      - meta
+      properties:
+        success:
+          type: boolean
+        order_id:
+          type: string
+        authorization_id:
+          type: string
+          description: Capture id (Fastlane orders only).
+        payment_uuid:
+          type: string
+          description: Fluid payment slug (Fastlane orders only).
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    PaypalAuthorizeOrderResponse:
+      description: Success body for PayPal order authorization.
+      type: object
+      additionalProperties: false
+      required:
+      - success
+      - order_id
+      - authorization_id
+      - meta
+      properties:
+        success:
+          type: boolean
+        order_id:
+          type: string
+        authorization_id:
+          type: string
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    PaypalShippingChangeResponse:
+      description: Success body for the PayPal shipping address change callback.
+      type: object
+      additionalProperties: false
+      required:
+      - success
+      - order_id
+      - meta
+      properties:
+        success:
+          type: boolean
+        order_id:
+          type: string
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    BraintreeClientTokenResponse:
+      description: Success body for the Braintree client token.
+      type: object
+      additionalProperties: false
+      required:
+      - client_token
+      - paypal_enabled
+      - meta
+      properties:
+        client_token:
+          type: string
+        paypal_enabled:
+          type: boolean
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    BraintreePayResponse:
+      description: Success body for a Braintree authorization.
+      type: object
+      additionalProperties: false
+      required:
+      - transaction_id
+      - payment_type
+      - meta
+      properties:
+        transaction_id:
+          type: string
+        payment_type:
+          type: string
+          description: Detected payment type (e.g. braintree_paypal, venmo).
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    KlarnaCreateSessionResponse:
+      description: Success body for Klarna session creation.
+      type: object
+      additionalProperties: false
+      required:
+      - success
+      - session_id
+      - client_token
+      - meta
+      properties:
+        success:
+          type: boolean
+        session_id:
+          type:
+          - string
+          - 'null'
+        client_token:
+          type:
+          - string
+          - 'null'
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    KlarnaUpdateSessionResponse:
+      description: Success body for Klarna session update.
+      type: object
+      additionalProperties: false
+      required:
+      - success
+      - meta
+      properties:
+        success:
+          type: boolean
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    ApplePaySessionResponse:
+      description: Success body for Apple Pay merchant validation. apple_pay is
+        Apple's raw startSession response body as a JSON-encoded string.
+      type: object
+      additionalProperties: false
+      required:
+      - apple_pay
+      - meta
+      properties:
+        apple_pay:
+          type: string
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    ApplePayFailureResponse:
+      description: Discriminated Apple Pay session failure (422). error_code is
+        the machine-readable discriminator; error_message is customer-facing copy.
+      type: object
+      additionalProperties: false
+      required:
+      - error_code
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_code:
+          type: string
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+paths:
+  "/api/payments/v2026-04/carts/{cart_token}/payment_method":
+    put:
+      summary: Set the cart payment method
+      description: Sets the payment method on the cart (idempotent). The request
+        and response shapes vary by payment type. The declared contract requires
+        type; the saved-payment-method flow (payment_method_id) is the only flow
+        that may omit payment_method.
+      tags:
+      - payments
+      operationId: payments_v2026_04_set_payment_method
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - type
+              properties:
+                type:
+                  type: string
+                  description: Payment type (credit_card, paypal, apple_pay,
+                    klarna, bread, affirm, or a platform type such as *_citcon,
+                    *_ppro, *_dlocal).
+                payment_method:
+                  type: object
+                  additionalProperties:
+                    "$ref": "#/components/schemas/JsonValue"
+                  description: Type-specific payment payload (e.g. VGS card
+                    fields for credit_card; order_id/token for paypal;
+                    authorization_token/session_id for klarna).
+                billing_address:
+                  type: object
+                  additionalProperties: false
+                  description: Optional billing address. All fields are optional.
+                  properties:
+                    id:
+                      type: integer
+                    name:
+                      type: string
+                    address1:
+                      type: string
+                    address2:
+                      type:
+                      - string
+                      - 'null'
+                    city:
+                      type: string
+                    state:
+                      type: string
+                    postal_code:
+                      type: string
+                    country_code:
+                      type: string
+                payment_account:
+                  type:
+                  - string
+                  - 'null'
+                  description: PaymentAccount UUID override for routing.
+                customer_details:
+                  type:
+                  - object
+                  - 'null'
+                  additionalProperties:
+                    "$ref": "#/components/schemas/JsonValue"
+                  description: Integration-specific customer details.
+                device_data:
+                  type:
+                  - string
+                  - 'null'
+                  description: Braintree Data Collector fraud fingerprint.
+                use_customer_payment_method:
+                  type: boolean
+                  description: Resolve payment_method_id against the customer's
+                    saved payment methods instead of the shared wallet.
+                payment_method_id:
+                  type:
+                  - integer
+                  - string
+                  description: Existing saved PaymentMethod id (saved payment
+                    method flow).
+                jwt:
+                  type: string
+                  description: Customer/user JWT authorizing use of a saved
+                    payment method (may also be sent as an Authorization header).
+                token:
+                  type: object
+                  additionalProperties:
+                    "$ref": "#/components/schemas/JsonValue"
+                  description: Raw Apple Pay payment token envelope (apple_pay
+                    flow).
+                apple_pay_token:
+                  type: object
+                  additionalProperties:
+                    "$ref": "#/components/schemas/JsonValue"
+                  description: VGS-decrypted Apple Pay token data (apple_pay
+                    flow, inbound VGS route).
+                payment_type:
+                  type: string
+                  description: Secondary payment-type selector. When set to
+                    "paypal" on an apple_pay request, routes the decrypted
+                    Apple Pay token through the PayPal-on-Apple-Pay flow.
+            examples:
+              credit_card:
+                summary: Credit card tokenized via VGS
+                value:
+                  type: credit_card
+                  payment_method:
+                    vgs_card_id: card_9f8e7d6c
+                  billing_address:
+                    name: Ada Lovelace
+                    address1: 1 Analytical Way
+                    city: London
+                    state: LDN
+                    postal_code: EC1A 1BB
+                    country_code: GB
+              saved_payment_method:
+                summary: Reuse a customer's saved payment method
+                value:
+                  type: credit_card
+                  payment_method_id: 4412
+                  use_customer_payment_method: true
+      responses:
+        '201':
+          description: Payment method set
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SetPaymentMethodResponse"
+              examples:
+                credit_card:
+                  summary: Stored card returned for a credit_card flow
+                  value:
+                    card:
+                      id: 88123
+                      brand: visa
+                      last_four: '4242'
+                      exp_month: 12
+                      exp_year: 2030
+                paypal:
+                  summary: PayPal order id returned for a paypal flow
+                  value:
+                    order_id: 5O190127TN364715T
+        '404':
+          description: Cart, payment, or saved payment method not found
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/BareErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Unprocessable entity
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/BareErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/tokenize":
+    post:
+      summary: Provision VGS vault credentials
+      description: Resolves the CreditCard payment account for the cart, pins the
+        routing decision on the cart, and returns the VGS Collect vault
+        credentials used to tokenize card data client-side. No request body.
+      tags:
+      - payments
+      operationId: payments_v2026_04_tokenize
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Vault credentials
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TokenizeResponse"
+              examples:
+                vault:
+                  summary: VGS vault credentials for client-side tokenization
+                  value:
+                    vault:
+                      vault_id: tntabc123
+                      environment: sandbox
+                      route_id: rt_9x8y7z
+                      mode: preflight
+                      requires_3ds: false
+                    requires_3ds: false
+                    payment_account_id: 4021
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart or payment account not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/verify":
+    post:
+      summary: Initialize 3DS verification
+      description: Starts 3D Secure device fingerprinting for the cart's payment
+        method. Returns the 3DS method content and the merchant transaction id
+        for the attempt.
+      tags:
+      - payments
+      operationId: payments_v2026_04_verify
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                vgs_card_id:
+                  type:
+                  - string
+                  - 'null'
+                  description: VGS card id fallback; primarily resolved from the
+                    cart's payment method.
+            examples:
+              default:
+                summary: Initialize 3DS using the cart's stored card
+                value: {}
+              vgs_card_id:
+                summary: Initialize 3DS with an explicit VGS card id
+                value:
+                  vgs_card_id: card_9f8e7d6c
+      responses:
+        '200':
+          description: 3DS initialized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/VerifyResponse"
+              examples:
+                initialized:
+                  summary: 3DS device fingerprinting initialized
+                  value:
+                    tds_method_content: PGh0bWw+Li4uPC9odG1sPg==
+                    merchant_tx_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                    fingerprinting_required: true
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: 3DS not required, not configured, already in progress, or
+            card not registered
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/paypal/token":
+    get:
+      summary: Get PayPal client SDK token
+      tags:
+      - paypal
+      operationId: payments_v2026_04_paypal_client_token
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      - name: payment_account_id
+        in: query
+        required: true
+        description: PayPal PaymentAccount UUID
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Client SDK token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaypalClientSdkTokenResponse"
+              examples:
+                token:
+                  summary: PayPal client SDK token
+                  value:
+                    client_sdk:
+                      token: A21AAL8_client_sdk_token
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart or payment account not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Missing payment_account_id or merchant not configured
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/paypal/orders":
+    post:
+      summary: Create a PayPal order
+      tags:
+      - paypal
+      operationId: payments_v2026_04_paypal_create_order
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - funding_source
+              - is_pay_later
+              properties:
+                funding_source:
+                  type: string
+                  description: PayPal funding source (e.g. paypal, Venmo,
+                    apple_pay).
+                is_pay_later:
+                  type: boolean
+                payment_token_id:
+                  type: string
+                  description: Fastlane single-use payment token; presence
+                    switches the order to the Fastlane capture flow.
+                is_app_switch:
+                  type: boolean
+            examples:
+              standard:
+                summary: Standard PayPal order
+                value:
+                  funding_source: paypal
+                  is_pay_later: false
+              fastlane:
+                summary: Fastlane order (single-use payment token)
+                value:
+                  funding_source: paypal
+                  is_pay_later: false
+                  payment_token_id: tok_9f8e7d6c
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaypalCreateOrderResponse"
+              examples:
+                created:
+                  summary: PayPal order created
+                  value:
+                    success: true
+                    order_id: 5O190127TN364715T
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters, zero-amount cart, or unsupported
+            recurring Apple Pay
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/paypal/authorize":
+    post:
+      summary: Authorize a PayPal order
+      tags:
+      - paypal
+      operationId: payments_v2026_04_paypal_authorize_order
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - order_id
+              properties:
+                order_id:
+                  type: string
+                  description: PayPal order id returned from order creation.
+            examples:
+              authorize:
+                summary: Authorize a created PayPal order
+                value:
+                  order_id: 5O190127TN364715T
+      responses:
+        '200':
+          description: Order authorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaypalAuthorizeOrderResponse"
+              examples:
+                authorized:
+                  summary: PayPal order authorized
+                  value:
+                    success: true
+                    order_id: 5O190127TN364715T
+                    authorization_id: 3AY52541TU409455V
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '400':
+          description: Invalid order id
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters or zero-amount cart
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/paypal/shipping":
+    patch:
+      summary: Apply a PayPal shipping address change
+      description: Updates the cart's shipping (and mirrored billing) address from
+        the PayPal onShippingChange callback, recalculates the cart, and patches
+        the PayPal order.
+      tags:
+      - paypal
+      operationId: payments_v2026_04_paypal_shipping_change
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - order_id
+              - shipping_address
+              properties:
+                order_id:
+                  type: string
+                shipping_address:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    city:
+                      type: string
+                    state:
+                      type: string
+                    postal_code:
+                      type: string
+                    country_code:
+                      type: string
+            examples:
+              shipping_change:
+                summary: Apply a PayPal onShippingChange update
+                value:
+                  order_id: 5O190127TN364715T
+                  shipping_address:
+                    city: Austin
+                    state: TX
+                    postal_code: '78701'
+                    country_code: US
+      responses:
+        '200':
+          description: Shipping change applied
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaypalShippingChangeResponse"
+              examples:
+                applied:
+                  summary: Shipping change applied and order patched
+                  value:
+                    success: true
+                    order_id: 5O190127TN364715T
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/braintree/token":
+    get:
+      summary: Get Braintree client token
+      tags:
+      - braintree
+      operationId: payments_v2026_04_braintree_client_token
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      - name: payment_account_id
+        in: query
+        required: true
+        description: Braintree PaymentAccount UUID
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Client token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BraintreeClientTokenResponse"
+              examples:
+                token:
+                  summary: Braintree client token
+                  value:
+                    client_token: eyJ2ZXJzaW9uIjoyLCJ0b2tlbiI6ImFiYyJ9
+                    paypal_enabled: true
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart or payment account not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Missing payment_account_id, non-Braintree account, or
+            token generation failure
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/braintree/pay":
+    post:
+      summary: Authorize a Braintree transaction
+      description: Authorizes a Braintree transaction from a JS SDK nonce and
+        stores the vault context on the cart. PaymentMethod creation happens via
+        the payment_method endpoint afterwards.
+      tags:
+      - braintree
+      operationId: payments_v2026_04_braintree_pay
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - payment_method_nonce
+              - payment_account_id
+              properties:
+                payment_method_nonce:
+                  type: string
+                  description: Nonce from the Braintree JS SDK.
+                payment_account_id:
+                  type: string
+                  description: Braintree PaymentAccount UUID.
+                device_data:
+                  type: string
+                  description: Braintree Data Collector fraud fingerprint.
+                payment_type:
+                  type: string
+                  description: Payment type override (e.g. venmo,
+                    braintree_paypal).
+                payer_email:
+                  type: string
+                shipping_address:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    recipient_name:
+                      type: string
+                    line1:
+                      type: string
+                    line2:
+                      type:
+                      - string
+                      - 'null'
+                    city:
+                      type: string
+                    state:
+                      type: string
+                    postal_code:
+                      type: string
+                    country_code:
+                      type: string
+            examples:
+              pay:
+                summary: Authorize a Braintree transaction from a JS SDK nonce
+                value:
+                  payment_method_nonce: fake-valid-nonce
+                  payment_account_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                  device_data: '{"correlation_id":"abc123"}'
+      responses:
+        '201':
+          description: Transaction authorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BraintreePayResponse"
+              examples:
+                authorized:
+                  summary: Braintree transaction authorized
+                  value:
+                    transaction_id: bt_txn_9f8e7d6c
+                    payment_type: braintree_paypal
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart or payment account not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters, zero-amount cart, duplicate
+            authorization, or gateway failure
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/klarna/sessions":
+    post:
+      summary: Create a Klarna payment session
+      tags:
+      - klarna
+      operationId: payments_v2026_04_klarna_create_session
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                intent:
+                  type: string
+            examples:
+              default:
+                summary: Create a Klarna session
+                value: {}
+              with_intent:
+                summary: Create a Klarna session with an explicit intent
+                value:
+                  intent: buy
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/KlarnaCreateSessionResponse"
+              examples:
+                created:
+                  summary: Klarna session created
+                  value:
+                    success: true
+                    session_id: klarna_sess_9f8e7d6c
+                    client_token: klarna_ct_abc123
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '400':
+          description: Klarna rejected the session
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+      security: []
+    patch:
+      summary: Update a Klarna payment session
+      tags:
+      - klarna
+      operationId: payments_v2026_04_klarna_update_session
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - session_id
+              properties:
+                session_id:
+                  type: string
+            examples:
+              update:
+                summary: Update an existing Klarna session
+                value:
+                  session_id: klarna_sess_9f8e7d6c
+      responses:
+        '200':
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/KlarnaUpdateSessionResponse"
+              examples:
+                updated:
+                  summary: Klarna session updated
+                  value:
+                    success: true
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '400':
+          description: Klarna rejected the session update
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/apple_pay/validate":
+    post:
+      summary: Validate an Apple Pay merchant session
+      description: Requests a merchant session from Apple's startSession endpoint
+        on behalf of the storefront domain. Requires a Referer header matching a
+        verified domain.
+      tags:
+      - apple-pay
+      operationId: payments_v2026_04_apple_pay_validate
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - company_id
+              - country_id
+              - apple_session_url
+              properties:
+                company_id:
+                  type: integer
+                country_id:
+                  type: integer
+                apple_session_url:
+                  type: string
+                  format: uri
+                  description: Apple Pay startSession endpoint URL provided by
+                    the Apple Pay JS onvalidatemerchant event.
+            examples:
+              validate:
+                summary: Validate an Apple Pay merchant session
+                value:
+                  company_id: 1024
+                  country_id: 233
+                  apple_session_url: https://apple-pay-gateway.apple.com/paymentservices/startSession
+      responses:
+        '200':
+          description: Merchant session
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ApplePaySessionResponse"
+              examples:
+                session:
+                  summary: Apple Pay merchant session
+                  value:
+                    apple_pay: '{"epochTimestamp":1700000000000,"merchantSessionIdentifier":"SSH1234"}'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Company, country, or cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters, missing referer, unverified domain,
+            misconfigured Apple Pay, or Apple session failure
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/ApplePayFailureResponse"
+      security: []

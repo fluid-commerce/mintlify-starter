@@ -1,0 +1,768 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Commerce v2026-04 API
+  version: v2026-04
+  description: Post-checkout order editing — atomically insert items and adjustments
+    into existing orders. Powers integrations like droplet-driven free-gift
+    flows.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+- url: https://{company}.fluid.app
+  description: Production server with company subdomain
+  variables:
+    company:
+      default: myco
+      description: Company subdomain
+tags:
+- name: order_edits
+  description: Post-checkout order editing — atomically insert items and add
+    adjustments or discounts to existing orders, with an optional dry-run
+    preview of the recalculated totals.
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Accepts company tokens, partner tokens,
+        public tokens, droplet installation tokens, and user_company tokens.
+        The authenticated credential determines `editor_type` and `editor_id`
+        on the resulting order-edit audit records — the payload never carries
+        either field.
+  schemas:
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    UnauthorizedError:
+      type: object
+      description: |
+        Bare 401 body — a single `message` string, not the wrapped
+        `ErrorResponse`.
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          example: Invalid credentials.
+    ForbiddenError:
+      description: |
+        One of the three 403 bodies:
+        - bare `{ message }` when the credential is not company-admin tier
+          (e.g. a rep token)
+        - bare `{ error }` when the admin-tier credential lacks the
+          `orders.update` permission
+        - the wrapped `ErrorResponse` when the credential has `orders.update`
+          but sends an override-shaped operation without the
+          `orders.override` permission
+      oneOf:
+      - type: object
+        required:
+        - message
+        properties:
+          message:
+            type: string
+            example: Not authorized.
+      - type: object
+        required:
+        - error
+        properties:
+          error:
+            type: string
+            example: Not authorized.
+      - "$ref": "#/components/schemas/ErrorResponse"
+    ConflictError:
+      description: |
+        One of the two 409 bodies:
+        - the wrapped `ErrorResponse` when `expected_updated_at` mismatched
+          the order's current value; `details.current_updated_at` carries
+          the value to re-fetch and echo back on retry
+        - a bare `{ status, message }` object when a request with the same
+          `Idempotency-Key` is still in flight; `status` is the literal
+          string "error", not an HTTP status code
+      oneOf:
+      - "$ref": "#/components/schemas/ErrorResponse"
+      - type: object
+        required:
+        - status
+        - message
+        properties:
+          status:
+            type: string
+            enum:
+            - error
+          message:
+            type: string
+            example: A request with this Idempotency-Key is already being processed
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties:
+                "$ref": "#/components/schemas/JsonValue"
+              description: Field-level error details (e.g. failed validations).
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    InsertItemOperation:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - variant_id
+      - quantity
+      - price
+      properties:
+        type:
+          type: string
+          enum:
+          - insert_item
+        variant_id:
+          type: string
+          description: Identifier of the product variant to insert. Must belong
+            to the authenticated company.
+        quantity:
+          type: integer
+          minimum: 1
+        price:
+          type: string
+          format: decimal
+          pattern: "^\\d+(\\.\\d+)?$"
+          description: Per-unit price as a decimal string (e.g. "29.99"). String avoids
+            JSON float precision loss. Must be non-negative.
+        overridden:
+          type: boolean
+          default: false
+          description: |
+            Marks the operation as a manual override (e.g. a non-standard
+            price). When true, the request requires the `orders.override`
+            permission in addition to `orders.update`; without it the
+            request returns HTTP 403 with the wrapped `ErrorResponse`
+            body. The server never infers an override from the price
+            value — only this explicit flag triggers the check.
+    RemoveItemOperation:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - item_id
+      properties:
+        type:
+          type: string
+          enum:
+          - remove_item
+        item_id:
+          type: string
+          description: Identifier of the order item to remove. Must belong
+            to the order being edited.
+    ModifyItemQuantityOperation:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - item_id
+      - quantity
+      properties:
+        type:
+          type: string
+          enum:
+          - modify_item_quantity
+        item_id:
+          type: string
+          description: Identifier of the order item to modify. Must belong
+            to the order being edited.
+        quantity:
+          type: integer
+          minimum: 1
+          description: New per-item quantity. Setting quantity to zero is rejected;
+            callers wanting to drop the item entirely should use remove_item.
+        overridden:
+          type: boolean
+          default: false
+          description: |
+            Marks the operation as a manual override. When true, the
+            request requires the `orders.override` permission in addition
+            to `orders.update`; without it the request returns HTTP 403
+            with the wrapped `ErrorResponse` body.
+    AddAdjustmentOperation:
+      type: object
+      additionalProperties: false
+      description: |
+        Adding an adjustment is always treated as a manual override,
+        regardless of `source_type`: requests containing this operation
+        require the `orders.override` permission in addition to
+        `orders.update`, and without it return HTTP 403 with the wrapped
+        `ErrorResponse` body. Droplet installation tokens are exempt from
+        granular permission checks, so droplet-driven flows (like the
+        free-gift example) are unaffected.
+      required:
+      - type
+      - amount
+      - label
+      - adjustment_type
+      properties:
+        type:
+          type: string
+          enum:
+          - add_adjustment
+        amount:
+          type: string
+          format: decimal
+          pattern: "^-?\\d+(\\.\\d+)?$"
+          description: |
+            Signed amount as a decimal string. Positive for charges, negative
+            for credits. Zero is rejected — "0" / "0.00" return HTTP 422
+            even though the pattern allows them syntactically.
+        label:
+          type: string
+          description: Human-readable label (shown in admin UI / receipts).
+        adjustment_type:
+          type: string
+          enum:
+          - credit
+          - fee
+          - correction
+          - promo
+        description:
+          type:
+          - string
+          - 'null'
+          description: Optional longer-form explanation.
+        source_type:
+          type:
+          - string
+          - 'null'
+          description: Optional integration tag (e.g. "droplet").
+        source_id:
+          type:
+          - string
+          - 'null'
+          description: Optional integration identifier (e.g. droplet handle).
+    ApplyDiscountOperation:
+      type: object
+      additionalProperties: false
+      description: |
+        Applying a manually created discount is treated as a manual
+        override and requires the `orders.override` permission in
+        addition to `orders.update`; promo- and droplet-source discounts
+        need only `orders.update`.
+      required:
+      - type
+      - discount_id
+      properties:
+        type:
+          type: string
+          enum:
+          - apply_discount
+        discount_id:
+          type: string
+          description: Identifier of the discount to apply. Must belong
+            to the authenticated company.
+    RemoveDiscountOperation:
+      type: object
+      additionalProperties: false
+      description: |
+        Removing a manually created discount is treated as a manual
+        override and requires the `orders.override` permission in
+        addition to `orders.update`; promo- and droplet-source discounts
+        need only `orders.update`.
+      required:
+      - type
+      - discount_id
+      properties:
+        type:
+          type: string
+          enum:
+          - remove_discount
+        discount_id:
+          type: string
+          description: Identifier of the discount to remove. Must be
+            currently attached to the order; otherwise the call returns 422.
+    OrderEditRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - operations
+      properties:
+        expected_updated_at:
+          type: string
+          format: date-time
+          description: |
+            Optional optimistic-concurrency guard. When provided, the
+            server compares against the order's current `updated_at`
+            before applying any operations and returns HTTP 409 with
+            the current value on mismatch. Pass the ISO-8601 string
+            received in a prior order response verbatim. Callers that
+            don't load the order first can omit this and bypass the
+            check.
+        operations:
+          type: array
+          minItems: 1
+          description: One or more edit operations to apply atomically. The whole
+            transaction commits or rolls back together.
+          items:
+            oneOf:
+            - "$ref": "#/components/schemas/InsertItemOperation"
+            - "$ref": "#/components/schemas/RemoveItemOperation"
+            - "$ref": "#/components/schemas/ModifyItemQuantityOperation"
+            - "$ref": "#/components/schemas/AddAdjustmentOperation"
+            - "$ref": "#/components/schemas/ApplyDiscountOperation"
+            - "$ref": "#/components/schemas/RemoveDiscountOperation"
+            discriminator:
+              propertyName: type
+              mapping:
+                insert_item: "#/components/schemas/InsertItemOperation"
+                remove_item: "#/components/schemas/RemoveItemOperation"
+                modify_item_quantity: "#/components/schemas/ModifyItemQuantityOperation"
+                add_adjustment: "#/components/schemas/AddAdjustmentOperation"
+                apply_discount: "#/components/schemas/ApplyDiscountOperation"
+                remove_discount: "#/components/schemas/RemoveDiscountOperation"
+    Adjustment:
+      type: object
+      properties:
+        id:
+          type: integer
+        amount:
+          type: string
+          description: Signed decimal string (e.g. "-29.99"). Positive for charges,
+            negative for credits.
+        label:
+          type: string
+        adjustment_type:
+          type: string
+          enum:
+          - credit
+          - fee
+          - correction
+          - promo
+        description:
+          type:
+          - string
+          - 'null'
+        source_type:
+          type:
+          - string
+          - 'null'
+          description: Integration tag set on write (e.g. "droplet").
+        source_id:
+          type:
+          - string
+          - 'null'
+          description: Integration identifier set on write (e.g. droplet handle).
+        created_at:
+          type: string
+          format: date-time
+    Order:
+      type: object
+      description: Order fields returned by the order-edit endpoints (subset
+        shown).
+      properties:
+        id:
+          type: integer
+        order_number:
+          type: string
+        status:
+          type: string
+        currency_code:
+          type: string
+        amount:
+          type: string
+          description: Original checkout total (immutable). For the recalculated
+            equivalent see `current_amount`.
+        tax:
+          type: string
+          description: Original checkout tax. Preserved on the order and surfaced
+            as `current_tax` for symmetry.
+        shipping:
+          type: string
+          description: Original checkout shipping cost.
+        amount_in_base:
+          type: string
+          description: Total in base currency (USD).
+        base_to_currency_rate:
+          type: string
+          description: Exchange rate used to convert to the base currency.
+        current_subtotal:
+          type: string
+          description: Recalculated subtotal after post-checkout edits.
+        current_discount:
+          type: string
+        current_adjustment_total:
+          type: string
+          description: Sum of post-checkout `OrderAdjustment.amount` values.
+        current_tax:
+          type: string
+          description: Preserved from checkout (not recalculated).
+        current_shipping:
+          type: string
+          description: Preserved from checkout.
+        current_amount:
+          type: string
+          description: |
+            current_subtotal − current_discount + current_adjustment_total
+            + current_tax + current_shipping.
+        current_cv:
+          type: integer
+        current_qv:
+          type: integer
+        adjustments:
+          type: array
+          items:
+            "$ref": "#/components/schemas/Adjustment"
+    OrderResponse:
+      description: |
+        Order response wrapper. The `order` object includes the eight
+        recalculated `current_*` totals plus the `adjustments` array.
+        Edit history is not exposed through this API.
+      type: object
+      required:
+      - order
+      - status
+      - meta
+      properties:
+        order:
+          "$ref": "#/components/schemas/Order"
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    PreviewOrderResponse:
+      description: |
+        Dry-run response for POST /api/v202604/orders/{order_id}/edits/preview.
+        Same shape as OrderResponse with an additional `dry_run: true` flag
+        on the envelope so consumers can statically confirm the no-persistence
+        semantics. The `order` object's `current_*` totals reflect the
+        hypothetical post-operation state.
+      type: object
+      required:
+      - order
+      - dry_run
+      - status
+      - meta
+      properties:
+        order:
+          "$ref": "#/components/schemas/Order"
+        dry_run:
+          type: boolean
+          const: true
+          description: Always true on preview responses. Distinguishes the
+            preview payload from a committed edit response wire-side.
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    JsonValue:
+      description: Any valid JSON value for provider, integration, theme, metadata,
+        or other dynamic payloads whose keys are not fixed by the API contract.
+      anyOf:
+      - type: string
+      - type: number
+      - type: boolean
+      - type: 'null'
+      - type: array
+        items:
+          "$ref": "#/components/schemas/JsonValue"
+      - type: object
+        additionalProperties:
+          "$ref": "#/components/schemas/JsonValue"
+  parameters:
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      description: The order's primary-key id.
+      schema:
+        type: integer
+  responses:
+    BadRequest:
+      description: Malformed payload. `details` carries Dry-Validation field errors
+        keyed by parameter path.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: |
+        Missing or invalid bearer token. The body is a bare `{ message }`
+        object — not the wrapped `ErrorResponse` envelope used by
+        400 / 404 / 422.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/UnauthorizedError"
+    Forbidden:
+      description: |
+        Authenticated but not authorized. Three paths produce 403, each
+        with its own body shape:
+        - Credential is not company-admin tier (e.g. a rep token) —
+          bare `{ message }`.
+        - Admin tier but missing the `orders.update` permission —
+          bare `{ error }`.
+        - Has `orders.update` but sends an override-shaped operation
+          (an adjustment op, a line-item op flagged `overridden: true`,
+          or a manual-source discount op) without the `orders.override`
+          permission — wrapped `ErrorResponse`.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ForbiddenError"
+    NotFound:
+      description: Order does not exist or does not belong to the authenticated company.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: |
+        Two distinct concurrent-edit cases collapse to this status, each
+        with its own body shape:
+          - `expected_updated_at` mismatched the order's current value —
+            wrapped `ErrorResponse`; `details.current_updated_at` carries
+            the value the client should re-fetch and echo back on retry.
+          - An `Idempotency-Key` is already in flight on another request —
+            bare `{ status, message }`. The client should retry once the
+            in-flight request completes; the cached response will replay.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ConflictError"
+    UnprocessableEntity:
+      description: Business error (e.g. variant not found, editor failure, cross-company
+        discount).
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+paths:
+  "/api/v202604/orders/{order_id}/edits":
+    post:
+      operationId: commerce_v2026_04_create_order_edit
+      summary: Atomically apply one or more edits to an existing order
+      description: |
+        Inserts items and / or adds general-purpose adjustments to an order
+        in a single DB transaction. After the operations run, the eight
+        `current_*` totals on the order are recalculated and an order-edit
+        audit record is written per operation.
+
+        On success, the `order_edited` lifecycle event fires so subscribed
+        webhooks receive the post-edit payload.
+
+        `editor_type` and `editor_id` are derived from the authenticated
+        credential — droplet installations land as `("droplet", handle)`,
+        admin user_company tokens as `("admin", user_company.id)`, other
+        tokens as `("system", auth_type)`. The payload itself never
+        carries these fields.
+
+        A typical use case is a droplet-driven free-gift flow: insert
+        a $X gift item plus a -$X credit adjustment in one block; the
+        order's `current_amount` is unchanged, but the audit log captures
+        both operations and webhook subscribers see the updated state.
+      tags:
+      - order_edits
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/OrderId"
+      - name: Idempotency-Key
+        in: header
+        required: false
+        description: |
+          Optional client-generated key (UUID recommended) that the server
+          uses to deduplicate retries. The first request with a given key
+          executes normally; subsequent requests with the same key return
+          the cached response with `X-Idempotent-Replayed: true` for 24
+          hours. A concurrent retry while the first is still in flight
+          returns HTTP 409. The cache is scoped to the authenticated
+          company.
+        schema:
+          type: string
+          maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/OrderEditRequest"
+            examples:
+              free_gift:
+                summary: Insert a free gift with offsetting credit
+                value:
+                  operations:
+                  - type: insert_item
+                    variant_id: abc123
+                    quantity: 1
+                    price: '29.99'
+                  - type: add_adjustment
+                    amount: "-29.99"
+                    label: Free gift credit
+                    adjustment_type: credit
+                    source_type: droplet
+                    source_id: free-gift-droplet
+      responses:
+        '200':
+          description: Edit applied successfully. Returns the updated order.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderResponse"
+              examples:
+                edited:
+                  summary: Order after applying the free-gift edit
+                  value:
+                    order:
+                      id: 90210
+                      order_number: '1001'
+                      status: complete
+                      currency_code: USD
+                      current_subtotal: '129.99'
+                      current_discount: '0.00'
+                      current_adjustment_total: '-29.99'
+                      current_amount: '100.00'
+                      adjustments:
+                      - id: 55
+                        amount: '-29.99'
+                        label: Free gift credit
+                        adjustment_type: credit
+                        source_type: droplet
+                        source_id: free-gift-droplet
+                        created_at: '2026-04-01T12:00:00Z'
+                    status: 200
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+          headers:
+            X-Idempotent-Replayed:
+              description: Present and `true` when the response is a cached
+                replay of a previous request with the same Idempotency-Key.
+              schema:
+                type: string
+                enum: ["true"]
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+  "/api/v202604/orders/{order_id}/edits/preview":
+    post:
+      operationId: commerce_v2026_04_preview_order_edit
+      summary: Dry-run an edit and return the would-be order shape
+      description: |
+        Accepts the same payload as POST /api/v202604/orders/{order_id}/edits.
+        Runs the operations through the same editing engine as the commit
+        endpoint inside a database savepoint that is ALWAYS rolled back,
+        then returns the order with its recalculated `current_*` totals
+        reflecting the post-operation state.
+
+        Use this to render a "before / after" preview before committing the
+        real edit -- e.g. an admin Edit Order sheet showing the new totals
+        before the user clicks Commit.
+
+        No persistence happens:
+          - order-edit audit records are not written
+          - `order_edited` lifecycle event does NOT fire
+          - subscribed webhooks do NOT receive the payload
+          - `order.updated_at` does NOT advance
+
+        Authentication and authorization match the create endpoint
+        (`orders.update`, company-scoped). Validation and business errors
+        return the same shapes (400 / 422). Variant / item / discount
+        lookups still happen, so 422s match what a real commit would
+        produce -- there is no "preview passed but commit failed" gap.
+      tags:
+      - order_edits
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/OrderEditRequest"
+            examples:
+              preview_free_gift:
+                summary: Preview inserting a free gift with an offsetting credit
+                value:
+                  operations:
+                  - type: insert_item
+                    variant_id: abc123
+                    quantity: 1
+                    price: '29.99'
+                  - type: add_adjustment
+                    amount: "-29.99"
+                    label: Free gift credit
+                    adjustment_type: credit
+                    source_type: droplet
+                    source_id: free-gift-droplet
+      responses:
+        '200':
+          description: |
+            Dry run succeeded. Returns the order with post-edit
+            `current_*` totals. The response carries `dry_run: true` at the
+            envelope level to make the no-persistence semantics explicit
+            on the wire.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewOrderResponse"
+              examples:
+                preview:
+                  summary: Dry-run totals for the free-gift edit
+                  value:
+                    order:
+                      id: 90210
+                      order_number: '1001'
+                      status: complete
+                      currency_code: USD
+                      current_subtotal: '129.99'
+                      current_discount: '0.00'
+                      current_adjustment_total: '-29.99'
+                      current_amount: '100.00'
+                    dry_run: true
+                    status: 200
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
