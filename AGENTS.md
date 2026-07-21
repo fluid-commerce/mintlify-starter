@@ -34,7 +34,7 @@ records on the relevant Linear issue and record durable decisions in
 - Canonical storefront field vocabulary — use these exact names in prose and examples: `id`, `slug`, `title`, `description`, `image_url`, `canonical_url`, `images`, `active`, `status`, `publish_at`, `seo`, `metafields`, `countries`, `languages`.
 - Pagination is **cursor pagination**: request with `page[cursor]` / `page[limit]`; responses return `meta.pagination.next_cursor` / `meta.pagination.prev_cursor`. Cursors are opaque strings. The terms `page`, `per_page`, `offset`, and any totals-based pagination language are banned.
 - Auth wording: "Bearer token" (`Authorization: Bearer <token>`). Integrator token types are company API tokens, partner tokens, and public (`pub-`) tokens.
-- Banned legacy references in docs content: `company/v1`, `/api/v1/`, `v2025-06` / `v202506`. Single exception: partner/public token-management endpoints genuinely live at `/api/v2025-06/tokens/*` and may be documented as such until a newer surface ships.
+- Banned legacy references in docs content: `company/v1`, `/api/v1/`, `v2025-06` / `v202506`. Single exception: partner/public token-management endpoints genuinely live at `/api/v2025-06/tokens/*` and may be documented as such until a newer surface ships. A second, narrower exception: the `webhooks-v0` surface is a genuine `v0` API (not legacy `v1`) whose list endpoints use offset `page` / `per_page` pagination; its auto-generated reference reflects the spec. This covers the synced reference only — hand-written prose must still use cursor-pagination language and must not introduce `page` / `per_page` / `offset` terms.
 
 ## Style preferences
 
@@ -51,4 +51,4 @@ records on the relevant Linear issue and record durable decisions in
 - No internal implementation names in published content: Rails class/module/gem names, internal service names, and code file paths stay out of docs. Evidence and audit-trail references belong in PRs and issues, not published pages.
 - Every factual claim in a guide must be registered in `eval/guide-claims.json` and pass `eval/check-guide-claims.mjs` (see the Guide truth gate section).
 - Examples must be realistic — real-looking slugs, names, and values. Never `"string"`, placeholder names, or auto-generated filler.
-- No page in the nav may document legacy v1 endpoints or offset pagination.
+- No hand-written prose page in the nav may document legacy v1 endpoints or use offset-pagination language. (The auto-generated `webhooks-v0` reference reflects that surface's genuine offset `page` / `per_page` pagination — see the webhooks exception above; this is not a legacy `v1` reference.)

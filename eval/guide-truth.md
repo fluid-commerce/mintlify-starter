@@ -34,15 +34,28 @@ derived from the guide text itself.
 ```jsonc
 {
   "version": 1,
-  "spec": "api-reference/storefront-v2026-04.yaml",
+  "spec": "api-reference/storefront-v2026-04.yaml",  // default spec (see guideSpecs)
   "extraction": {
     "method": "blind — guides only, no spec access",
     "date": "YYYY-MM-DD"
   },
   "guides": ["api/guides/<file>.mdx", ...],
+  "guideSpecs": {                                     // optional: per-guide spec overrides
+    "api/guides/webhooks.mdx": "api-reference/webhooks-v0.yaml"
+  },
   "claims": [ /* Claim objects, see below */ ]
 }
 ```
+
+**Specs are resolved per guide.** `spec` is the default every guide's mechanical
+claims validate against. `guideSpecs` (optional) overrides it for individual guides:
+a guide listed there validates against its own spec — the webhooks guide against
+`api-reference/webhooks-v0.yaml`, while the storefront pilot guides stay on the
+default. Guides not listed use `spec`. The checker loads each referenced spec once
+(cached) and validates every claim against its guide's resolved spec in a single run,
+so one registry spans multiple published surfaces. When `guideSpecs` is absent the
+behavior is exactly the single-spec case. The `--spec` CLI flag overrides the
+*default*; per-guide overrides in `guideSpecs` still apply on top of it.
 
 ### Claim object
 
@@ -283,6 +296,10 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 | Past `publish_at` + `status: scheduled` resolving published immediately | Implied by the read-time resolution rule the guides already state. |
 | ISO-code validation, cycle/self-parent protection, `source_type` enum-validation | Spec is silent — nothing assertable without inventing behavior. |
 | Envelope details (`seo` always present, nullable `meta.request_id`, 202 envelope quirks) | Outside the four topics' task flows. |
+| Webhook delivery retrigger + a delivery-event history list | `webhooks-v0` exposes no retrigger endpoint and no delivery-event list — only most-recent-per-resource inspection via `GET /api/company/webhooks/resources/{resource_name}`. The old guide/source documented both, but they contradict the published surface; documenting them would mislead readers and fail mechanical endpoint claims. Adding them would be a backend spec addition, out of Phase 8 scope. |
+| The empty/no-events-yet `404` on `GET /api/company/webhooks/resources/{resource_name}` | The controller has a latent bug: with a valid resource but no delivered events yet it crashes rather than returning a clean empty body. The guide documents only the invalid/unregistered-resource `404` (`{message, status}`), which is well-defined. Revisit if the backend fixes the empty case. |
+| Webhooks per-endpoint 4xx matrix (PUT/DELETE/show/schema codes), the callback + company-event 4xx codes, `http_method` enum/defaults, and `deprecated_resources` | Endpoint-level contract detail belongs to the auto-generated reference driven by the spec, not the task guide (AGENTS.md content boundary). The guide covers only the codes its task flows hinge on (create `201`/`422`, delete `200`, resource-events `404`). |
+| Webhooks list pagination (offset `page`/`per_page`, `per_page` max 100) | The `webhooks-v0` list endpoints genuinely use offset pagination; the auto-generated reference reflects it, but hand-written prose must not use offset-pagination language (AGENTS.md). The guide omits list pagination entirely rather than introduce banned terms. |
 
 ## Low-confidence claims (survived on a split vote)
 
@@ -300,3 +317,18 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 4. Delete behavior undocumented (child cascade; category soft- vs collection hard-delete).
 5. Metafields write asymmetry (CollectionWrite models `id`; CategoryWrite doesn't).
 6. `sort=position` offered on collections, which expose no `position` field.
+7. Webhook **delivery/callback** contract is unmodeled in `webhooks-v0` (a
+   management-API spec — it covers subscription management, not the outbound
+   callback). The signed delivery headers (`X-Fluid-Signature`, a hex HMAC-SHA256
+   over `"{X-Fluid-Timestamp}.{raw_body}"` keyed with the webhook's `auth_token`;
+   plus `X-Fluid-Token`/`AUTH_TOKEN` carrying the raw token, and `X-Fluid-Shop`),
+   the 2xx-to-acknowledge expectation, and delivery idempotency are runtime
+   behaviors with no schema representation. The webhooks guide documents them,
+   verified against backend code (`webhook.rb#request_headers`, `webhook_caller.rb`),
+   carried as `check: semantic` claims (`webhooks-036`, `-037`, `-038`, `-039`) since
+   the mechanical checker cannot settle them from this spec. The delivery *envelope*
+   shape, by contrast, IS modeled (the resource-events endpoint returns it), so
+   envelope claims are mechanical. A future OpenAPI 3.1 `webhooks:` block could model
+   the callback contract; until then this stays code-verified.
+   (Supersedes the earlier `x-auth-token` framing, which was incorrect — no such
+   header exists.)
