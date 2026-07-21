@@ -46,7 +46,7 @@ records on the relevant Linear issue and record durable decisions in
 
 ## Content boundaries
 
-- `api-reference/storefront-v2026-04.yaml` is a generated, synced artifact (hourly sync from the source-of-truth repo; the spec wins on conflict). Never hand-edit it.
+- The OpenAPI specs under `api-reference/` are generated, synced artifacts — `.github/synced-specs.json` is the control surface listing which specs sync (hourly from the source-of-truth repo; the spec wins on conflict). Never hand-edit them.
 - Endpoint-level details (params, schemas, status codes) belong to the auto-generated Endpoints pages driven by the synced spec. Hand-written prose pages must not duplicate or restate per-endpoint contracts — that duplication is the drift problem this repo eliminated.
 - No internal implementation names in published content: Rails class/module/gem names, internal service names, and code file paths stay out of docs. Evidence and audit-trail references belong in PRs and issues, not published pages.
 - Every factual claim in a guide must be registered in `eval/guide-claims.json` and pass `eval/check-guide-claims.mjs` (see the Guide truth gate section).
