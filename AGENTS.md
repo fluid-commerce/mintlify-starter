@@ -1,7 +1,3 @@
-> **First-time setup**: Customize this file for your project. Prompt the user to customize this file for their project.
-> For Mintlify product knowledge (components, configuration, writing standards),
-> install the Mintlify skill: `npx skills add https://mintlify.com/docs`
-
 # Documentation project instructions
 
 ## Guide truth gate (read before editing `api/guides/` or `api-reference/`)
@@ -28,12 +24,19 @@ records on the relevant Linear issue and record durable decisions in
 
 ## Terminology
 
-{/* Add product-specific terms and preferred usage */}
-{/* Example: Use "workspace" not "project", "member" not "user" */}
+- The version label in prose and page titles is `v2026-04`; the URL path segment is the non-hyphenated `/api/v202604/...`. Never mix the two forms.
+- Two surfaces, named consistently:
+  - **Public storefront** — `/api/v202604/<resource>`, slug-addressed, no authentication.
+  - **Company** — `/api/v202604/company/<resource>`, `:id`-addressed, requires a Bearer token.
+
+  Public vs. company is expressed per operation, not by splitting the docs.
+- Resources are plural kebab-case nouns (`enrollment-packs`). Actions are HTTP methods — never verbs in paths.
+- Canonical storefront field vocabulary — use these exact names in prose and examples: `id`, `slug`, `title`, `description`, `image_url`, `canonical_url`, `images`, `active`, `status`, `publish_at`, `seo`, `metafields`, `countries`, `languages`.
+- Pagination is **cursor pagination**: request with `page[cursor]` / `page[limit]`; responses return `meta.pagination.next_cursor` / `meta.pagination.prev_cursor`. Cursors are opaque strings. The terms `page`, `per_page`, `offset`, and any totals-based pagination language are banned.
+- Auth wording: "Bearer token" (`Authorization: Bearer <token>`). Integrator token types are company API tokens, partner tokens, and public (`pub-`) tokens.
+- Banned legacy references in docs content: `company/v1`, `/api/v1/`, `v2025-06` / `v202506`. Single exception: partner/public token-management endpoints genuinely live at `/api/v2025-06/tokens/*` and may be documented as such until a newer surface ships.
 
 ## Style preferences
-
-{/* Add any project-specific style rules below */}
 
 - Use active voice and second person ("you")
 - Keep sentences concise — one idea per sentence
@@ -43,5 +46,9 @@ records on the relevant Linear issue and record durable decisions in
 
 ## Content boundaries
 
-{/* Define what should and shouldn't be documented */}
-{/* Example: Don't document internal admin features */}
+- `api-reference/storefront-v2026-04.yaml` is a generated, synced artifact (hourly sync from the source-of-truth repo; the spec wins on conflict). Never hand-edit it.
+- Endpoint-level details (params, schemas, status codes) belong to the auto-generated Endpoints pages driven by the synced spec. Hand-written prose pages must not duplicate or restate per-endpoint contracts — that duplication is the drift problem this repo eliminated.
+- No internal implementation names in published content: Rails class/module/gem names, internal service names, and code file paths stay out of docs. Evidence and audit-trail references belong in PRs and issues, not published pages.
+- Every factual claim in a guide must be registered in `eval/guide-claims.json` and pass `eval/check-guide-claims.mjs` (see the Guide truth gate section).
+- Examples must be realistic — real-looking slugs, names, and values. Never `"string"`, placeholder names, or auto-generated filler.
+- No page in the nav may document legacy v1 endpoints or offset pagination.

@@ -1,69 +1,77 @@
 ---
 title: "Fluid API Authentication — Token Types and Scopes"
 sidebarTitle: "Authentication"
-description: "Learn how to authenticate Fluid API requests using company tokens, partner tokens, and public tokens. Includes scopes, expiration, and best practices."
+description: "Learn how to authenticate Fluid API requests using company, partner, and public tokens. Includes scopes, expiration, domain allowlists, and best practices."
 ---
 
-Every request to the Fluid API requires a valid bearer token. Fluid provides three token types — company, partner, and public — each designed for a different trust level and integration pattern. Choose the right token type for your use case to keep your storefront secure and your integrations scoped appropriately.
+Company endpoints on the Fluid API are authenticated with a bearer token. Fluid provides three token types for integrators — company, partner, and public — each designed for a different trust level and integration pattern. Public storefront read endpoints require no token at all; everything below applies to the token-authenticated company surface.
 
-## Passing Your Token
+## Passing your token
 
-Include your token in the `Authorization` header of every API request. The value must be prefixed with `Bearer ` followed by your token string.
+Include your token in the `Authorization` header, prefixed with `Bearer `:
 
 ```bash
-curl https://api.fluid.app/api/company/v1/products \
+curl https://api.fluid.app/api/v202604/company/products \
   -H "Authorization: Bearer <your_token>" \
   -H "Content-Type: application/json"
 ```
 
-Requests made without a valid token, or with an expired or revoked token, will receive a `401 Unauthorized` response.
+A request with a missing, invalid, expired, or revoked token receives a `401 Unauthorized`. The `401` body is a bare `{ "message": "..." }` object rather than the wrapped error envelope used by `404` and `422` responses — see [Errors](/api/overview#errors) for the full envelope contract.
 
-## Token Types
+## Token types
 
-Fluid supports three token types. Each has a different scope of access and a different lifecycle.
+Each token type has a different scope of access and a different lifecycle.
 
-### Company Token
+### Company token
 
 A company token grants full administrative access to your Fluid account, equivalent to a logged-in admin. Use company tokens for server-side integrations, internal tooling, and automation scripts where you fully control the runtime environment.
 
-Generate a company token from your developer settings at [https://www.fluid.app/settings/developer](https://www.fluid.app/settings/developer).
+Create a company token from your Fluid dashboard under **Settings → Developer**. This is the primary way to obtain a company token.
 
 <Warning>
-  Never use company tokens in client-side JavaScript or expose them in public repositories. Anyone who obtains a company token has full access to your account.
+  Never use a company token in client-side JavaScript or commit it to a public repository. Anyone who obtains a company token has full access to your account.
 </Warning>
 
-### Partner Token
+### Partner token
 
-A partner token provides company-level access for third-party integrations. Partner tokens support optional expiration, making them safer to distribute to external systems. Create a partner token by calling the partner token endpoint with your company token.
+A partner token (prefixed `PT-`) provides company-level access for third-party integrations. Partner tokens support an **optional** expiration and can be tied to a role, making them safer to distribute than a raw company token. They suit agency-built integrations, certified app partners, and automated workflows that need elevated access without sharing your primary company token.
 
-Partner tokens are ideal for agency-built integrations, certified app partners, and automated workflows that need elevated access without sharing your primary company token.
+Partner tokens are managed under `/api/v2025-06/tokens/partner` and require a company-admin token to create or manage.
 
-### Public Token
+### Public token
 
-A public token is designed for client-side use and always begins with the prefix `pub-`. Public tokens are scoped to specific permissions and can be safely embedded in browser code or mobile apps.
+A public token (prefixed `pub-`) is designed for client-side use and is scoped to a specific set of read/asset permissions, so it can be embedded in browser code or mobile apps. Public tokens are managed under `/api/v2025-06/tokens/public` and, like partner tokens, require a company-admin token to create or manage.
 
-Public tokens operate in one of two modes:
+Every public token must be constrained by an expiration, a domain allowlist, or both:
 
-- **Short-lived**: Requires an `expires_at` timestamp. The token becomes invalid after that time, limiting exposure if it is intercepted.
-- **Long-lived**: Requires a `domain_allowlist` array. Requests are only accepted from the specified origins, preventing use from unauthorized domains.
+- **Short-lived** — set `expires_at`. The token stops working after that time, limiting exposure if it leaks.
+- **Long-lived (non-expiring)** — omit `expires_at` and provide a `domain_allowlist`. Requests are only accepted from the listed origins.
 
 <Warning>
-  A public token without either `expires_at` or `domain_allowlist` will fail validation and cannot be created. You must provide one or both fields.
+  A **non-expiring** public token requires a `domain_allowlist` — creating one without either `expires_at` or a non-empty `domain_allowlist` fails validation. For a short-lived token a domain allowlist is optional but recommended.
 </Warning>
 
-## Creating a Partner Token
+## Managing partner tokens
 
-Send a `GET` request to the partner token endpoint using your company token. The response contains a new partner token you can distribute to your integration. Partner tokens support an optional expiration date that limits their validity window.
+Partner tokens live under `/api/v2025-06/tokens/partner` and support the full lifecycle: list (`GET`), show (`GET /{id}`), create (`POST`), update (`PATCH /{id}`), and delete (`DELETE /{id}`). Create one with a company-admin token by posting a `label` (required) and an optional `expires_at`:
 
 ```bash
-curl https://api.fluid.app/api/v2025-06/tokens/partner \
+curl -X POST https://api.fluid.app/api/v2025-06/tokens/partner \
   -H "Authorization: Bearer <your_company_token>" \
-  -H "Content-Type: application/json"
+  -H "Content-Type: application/json" \
+  -d '{
+    "partner_token": {
+      "label": "Acme Analytics Partner",
+      "expires_at": "2026-12-31T00:00:00Z"
+    }
+  }'
 ```
 
-## Public Tokens
+Omit `expires_at` for a non-expiring partner token. To revoke a partner token, send `DELETE /api/v2025-06/tokens/partner/{id}`.
 
-Public tokens give you fine-grained control over what client-side code can access. Create a public token by sending a `POST` request to `/api/v2025-06/tokens/public`.
+## Managing public tokens
+
+Public tokens live under `/api/v2025-06/tokens/public` and support list (`GET`), create (`POST`), and delete (`DELETE /{id}`). Create one with a company-admin token; the request body nests under `public_token` and a `name` is required.
 
 **Create a short-lived public token:**
 
@@ -72,33 +80,39 @@ curl -X POST https://api.fluid.app/api/v2025-06/tokens/public \
   -H "Authorization: Bearer <your_company_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "scopes": ["products:read", "media:read"],
-    "expires_at": "2025-06-30T00:00:00Z"
+    "public_token": {
+      "name": "Storefront catalog widget",
+      "scopes": ["products:read", "media:read"],
+      "expires_at": "2026-12-31T00:00:00Z"
+    }
   }'
 ```
 
-**Create a long-lived public token with a domain allowlist:**
+**Create a non-expiring public token with a domain allowlist:**
 
 ```bash
 curl -X POST https://api.fluid.app/api/v2025-06/tokens/public \
   -H "Authorization: Bearer <your_company_token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "scopes": ["products:read", "dam:browse"],
-    "domain_allowlist": ["https://www.yourstore.com", "https://app.yourstore.com"]
+    "public_token": {
+      "name": "Acme storefront",
+      "scopes": ["products:read", "dam:browse"],
+      "domain_allowlist": ["https://shop.acmewellness.com", "https://www.acmewellness.com"]
+    }
   }'
 ```
 
-To list all public tokens for your account, send a `GET` request to `/api/v2025-06/tokens/public`. To revoke a token, send a `DELETE` request to `/api/v2025-06/tokens/public/{id}`.
+To list your public tokens, send `GET /api/v2025-06/tokens/public`. To revoke one, send `DELETE /api/v2025-06/tokens/public/{id}`.
 
-### Public Token Scopes
+### Public token scopes
 
-Use scopes to limit what a public token can access. Request only the scopes your client-side code actually needs.
+Request only the scopes your client-side code actually needs.
 
 | Scope | Access |
 |-------|--------|
-| `dam:browse` | Browse and search DAM assets |
 | `dam:upload` | Upload files to the DAM |
+| `dam:browse` | Browse and search DAM assets |
 | `dam:unsplash` | Search and import images from Unsplash via the DAM |
 | `dam:ai_generate` | Generate images using AI tools in the DAM |
 | `media:read` | Read media records |
@@ -107,12 +121,14 @@ Use scopes to limit what a public token can access. Request only the scopes your
 | `playlists:read` | Read playlist definitions |
 | `forms:read` | Read form definitions |
 
-## Best Practices
+## Storefront company permissions
 
-Following these practices will help you keep your API credentials secure across all environments.
+The v2026-04 storefront company endpoints (`/api/v202604/company/...`) accept a company-admin bearer token carrying `storefront.view` for reads and `storefront.update` for writes. Legacy per-resource grants (such as `products.view`) are still accepted during the migration window.
 
-- **Store tokens in environment variables.** Never hard-code tokens in source files. Use `.env` files locally and secret management tools (such as AWS Secrets Manager or Vault) in production.
-- **Rotate tokens regularly.** Periodically expire and regenerate tokens, especially for long-running integrations.
+## Best practices
+
+- **Store tokens in environment variables.** Never hard-code tokens in source files. Use `.env` files locally and a secrets manager (such as AWS Secrets Manager or Vault) in production.
 - **Use the least-privileged token type.** Prefer public tokens for client-side code, partner tokens for third-party integrations, and reserve company tokens for fully trusted server-side environments.
-- **Set expiration on partner tokens.** Even for long-running integrations, prefer tokens that expire and are refreshed automatically over indefinite tokens.
-- **Audit token usage.** Review active tokens periodically at [https://www.fluid.app/settings/developer](https://www.fluid.app/settings/developer) and revoke any that are no longer in use.
+- **Scope public tokens narrowly.** Request only the scopes a client needs, and constrain each token with an expiration, a domain allowlist, or both.
+- **Prefer expiring tokens.** Even for long-running integrations, favor tokens that expire and are refreshed over indefinite ones.
+- **Rotate and audit.** Periodically regenerate tokens, and review and revoke unused tokens under **Settings → Developer**.

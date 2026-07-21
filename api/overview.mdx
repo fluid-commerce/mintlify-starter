@@ -1,98 +1,183 @@
 ---
 title: "Fluid Commerce API Reference — Overview and Base URLs"
 sidebarTitle: "Overview"
-description: "The Fluid Commerce API provides REST endpoints for managing products, orders, carts, customers, payments, webhooks, and integrations for your storefront."
+description: "The Fluid Commerce API is a versioned REST API. This overview covers base URLs, the v2026-04 surface, the standard response envelope, error shapes, and cursor pagination."
 ---
 
-The Fluid Commerce API is a RESTful API that gives you full programmatic control over your We-Commerce storefront. Use it to manage your product catalog, process orders, handle customer accounts, configure payments, trigger webhooks, and orchestrate integrations — all from your own systems or custom-built applications.
+The Fluid Commerce API is a versioned REST API that gives you programmatic access to your storefront: catalog, content, media, and the resources that back your storefront pages. Requests and responses are JSON, and every response follows a single, predictable envelope so your integration can parse success and error bodies the same way across every endpoint.
 
 ## Base URLs
 
-All API requests are made over HTTPS. Use the production URL for live traffic, or the mock server to explore and test endpoints without affecting real data.
+All requests are made over HTTPS. Two servers are available:
 
-| Environment | Base URL |
-|-------------|----------|
-| Production | `https://api.fluid.app/` |
-| Mock server | `https://docs.fluid.app/_mock/docs/apis/swagger/` |
+| Server | Base URL | Use it for |
+|--------|----------|------------|
+| Global | `https://api.fluid.app` | Company (token-authenticated) endpoints — the token identifies your company |
+| Company subdomain | `https://{company}.fluid.app` | Public storefront endpoints — the company is resolved from the subdomain |
+
+Public storefront reads resolve the company from the request subdomain, so a catalog request looks like `https://acme.fluid.app/api/v202604/products`. Company endpoints work against the global host with your token, for example `https://api.fluid.app/api/v202604/company/products`.
+
+## API versioning
+
+The current, canonical surface is **v2026-04**. Its URL paths use the non-hyphenated form `/api/v202604/...`:
+
+```bash
+GET https://acme.fluid.app/api/v202604/products
+GET https://api.fluid.app/api/v202604/company/products
+```
+
+New standardized surfaces ship under date versions like this one. Earlier per-domain surfaces (v0/v1) remain live but frozen — no new fields or endpoints are added to them — so build new integrations against the current version.
+
+<Note>
+  A small number of related surfaces carry their own date version in the path — token management is one (see [Authentication](/api/authentication)). Each endpoint's reference entry shows its exact path, so always copy the version from there.
+</Note>
 
 ## Authentication
 
-Every request to the Fluid API must include a valid bearer token in the `Authorization` header.
+Company endpoints require a bearer token in the `Authorization` header:
 
 ```bash
 Authorization: Bearer <your_token>
 ```
 
-Fluid supports multiple token types — company tokens, partner tokens, and public tokens — each with different scopes and intended use cases. See the [Authentication guide](/api/authentication) for full details on generating and managing tokens.
+Public storefront endpoints (`/api/v202604/{resource}` and `/api/v202604/{resource}/{slug}`) require no authentication — the company is resolved from the subdomain. Company endpoints (`/api/v202604/company/...`) require a company-admin bearer token with `storefront.view` for reads and `storefront.update` for writes. See the [Authentication guide](/api/authentication) for token types, scopes, and management.
 
-## Request Format
+## Request format
 
-The API accepts JSON-encoded request bodies. Always set the `Content-Type` header when sending a request body.
+Send request bodies as JSON and set the `Content-Type` header:
 
 ```bash
 Content-Type: application/json
 ```
 
-Send all request bodies as valid JSON. String values must be quoted, boolean values must be `true` or `false`, and numeric values must not be quoted.
+String values must be quoted, booleans must be `true` or `false`, and numbers must not be quoted.
 
-## Response Format
+## Response format
 
-All API responses are JSON-encoded and include a `meta` object at the top level. The `meta` object contains a unique `request_id` for support and tracing, a `timestamp` for the response time, and — on list endpoints — a `pagination` object.
+Every successful response carries a top-level integer `status`, a `meta` object, and the resource under its own key. List endpoints return the resource under a plural key (for example `products`) and add a `pagination` object to `meta`:
 
 ```json
 {
+  "status": 200,
+  "products": [
+    {
+      "id": 4821,
+      "slug": "cascade-merino-crew",
+      "title": "Cascade Merino Crew"
+    }
+  ],
   "meta": {
-    "request_id": "123e4567-e89b-12d3-a456-426614174000",
-    "timestamp": "2021-01-01T00:00:00Z",
+    "request_id": "9f1c2d34-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "timestamp": "2026-07-20T18:42:11Z",
     "pagination": {
-      "current_page": 1,
-      "total_pages": 5,
-      "per_page": 20,
-      "total_count": 100
+      "cursor": null,
+      "limit": 25,
+      "prev_cursor": null,
+      "next_cursor": "eyJpZCI6NDgyMn0"
     }
   }
 }
 ```
 
+Show, create, and update endpoints return a single resource under its singular key (for example `product` or `category`) and omit `pagination`:
+
+```json
+{
+  "status": 200,
+  "category": {
+    "id": 4821,
+    "slug": "summer-sale",
+    "title": "Summer Sale"
+  },
+  "meta": {
+    "request_id": "9f1c2d34-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "timestamp": "2026-07-20T18:42:11Z"
+  }
+}
+```
+
+`meta.request_id` is a per-request identifier (it may be `null`) — include it when contacting support so a request can be traced.
+
+## Errors
+
+Validation (`422`) and not-found (`404`) responses use a wrapped error envelope that mirrors the success shape — an `error` object, a top-level `status`, and `meta`:
+
+```json
+{
+  "error": {
+    "message": "Validation failed.",
+    "details": {
+      "page.cursor": ["is invalid"]
+    }
+  },
+  "status": 422,
+  "meta": {
+    "request_id": "9f1c2d34-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "timestamp": "2026-07-20T18:42:11Z"
+  }
+}
+```
+
+<Warning>
+  Two responses are deliberate exceptions to the envelope, and integrators should handle them explicitly. A `401` returns a bare `{ "message": "..." }`, and a `403` returns a bare `{ "error": "..." }` (or `{ "message": "..." }` when the credential is not company-admin tier). Neither is wrapped in the `error`/`status`/`meta` envelope.
+</Warning>
+
+Status codes follow these conventions:
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `401` | Missing or invalid token |
+| `403` | Authenticated, but the token lacks the required permission |
+| `404` | Resource not found — also returned for non-public resources requested on the public surface (the public surface never returns `403`) |
+| `422` | Validation failed, including an invalid cursor or a `page[limit]` above `100`; failing fields are keyed under `error.details` (for example `page.cursor`) |
+
 ## Pagination
 
-Most list endpoints support pagination via query parameters. Use `page` to specify which page to retrieve and `per_page` to control how many records are returned per request.
+List endpoints use opaque cursor pagination. Two query parameters control it:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `page` | integer | Page number to retrieve (default: `1`) |
-| `per_page` | integer | Number of records per page (default: `20`) |
+| `page[cursor]` | string | An opaque cursor returned in a previous response's `meta.pagination.next_cursor` or `prev_cursor`. Omit it on the first page. |
+| `page[limit]` | integer | Page size. Default `25`, maximum `100`. A value above `100` returns `422`. |
 
-The `meta.pagination` object in each list response tells you the current page, total pages, and total record count so you can iterate through results programmatically.
+Each list response reports pagination under `meta.pagination`:
 
-## API Groups
+```json
+"pagination": {
+  "cursor": null,
+  "limit": 25,
+  "prev_cursor": null,
+  "next_cursor": "eyJpZCI6NDgyMn0"
+}
+```
 
-The Fluid API is organized into functional groups. Each group covers a distinct area of your commerce operations.
+To walk a full result set, pass the response's `next_cursor` as `page[cursor]` on the next request and repeat until `next_cursor` comes back `null`. Cursors are opaque strings — pass them back verbatim and do not attempt to decode or construct them. Pagination is count-free by design: there are no `total_count` or `total_pages` fields.
 
-| Group | Resources |
-|-------|-----------|
-| **Commerce** | Products, Orders, Carts, Customers, Discounts, Subscriptions |
-| **Payments** | Payment accounts, transactions, routing |
-| **Integrations** | Webhooks, Drop Zones, Droplets |
-| **Users** | Reps, Admins, Users |
-| **Content** | Media, Pages, Posts, Libraries |
-| **Settings** | Brand guidelines, display settings, languages, warehouses |
+## What's available
+
+The v2026-04 storefront surface covers categories, collections, products, pages, posts, media, playlists, and enrollment packs — each with a public (unauthenticated) read surface and a company (token-authenticated) management surface. Browse every endpoint, with request and response schemas, in the auto-generated **Endpoints** reference.
 
 <CardGroup cols={2}>
-  <Card title="Products" icon="box" href="/api/products">
-    Manage your product catalog, variants, options, and images.
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Token types, scopes, and how to pass and manage credentials.
   </Card>
-  <Card title="Orders" icon="shopping-bag" href="/api/orders">
-    Retrieve and manage orders, fulfillments, and refunds.
+  <Card title="Find and create categories and collections" icon="magnifying-glass" href="/api/guides/find-and-create-categories-and-collections">
+    Browse the public catalog and manage rows with the company API.
   </Card>
-  <Card title="Carts" icon="cart-shopping" href="/api/carts">
-    Create and manage shopping carts, apply discounts, and check out.
+  <Card title="Work with the category hierarchy" icon="sitemap" href="/api/guides/category-hierarchy">
+    Nest categories and traverse parents and children.
   </Card>
-  <Card title="Webhooks" icon="webhook" href="/api/webhooks">
-    Subscribe to real-time events from your Fluid storefront.
+  <Card title="Control country availability" icon="earth-americas" href="/api/guides/country-availability">
+    Set, read, and filter the countries a row is available in.
+  </Card>
+  <Card title="Rename, publish, and schedule" icon="calendar" href="/api/guides/rename-publish-and-schedule">
+    Rename a row and control when it goes live.
   </Card>
 </CardGroup>
 
+Additional surfaces — including checkout, payments, and webhooks — are being published to this same standard.
+
 <Tip>
-  Download the full OpenAPI specification at [https://docs.fluid.app/_spec/docs/apis/swagger.json](https://docs.fluid.app/_spec/docs/apis/swagger.json). A YAML version is also available at `/_spec/docs/apis/swagger.yaml`.
+  Download the full OpenAPI specification at [https://storage.googleapis.com/fluid-public/docs/api/storefront-v2026-04.yaml](https://storage.googleapis.com/fluid-public/docs/api/storefront-v2026-04.yaml). This public mirror is synced hourly; the same spec is committed in this docs repo at `api-reference/storefront-v2026-04.yaml` and drives the Endpoints reference.
 </Tip>
