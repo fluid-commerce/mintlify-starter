@@ -303,20 +303,45 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 
 ## Low-confidence claims (survived on a split vote)
 
-- **`has_children` semantics** (hierarchy-010/-027/-030): CONFIRMED 2-1. The field
-  has no description anywhere in the spec; "true = ≥1 child" rests on the field name
-  alone, and a live-children-only reading is plausible on the public surface. If
-  upstream adds a description, re-verify these three claims first.
+- **`has_children` semantics** (hierarchy-010/-027/-030): **still low-confidence
+  (split 2-1).** Phase 9.5a added a `has_children` field description to the spec —
+  "`true` when the category has at least one child category; `false` when it is a
+  leaf. Use it to decide whether to fetch a level deeper when walking the tree." —
+  but that text was authored this pass from the same guide source
+  (`category-hierarchy.mdx`) these claims already rest on, so it is not independent
+  evidence and does not upgrade their confidence. The residual doubt is unchanged:
+  on the live-only public catalog, whether `has_children` counts *non-live* child
+  categories is established by neither the guide, the spec, nor any claim. Clearing
+  it needs a contract-owner/backend confirmation of the counting semantic, not a
+  restatement of the guide. Claims stay `check: semantic`; anchors unchanged.
 
 ## Known upstream spec gaps (flagged to the backend contract owners)
 
 1. `custom_slug` structurally present in public response schemas while prose says
    it's omitted from the public surface (shared-schema modeling).
+   **Deferred (9.5a)** — resolving it is a schema-shape change (split public vs
+   authenticated schema), out of this description-only pass; tracked as a follow-up.
 2. `has_children` and `position` have no field descriptions.
+   **Resolved (9.5a)** — field descriptions were added to both on the `Category`
+   schema this pass, so this gap (missing descriptions) is closed. Note this does
+   **not** re-verify the low-confidence `has_children` claims: the new text is
+   sourced from the same guide, so hierarchy-010/-027/-030 remain low-confidence
+   pending contract-owner confirmation (see Low-confidence claims above).
 3. `filter[status]` stored-vs-resolved matching undefined for past-due scheduled rows.
+   **Deferred (9.5a)** — the param got a general description this pass, but the
+   specific stored-vs-resolved semantic is still not established by any guide, claim,
+   or spec source (the param description explicitly flags it `needs_confirmation`).
+   Documenting it would be fabrication; needs contract-owner confirmation.
 4. Delete behavior undocumented (child cascade; category soft- vs collection hard-delete).
+   **Deferred (9.5a)** — child-category cascade remains unspecified anywhere; needs
+   contract-owner confirmation.
 5. Metafields write asymmetry (CollectionWrite models `id`; CategoryWrite doesn't).
+   **Documented (9.5a)** — the asymmetry is now noted in both
+   `metafields_attributes` descriptions (each cross-references the other). Structural
+   alignment of the two schemas is deferred (schema-shape change; follow-up).
 6. `sort=position` offered on collections, which expose no `position` field.
+   **Deferred (9.5a)** — the fix is an enum/shape change (swap the shared `Sort` for a
+   `SortNoPosition` on the collection ops), out of description-only scope; follow-up.
 7. Webhook **delivery/callback** contract is unmodeled in `webhooks-v0` (a
    management-API spec — it covers subscription management, not the outbound
    callback). The signed delivery headers (`X-Fluid-Signature`, a hex HMAC-SHA256
