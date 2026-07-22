@@ -273,22 +273,45 @@ function isNoneSecurity(sec) {
   return false;
 }
 
+// True when the named security scheme is a bearer-style scheme (http/bearer, a
+// bearer/authorization apiKey header, or oauth2).
+function isBearerScheme(spec, name) {
+  const schemes = (spec.components && spec.components.securitySchemes) || {};
+  const s = deref(spec, schemes[name]);
+  if (!s) return false;
+  if (s.type === "http" && typeof s.scheme === "string" && s.scheme.toLowerCase() === "bearer") return true;
+  if (s.type === "apiKey" && s.in === "header" && typeof s.name === "string" && /bearer|authorization/i.test(s.name)) return true;
+  if (s.type === "oauth2") return true;
+  return false;
+}
+
 function requiresBearer(spec, sec) {
   if (!Array.isArray(sec) || sec.length === 0) return false;
-  const schemes = (spec.components && spec.components.securitySchemes) || {};
   for (const req of sec) {
     if (!req || typeof req !== "object") continue;
     for (const name of Object.keys(req)) {
-      const s = deref(spec, schemes[name]);
-      if (!s) continue;
-      if (s.type === "http" && typeof s.scheme === "string" && s.scheme.toLowerCase() === "bearer") return true;
-      if (s.type === "apiKey" && s.in === "header" && typeof s.name === "string" && /bearer|authorization/i.test(s.name)) {
-        return true;
-      }
-      if (s.type === "oauth2") return true;
+      if (isBearerScheme(spec, name)) return true;
     }
   }
   return false;
+}
+
+// Role-name (scope) list attached to the bearer scheme inside the effective
+// security requirement. The spec models scopes as an OAS 3.1 role-name array on
+// the bearer requirement entry (e.g. `[{ bearer_auth: ["storefront.update"] }]`),
+// even though the scheme itself stays http/bearer. Returns [] when bearer is
+// required with no scopes modeled (`bearer_auth: []`) or no bearer entry is found.
+function bearerScopes(spec, sec) {
+  if (!Array.isArray(sec)) return [];
+  for (const req of sec) {
+    if (!req || typeof req !== "object") continue;
+    for (const name of Object.keys(req)) {
+      if (isBearerScheme(spec, name)) {
+        return Array.isArray(req[name]) ? req[name] : [];
+      }
+    }
+  }
+  return [];
 }
 
 function requestBodyJsonSchema(spec, op) {
@@ -500,9 +523,21 @@ function validateAnchorShape(claim, anchor, report) {
       report.fail(claim, `anchor.method must be a lowercase HTTP verb (got ${JSON.stringify(anchor.method)})`);
       ok = false;
     }
-    if (type === "auth" && anchor.auth !== "none" && anchor.auth !== "bearer") {
-      report.fail(claim, `anchor.auth must be 'none' | 'bearer'`);
-      ok = false;
+    if (type === "auth") {
+      if (anchor.auth !== "none" && anchor.auth !== "bearer") {
+        report.fail(claim, `anchor.auth must be 'none' | 'bearer'`);
+        ok = false;
+      }
+      // Optional scopes: a non-empty array of strings, valid only with bearer.
+      if (anchor.scopes !== undefined) {
+        if (!Array.isArray(anchor.scopes) || anchor.scopes.length === 0 || !anchor.scopes.every((s) => typeof s === "string")) {
+          report.fail(claim, `anchor.scopes must be a non-empty array of strings`);
+          ok = false;
+        } else if (anchor.auth !== "bearer") {
+          report.fail(claim, `anchor.scopes is only valid with auth 'bearer' (got auth ${JSON.stringify(anchor.auth)})`);
+          ok = false;
+        }
+      }
     }
     if (type === "parameter") {
       if (typeof anchor.param !== "string") {
@@ -576,7 +611,7 @@ function checkEndpoint(spec, claim, report) {
 }
 
 function checkAuth(spec, claim, report) {
-  const { path, method, auth } = claim.anchor;
+  const { path, method, auth, scopes } = claim.anchor;
   const op = getOperation(spec, path, method);
   if (!op) {
     report.fail(claim, `operation ${method.toUpperCase()} ${path} not found (auth claim)`);
@@ -587,9 +622,20 @@ function checkAuth(spec, claim, report) {
     if (!isNoneSecurity(sec)) {
       report.fail(claim, `${method.toUpperCase()} ${path} requires auth but claim says 'none' (security=${JSON.stringify(sec)})`);
     }
-  } else if (auth === "bearer") {
-    if (isNoneSecurity(sec) || !requiresBearer(spec, sec)) {
-      report.fail(claim, `${method.toUpperCase()} ${path} does not require a bearer scheme but claim says 'bearer' (security=${JSON.stringify(sec)})`);
+    return;
+  }
+  // auth === "bearer"
+  if (isNoneSecurity(sec) || !requiresBearer(spec, sec)) {
+    report.fail(claim, `${method.toUpperCase()} ${path} does not require a bearer scheme but claim says 'bearer' (security=${JSON.stringify(sec)})`);
+    return;
+  }
+  // When scopes are asserted, every named scope must be granted by the bearer
+  // scheme's role-name list in the operation's effective security requirement.
+  if (scopes !== undefined) {
+    const granted = bearerScopes(spec, sec);
+    const missing = scopes.filter((s) => !granted.includes(s));
+    if (missing.length > 0) {
+      report.fail(claim, `${method.toUpperCase()} ${path} bearer requirement does not grant scope(s) ${JSON.stringify(missing)} — claim requires ${JSON.stringify(scopes)}, op grants ${JSON.stringify(granted)}`);
     }
   }
 }
@@ -1216,6 +1262,10 @@ const SELFTEST_SPEC = {
         requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/WidgetCreate" } } } },
         responses: { "201": { description: "created" } },
       },
+      patch: {
+        security: [{ bearer_auth: ["widgets.update"] }],
+        responses: { "200": { description: "updated" } },
+      },
     },
     "/api/v1/widgets/{id}": {
       parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
@@ -1275,6 +1325,12 @@ function runSelfTest() {
     [stClaim("P-auth-none", "auth", "mechanical", { path: "/api/v1/widgets", method: "get", auth: "none" }), false],
     [stClaim("P-auth-bearer", "auth", "mechanical", { path: "/api/v1/widgets", method: "post", auth: "bearer" }), false],
     [stClaim("F-auth-none-on-bearer", "auth", "mechanical", { path: "/api/v1/widgets", method: "post", auth: "none" }), true],
+    // ---- auth scopes ----
+    // PATCH grants ["widgets.update"]; POST requires bearer with no scopes ([]).
+    [stClaim("P-auth-scope", "auth", "mechanical", { path: "/api/v1/widgets", method: "patch", auth: "bearer", scopes: ["widgets.update"] }), false],
+    [stClaim("F-scope-not-granted", "auth", "mechanical", { path: "/api/v1/widgets", method: "post", auth: "bearer", scopes: ["widgets.update"] }), true],
+    [stClaim("F-scope-wrong", "auth", "mechanical", { path: "/api/v1/widgets", method: "patch", auth: "bearer", scopes: ["widgets.delete"] }), true],
+    [stClaim("F-scope-shape-with-none", "auth", "mechanical", { path: "/api/v1/widgets", method: "get", auth: "none", scopes: ["widgets.view"] }), true],
 
     // ---- request-field ----
     [stClaim("F-missing-required", "request-field", "mechanical", { path: "/api/v1/widgets", method: "post", field: "widget.count", required: true }), true],
