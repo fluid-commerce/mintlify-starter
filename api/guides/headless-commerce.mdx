@@ -1,0 +1,194 @@
+---
+title: "Build a headless checkout"
+description: "Drive a custom purchase flow on Fluid's checkout surface — create a cart, add line items, capture the buyer's contact and address, select shipping, collect payment, and complete the order."
+---
+
+Fluid hosts a full checkout, but you can also drive one yourself. The checkout surface exposes every step of a purchase as a cart operation, so you can build a bespoke storefront, embed checkout in your own app, or place orders on behalf of a rep. This guide walks the flow end to end: find a product, create a cart, add items, capture the buyer's details, price shipping, take payment, and turn the cart into an order.
+
+The flow is built for direct-sales commerce — a cart can carry rep attribution, subscription line items, and enrollment context alongside ordinary products.
+
+## Base URL and authentication
+
+Every request goes to `https://api.fluid.app`. The checkout surface is versioned: paths sit under `/api/checkout/v2026-04/`.
+
+Cart mutations authenticate with a company Bearer token, sent as `Authorization: Bearer <your_token>` on every request. Three operations are public and need no token: creating a cart, querying a product, and retrieving a finished order. A server-side integration typically holds one company token and uses it for the whole flow.
+
+<Info>
+  The cart token appears as `{token}` in cart-level paths and as `{cart_token}` in the items and discount sub-resources. It is the same value in both — the `cart_token` the create-cart response returns. Substitute it wherever a path shows either placeholder.
+</Info>
+
+## The checkout flow
+
+<Steps>
+  <Step title="Find a product and a variant">
+    A cart is built from product variants, so you start by resolving the `variant_id` you want to sell. Query a single product on the checkout surface with `POST /api/checkout/v2026-04/products/{id}`, passing the shop under `metadata.fluid_shop`. The `{id}` segment accepts a product id or slug.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/products/cordless-blender" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "metadata": {
+          "fluid_shop": "acme.fluid.app"
+        }
+      }'
+    ```
+
+    The response lists the product's purchasable variants; see the [Checkout endpoints](/api-reference/checkout-v2026-04) reference for its full shape. To browse or search the whole catalog instead of fetching one product, use the Storefront products API, documented under the Storefront endpoints reference.
+  </Step>
+
+  <Step title="Create a cart">
+    Create the cart with `POST /api/checkout/v2026-04/carts`. The body requires `fluid_shop` (the company subdomain) and `country_code` (an ISO country code). You can seed the cart with an `items` array in the same call — each item requires a `variant_id` and a `quantity` — and attach rep attribution under `attribution`.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "fluid_shop": "acme",
+        "country_code": "US",
+        "attribution": {
+          "share_guid": "sh_9f2ac1b7"
+        },
+        "items": [
+          { "variant_id": 88214, "quantity": 2 }
+        ]
+      }'
+    ```
+
+    Creating a cart is a public operation — it needs no Bearer token. A successful call returns the cart, including the `cart_token` you pass to every subsequent step. A body that fails validation — for example a missing `country_code` — returns `422`.
+
+    <Info>
+      Store the returned `cart_token` in your application state. It identifies the cart for the rest of the flow.
+    </Info>
+  </Step>
+
+  <Step title="Add and adjust line items">
+    Add more items after creation with `POST /api/checkout/v2026-04/carts/{cart_token}/items`. The body takes an `items` array; each entry requires a `variant_id` and a `quantity`. Mark an item as a subscription by setting `subscription` to true and naming a `subscription_plan_id`.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/items" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "items": [
+          {
+            "variant_id": 90731,
+            "quantity": 1,
+            "subscription": true,
+            "subscription_plan_id": 4
+          }
+        ]
+      }'
+    ```
+
+    You can inspect the cart at any time with `GET /api/checkout/v2026-04/carts/{token}`, which returns the current items, totals, and available shipping methods.
+
+    ```bash
+    curl "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX" \
+      -H "Authorization: Bearer <your_token>"
+    ```
+  </Step>
+
+  <Step title="Capture the buyer's contact details">
+    Attach the buyer's contact information with `PATCH /api/checkout/v2026-04/carts/{token}`. The body accepts `email`, `phone`, and the marketing opt-ins `email_marketing` and `sms_marketing`.
+
+    ```bash
+    curl -X PATCH "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "email": "dana.lee@example.com",
+        "phone": "+13105550142",
+        "email_marketing": true
+      }'
+    ```
+  </Step>
+
+  <Step title="Set the shipping address">
+    Set the address with `POST /api/checkout/v2026-04/carts/{token}/address`. The body requires a `type` — one of `ship_to`, `bill_to`, or `both` — and carries the address fields under an `address` object.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/address" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "type": "ship_to",
+        "address": {
+          "first_name": "Dana",
+          "last_name": "Lee",
+          "address1": "1200 Market St",
+          "city": "San Francisco",
+          "state": "CA",
+          "postal_code": "94103",
+          "country_code": "US"
+        }
+      }'
+    ```
+
+    <Note>
+      Setting the address triggers a full recalculation of tax, shipping, and totals, so the cart you get back reflects the destination. Re-read the cart to see the refreshed available shipping methods.
+    </Note>
+  </Step>
+
+  <Step title="Select a shipping method">
+    Once the cart has an address, choose one of its available methods with `PUT /api/checkout/v2026-04/carts/{token}/shipping`, passing the `shipping_method_id`. Selecting a shipping method is idempotent — selecting the same one again is a no-op.
+
+    ```bash
+    curl -X PUT "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/shipping" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "shipping_method_id": 5123
+      }'
+    ```
+  </Step>
+
+  <Step title="Apply a discount code (optional)">
+    Apply a promotion with `POST /api/checkout/v2026-04/carts/{cart_token}/discount`, passing the `discount_code`. Applying a discount is not idempotent — applying the same code twice returns an error.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/discount" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "discount_code": "SAVE10"
+      }'
+    ```
+  </Step>
+
+  <Step title="Collect payment">
+    Card capture and tokenization happen on Fluid's cart payment surface, which authenticates with the cart token in the path — no Bearer token — and returns a payment reference. See the Cart payment endpoints reference for tokenization, 3D Secure, and the wallet flows (Apple Pay, PayPal, and others). Carry the resulting reference into the next step as the `payment_uuid` query parameter.
+  </Step>
+
+  <Step title="Complete the checkout">
+    Turn the cart into an order with `POST /api/checkout/v2026-04/carts/{token}/complete`. Pass the payment reference as the `payment_uuid` query parameter, and send an `Idempotency-Key` header so a retried request never places a second order. A successful call returns `200` with the completed order.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/complete?payment_uuid=pay_3Fd8Qw" \
+      -H "Authorization: Bearer <your_token>" \
+      -H "Idempotency-Key: 2f6b1c8a-checkout-01"
+    ```
+
+    <Warning>
+      Completion is final. Once the cart converts to an order it is locked, and any further mutation returns `410`. Do not reuse the `cart_token` after a successful checkout — start a new cart for the next purchase.
+    </Warning>
+  </Step>
+
+  <Step title="Retrieve the order">
+    Read the order back with `GET /api/checkout/v2026-04/orders/{token}`, using the order token from the completion response. This endpoint is public, so you can show an order-confirmation page without a Bearer token. The response carries the order's `token` and its human-facing `order_number`.
+
+    ```bash
+    curl "https://api.fluid.app/api/checkout/v2026-04/orders/ord_5Kp1Zt7Yb2"
+    ```
+  </Step>
+</Steps>
+
+## Related surfaces
+
+- **Cart payment** — card tokenization, 3D Secure, and wallet payments live on the cart payment surface; see the Cart payment endpoints reference.
+- **Storefront** — browse and search the product catalog on the Storefront endpoints reference.
+- **Subscriptions** — the checkout surface also manages the subscriptions a cart creates; see the subscription operations in the reference.
+
+## Next steps
+
+- Browse the [Checkout endpoints](/api-reference/checkout-v2026-04) reference for full request and response schemas.
+- Create a cart, add an item, and read it back to confirm your token handling before wiring up payment.
