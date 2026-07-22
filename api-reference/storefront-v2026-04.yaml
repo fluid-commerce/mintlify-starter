@@ -4,17 +4,117 @@ info:
   title: Fluid Storefront v2026-04 API
   version: v2026-04
   description: |
-    The modernized storefront category surface. Two surfaces share this
-    spec: a **public** unauthenticated catalog / show under
-    `/api/v202604/categories`, and a **company** token-authenticated
-    CRUD + member-action surface under `/api/v202604/company/categories`.
-    Every category response carries the canonical storefront "common
-    top" (id, slug, title, description, image_url, canonical_url,
-    images, active, status, publish_at, seo, metafields, languages)
-    followed by the resource's own fields. A stored `scheduled` category
-    whose `publish_at` has passed resolves to `published` at the API
-    boundary, and company create/update auto-queue Lighthouse +
-    compliance scans.
+    The modernized storefront surface, covering all eight storefront
+    resources: **Categories**, **Collections**, **Products**, **Posts**,
+    **Pages**, **Media**, **Enrollment Packs**, and **Playlists**.
+
+    ## Two surfaces
+
+    Every resource is exposed twice, and the pair is the thing to
+    understand first:
+
+    - **Public** — `/api/v202604/{resource}` and
+      `/api/v202604/{resource}/{slug}`. Unauthenticated
+      (`security: []`); the store is resolved from the request
+      subdomain. Addressed by `slug`, the same identifier that appears
+      in `canonical_url`. Returns only live rows — non-live content
+      never leaks here.
+    - **Company** — `/api/v202604/company/{resource}`. Bearer-token
+      authenticated, addressed by `id`, and returns every row whatever
+      its lifecycle state, so an admin can manage drafts and archives.
+      Full CRUD plus the standardized `shares`, `lighthouse`, and
+      `compliance` member actions on each resource.
+
+    Path segments use the storefront's nouns, not the database's:
+    `enrollment-packs` and `playlists` (the Library model).
+
+    ## One response shape
+
+    Every resource response opens with the same canonical "common top",
+    in the same order, before any resource-specific fields:
+
+        id, slug, title, description, image_url, canonical_url, images,
+        active, status, publish_at, seo, metafields, languages
+
+    That means a consumer can render any storefront resource from one
+    code path. `seo` is always present and always fully populated — the
+    server resolves it through a priority chain (SEO record → resource
+    field → store default → built-in), so there is no client-side
+    fallback logic and the API can never disagree with the rendered
+    `<head>`. `metafields`, `languages`, and (where applicable)
+    `countries` are always arrays, never null.
+
+    ## Lifecycle
+
+    `status` is the canonical four-value contract — `draft`,
+    `scheduled`, `published`, `archived` — and resolves at the API
+    boundary: a stored `scheduled` row whose `publish_at` has passed
+    reads as `published` with no write required. `active` is the
+    separate merchant on/off toggle; a resource is live only when it is
+    both active and resolved-published. Company create and update
+    auto-queue Lighthouse and compliance scans, so the scores on the
+    member actions always describe the current state of the resource.
+
+    ## Listing and pagination
+
+    Index endpoints share one query surface: `lang`, `q` (Elasticsearch
+    over title and description), `filter[…]`, `sort`, and cursor
+    pagination via `page[cursor]` / `page[limit]` (default 25, max 100).
+    Follow `meta.pagination.next_cursor`; do not construct cursors.
+    Products additionally take `country`, which selects the
+    country-relative price and currency AND gates availability.
+
+    Categories and Collections expose their products from their own
+    path — `GET /api/v202604/categories/{slug}/products` — which is the
+    products catalog scoped to one owner, with the same card shape,
+    filters, sorting, and pagination.
+
+    ## Translating a resource
+
+    Translations are written inline on the resource's own create/update.
+    There is no separate translations endpoint and no `translations`
+    object in the payload — the `lang` query parameter selects the locale
+    a request reads or writes.
+
+    **Read** a locale with `lang` on any GET:
+
+        GET /api/v202604/company/collections/4821?lang=fr
+
+    Translated fields (`title`, `description`, `image_url`, and each
+    resource's own translated fields) come back inline in that locale.
+    On the public surface any field with no `fr` translation falls back
+    to its `en` value, so a partially-translated resource never renders
+    blank. The `languages` array on every response lists exactly the
+    locales that carry a translation, always including the default.
+
+    **Write** a locale with `lang` on POST/PATCH:
+
+        PATCH /api/v202604/company/collections/4821?lang=fr
+        { "collection": { "title": "Essentiels bien-être" } }
+
+    Omitting `lang` writes the store's default locale — the store's own
+    default language, not the platform's. A store selling in French
+    treats `lang=fr` as its default write.
+
+    A translation PATCH is TEXT ONLY: against any other locale,
+    everything but the translated fields is ignored, so translating a
+    title can never regenerate the slug, move `status`, or change
+    `country_isos`, metafields, SEO, or associations. Send those in a
+    request against the store's default locale instead.
+
+    Creating is different: POST always writes the store's default locale
+    whatever `lang` says, and keeps its full payload. A resource created
+    under a translation would have no value in the store's own language
+    and would take its slug from the translation. `lang` is still
+    validated on POST, so an unsupported locale is a 422 rather than a
+    surprise.
+
+    A `lang` the store does not sell in returns 422 — translations are
+    never written to a locale the store has not enabled. Add the language
+    to the store first.
+
+    The typical flow is: create in the default locale, then one PATCH per
+    additional locale carrying only the translated text.
   contact:
     email: support@fluid.app
   license:
@@ -92,6 +192,36 @@ components:
         responds in the company's default locale. On the public
         surface, falls back to `en` for any translated field missing
         in the requested locale.
+      schema:
+        type: string
+        example: fr
+    LangWrite:
+      name: lang
+      in: query
+      required: false
+      description: |
+        Locale to WRITE, and to render the response in. ISO code
+        (e.g. `fr`, `de`); omit to write the store's default locale.
+
+        On PATCH, a locale other than the store's own default writes ONLY
+        the translated fields — slug, lifecycle, countries, metafields,
+        SEO, and associations in the same payload are ignored, so
+        translating a title cannot regenerate the slug or move `status`.
+        Send those in a request against the store's default locale.
+
+        POST always writes the store's default locale, whatever `lang`
+        says, and keeps its full payload. Mobility's base values hold the
+        default locale, so a resource created under a translation would
+        read back blank in the store's own language. `lang` is still
+        validated on POST. Translate a resource after it exists, with
+        PATCH.
+
+        The comparison is against the STORE's default language, not the
+        platform's — a store selling in French treats `lang=fr` as its
+        default write, not a translation.
+
+        A locale the store does not sell in returns 422. See
+        "Translating a resource" in the API description.
       schema:
         type: string
         example: fr
@@ -442,6 +572,7 @@ components:
             type: string
           description: |
             ISO codes of locales this resource is translated into.
+            Always includes the store's default language.
             Always includes the company default locale; never empty.
           example: [en, fr, de]
         parent_id:
@@ -546,6 +677,15 @@ components:
           description: |
             ISO codes restricting availability. `[]` clears
             restrictions; key omitted leaves countries unchanged.
+        product_ids:
+          type: array
+          items:
+            type: integer
+          description: |
+            Full replacement set of product ids in this category. `[]`
+            empties it; key omitted leaves membership unchanged. Ids must
+            belong to the authenticated store — a product from another
+            store returns 422.
         metafields_attributes:
           type: array
           items:
@@ -3028,6 +3168,29 @@ components:
             ISO codes restricting availability. `[]` clears restrictions;
             key omitted leaves countries unchanged. An ISO the store does
             not sell in returns a 422.
+        library_items_attributes:
+          type: array
+          description: |
+            Playlist contents. `relateable_type` is `Product` or
+            `EnrollmentPack` and must belong to the authenticated store —
+            an item from another store returns 422. `order` is the 1-based
+            position in the playlist; omit it (or send `0`) to add the item
+            at the top.
+          items:
+            type: object
+            required: [relateable_id, relateable_type]
+            properties:
+              id:
+                type: integer
+              relateable_id:
+                type: integer
+              relateable_type:
+                type: string
+                enum: [Product, EnrollmentPack]
+              order:
+                type: integer
+              _destroy:
+                type: boolean
         metafields_attributes:
           type: array
           items:
@@ -3223,6 +3386,15 @@ components:
           description: |
             ISO codes restricting availability. `[]` clears
             restrictions; key omitted leaves countries unchanged.
+        product_ids:
+          type: array
+          items:
+            type: integer
+          description: |
+            Full replacement set of product ids in this collection. `[]`
+            empties it; key omitted leaves membership unchanged. Ids must
+            belong to the authenticated store — a product from another
+            store returns 422.
         metafields_attributes:
           type: array
           items:
@@ -3879,6 +4051,76 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/categories/{slug}/products:
+    get:
+      tags: [storefront]
+      summary: Products in a Category (public)
+      operationId: storefrontCategoryProducts
+      description: |
+        PUBLIC endpoint — NO authentication required. Company is resolved
+        from the request subdomain.
+
+        The products catalog scoped to one category, not a second catalog:
+        the response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination are identical to
+        `GET /api/v202604/products`. Returns ONLY live products (active +
+        resolved-published) with an active variant in the requested
+        `country`.
+
+        The category in the path always wins — a `filter[category_ids]` in the
+        query string cannot widen the listing beyond it. Returns 404 when
+        no live category matches the slug.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          description: The category's slug, as returned in its `slug` field.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of live products in this category, with country-relative pricing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/categories:
     get:
       tags: [company]
@@ -3937,6 +4179,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -4071,6 +4314,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -4154,6 +4398,82 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/company/categories/{id}/products:
+    get:
+      tags: [company]
+      summary: Products in a Category
+      operationId: companyCategoryProducts
+      description: |
+        Every product filed under this category, including the draft and
+        archived rows the public listing hides.
+
+        Same response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination as
+        `GET /api/v202604/company/products`. The category in the path always
+        wins — a `filter[category_ids]` in the query string cannot widen the
+        listing beyond it.
+
+        Requires `storefront.view` (legacy `categories.view` still accepted).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[status]
+          in: query
+          required: false
+          description: Restrict to a single stored lifecycle state.
+          schema:
+            type: string
+            enum: [active, draft, archived]
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of products in this category, every lifecycle state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/categories/{id}/lighthouse:
     get:
       tags: [company]
@@ -4633,6 +4953,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
         - $ref: "#/components/parameters/Country"
       requestBody:
@@ -4849,6 +5170,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -5203,6 +5525,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -5295,6 +5618,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -5647,6 +5971,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -5734,6 +6059,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -6070,6 +6396,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -6153,6 +6480,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -6473,6 +6801,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -6558,6 +6887,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -6948,6 +7278,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -7018,6 +7349,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -7328,6 +7660,76 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/collections/{slug}/products:
+    get:
+      tags: [storefront]
+      summary: Products in a Collection (public)
+      operationId: storefrontCollectionProducts
+      description: |
+        PUBLIC endpoint — NO authentication required. Company is resolved
+        from the request subdomain.
+
+        The products catalog scoped to one collection, not a second catalog:
+        the response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination are identical to
+        `GET /api/v202604/products`. Returns ONLY live products (active +
+        resolved-published) with an active variant in the requested
+        `country`.
+
+        The collection in the path always wins — a `filter[collection_ids]` in the
+        query string cannot widen the listing beyond it. Returns 404 when
+        no live collection matches the slug.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          description: The collection's slug, as returned in its `slug` field.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of live products in this collection, with country-relative pricing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/collections:
     get:
       tags: [company]
@@ -7382,6 +7784,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -7472,6 +7875,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
           in: path
           required: true
@@ -7555,6 +7959,82 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/company/collections/{id}/products:
+    get:
+      tags: [company]
+      summary: Products in a Collection
+      operationId: companyCollectionProducts
+      description: |
+        Every product filed under this collection, including the draft and
+        archived rows the public listing hides.
+
+        Same response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination as
+        `GET /api/v202604/company/products`. The collection in the path always
+        wins — a `filter[collection_ids]` in the query string cannot widen the
+        listing beyond it.
+
+        Requires `storefront.view` (legacy `collections.view` still accepted).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[status]
+          in: query
+          required: false
+          description: Restrict to a single stored lifecycle state.
+          schema:
+            type: string
+            enum: [active, draft, archived]
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of products in this collection, every lifecycle state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/collections/{id}/lighthouse:
     get:
       tags: [company]
