@@ -283,6 +283,22 @@ Editing an existing guide: update the affected claims (quotes/lines/anchors) in 
 same PR; the quote-presence check fails until you do. Semantic re-verification is
 only needed when behavioral statements changed.
 
+## Multi-spec guides (Phase 9 — `headless-commerce`)
+
+`api/guides/headless-commerce.mdx` walks a flow that legitimately spans three
+published surfaces: product listing (`storefront-v2026-04`), the cart→order
+lifecycle (`checkout-v2026-04`), and card tokenization/3DS + wallets
+(`payments-v2026-04`). The mechanical checker resolves **one** spec per guide, so
+the guide is gated against `checkout-v2026-04` (its `guideSpecs` entry) and **all**
+its mechanical claims anchor there. The storefront and payments touchpoints are
+expressed as prose **cross-links** to their reference groups, deliberately
+token-light so the coverage lint stays satisfied against the checkout spec — the
+guide never emits a `/api/v202604/...` product path or a payments snake_case field
+as an asserted fact. This preserves the one-spec-per-guide model with no
+eval-harness change; if a future guide genuinely needs mechanical claims across
+multiple specs, extend `guideSpecs` to accept an array and resolve each claim
+against the spec that holds its anchor.
+
 ## Accepted omissions (deliberate — do not re-litigate without cause)
 
 Facts the omission sweep surfaced that the guides intentionally do **not** cover:
@@ -300,6 +316,9 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 | The empty/no-events-yet `404` on `GET /api/company/webhooks/resources/{resource_name}` | The controller has a latent bug: with a valid resource but no delivered events yet it crashes rather than returning a clean empty body. The guide documents only the invalid/unregistered-resource `404` (`{message, status}`), which is well-defined. Revisit if the backend fixes the empty case. |
 | Webhooks per-endpoint 4xx matrix (PUT/DELETE/show/schema codes), the callback + company-event 4xx codes, `http_method` enum/defaults, and `deprecated_resources` | Endpoint-level contract detail belongs to the auto-generated reference driven by the spec, not the task guide (AGENTS.md content boundary). The guide covers only the codes its task flows hinge on (create `201`/`422`, delete `200`, resource-events `404`). |
 | Webhooks list pagination (offset `page`/`per_page`, `per_page` max 100) | The `webhooks-v0` list endpoints genuinely use offset pagination; the auto-generated reference reflects it, but hand-written prose must not use offset-pagination language (AGENTS.md). The guide omits list pagination entirely rather than introduce banned terms. |
+| Headless (`headless-commerce`): the anonymous cart-token / magic-link customer auth path (`/carts/{cart_token}/auth/*`, the `jwt` from `verify_cart_magic_link`) | The guide documents the **server-side company-token model** — one bearer token drives the whole flow. The customer-facing anonymous auth path is a separate integration model, out of this guide's task scope. |
+| Headless: per-endpoint create-cart error detail — explicit-`null` dry-validation `422`, `400` on missing/blank `fluid_shop`, `404` on an unresolvable `fluid_shop` subdomain | The guide uses the well-defined `country_code`→`422` example for its one validation callout ("for example …", not a universal claim); the full 400/404/422 matrix belongs to the auto-generated reference (AGENTS.md content boundary). See upstream gap #8 for the 400/422 asymmetry. |
+| Headless: `410` second trigger (enrollment carts in an authorized-payment state); `update_cart_country` cascade (clears address/discounts/shipping); points / manual-discount / enrollment ops; `shipping_method_id: null` clears the selection | Outside the linear product→cart→order task flow the guide teaches; reference territory. |
 
 ## Low-confidence claims (survived on a split vote)
 
@@ -332,3 +351,25 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
    the callback contract; until then this stays code-verified.
    (Supersedes the earlier `x-auth-token` framing, which was incorrect — no such
    header exists.)
+8. **Checkout auth model is internally inconsistent** (`checkout-v2026-04`).
+   Cart-mutation ops declare `security: [{ bearer_auth: [] }]`, yet create-cart,
+   product query, order retrieval, the cart-auth/magic-link ops, and enrollment ops
+   are `security: []` (public), and no cart-mutation op documents a `401`. The spec
+   never states that the **cart token in the path is the credential** for the
+   anonymous flow. The headless guide sidesteps this by documenting the server-side
+   company-token model; the anonymous model needs spec clarification.
+9. **`query_product` uses a legacy 404 error envelope** (`checkout-v2026-04`). Its
+   `404` returns `{ status: "fail", data: { error } }` while every other error
+   (including `query_product`'s own `422`) uses `ErrorResponse`
+   (`{ error_message, errors, meta }`). A uniform error parser breaks on
+   product-not-found.
+10. **`payment_uuid` provenance spans specs.** `complete_cart` consumes a
+    `payment_uuid` query param, but the tokenize/authorize step and the
+    `requires_3ds` branch that produce it live in `payments-v2026-04`, not
+    `checkout-v2026-04`. The headless guide bridges the gap with a cross-link to the
+    Cart payment reference; a reader working only from the checkout spec cannot find
+    where `payment_uuid` comes from.
+11. **`fluid_shop` example format is inconsistent** across checkout ops (`acme`
+    subdomain in `create_cart`/`send_magic_link` vs `acme.fluid.app` full host in
+    `query_product`'s `metadata.fluid_shop`). The headless guide matches each op's
+    own example rather than inventing a single convention.
