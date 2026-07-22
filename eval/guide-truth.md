@@ -351,25 +351,41 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
    the callback contract; until then this stays code-verified.
    (Supersedes the earlier `x-auth-token` framing, which was incorrect — no such
    header exists.)
-8. **Checkout auth model is internally inconsistent** (`checkout-v2026-04`).
-   Cart-mutation ops declare `security: [{ bearer_auth: [] }]`, yet create-cart,
-   product query, order retrieval, and enrollment ops are `security: []` (public),
-   and no cart-mutation op documents a `401`. The spec never states that the **cart
-   token in the path is the credential** for the anonymous flow. The headless guide
-   sidesteps this by documenting the server-side company-token model; the anonymous
-   model needs spec clarification.
-   **9.5b — DOCUMENTED (actual state), one correction, contract-owner question stands.**
-   Every checkout operation now carries a description stating its *declared* auth, and
-   the create-cart / cart-mutation descriptions note that the cart token in the path
-   scopes the anonymous flow. **Correction to this gap's original framing:** the four
-   cart-auth/magic-link ops (`destroy_cart_auth`, `send_cart_magic_link`,
-   `get_cart_auth_me`, `verify_cart_magic_link`) do **not** declare `security: []` —
-   they declare `security: [{ bearer_auth: [] }]` on `master` (verified). Their
-   descriptions were written to the *actual* declared bearer requirement, not to the
-   "public" reading above. The substantive contract question — whether those four ops
-   and the anonymous cart-token flow *should* be public/token-scoped rather than
-   company-bearer — is a spec-behavior change, out of 9.5b scope, and remains flagged
-   for contract owners.
+8. **Checkout cart auth model is internally inconsistent and the `security:` blocks are
+   stale vs. the controllers** (`checkout-v2026-04`). Ground truth (Rails controllers):
+   - `commerce/checkout/v202604/base_controller.rb` is secure-by-default
+     (`before_action :authenticate_customer!`). Cart controllers OPT OUT with
+     `skip_before_action :authenticate_customer!` and authorize by the **cart token in the
+     path** instead; an optional bearer (`current_jwt`) only enriches behavior (wallet
+     resolution for isolated-payment-token companies).
+   - `carts/carts_controller.rb:11` skips auth for all cart ops EXCEPT `sync` and
+     `volume_rep` (`carts_controller.rb:13`), which genuinely require a bearer.
+   - `carts/auth_controller.rb:8`, `carts/items_controller.rb:8`,
+     `carts/discount_controller.rb:10` (except `create_manual`),
+     `carts/discounts_controller.rb:8`, `carts/points_controller.rb:8`,
+     `enrollments_controller.rb:9`, `orders_controller.rb:7`, `products_controller.rb:7`
+     all `skip_before_action :authenticate_customer!`.
+   So the cart-mutation ops (`add_cart_items`, `update_cart_item`, `delete_cart_item`,
+   `apply_cart_discount`, `remove_cart_discount`, `update_cart`, `update_cart_language`,
+   `update_cart_metadata`, `recalculate_cart`, `complete_cart`, `update_cart_country`,
+   `update_cart_address`, `update_cart_shipping`, points ops) AND the four cart-auth ops
+   (`get_cart_auth_me`, `send_cart_magic_link`, `verify_cart_magic_link`,
+   `destroy_cart_auth`) are all PUBLIC — yet the spec annotates them
+   `security: [{ bearer_auth: [] }]`. (Correction to the prior framing: the cart-auth ops
+   are NOT `security: []`; they carry `bearer_auth`.) The `skip_before_action` opt-outs
+   were never mirrored into the per-op swagger annotations, which still reflect the base
+   controller's secure-by-default posture.
+   **Recommended fix (contract owners):** model the public cart ops (mutation + auth) as
+   `security: [{}, { bearer_auth: [] }]` — an OPTIONAL bearer that matches the controllers
+   (public, cart-token scoped, bearer-enriched) — NOT `security: []`. This also keeps the
+   truth-gate green: the mechanical `auth: bearer` claim `headless-005`
+   (`POST …/carts/{cart_token}/items`) still passes because `requiresBearer` is satisfied
+   by the `bearer_auth` alternative, whereas `[]` would fail it. `sync`/`volume_rep` stay
+   `[{ bearer_auth: [] }]` (genuinely required); add a `401` to the ops that require auth.
+   **9.5b — DONE (docs side):** operation DESCRIPTIONS now state the real (public,
+   cart-token-scoped) contract, correcting the earlier PR-#20043 prose that echoed the
+   stale bearer declaration (Greptile review, verified against the controllers above). The
+   `security:` shape change is deferred to the contract owners per the recommendation.
 9. **`query_product` uses a legacy 404 error envelope** (`checkout-v2026-04`). Its
    `404` returns `{ status: "fail", data: { error } }` while every other error
    (including `query_product`'s own `422`) uses `ErrorResponse`
