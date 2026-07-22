@@ -4,17 +4,117 @@ info:
   title: Fluid Storefront v2026-04 API
   version: v2026-04
   description: |
-    The modernized storefront category surface. Two surfaces share this
-    spec: a **public** unauthenticated catalog / show under
-    `/api/v202604/categories`, and a **company** token-authenticated
-    CRUD + member-action surface under `/api/v202604/company/categories`.
-    Every category response carries the canonical storefront "common
-    top" (id, slug, title, description, image_url, canonical_url,
-    images, active, status, publish_at, seo, metafields, languages)
-    followed by the resource's own fields. A stored `scheduled` category
-    whose `publish_at` has passed resolves to `published` at the API
-    boundary, and company create/update auto-queue Lighthouse +
-    compliance scans.
+    The modernized storefront surface, covering all eight storefront
+    resources: **Categories**, **Collections**, **Products**, **Posts**,
+    **Pages**, **Media**, **Enrollment Packs**, and **Playlists**.
+
+    ## Two surfaces
+
+    Every resource is exposed twice, and the pair is the thing to
+    understand first:
+
+    - **Public** — `/api/v202604/{resource}` and
+      `/api/v202604/{resource}/{slug}`. Unauthenticated
+      (`security: []`); the store is resolved from the request
+      subdomain. Addressed by `slug`, the same identifier that appears
+      in `canonical_url`. Returns only live rows — non-live content
+      never leaks here.
+    - **Company** — `/api/v202604/company/{resource}`. Bearer-token
+      authenticated, addressed by `id`, and returns every row whatever
+      its lifecycle state, so an admin can manage drafts and archives.
+      Full CRUD plus the standardized `shares`, `lighthouse`, and
+      `compliance` member actions on each resource.
+
+    Path segments use the storefront's nouns, not the database's:
+    `enrollment-packs` and `playlists` (the Library model).
+
+    ## One response shape
+
+    Every resource response opens with the same canonical "common top",
+    in the same order, before any resource-specific fields:
+
+        id, slug, title, description, image_url, canonical_url, images,
+        active, status, publish_at, seo, metafields, languages
+
+    That means a consumer can render any storefront resource from one
+    code path. `seo` is always present and always fully populated — the
+    server resolves it through a priority chain (SEO record → resource
+    field → store default → built-in), so there is no client-side
+    fallback logic and the API can never disagree with the rendered
+    `<head>`. `metafields`, `languages`, and (where applicable)
+    `countries` are always arrays, never null.
+
+    ## Lifecycle
+
+    `status` is the canonical four-value contract — `draft`,
+    `scheduled`, `published`, `archived` — and resolves at the API
+    boundary: a stored `scheduled` row whose `publish_at` has passed
+    reads as `published` with no write required. `active` is the
+    separate merchant on/off toggle; a resource is live only when it is
+    both active and resolved-published. Company create and update
+    auto-queue Lighthouse and compliance scans, so the scores on the
+    member actions always describe the current state of the resource.
+
+    ## Listing and pagination
+
+    Index endpoints share one query surface: `lang`, `q` (Elasticsearch
+    over title and description), `filter[…]`, `sort`, and cursor
+    pagination via `page[cursor]` / `page[limit]` (default 25, max 100).
+    Follow `meta.pagination.next_cursor`; do not construct cursors.
+    Products additionally take `country`, which selects the
+    country-relative price and currency AND gates availability.
+
+    Categories and Collections expose their products from their own
+    path — `GET /api/v202604/categories/{slug}/products` — which is the
+    products catalog scoped to one owner, with the same card shape,
+    filters, sorting, and pagination.
+
+    ## Translating a resource
+
+    Translations are written inline on the resource's own create/update.
+    There is no separate translations endpoint and no `translations`
+    object in the payload — the `lang` query parameter selects the locale
+    a request reads or writes.
+
+    **Read** a locale with `lang` on any GET:
+
+        GET /api/v202604/company/collections/4821?lang=fr
+
+    Translated fields (`title`, `description`, `image_url`, and each
+    resource's own translated fields) come back inline in that locale.
+    On the public surface any field with no `fr` translation falls back
+    to its `en` value, so a partially-translated resource never renders
+    blank. The `languages` array on every response lists exactly the
+    locales that carry a translation, always including the default.
+
+    **Write** a locale with `lang` on POST/PATCH:
+
+        PATCH /api/v202604/company/collections/4821?lang=fr
+        { "collection": { "title": "Essentiels bien-être" } }
+
+    Omitting `lang` writes the store's default locale — the store's own
+    default language, not the platform's. A store selling in French
+    treats `lang=fr` as its default write.
+
+    A translation PATCH is TEXT ONLY: against any other locale,
+    everything but the translated fields is ignored, so translating a
+    title can never regenerate the slug, move `status`, or change
+    `country_isos`, metafields, SEO, or associations. Send those in a
+    request against the store's default locale instead.
+
+    Creating is different: POST always writes the store's default locale
+    whatever `lang` says, and keeps its full payload. A resource created
+    under a translation would have no value in the store's own language
+    and would take its slug from the translation. `lang` is still
+    validated on POST, so an unsupported locale is a 422 rather than a
+    surprise.
+
+    A `lang` the store does not sell in returns 422 — translations are
+    never written to a locale the store has not enabled. Add the language
+    to the store first.
+
+    The typical flow is: create in the default locale, then one PATCH per
+    additional locale carrying only the translated text.
   contact:
     email: support@fluid.app
   license:
@@ -92,6 +192,36 @@ components:
         responds in the company's default locale. On the public
         surface, falls back to `en` for any translated field missing
         in the requested locale.
+      schema:
+        type: string
+        example: fr
+    LangWrite:
+      name: lang
+      in: query
+      required: false
+      description: |
+        Locale to WRITE, and to render the response in. ISO code
+        (e.g. `fr`, `de`); omit to write the store's default locale.
+
+        On PATCH, a locale other than the store's own default writes ONLY
+        the translated fields — slug, lifecycle, countries, metafields,
+        SEO, and associations in the same payload are ignored, so
+        translating a title cannot regenerate the slug or move `status`.
+        Send those in a request against the store's default locale.
+
+        POST always writes the store's default locale, whatever `lang`
+        says, and keeps its full payload. Mobility's base values hold the
+        default locale, so a resource created under a translation would
+        read back blank in the store's own language. `lang` is still
+        validated on POST. Translate a resource after it exists, with
+        PATCH.
+
+        The comparison is against the STORE's default language, not the
+        platform's — a store selling in French treats `lang=fr` as its
+        default write, not a translation.
+
+        A locale the store does not sell in returns 422. See
+        "Translating a resource" in the API description.
       schema:
         type: string
         example: fr
@@ -393,21 +523,40 @@ components:
       properties:
         id:
           type: integer
+          description: |
+            Numeric identifier for the category. This is the canonical company-surface
+            identifier used to address the row on
+            `/api/v202604/company/categories/{id}` endpoints.
           example: 4821
         slug:
           type: string
+          description: |
+            URL-safe identifier and the canonical public identifier for the category.
+            It matches the row's `canonical_url` and is the key used by the public
+            show endpoint (`GET /api/v202604/categories/{slug}`).
           example: summer-sale
         title:
           type: string
+          description: |
+            Human-readable display title of the category. When the slug is
+            auto-generated, it derives from this value.
           example: Summer Sale
         description:
           type: [string, "null"]
+          description: |
+            Optional long-form description of the category; `null` when unset.
           example: Hand-picked categories for the July clearance.
         image_url:
           type: [string, "null"]
+          description: |
+            URL of the category's primary image, or `null` when it has no image. See
+            `images` for responsive renditions.
           example: https://cdn.fluid.app/categories/4821.png
         canonical_url:
           type: string
+          description: |
+            Absolute canonical storefront URL for the category, built from its current
+            `slug`.
           example: https://acme.fluid.app/home/categories/summer-sale
         images:
           $ref: "#/components/schemas/ResponsiveImageSet"
@@ -429,11 +578,19 @@ components:
         publish_at:
           type: [string, "null"]
           format: date-time
+          description: |
+            Scheduled go-live timestamp (ISO 8601), or `null` when none is set. At
+            read time, once `publish_at` has passed a stored `scheduled` row resolves
+            to `published` automatically. Models go-live only — there is no
+            corresponding unpublish-at timestamp.
           example: null
         seo:
           $ref: "#/components/schemas/Seo"
         metafields:
           type: array
+          description: |
+            Custom metadata entries (each a `namespace`/`key`/`value` with a
+            `value_type`) attached to the category; empty array when none are set.
           items:
             $ref: "#/components/schemas/Metafield"
         languages:
@@ -442,14 +599,21 @@ components:
             type: string
           description: |
             ISO codes of locales this resource is translated into.
+            Always includes the store's default language.
             Always includes the company default locale; never empty.
           example: [en, fr, de]
         parent_id:
           type: [integer, "null"]
-          description: Parent Category id when nested; null at the root.
+          description: |
+            The id of the parent category, or `null` when the category is at the root
+            (top level). The literal `"root"` is a value of the `filter[parent_id]`
+            query parameter, not a value of this field.
           example: null
         position:
           type: integer
+          description: |
+            The category's sort order among its siblings. The default catalog sort
+            (`position` then `id`) uses it.
           example: 1
         source_type:
           type: [string, "null"]
@@ -459,6 +623,10 @@ components:
           example: product
         has_children:
           type: boolean
+          description: |
+            `true` when the category has at least one child category; `false` when it
+            is a leaf. Use it to decide whether to fetch a level deeper when walking
+            the tree.
           example: false
         countries:
           type: array
@@ -523,20 +691,45 @@ components:
             change.
         custom_slug:
           type: boolean
+          description: |
+            Send together with `slug` and set `true` to pin a permanent merchant-set
+            slug. Without it, the slug is auto-generated from `title` and regenerates
+            whenever the title changes.
         active:
           type: boolean
+          description: |
+            Merchant on/off toggle. Set `false` to hide the category from every public
+            surface regardless of `status`.
         status:
           type: string
           enum: [draft, scheduled, published, archived]
+          description: |
+            Lifecycle state to set. `published` with `active: true` makes the category
+            live; `scheduled` with a future `publish_at` goes live automatically when
+            that time passes. There is no separate publish endpoint — visibility is
+            changed through `active` and `status`.
         publish_at:
           type: [string, "null"]
           format: date-time
+          description: |
+            Target go-live timestamp used with `status: scheduled`. Once it passes,
+            the row resolves to `published` at read time. Models go-live only — there
+            is no unpublish-at field.
         parent_id:
           type: [integer, "null"]
+          description: |
+            Set to the parent category's id to nest this category; `null` (or omitted
+            on create) makes it top-level. On update, set another id to re-parent it,
+            or `null` to promote it to the top level.
         position:
           type: integer
+          description: |
+            Sort order among sibling categories at the same level.
         source_type:
           type: string
+          description: |
+            Which kind of resource this category groups: `product`, `medium`, `page`,
+            `library`, or `promotion`.
         application_theme_template_id:
           type: [integer, "null"]
         country_isos:
@@ -544,10 +737,27 @@ components:
           items:
             type: string
           description: |
-            ISO codes restricting availability. `[]` clears
-            restrictions; key omitted leaves countries unchanged.
+            ISO country codes restricting availability; maps to the read-side
+            `countries` field. An empty array (`[]`) clears all restrictions
+            (unrestricted — available everywhere the company sells); omitting the key
+            leaves the existing countries unchanged (PATCH semantics).
+        product_ids:
+          type: array
+          items:
+            type: integer
+          description: |
+            Full replacement set of product ids in this category. `[]`
+            empties it; key omitted leaves membership unchanged. Ids must
+            belong to the authenticated store — a product from another
+            store returns 422.
         metafields_attributes:
           type: array
+          description: |
+            Metafields to write on the category using Rails nested-attributes
+            semantics: each entry sets `namespace`, `key`, `value`, and `value_type`,
+            with an optional `description`; send `_destroy: true` to remove an entry.
+            Note: unlike `CollectionWrite.metafields_attributes`, category entries do
+            not model an `id`.
           items:
             type: object
             required: [namespace, key, value, value_type]
@@ -3028,6 +3238,29 @@ components:
             ISO codes restricting availability. `[]` clears restrictions;
             key omitted leaves countries unchanged. An ISO the store does
             not sell in returns a 422.
+        library_items_attributes:
+          type: array
+          description: |
+            Playlist contents. `relateable_type` is `Product` or
+            `EnrollmentPack` and must belong to the authenticated store —
+            an item from another store returns 422. `order` is the 1-based
+            position in the playlist; omit it (or send `0`) to add the item
+            at the top.
+          items:
+            type: object
+            required: [relateable_id, relateable_type]
+            properties:
+              id:
+                type: integer
+              relateable_id:
+                type: integer
+              relateable_type:
+                type: string
+                enum: [Product, EnrollmentPack]
+              order:
+                type: integer
+              _destroy:
+                type: boolean
         metafields_attributes:
           type: array
           items:
@@ -3092,21 +3325,40 @@ components:
       properties:
         id:
           type: integer
+          description: |
+            Numeric identifier for the collection. This is the canonical
+            company-surface identifier used to address the row on
+            `/api/v202604/company/collections/{id}` endpoints.
           example: 5102
         slug:
           type: string
+          description: |
+            URL-safe identifier and the canonical public identifier for the
+            collection. It matches the row's `canonical_url` and is the key used by
+            the public show endpoint (`GET /api/v202604/collections/{slug}`).
           example: wellness-essentials
         title:
           type: string
+          description: |
+            Human-readable display title of the collection. When the slug is
+            auto-generated, it derives from this value.
           example: Wellness Essentials
         description:
           type: [string, "null"]
+          description: |
+            Optional long-form description of the collection; `null` when unset.
           example: Hand-picked supplements and recovery gear.
         image_url:
           type: [string, "null"]
+          description: |
+            URL of the collection's primary image, or `null` when it has no image. See
+            `images` for responsive renditions.
           example: https://cdn.fluid.app/collections/5102.png
         canonical_url:
           type: string
+          description: |
+            Absolute canonical storefront URL for the collection, built from its
+            current `slug`.
           example: https://acme.fluid.app/home/collections/wellness-essentials
         images:
           $ref: "#/components/schemas/ResponsiveImageSet"
@@ -3128,11 +3380,19 @@ components:
         publish_at:
           type: [string, "null"]
           format: date-time
+          description: |
+            Scheduled go-live timestamp (ISO 8601), or `null` when none is set. At
+            read time, once `publish_at` has passed a stored `scheduled` row resolves
+            to `published` automatically. Models go-live only — there is no
+            corresponding unpublish-at timestamp.
           example: null
         seo:
           $ref: "#/components/schemas/Seo"
         metafields:
           type: array
+          description: |
+            Custom metadata entries (each a `namespace`/`key`/`value` with a
+            `value_type`) attached to the collection; empty array when none are set.
           items:
             $ref: "#/components/schemas/Metafield"
         languages:
@@ -3206,14 +3466,30 @@ components:
             change.
         custom_slug:
           type: boolean
+          description: |
+            Send together with `slug` and set `true` to pin a permanent merchant-set
+            slug. Without it, the slug is auto-generated from `title` and regenerates
+            whenever the title changes.
         active:
           type: boolean
+          description: |
+            Merchant on/off toggle. Set `false` to hide the collection from every
+            public surface regardless of `status`.
         status:
           type: string
           enum: [draft, scheduled, published, archived]
+          description: |
+            Lifecycle state to set. `published` with `active: true` makes the
+            collection live; `scheduled` with a future `publish_at` goes live
+            automatically when that time passes. There is no separate publish endpoint
+            — visibility is changed through `active` and `status`.
         publish_at:
           type: [string, "null"]
           format: date-time
+          description: |
+            Target go-live timestamp used with `status: scheduled`. Once it passes,
+            the row resolves to `published` at read time. Models go-live only — there
+            is no unpublish-at field.
         application_theme_template_id:
           type: [integer, "null"]
         country_isos:
@@ -3221,10 +3497,27 @@ components:
           items:
             type: string
           description: |
-            ISO codes restricting availability. `[]` clears
-            restrictions; key omitted leaves countries unchanged.
+            ISO country codes restricting availability; maps to the read-side
+            `countries` field. An empty array (`[]`) clears all restrictions
+            (unrestricted — available everywhere the company sells); omitting the key
+            leaves the existing countries unchanged (PATCH semantics).
+        product_ids:
+          type: array
+          items:
+            type: integer
+          description: |
+            Full replacement set of product ids in this collection. `[]`
+            empties it; key omitted leaves membership unchanged. Ids must
+            belong to the authenticated store — a product from another
+            store returns 422.
         metafields_attributes:
           type: array
+          description: |
+            Metafields to write on the collection using Rails nested-attributes
+            semantics: each entry sets `namespace`, `key`, `value`, and `value_type`,
+            with an optional `description`; send `_destroy: true` to remove an entry.
+            Include the entry's `id` to update or destroy an existing metafield.
+            (Category write bodies do not model this `id`.)
           items:
             type: object
             required: [namespace, key, value, value_type]
@@ -3730,13 +4023,20 @@ paths:
         - name: filter[source_type]
           in: query
           required: false
+          description: |
+            One source type: `product`, `medium`, `page`, `library`, or `promotion`.
+            Categories only — the collection catalog does not accept this filter.
           schema:
             type: string
             enum: [product, medium, page, library, promotion]
         - name: filter[parent_id]
           in: query
           required: false
-          description: Category id (integer-as-string), or `"root"` for top-level only.
+          description: |
+            A category id as a string, or the literal `"root"` for top-level
+            categories only. Selects a single level of the tree. Categories
+            only — collections have no hierarchy. Honored on both the public
+            catalog and the company index, which share one query contract.
           schema:
             type: string
             example: "root"
@@ -3826,6 +4126,8 @@ paths:
         - name: slug
           in: path
           required: true
+          description: |
+            Canonical public slug of the category; matches the row's `canonical_url`.
           schema:
             type: string
         - $ref: "#/components/parameters/Lang"
@@ -3879,6 +4181,76 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/categories/{slug}/products:
+    get:
+      tags: [storefront]
+      summary: Products in a Category (public)
+      operationId: storefrontCategoryProducts
+      description: |
+        PUBLIC endpoint — NO authentication required. Company is resolved
+        from the request subdomain.
+
+        The products catalog scoped to one category, not a second catalog:
+        the response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination are identical to
+        `GET /api/v202604/products`. Returns ONLY live products (active +
+        resolved-published) with an active variant in the requested
+        `country`.
+
+        The category in the path always wins — a `filter[category_ids]` in the
+        query string cannot widen the listing beyond it. Returns 404 when
+        no live category matches the slug.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          description: The category's slug, as returned in its `slug` field.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of live products in this category, with country-relative pricing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/categories:
     get:
       tags: [company]
@@ -3890,8 +4262,10 @@ paths:
         rows included), so admins can manage non-public rows.
 
         Supports the same cursor pagination / filter / sort / `q`
-        contract as the public catalog. Adds `filter[status]` and
-        `filter[active]` which are only meaningful on this surface.
+        contract as the public catalog — `filter[source_type]` and
+        `filter[parent_id]` behave identically here (one shared
+        `ListParams`). Adds `filter[status]` and `filter[active]`,
+        which are accepted on both surfaces but only take effect here.
       security:
         - bearer_auth: []
       parameters:
@@ -3901,9 +4275,32 @@ paths:
         - $ref: "#/components/parameters/PageLimit"
         - $ref: "#/components/parameters/FilterCountry"
         - $ref: "#/components/parameters/FilterLanguage"
+        - name: filter[source_type]
+          in: query
+          required: false
+          description: |
+            One source type: `product`, `medium`, `page`, `library`, or `promotion`.
+            Categories only — the collection catalog does not accept this filter.
+          schema:
+            type: string
+            enum: [product, medium, page, library, promotion]
+        - name: filter[parent_id]
+          in: query
+          required: false
+          description: |
+            A category id as a string, or the literal `"root"` for top-level
+            categories only. Selects a single level of the tree. Categories
+            only — collections have no hierarchy. Honored on both the public
+            catalog and the company index, which share one query contract.
+          schema:
+            type: string
+            example: "root"
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, `published`, or `archived`. Restricts the
+            index to a single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published, archived]
@@ -3937,6 +4334,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -4041,6 +4439,8 @@ paths:
         - name: id
           in: path
           required: true
+          description: |
+            Numeric id of the category — the canonical company identifier.
           schema:
             type: integer
         - $ref: "#/components/parameters/Lang"
@@ -4071,7 +4471,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4083,6 +4485,52 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CategoryUpdateRequest"
+            examples:
+              rename:
+                summary: Rename (auto-generated slug regenerates)
+                value:
+                  category:
+                    title: End-of-Summer Sale
+              pinSlug:
+                summary: Rename and pin a permanent slug
+                value:
+                  category:
+                    title: End-of-Summer Sale
+                    slug: summer-sale
+                    custom_slug: true
+              publish:
+                summary: Publish (make live)
+                value:
+                  category:
+                    active: true
+                    status: published
+              unpublish:
+                summary: Unpublish (quick on/off, preserves lifecycle state)
+                value:
+                  category:
+                    active: false
+              schedule:
+                summary: Schedule go-live — replace publish_at with any future timestamp
+                value:
+                  category:
+                    active: true
+                    status: scheduled
+                    publish_at: "2999-01-15T08:00:00Z"
+              setCountries:
+                summary: Restrict country availability
+                value:
+                  category:
+                    country_isos: [GB, US]
+              clearCountries:
+                summary: Clear restrictions (available everywhere the company sells)
+                value:
+                  category:
+                    country_isos: []
+              promoteToRoot:
+                summary: Promote to top level
+                value:
+                  category:
+                    parent_id: null
       responses:
         "200":
           description: The updated Category.
@@ -4110,6 +4558,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4136,6 +4585,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4154,20 +4604,103 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/company/categories/{id}/products:
+    get:
+      tags: [company]
+      summary: Products in a Category
+      operationId: companyCategoryProducts
+      description: |
+        Every product filed under this category, including the draft and
+        archived rows the public listing hides.
+
+        Same response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination as
+        `GET /api/v202604/company/products`. The category in the path always
+        wins — a `filter[category_ids]` in the query string cannot widen the
+        listing beyond it.
+
+        Requires `storefront.view` (legacy `categories.view` still accepted).
+      parameters:
+        - name: id
+          description: The unique identifier of the category whose products to list.
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[status]
+          in: query
+          required: false
+          description: Restrict to a single stored lifecycle state.
+          schema:
+            type: string
+            enum: [active, draft, archived]
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of products in this category, every lifecycle state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/categories/{id}/lighthouse:
     get:
       tags: [company]
       summary: Latest Lighthouse result
       operationId: companyCategoriesLighthouseShow
       description: |
-        Returns the most recent successful Lighthouse scan for the
-        Category. A fresh scan is queued automatically on every company
-        create + update — polling this endpoint shortly after a write
-        surfaces the new result.
+        Returns the most recent successful Lighthouse scan for the Category
+        (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4210,6 +4743,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4241,6 +4775,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4278,6 +4813,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the category.
           in: path
           required: true
           schema:
@@ -4435,6 +4971,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the product.
           in: path
           required: true
           schema:
@@ -4569,6 +5106,9 @@ paths:
         - name: filter[availability]
           in: query
           required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products; `all`
+            (default) imposes no stock constraint.
           schema:
             type: string
             enum: [all, in_stock]
@@ -4576,11 +5116,16 @@ paths:
         - name: filter[bundle]
           in: query
           required: false
+          description: |
+            `true` returns only bundle products; `false` returns only non-bundle
+            products.
           schema:
             type: boolean
         - name: filter[category_ids]
           in: query
           required: false
+          description: |
+            Restrict to products in any of these category ids.
           schema:
             type: array
             items:
@@ -4588,6 +5133,8 @@ paths:
         - name: filter[collection_ids]
           in: query
           required: false
+          description: |
+            Restrict to products in any of these collection ids.
           schema:
             type: array
             items:
@@ -4595,6 +5142,9 @@ paths:
         - name: sort
           in: query
           required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default `priority` then
+            `id`.
           schema:
             type: string
             enum: [priority, -priority, title, -title, created_at, -created_at]
@@ -4633,6 +5183,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
         - $ref: "#/components/parameters/Country"
       requestBody:
@@ -4813,6 +5364,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -4849,7 +5401,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -4904,6 +5458,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -4930,6 +5485,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -4954,14 +5510,20 @@ paths:
       summary: Latest Lighthouse result
       operationId: companyProductsLighthouseShow
       description: |
-        Returns the most recent successful Lighthouse scan for the Product.
-        A fresh scan is queued automatically on every company create +
-        update — polling this endpoint shortly after a write surfaces the
-        new result.
+        Returns the most recent successful Lighthouse scan for the Product
+        (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -5004,6 +5566,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -5035,6 +5598,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -5072,6 +5636,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the product.
           in: path
           required: true
           schema:
@@ -5135,6 +5700,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5174,6 +5740,9 @@ paths:
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, or `published`. Restricts the index to a
+            single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published]
@@ -5203,6 +5772,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -5263,10 +5833,14 @@ paths:
       tags: [company]
       summary: Company Enrollment Pack show
       operationId: companyEnrollmentPacksShow
+      description: |
+        Token-authenticated; resolves by id (the canonical company identifier).
+        Returns the Enrollment Pack in any lifecycle state.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5295,7 +5869,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5337,6 +5913,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5356,10 +5933,14 @@ paths:
       tags: [company]
       summary: Share statistics for an Enrollment Pack
       operationId: companyEnrollmentPacksShares
+      description: |
+        Read-only aggregate share statistics for the Enrollment Pack. Uses the
+        shared shares response shape common to the storefront resources.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5383,10 +5964,21 @@ paths:
       tags: [company]
       summary: Latest Lighthouse result
       operationId: companyEnrollmentPacksLighthouseShow
+      description: |
+        Returns the most recent successful Lighthouse scan for the Enrollment
+        Pack (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5416,10 +6008,18 @@ paths:
       tags: [company]
       summary: Trigger a Lighthouse scan
       operationId: companyEnrollmentPacksLighthouseScan
+      description: |
+        Queues a fresh Lighthouse scan for the Enrollment Pack. Returns
+        immediately with `202 Accepted`; the new result lands at `GET
+        :id/lighthouse` once the job completes. Manual triggers are rarely needed
+        — every company create and update auto-queues a scan — but are useful when
+        an out-of-band change (DNS, CDN, theme deploy) should be re-scored without
+        a resource write.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5443,10 +6043,14 @@ paths:
       tags: [company]
       summary: Latest compliance result
       operationId: companyEnrollmentPacksComplianceShow
+      description: |
+        Returns the most recent compliance scan result for the Enrollment Pack. A
+        fresh scan is queued automatically on every company create + update.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5476,10 +6080,15 @@ paths:
       tags: [company]
       summary: Trigger a compliance scan
       operationId: companyEnrollmentPacksComplianceScan
+      description: |
+        Queues a fresh compliance scan for the Enrollment Pack. Returns
+        immediately with `202 Accepted`; the new result lands at `GET
+        :id/compliance` once the job completes.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the enrollment pack.
           in: path
           required: true
           schema:
@@ -5564,6 +6173,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the post.
           in: path
           required: true
           schema:
@@ -5602,6 +6212,9 @@ paths:
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, `published`, or `archived`. Restricts the
+            index to a single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published, archived]
@@ -5609,16 +6222,23 @@ paths:
         - name: filter[category_id]
           in: query
           required: false
+          description: |
+            Restrict the catalog to posts filed under one Category.
           schema:
             type: integer
         - name: filter[collection_id]
           in: query
           required: false
+          description: |
+            Restrict the catalog to posts appearing in one Collection.
           schema:
             type: integer
         - name: sort
           in: query
           required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default sort is newest
+            blog posts first (`post_date DESC NULLS LAST`).
           schema:
             type: string
             enum: [post_date, -post_date, title, -title, created_at, -created_at]
@@ -5647,6 +6267,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -5701,10 +6322,14 @@ paths:
       tags: [company]
       summary: Company Post show
       operationId: companyPostsShow
+      description: |
+        Token-authenticated; resolves by id (the canonical company identifier).
+        Returns the Post in any lifecycle state.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5734,7 +6359,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5775,6 +6402,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5794,10 +6422,14 @@ paths:
       tags: [company]
       summary: Share statistics for a Post
       operationId: companyPostsShares
+      description: |
+        Read-only aggregate share statistics for the Post. Uses the shared shares
+        response shape common to the storefront resources.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5829,6 +6461,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5858,10 +6491,17 @@ paths:
       tags: [company]
       summary: Trigger a Lighthouse scan
       operationId: companyPostsLighthouseScan
+      description: |
+        Queues a fresh Lighthouse scan for the Post. Returns immediately with `202
+        Accepted`; the new result lands at `GET :id/lighthouse` once the job
+        completes. Manual triggers are rarely needed — every company create and
+        update auto-queues a scan — but are useful when an out-of-band change
+        (DNS, CDN, theme deploy) should be re-scored without a resource write.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5885,10 +6525,14 @@ paths:
       tags: [company]
       summary: Latest compliance result
       operationId: companyPostsComplianceShow
+      description: |
+        Returns the most recent compliance scan result for the Post. A fresh scan
+        is queued automatically on every company create + update.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5918,10 +6562,15 @@ paths:
       tags: [company]
       summary: Trigger a compliance scan
       operationId: companyPostsComplianceScan
+      description: |
+        Queues a fresh compliance scan for the Post. Returns immediately with `202
+        Accepted`; the new result lands at `GET :id/compliance` once the job
+        completes.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the post.
           in: path
           required: true
           schema:
@@ -5961,6 +6610,8 @@ paths:
         - name: filter[media_type]
           in: query
           required: false
+          description: |
+            Restrict to one media type: `share`, `training`, `update`, or `upload`.
           schema:
             type: string
             enum: [share, training, update, upload]
@@ -5991,6 +6642,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the media.
           in: path
           required: true
           schema:
@@ -6030,12 +6682,17 @@ paths:
         - name: filter[media_type]
           in: query
           required: false
+          description: |
+            Restrict to one media type: `share`, `training`, `update`, or `upload`.
           schema:
             type: string
             enum: [share, training, update, upload]
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, or `published`. Restricts the index to a
+            single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published]
@@ -6043,6 +6700,9 @@ paths:
         - name: filter[visibility]
           in: query
           required: false
+          description: |
+            Company-surface only. Restrict to media with `open` or `restricted`
+            visibility.
           schema:
             type: string
             enum: [open, restricted]
@@ -6070,6 +6730,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -6121,10 +6782,14 @@ paths:
       tags: [company]
       summary: Company Medium show
       operationId: companyMediumShow
+      description: |
+        Token-authenticated; resolves by id (the canonical company identifier).
+        Returns the Medium in any lifecycle state.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6153,7 +6818,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6194,6 +6861,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6213,10 +6881,14 @@ paths:
       tags: [company]
       summary: Share statistics for a Medium
       operationId: companyMediumShares
+      description: |
+        Read-only aggregate share statistics for the Medium. Uses the shared
+        shares response shape common to the storefront resources.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6240,10 +6912,21 @@ paths:
       tags: [company]
       summary: Latest Lighthouse result
       operationId: companyMediumLighthouseShow
+      description: |
+        Returns the most recent successful Lighthouse scan for the Medium
+        (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6273,10 +6956,17 @@ paths:
       tags: [company]
       summary: Trigger a Lighthouse scan
       operationId: companyMediumLighthouseScan
+      description: |
+        Queues a fresh Lighthouse scan for the Medium. Returns immediately with
+        `202 Accepted`; the new result lands at `GET :id/lighthouse` once the job
+        completes. Manual triggers are rarely needed — every company create and
+        update auto-queues a scan — but are useful when an out-of-band change
+        (DNS, CDN, theme deploy) should be re-scored without a resource write.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6300,10 +6990,14 @@ paths:
       tags: [company]
       summary: Latest compliance result
       operationId: companyMediumComplianceShow
+      description: |
+        Returns the most recent compliance scan result for the Medium. A fresh
+        scan is queued automatically on every company create + update.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6333,10 +7027,15 @@ paths:
       tags: [company]
       summary: Trigger a compliance scan
       operationId: companyMediumComplianceScan
+      description: |
+        Queues a fresh compliance scan for the Medium. Returns immediately with
+        `202 Accepted`; the new result lands at `GET :id/compliance` once the job
+        completes.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the media.
           in: path
           required: true
           schema:
@@ -6405,6 +7104,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the page.
           in: path
           required: true
           schema:
@@ -6443,6 +7143,9 @@ paths:
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, or `published`. Restricts the index to a
+            single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published]
@@ -6473,6 +7176,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -6524,10 +7228,14 @@ paths:
       tags: [company]
       summary: Company Page show
       operationId: companyPageShow
+      description: |
+        Token-authenticated; resolves by id (the canonical company identifier).
+        Returns the Page in any lifecycle state.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6558,7 +7266,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6600,6 +7310,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6628,6 +7339,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6653,10 +7365,14 @@ paths:
       tags: [company]
       summary: Share statistics for a Page
       operationId: companyPageShares
+      description: |
+        Read-only aggregate share statistics for the Page. Uses the shared shares
+        response shape common to the storefront resources.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6680,10 +7396,21 @@ paths:
       tags: [company]
       summary: Latest Lighthouse result
       operationId: companyPageLighthouseShow
+      description: |
+        Returns the most recent successful Lighthouse scan for the Page
+        (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6713,10 +7440,17 @@ paths:
       tags: [company]
       summary: Trigger a Lighthouse scan
       operationId: companyPageLighthouseScan
+      description: |
+        Queues a fresh Lighthouse scan for the Page. Returns immediately with `202
+        Accepted`; the new result lands at `GET :id/lighthouse` once the job
+        completes. Manual triggers are rarely needed — every company create and
+        update auto-queues a scan — but are useful when an out-of-band change
+        (DNS, CDN, theme deploy) should be re-scored without a resource write.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6740,10 +7474,14 @@ paths:
       tags: [company]
       summary: Latest compliance result
       operationId: companyPageComplianceShow
+      description: |
+        Returns the most recent compliance scan result for the Page. A fresh scan
+        is queued automatically on every company create + update.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6773,10 +7511,15 @@ paths:
       tags: [company]
       summary: Trigger a compliance scan
       operationId: companyPageComplianceScan
+      description: |
+        Queues a fresh compliance scan for the Page. Returns immediately with `202
+        Accepted`; the new result lands at `GET :id/compliance` once the job
+        completes.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the page.
           in: path
           required: true
           schema:
@@ -6826,6 +7569,8 @@ paths:
           description: Opaque Rotulus cursor from the previous response's `meta.pagination.next_cursor`.
         - name: page[limit]
           in: query
+          description: |
+            Page size. Default 25, max 100; a larger value returns 422.
           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
         - name: filter[country]
           in: query
@@ -6868,6 +7613,7 @@ paths:
       security: []
       parameters:
         - name: slug
+          description: The URL slug of the playlist.
           in: path
           required: true
           schema: { type: string }
@@ -6903,22 +7649,37 @@ paths:
         - $ref: "#/components/parameters/Lang"
         - name: page[cursor]
           in: query
+          description: |
+            Opaque Rotulus cursor from the previous response's
+            `meta.pagination.next_cursor`.
           schema: { type: string }
         - name: page[limit]
           in: query
+          description: |
+            Page size. Default 25, max 100; a larger value returns 422.
           schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
         - name: filter[status]
           in: query
+          description: |
+            One of `draft`, `scheduled`, or `published`. Restricts the index to a
+            single lifecycle state. Company-surface only.
           schema: { type: string, enum: [draft, scheduled, published] }
         - $ref: "#/components/parameters/FilterActive"
         - name: filter[country]
           in: query
+          description: |
+            ISO-2 country code. Returns unrestricted playlists plus those restricted
+            to this country.
           schema: { type: string }
         - name: filter[language]
           in: query
+          description: |
+            ISO locale. Restricts to playlists translated in this locale.
           schema: { type: string }
         - name: sort
           in: query
+          description: |
+            Sort axis. Prefix `-` for descending. Default is `-created_at`.
           schema: { type: string, enum: [title, -title, created_at, -created_at] }
       responses:
         "200":
@@ -6948,6 +7709,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -6988,6 +7750,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7018,7 +7781,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7053,6 +7818,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7071,10 +7837,14 @@ paths:
       tags: [company]
       summary: Share statistics for a playlist
       operationId: companyPlaylistSharesShow
+      description: |
+        Read-only aggregate share statistics for the playlist. Uses the shared
+        shares response shape common to the storefront resources.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7097,10 +7867,21 @@ paths:
       tags: [company]
       summary: Latest Lighthouse result for a playlist
       operationId: companyPlaylistLighthouseShow
+      description: |
+        Returns the most recent successful Lighthouse scan for the Playlist
+        (scans persist only on success). A fresh scan is auto-queued on
+        every company create and update, but it runs asynchronously — a
+        failed, rate-limited, or recently-run rescan writes no new record,
+        so this endpoint may return the prior scan with HTTP 200. `POST
+        .../lighthouse` requests a rescan (it always returns 202) but
+        cannot guarantee a newer score — the queued scan is skipped
+        silently when one ran in the last ~5 minutes, the scanner is
+        rate-limited, or its circuit breaker is open.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7129,10 +7910,17 @@ paths:
       tags: [company]
       summary: Trigger a Lighthouse scan for a playlist
       operationId: companyPlaylistLighthouseScan
+      description: |
+        Queues a fresh Lighthouse scan for the playlist. Returns immediately with
+        `202 Accepted`; the new result lands at `GET :id/lighthouse` once the job
+        completes. Manual triggers are rarely needed — every company create and
+        update auto-queues a scan — but are useful when an out-of-band change
+        (DNS, CDN, theme deploy) should be re-scored without a resource write.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7155,10 +7943,14 @@ paths:
       tags: [company]
       summary: Latest compliance result for a playlist
       operationId: companyPlaylistComplianceShow
+      description: |
+        Returns the most recent compliance scan result for the playlist. A fresh
+        scan is queued automatically on every company create + update.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7187,10 +7979,15 @@ paths:
       tags: [company]
       summary: Trigger a compliance scan for a playlist
       operationId: companyPlaylistComplianceScan
+      description: |
+        Queues a fresh compliance scan for the playlist. Returns immediately with
+        `202 Accepted`; the new result lands at `GET :id/compliance` once the job
+        completes.
       security:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the playlist.
           in: path
           required: true
           schema: { type: integer }
@@ -7287,6 +8084,9 @@ paths:
         - name: slug
           in: path
           required: true
+          description: |
+            Canonical public slug of the collection; matches the row's
+            `canonical_url`.
           schema:
             type: string
         - $ref: "#/components/parameters/Lang"
@@ -7328,6 +8128,76 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/collections/{slug}/products:
+    get:
+      tags: [storefront]
+      summary: Products in a Collection (public)
+      operationId: storefrontCollectionProducts
+      description: |
+        PUBLIC endpoint — NO authentication required. Company is resolved
+        from the request subdomain.
+
+        The products catalog scoped to one collection, not a second catalog:
+        the response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination are identical to
+        `GET /api/v202604/products`. Returns ONLY live products (active +
+        resolved-published) with an active variant in the requested
+        `country`.
+
+        The collection in the path always wins — a `filter[collection_ids]` in the
+        query string cannot widen the listing beyond it. Returns 404 when
+        no live collection matches the slug.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          description: The collection's slug, as returned in its `slug` field.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of live products in this collection, with country-relative pricing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/collections:
     get:
       tags: [company]
@@ -7350,6 +8220,9 @@ paths:
         - name: filter[status]
           in: query
           required: false
+          description: |
+            One of `draft`, `scheduled`, `published`, or `archived`. Restricts the
+            index to a single lifecycle state. Company-surface only.
           schema:
             type: string
             enum: [draft, scheduled, published, archived]
@@ -7382,6 +8255,7 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - $ref: "#/components/parameters/Lang"
       requestBody:
         required: true
@@ -7445,6 +8319,8 @@ paths:
         - name: id
           in: path
           required: true
+          description: |
+            Numeric id of the collection — the canonical company identifier.
           schema:
             type: integer
         - $ref: "#/components/parameters/Lang"
@@ -7472,7 +8348,9 @@ paths:
       security:
         - bearer_auth: []
       parameters:
+        - $ref: "#/components/parameters/LangWrite"
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7484,6 +8362,23 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CollectionUpdateRequest"
+            examples:
+              publish:
+                summary: Publish (make live)
+                value:
+                  collection:
+                    status: published
+                    active: true
+              setCountries:
+                summary: Restrict country availability
+                value:
+                  collection:
+                    country_isos: [GB, US]
+              clearCountries:
+                summary: Clear restrictions (available everywhere the company sells)
+                value:
+                  collection:
+                    country_isos: []
       responses:
         "200":
           description: The updated Collection.
@@ -7511,6 +8406,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7537,6 +8433,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7555,6 +8452,83 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v202604/company/collections/{id}/products:
+    get:
+      tags: [company]
+      summary: Products in a Collection
+      operationId: companyCollectionProducts
+      description: |
+        Every product filed under this collection, including the draft and
+        archived rows the public listing hides.
+
+        Same response body, filters, sorting, search, country-relative
+        pricing, and cursor pagination as
+        `GET /api/v202604/company/products`. The collection in the path always
+        wins — a `filter[collection_ids]` in the query string cannot widen the
+        listing beyond it.
+
+        Requires `storefront.view` (legacy `collections.view` still accepted).
+      parameters:
+        - name: id
+          description: The unique identifier of the collection whose products to list.
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Country"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - name: filter[status]
+          in: query
+          required: false
+          description: Restrict to a single stored lifecycle state.
+          schema:
+            type: string
+            enum: [active, draft, archived]
+        - name: filter[availability]
+          in: query
+          required: false
+          description: |
+            Stock filter. `in_stock` restricts to purchasable products;
+            `all` (default) imposes no stock constraint.
+          schema:
+            type: string
+            enum: [all, in_stock]
+            default: all
+        - name: filter[bundle]
+          in: query
+          required: false
+          description: |
+            `true` returns only bundle products; `false` returns only
+            non-bundle products.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          description: |
+            Single sort key. Prefix with `-` for descending. Default
+            `priority` then `id`.
+          schema:
+            type: string
+            enum: [priority, -priority, title, -title, created_at, -created_at]
+      responses:
+        "200":
+          description: A page of products in this collection, every lifecycle state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v202604/company/collections/{id}/lighthouse:
     get:
       tags: [company]
@@ -7568,6 +8542,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7605,6 +8580,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7636,6 +8612,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
@@ -7673,6 +8650,7 @@ paths:
         - bearer_auth: []
       parameters:
         - name: id
+          description: The unique identifier of the collection.
           in: path
           required: true
           schema:
