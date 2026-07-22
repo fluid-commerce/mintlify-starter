@@ -1102,8 +1102,13 @@ function checkAll(spec, registry, getGuide, opts = {}) {
         if (wellFormed.has(idx)) {
           const fn = MECHANICAL_DISPATCH[claim.type];
           if (fn) {
+            // Resolve the spec per-claim: a guide listed in the registry's
+            // `guideSpecs` map validates against its own spec; every other guide
+            // falls back to the default `spec`. Absent a resolver (e.g. the
+            // in-memory self-test), the single `spec` is used unchanged.
+            const claimSpec = opts.resolveSpec ? opts.resolveSpec(claim.guide) : spec;
             try {
-              fn(spec, claim, report);
+              fn(claimSpec, claim, report);
             } catch (err) {
               report.fail(claim, `checker error: ${err.message}`);
             }
@@ -1396,6 +1401,23 @@ function runSelfTest() {
   ];
   for (const [name, ok] of covAsserts) assertions.push({ id: name, ok, expected: "caught", got: ok ? "caught" : "MISSED" });
 
+  // guideSpecs per-guide spec resolution: a claim whose guide is mapped to an
+  // alternate spec validates against THAT spec; an unmapped guide falls back to
+  // the default spec (so the same op-anchor passes under one and fails under the
+  // other, proving both the override and the fallback).
+  const GS_SPEC_B = { openapi: "3.1.0", paths: { "/api/v1/gadgets": { get: { responses: { "200": { description: "ok" } } } } } };
+  const GS_GUIDE = "fixtures/other.mdx";
+  const gsGetGuide = (p) => (p === GS_GUIDE ? "gadgets live here" : p === SELFTEST_GUIDE_PATH ? SELFTEST_GUIDE_TEXT : null);
+  const gsClaims = [
+    { id: "GS-mapped", guide: GS_GUIDE, line: 1, quote: "gadgets live here", type: "endpoint", check: "mechanical", claim: "mapped guide -> SPEC_B", anchor: { path: "/api/v1/gadgets", method: "get" } },
+    { id: "GS-fallback", guide: SELFTEST_GUIDE_PATH, line: 1, quote: "line1 alpha", type: "endpoint", check: "mechanical", claim: "unmapped guide -> default spec", anchor: { path: "/api/v1/gadgets", method: "get" } },
+  ];
+  const gsResolve = (g) => (g === GS_GUIDE ? GS_SPEC_B : SELFTEST_SPEC);
+  const gsRun = checkAll(SELFTEST_SPEC, { version: 1, guides: [], claims: gsClaims }, gsGetGuide, { resolveSpec: gsResolve });
+  const gsFailed = new Set(gsRun.report.failures.map((f) => f.id));
+  const gsOk = !gsFailed.has("GS-mapped") && gsFailed.has("GS-fallback");
+  assertions.push({ id: "guideSpecs: mapped guide uses its spec; unmapped falls back to default", ok: gsOk, expected: "PASS", got: gsOk ? "PASS" : "FAIL" });
+
   // Report.
   let allOk = true;
   for (const a of assertions) {
@@ -1487,16 +1509,35 @@ function main() {
     process.exit(stats.failures === 0 ? 0 : 1);
   }
 
-  let spec;
+  const registry = loadRegistry(opts.claims);
+
+  // The default spec (--spec override, else the built-in default) validates every
+  // guide not named in the registry's optional `guideSpecs` map. Each spec is
+  // loaded once and cached, so a multi-surface registry (e.g. storefront guides +
+  // a webhooks guide) validates each claim against its own spec in a single run.
+  const guideSpecs = (registry && typeof registry.guideSpecs === "object" && registry.guideSpecs) || {};
+  const specCache = new Map();
+  const loadSpecCached = (p) => {
+    if (!specCache.has(p)) specCache.set(p, loadSpec(p));
+    return specCache.get(p);
+  };
+
+  let defaultSpec;
   try {
-    spec = loadSpec(opts.spec);
+    defaultSpec = loadSpecCached(opts.spec);
+    for (const p of new Set(Object.values(guideSpecs))) {
+      if (typeof p === "string") loadSpecCached(p);
+    }
   } catch (err) {
     process.stderr.write(`ERROR loading spec: ${err.message}\n`);
     process.exit(2);
   }
+  const resolveSpec = (guidePath) => {
+    const p = guideSpecs[guidePath];
+    return typeof p === "string" ? loadSpecCached(p) : defaultSpec;
+  };
 
-  const registry = loadRegistry(opts.claims);
-  const { report, stats } = checkAll(spec, registry, makeGuideLoader());
+  const { report, stats } = checkAll(defaultSpec, registry, makeGuideLoader(), { resolveSpec });
   printReport(report, stats);
   process.exit(stats.failures === 0 ? 0 : 1);
 }

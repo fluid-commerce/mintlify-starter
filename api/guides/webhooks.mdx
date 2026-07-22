@@ -1,0 +1,211 @@
+---
+title: "Register and handle webhooks"
+description: "Subscribe to Fluid events over HTTPS, verify deliveries with a shared secret, handle the delivery envelope, and inspect the most recent delivered event for a resource."
+---
+
+Webhooks push events to your server as they happen in Fluid — an order is placed, a cart changes, a member is created — so you never have to poll for updates. You register an HTTPS endpoint once, and Fluid delivers a JSON payload to it every time a matching event fires. This guide covers registering a webhook, managing it, verifying and handling deliveries, and inspecting the most recent delivered event for a resource.
+
+## Base URL and authentication
+
+Webhook management lives on the company surface. Call it against `https://api.fluid.app` and send a company Bearer token on every request as `Authorization: Bearer <your_token>`. Unlike the versioned storefront and checkout surfaces, the webhook paths are unversioned: subscriptions sit under `/api/company/webhooks` and the payload schemas under `/api/webhooks/schemas`.
+
+<Note>
+  Every operation in this guide requires a company Bearer token. In production your delivery `url` must be HTTPS, and Fluid does not deliver to internal or private (non-public) hosts, so your endpoint must be publicly reachable.
+</Note>
+
+## Register a webhook
+
+Create a subscription with `POST /api/company/webhooks`. A subscription needs three things: the `resource` to watch, the `event` on that resource, and the `url` Fluid delivers to. You can also set `active`, the `http_method` Fluid uses to deliver, and an `auth_token` — a shared secret you use to verify deliveries.
+
+```bash
+curl -X POST "https://api.fluid.app/api/company/webhooks" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook": {
+      "resource": "order",
+      "event": "created",
+      "url": "https://hooks.acme-wellness.com/fluid/orders",
+      "active": true,
+      "http_method": "post",
+      "auth_token": "k7Jf2Qm9RtV8xZ1aB4cD6eG0hL3nP5s"
+    }
+  }'
+```
+
+A successful create returns `201` with the new subscription under a `webhook` key; a body that fails validation returns `422`. The response echoes the webhook's integer `id`, the fields you set, and an `event_identifier` — the identifier Fluid uses for this event's payload schema.
+
+<Note>
+  Discover what you can subscribe to before you register. `GET /api/company/webhooks/resources` lists the resources and the events available on each.
+</Note>
+
+## List, inspect, update, and delete
+
+List your subscriptions with `GET /api/company/webhooks`, and fetch one by its numeric id with `GET /api/company/webhooks/{id}`:
+
+```bash
+curl "https://api.fluid.app/api/company/webhooks" \
+  -H "Authorization: Bearer <your_token>"
+
+curl "https://api.fluid.app/api/company/webhooks/8123" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+Update a subscription with `PUT /api/company/webhooks/{id}`. The update body accepts `url`, `active`, `auth_token`, and `http_method`; it does not accept `resource` or `event`. To retarget a subscription at a different resource or event, delete it and create a new one.
+
+```bash
+curl -X PUT "https://api.fluid.app/api/company/webhooks/8123" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook": {
+      "active": false
+    }
+  }'
+```
+
+Delete a subscription with `DELETE /api/company/webhooks/{id}`. A successful delete returns `200` and echoes the deleted webhook's `id`:
+
+```bash
+curl -X DELETE "https://api.fluid.app/api/company/webhooks/8123" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+## The delivery envelope
+
+Every delivery is a JSON envelope with a small, stable outer shape. The event data rides inside `payload`.
+
+<ResponseField name="id" type="integer">
+  The delivery's identifier — a number, not a prefixed string.
+</ResponseField>
+
+<ResponseField name="identifier" type="string">
+  A generated token for this specific delivery.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The event identifier, matching what you registered.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string">
+  An ISO 8601 timestamp for when the event occurred.
+</ResponseField>
+
+<ResponseField name="payload" type="object">
+  The event data, keyed by the resource's name, plus metadata about the event.
+</ResponseField>
+
+Inside `payload`, the event data is keyed by the resource's own name — an order delivery carries an `order` object, a cart delivery a `cart` object, a member delivery a `member` object. There is no generic `data` wrapper. Alongside the resource, `payload` carries metadata about the event: `event_name`, `schema_version`, `schema_hash`, `company_id`, `resource_name`, `resource`, and `event`.
+
+```json
+{
+  "id": 90784,
+  "identifier": "evt_9Yb2Kd7Qm1",
+  "name": "order_created",
+  "timestamp": "2026-07-15T12:34:56Z",
+  "payload": {
+    "event_name": "order_created",
+    "schema_version": "1",
+    "schema_hash": "9f3c2a90b1c2d4e5",
+    "company_id": 4821,
+    "resource": "order",
+    "event": "created",
+    "order": {
+      "id": 55210,
+      "status": "placed",
+      "total": "129.99"
+    }
+  }
+}
+```
+
+<Note>
+  Read the resource data from the key named for the resource in lowercase — `payload.order`, `payload.cart`, or `payload.member`. The separate `resource_name` metadata field is an internal type identifier and may be namespaced, so don't use it to index the payload.
+</Note>
+
+## Verify a delivery
+
+Set `auth_token` to a long, random secret when you register a webhook. Fluid uses it to sign every delivery. Each delivery carries these headers:
+
+- `X-Fluid-Signature` — a hex HMAC-SHA256 of the request, keyed with your `auth_token`.
+- `X-Fluid-Timestamp` — the Unix time in seconds when Fluid signed the request.
+- `X-Fluid-Token` and `AUTH_TOKEN` — your raw `auth_token`.
+- `X-Fluid-Shop` — your shop identifier.
+
+Verify the signature: recompute a hex HMAC-SHA256, keyed with your `auth_token`, over the string `<X-Fluid-Timestamp>.<raw_request_body>`, then constant-time compare it to `X-Fluid-Signature`. Sign over the raw request body exactly as received; if you re-serialize the parsed JSON the bytes can change and the signature will not match.
+
+```javascript
+const crypto = require("crypto");
+
+// Mount with the raw body preserved, e.g. express.raw({ type: "application/json" }).
+app.post("/fluid/orders", (req, res) => {
+  const rawBody = req.body; // Buffer/string of the exact bytes received
+  const timestamp = req.headers["x-fluid-timestamp"];
+  const presented = req.headers["x-fluid-signature"] || "";
+
+  const expected = crypto
+    .createHmac("sha256", process.env.FLUID_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`)
+    .digest("hex");
+
+  const ok =
+    presented.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(expected));
+  if (!ok) {
+    return res.sendStatus(401);
+  }
+  // Trusted: parse rawBody and read its payload here.
+  res.sendStatus(200);
+});
+```
+
+If you don't verify the signature, the simpler alternative is to compare the `X-Fluid-Token` (or `AUTH_TOKEN`) header against your stored secret with a constant-time comparison. The signature is more robust because it also binds the timestamp and the exact body.
+
+Use at least 32 random characters for the secret, and rotate it periodically — send a new `auth_token` to the update endpoint, then update the value your handler verifies against.
+
+## Handle and respond
+
+Acknowledge every delivery quickly with a `2xx` status. Parse the envelope, enqueue the work, and return `200` right away rather than doing slow processing inline:
+
+```javascript
+app.post("/fluid/orders", (req, res) => {
+  const { name, payload } = req.body;
+  queue.add(name, payload); // process out of band
+  res.sendStatus(200);
+});
+```
+
+Make your handler idempotent: key on the envelope's integer `id` so that reprocessing the same event is a safe no-op.
+
+## Inspect the most recent delivery
+
+To confirm what Fluid last sent for a resource, call `GET /api/company/webhooks/resources/{resource_name}`. It returns the most recent delivered event for that resource as the same envelope you receive at your endpoint:
+
+```bash
+curl "https://api.fluid.app/api/company/webhooks/resources/order" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+<Warning>
+  Pass a resource that your company has actually registered. An unregistered or unknown `resource_name` returns `404` with a `{ "message": ..., "status": ... }` body, not an empty response.
+</Warning>
+
+## Introspect payload schemas
+
+Each event publishes a JSON schema for its payload. List the schemas with `GET /api/webhooks/schemas`, optionally narrowing to one event with the `event_identifier` query parameter, and fetch a single schema with `GET /api/webhooks/schemas/{event_identifier}`:
+
+```bash
+curl "https://api.fluid.app/api/webhooks/schemas?event_identifier=order_created" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+Use these schemas to generate types or validate payloads when you build a handler.
+
+## Related surfaces
+
+Webhooks push events to you. Two adjacent surfaces are documented in the API reference: **callback registrations** (`/api/callback/registrations`), which let Fluid call you synchronously for tax or shipping decisions, and **company events** (`/api/company/events`), the company calendar surfaced to members. Both use the same company Bearer token.
+
+## Next steps
+
+- Browse the [Webhooks endpoints](/api-reference/webhooks-v0) reference for full request and response schemas.
+- Register a subscription, then use the inspect endpoint to confirm your first delivery.
