@@ -305,10 +305,7 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 
 | Omitted fact | Rationale |
 | ------------ | --------- |
-| Delete semantics (category soft-delete vs collection hard-delete; child cascade) | Outside all four pilot guide topics; the spec itself doesn't document cascade behavior. Revisit when a delete guide is authored. |
-| `filter[status]` stored-vs-resolved matching for past-due scheduled rows | Spec is silent; guides must not assert either way. |
-| `sort=position` offered on collections (which expose no `position`) | Spec quirk, not a guide trap — guides already say collections omit position. |
-| Metafields `id` in CollectionWrite but not CategoryWrite | Spec asymmetry; guides don't document per-item metafield updates. |
+| Metafields `id` in CollectionWrite but not CategoryWrite | **Confirmed intentional backend asymmetry (CURRENT-2657)** — category write params (`categories/{create,update}_params.rb`) omit `id`; collection params include `optional(:id)`, so per-metafield update/destroy is a collection-only capability. The reference now documents both surfaces; guides still don't teach per-item metafield updates. Not a modeling bug — structural symmetry deliberately not forced (would document a field the category API silently strips). |
 | Past `publish_at` + `status: scheduled` resolving published immediately | Implied by the read-time resolution rule the guides already state. |
 | ISO-code validation, cycle/self-parent protection, `source_type` enum-validation | Spec is silent — nothing assertable without inventing behavior. |
 | Envelope details (`seo` always present, nullable `meta.request_id`, 202 envelope quirks) | Outside the four topics' task flows. |
@@ -322,45 +319,61 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 
 ## Low-confidence claims (survived on a split vote)
 
-- **`has_children` semantics** (hierarchy-010/-027/-030): **still low-confidence
-  (split 2-1).** Phase 9.5a added a `has_children` field description to the spec —
-  "`true` when the category has at least one child category; `false` when it is a
-  leaf. Use it to decide whether to fetch a level deeper when walking the tree." —
-  but that text was authored this pass from the same guide source
-  (`category-hierarchy.mdx`) these claims already rest on, so it is not independent
-  evidence and does not upgrade their confidence. The residual doubt is unchanged:
-  on the live-only public catalog, whether `has_children` counts *non-live* child
-  categories is established by neither the guide, the spec, nor any claim. Clearing
-  it needs a contract-owner/backend confirmation of the counting semantic, not a
-  restatement of the guide. Claims stay `check: semantic`; anchors unchanged.
+- **`has_children` semantics** (hierarchy-010/-027/-030): **RESOLVED — upgraded to
+  confident (CURRENT-2657).** The residual doubt (does `has_children` count *non-live*
+  children on the live-only public catalog?) is now settled against the backend, the
+  authoritative source: `Api::V202604::Categories::Browser.ids_with_children`
+  (`app/services/api/v202604/categories/browser.rb`) resolves the flag with
+  `Category.where(ancestry: …)` and **no visibility filter** — unlike the catalog
+  scope, it does not restrict to `live?`. So `has_children` counts child categories in
+  **any** lifecycle state: a live parent whose only children are draft/scheduled/
+  archived still reports `true`. The spec `has_children` description now states this
+  counting semantic authoritatively, so the three claims are re-verified with
+  independent (code) evidence rather than resting on the guide. Claims stay
+  `check: semantic` (a counting rule is behavioral, not settleable from schema
+  structure); anchors unchanged.
 
 ## Known upstream spec gaps (flagged to the backend contract owners)
 
 1. `custom_slug` structurally present in public response schemas while prose says
    it's omitted from the public surface (shared-schema modeling).
-   **Deferred (9.5a)** — resolving it is a schema-shape change (split public vs
-   authenticated schema), out of this description-only pass; tracked as a follow-up.
+   **Resolved (CURRENT-2657)** — the shared read schema was split per surface for all
+   seven resources that carry `custom_slug` (Category, Post, Product, Collection, Medium,
+   Page, Playlist): a public base carries every field except `custom_slug` and is closed
+   with `unevaluatedProperties: false` (so a company-only field leaking onto the public
+   surface now fails conformance), while an authenticated variant composes the base with
+   `custom_slug` via `allOf` and backs the company read responses. Confirmed against the
+   backend: `custom_slug` is the only field in each blueprint's `view :authenticated`
+   block, and public controllers render the default view (no `custom_slug`).
 2. `has_children` and `position` have no field descriptions.
    **Resolved (9.5a)** — field descriptions were added to both on the `Category`
-   schema this pass, so this gap (missing descriptions) is closed. Note this does
-   **not** re-verify the low-confidence `has_children` claims: the new text is
-   sourced from the same guide, so hierarchy-010/-027/-030 remain low-confidence
-   pending contract-owner confirmation (see Low-confidence claims above).
+   schema. **Counting semantic also confirmed (CURRENT-2657)**: the `has_children`
+   description now authoritatively states it counts children in any lifecycle state,
+   verified against `Categories::Browser.ids_with_children` — this re-verifies and
+   upgrades hierarchy-010/-027/-030 (see Low-confidence claims above, now resolved).
 3. `filter[status]` stored-vs-resolved matching undefined for past-due scheduled rows.
-   **Deferred (9.5a)** — the param got a general description this pass, but the
-   specific stored-vs-resolved semantic is still not established by any guide, claim,
-   or spec source (the param description explicitly flags it `needs_confirmation`).
-   Documenting it would be fabrication; needs contract-owner confirmation.
+   **Resolved (CURRENT-2657)** — confirmed against `Categories::Browser#apply_status_filter`
+   (`where(status:)`): `filter[status]` matches the **stored** status column. A past-due
+   `scheduled` row renders as `status: published` but is matched by `filter[status]=scheduled`,
+   not `=published`. The spec param descriptions now state this.
 4. Delete behavior undocumented (child cascade; category soft- vs collection hard-delete).
-   **Deferred (9.5a)** — child-category cascade remains unspecified anywhere; needs
-   contract-owner confirmation.
+   **Resolved (CURRENT-2657)** — confirmed against the models/controllers: BOTH category
+   and collection are **hard** delete (neither includes `Discard`); deleting a category
+   **cascade-destroys its descendant categories** (`has_ancestry` orphan_strategy
+   `:destroy`, runtime-verified), while filed products/media/pages are foreign-key
+   **nullified**; collections have no child hierarchy. The earlier "category soft- vs
+   collection hard-delete" framing was inaccurate (`archived` is a lifecycle state, not a
+   delete) and is corrected. The destroy op descriptions now document this.
 5. Metafields write asymmetry (CollectionWrite models `id`; CategoryWrite doesn't).
-   **Documented (9.5a)** — the asymmetry is now noted in both
-   `metafields_attributes` descriptions (each cross-references the other). Structural
-   alignment of the two schemas is deferred (schema-shape change; follow-up).
+   **Confirmed intentional (CURRENT-2657)** — verified as real backend behavior (category
+   write params omit `id`; collection params include `optional(:id)`), not a modeling bug.
+   Both `metafields_attributes` descriptions were sharpened to state it; structural
+   symmetry was deliberately **not** forced (adding `id` to `CategoryWrite` would document
+   a field the category API silently strips). See Accepted omissions above.
 6. `sort=position` offered on collections, which expose no `position` field.
-   **Deferred (9.5a)** — the fix is an enum/shape change (swap the shared `Sort` for a
-   `SortNoPosition` on the collection ops), out of description-only scope; follow-up.
+   **Resolved (CURRENT-2657)** — the shared `Sort` parameter (which offers `position`)
+   was swapped for `SortNoPosition` on both collection index ops (`storefrontCollectionsIndex`,
+   `companyCollectionsIndex`); collections no longer advertise a `position` sort key.
 7. Webhook **delivery/callback** contract is unmodeled in `webhooks-v0` (a
    management-API spec — it covers subscription management, not the outbound
    callback). The signed delivery headers (`X-Fluid-Signature`, a hex HMAC-SHA256
