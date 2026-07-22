@@ -351,25 +351,111 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
    the callback contract; until then this stays code-verified.
    (Supersedes the earlier `x-auth-token` framing, which was incorrect — no such
    header exists.)
-8. **Checkout auth model is internally inconsistent** (`checkout-v2026-04`).
-   Cart-mutation ops declare `security: [{ bearer_auth: [] }]`, yet create-cart,
-   product query, order retrieval, the cart-auth/magic-link ops, and enrollment ops
-   are `security: []` (public), and no cart-mutation op documents a `401`. The spec
-   never states that the **cart token in the path is the credential** for the
-   anonymous flow. The headless guide sidesteps this by documenting the server-side
-   company-token model; the anonymous model needs spec clarification.
+8. **Checkout cart auth model is internally inconsistent and the `security:` blocks are
+   stale vs. the controllers** (`checkout-v2026-04`). Ground truth (Rails controllers):
+   - `commerce/checkout/v202604/base_controller.rb` is secure-by-default
+     (`before_action :authenticate_customer!`). Cart controllers OPT OUT with
+     `skip_before_action :authenticate_customer!` and authorize by the **cart token in the
+     path** instead; an optional bearer (`current_jwt`) only enriches behavior (wallet
+     resolution for isolated-payment-token companies).
+   - `carts/carts_controller.rb:11` skips auth for all cart ops EXCEPT `sync` and
+     `volume_rep` (`carts_controller.rb:13`), which genuinely require a bearer.
+   - `carts/auth_controller.rb:8`, `carts/items_controller.rb:8`,
+     `carts/discount_controller.rb:10` (except `create_manual`),
+     `carts/discounts_controller.rb:8`, `carts/points_controller.rb:8`,
+     `enrollments_controller.rb:9`, `orders_controller.rb:7`, `products_controller.rb:7`
+     all `skip_before_action :authenticate_customer!`.
+   So the cart-mutation ops (`add_cart_items`, `update_cart_item`, `delete_cart_item`,
+   `apply_cart_discount`, `remove_cart_discount`, `update_cart`, `update_cart_language`,
+   `update_cart_metadata`, `recalculate_cart`, `complete_cart`, `update_cart_country`,
+   `update_cart_address`, `update_cart_shipping`, points ops) AND the four cart-auth ops
+   (`get_cart_auth_me`, `send_cart_magic_link`, `verify_cart_magic_link`,
+   `destroy_cart_auth`) are all PUBLIC — yet the spec annotates them
+   `security: [{ bearer_auth: [] }]`. (Correction to the prior framing: the cart-auth ops
+   are NOT `security: []`; they carry `bearer_auth`.) The `skip_before_action` opt-outs
+   were never mirrored into the per-op swagger annotations, which still reflect the base
+   controller's secure-by-default posture.
+   **Recommended fix (contract owners):** model the public cart ops (mutation + auth) as
+   `security: [{}, { bearer_auth: [] }]` — an OPTIONAL bearer that matches the controllers
+   (public, cart-token scoped, bearer-enriched) — NOT `security: []`. This also keeps the
+   truth-gate green: the mechanical `auth: bearer` claim `headless-005`
+   (`POST …/carts/{cart_token}/items`) still passes because `requiresBearer` is satisfied
+   by the `bearer_auth` alternative, whereas `[]` would fail it. `sync`/`volume_rep` stay
+   `[{ bearer_auth: [] }]` (genuinely required); add a `401` to the ops that require auth.
+   **9.5b — DONE (docs side):** operation DESCRIPTIONS now state the real (public,
+   cart-token-scoped) contract, correcting the earlier PR-#20043 prose that echoed the
+   stale bearer declaration (Greptile review, verified against the controllers above). The
+   `security:` shape change is deferred to the contract owners per the recommendation.
 9. **`query_product` uses a legacy 404 error envelope** (`checkout-v2026-04`). Its
    `404` returns `{ status: "fail", data: { error } }` while every other error
    (including `query_product`'s own `422`) uses `ErrorResponse`
    (`{ error_message, errors, meta }`). A uniform error parser breaks on
    product-not-found.
+   **9.5b — DOCUMENTED.** `query_product`'s description now calls out that its `404`
+   returns the legacy `{ status: "fail", data: { error } }` shape while its `422` and
+   every other operation use the standard `ErrorResponse`. Structural fix (aligning
+   the envelope) is a spec-behavior change, out of scope; still flagged upstream.
 10. **`payment_uuid` provenance spans specs.** `complete_cart` consumes a
     `payment_uuid` query param, but the tokenize/authorize step and the
     `requires_3ds` branch that produce it live in `payments-v2026-04`, not
     `checkout-v2026-04`. The headless guide bridges the gap with a cross-link to the
     Cart payment reference; a reader working only from the checkout spec cannot find
     where `payment_uuid` comes from.
+    **9.5b — DOCUMENTED on both surfaces.** In `payments-v2026-04`, the tokenize and
+    verify (`requires_3ds`) operations and the PayPal-order `payment_uuid` response
+    field now describe it as the server-produced Fluid payment reference carried into
+    checkout. In `checkout-v2026-04`, `complete_cart` now states the `payment_uuid` it
+    consumes is produced upstream by the Cart payment surface and cross-references it.
+    (No `payment_uuid`-named field is invented on the card-flow response — none is
+    modeled there; that opacity is the remaining upstream gap.)
 11. **`fluid_shop` example format is inconsistent** across checkout ops (`acme`
     subdomain in `create_cart`/`send_magic_link` vs `acme.fluid.app` full host in
     `query_product`'s `metadata.fluid_shop`). The headless guide matches each op's
     own example rather than inventing a single convention.
+    **9.5b — DOCUMENTED (per-op).** Each operation's `fluid_shop` is now described in
+    its own terms — subdomain form in `create_cart`/`send_magic_link`, full-host form
+    in `query_product`'s `metadata.fluid_shop` — rather than unifying the convention.
+    Unifying is a spec-behavior change, out of scope; still flagged upstream.
+
+## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
+
+Applied the 9.5a description bar to the six remaining synced specs
+(`.github/synced-specs.json`, excluding storefront). Spec edits land in `fluid`
+(`docs/openapi/*.yaml`); this repo records the durable decisions and the truth-gate
+result. All changes were **additive** (descriptions + named examples only) — a
+structural diff vs `master` confirmed identical paths, methods, security, status
+codes, params, and request/response/component schemas on every spec, so Skooma
+`:strict` and the mechanical claims are unaffected. The guide-claims gate was re-run
+against the enriched specs: **PASS** (351 claims, 234 mechanical, 0 failures,
+0 coverage failures), including the two registry-gated surfaces (`webhooks-v0`,
+49 claims; `checkout-v2026-04`/headless, 44 claims).
+
+Per-spec description coverage (before → after):
+
+| Spec | operations | parameter defs | schema properties |
+| ---- | ---------- | -------------- | ----------------- |
+| `auth-v0` | 28/28 → 28/28 (100%) | 7/13 → 13/13 (100%) | 2/65 → 65/65 (100%) |
+| `commerce-v2026-04` | 2/2 → 2/2 (100%) | 2/2 → 2/2 (100%) | 31/69 → 69/69 (100%) |
+| `webhooks-v0` | 8/24 → 24/24 (100%) | 8/17 → 17/17 (100%) | 8/161 → 57/161 (35%) |
+| `payment-v2026-04` | 2/15 → 15/15 (100%) | 12/12 → 12/12 (100%) | 55/155 → 101/155 (65%) |
+| `payments-v2026-04` | 6/12 → 12/12 (100%) | 14/14 → 14/14 (100%) | 10/65 → 46/65 (71%) |
+| `checkout-v2026-04` | 28/73 → 73/73 (100%) | 141/141 → 141/141 (100%) | 98/2437 → 220/2437 (9%) |
+
+100% operation + parameter description coverage on every surface; property coverage
+was prioritized on guide-explained and core integration fields (giant checkout
+sub-trees intentionally not exhausted). Named request examples were added to the
+guide-walked operations on each surface.
+
+### New contract-owner questions from 9.5b
+
+- **Gap #8 correction (above):** the four `checkout-v2026-04` cart-auth/magic-link ops
+  declare `bearer_auth`, not `security: []` as the original gap #8 stated. Descriptions
+  reflect the actual declared auth; whether those ops *should* be public is an
+  unresolved spec-behavior question for contract owners.
+- **`payment-processing.mdx` maps to a different surface.** The `guides/payment-processing.mdx`
+  guide documents the Fluid Orchestration routing API (`/api/fluid_orchestration/...`,
+  bearer-authed), **not** the `payment-v2026-04` gateway spec or the `payments-v2026-04`
+  cart-payment spec. Enrichment of those two specs was therefore driven by the specs'
+  own structure, the cart/checkout guides, and (for `commerce-v2026-04` totals) the
+  backend recalculator — never by importing orchestration-guide facts. Worth confirming
+  the intended guide↔surface mapping when guides are slimmed in 9.5e.
