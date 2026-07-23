@@ -1,0 +1,122 @@
+---
+title: "Translate a resource"
+description: "Write translations onto storefront resources with the lang query parameter, read a locale back, and understand why a translation write is always a company PATCH."
+---
+
+Every storefront resource — products, media, categories, collections, posts, pages, playlists, and enrollment packs — can carry its `title`, `description`, and `image_url` in more than one language. You translate inline on the resource's own create and update: there is no separate translations endpoint and no `translations` object in the payload. The `lang` query parameter selects the locale a request reads or writes.
+
+This guide covers the model that applies to all eight resources, then works through Products end to end.
+
+## The model
+
+Six rules govern every translation, whatever the resource:
+
+- **Create writes the default locale.** `POST /api/v202604/company/{resource}` always writes the store's default locale and keeps its full payload — whatever `lang` says. A resource created under a translation would read back blank in the store's own language, so `lang` is validated on create but does not select the write locale.
+- **You translate an existing row with PATCH.** Send `PATCH /api/v202604/company/{resource}/{id}?lang=<iso>` against a row that already exists. The `lang` you pass is the locale you write.
+- **A translation PATCH is text only.** Against any locale other than the store's default, only the translated fields (`title`, `description`, `image_url`) are written. The slug, lifecycle, country availability, metafields, SEO, and associations in the same payload are ignored, so translating a title can never regenerate the slug or move the status. Send those in a request against the store's default locale instead.
+- **An unsold locale returns `422`.** A `lang` the store does not sell in is rejected — translations are never written to a locale the store has not enabled. Add the language to the store first.
+- **Public reads fall back.** On the public surface, any field with no translation in the requested locale falls back to its default-locale value, so a partially translated resource never renders blank.
+- **`languages` lists what is translated.** Every response carries a `languages` array listing exactly the locales that carry a translation, always including the store's default.
+
+The store's default is the *store's* own language, not the platform's: a store selling in French treats `lang=fr` as its default write, not a translation.
+
+The typical flow is: create the resource in the default locale, then send one PATCH per additional locale carrying only the translated text.
+
+## Translate a product
+
+Start by creating the product in the store's default locale. This is an ordinary create — the full payload is kept.
+
+```bash
+curl -X POST "https://api.fluid.app/api/v202604/company/products" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product": {
+      "title": "Beet Blend",
+      "description": "A cold-pressed beet concentrate."
+    }
+  }'
+```
+
+The response carries the new product's `id` (say `60311`) and a `languages` array that already lists the default locale.
+
+Now add a French translation to that existing product. Pass `lang=fr` and send only the translated text — the title and description in French.
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/v202604/company/products/60311?lang=fr" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product": {
+      "title": "Mélange de betteraves",
+      "description": "Un concentré de betteraves pressé à froid."
+    }
+  }'
+```
+
+Because this PATCH targets a non-default locale, it writes only the translated fields. Any slug, status, or country change sent alongside is ignored — this call cannot regenerate the slug or move the product's lifecycle. After it succeeds, `fr` joins the product's `languages` array.
+
+To read a specific translation back before editing it, pass `lang` on the company show endpoint:
+
+```bash
+curl "https://api.fluid.app/api/v202604/company/products/60311?lang=fr" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+The translated fields come back inline in French. Passing a locale the store does not sell in — on either the PATCH or a read — returns `422`.
+
+## Read versus write
+
+Reading a locale and writing one are different operations — this is where translating media trips people up.
+
+On a GET, `lang` only *renders* an existing translation, and `filter[language]` only *filters* the catalog to rows already translated in a locale. Neither writes anything. A media item renders in French on the public catalog:
+
+```bash
+curl "https://acme.fluid.app/api/v202604/media?lang=fr"
+```
+
+and the same catalog narrows to only the media translated in French:
+
+```bash
+curl "https://acme.fluid.app/api/v202604/media?filter[language]=fr"
+```
+
+Both are reads. To *write* a French translation onto a media item, PATCH the company row with `lang=fr`, exactly as you did for a product:
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/v202604/company/media/60421?lang=fr" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "medium": {
+      "title": "Guide de démarrage",
+      "description": "Une courte vidéo de bienvenue."
+    }
+  }'
+```
+
+<Warning>
+  Do not reach for the public media catalog to translate a media item. The public `GET /api/v202604/media` endpoint only renders and filters locales — it never writes one. Writing a translation is always a company `PATCH /api/v202604/company/media/{id}?lang=`.
+</Warning>
+
+## Every translatable resource
+
+All eight storefront resources translate the same way. Each carries `title`, `description`, and `image_url` as translated fields; send `lang` and only the translated text on the company update endpoint, wrapped under the resource's own body key.
+
+| Resource | Company write endpoint | Body key |
+| --- | --- | --- |
+| Products | `PATCH /api/v202604/company/products/{id}` | `product` |
+| Media | `PATCH /api/v202604/company/media/{id}` | `medium` |
+| Categories | `PATCH /api/v202604/company/categories/{id}` | `category` |
+| Collections | `PATCH /api/v202604/company/collections/{id}` | `collection` |
+| Posts | `PATCH /api/v202604/company/posts/{id}` | `post` |
+| Pages | `PATCH /api/v202604/company/pages/{id}` | `page` |
+| Playlists | `PATCH /api/v202604/company/playlists/{id}` | `library` |
+| Enrollment packs | `PATCH /api/v202604/company/enrollment-packs/{id}` | `enrollment_pack` |
+
+The body key is the only thing that changes between resources — playlists wrap their write in `library`, media in `medium`, and enrollment packs in `enrollment_pack`, matching each resource's create contract.
+
+## Next steps
+
+- [Control country availability](/api/guides/country-availability) — a per-row country list, written on the store's default locale (not through a translation PATCH).
+- [Rename, publish, and schedule](/api/guides/rename-publish-and-schedule) — the lifecycle and slug fields a translation PATCH deliberately leaves untouched.
