@@ -13,47 +13,33 @@ Fluid gives you everything you need to build a fully functional shopping cart �
 <Steps>
 
   <Step title="Fetch Product Details">
-    Before adding anything to a cart, retrieve the product you want to sell. Use the product ID from your Fluid catalog:
+    Before adding anything to a cart, retrieve the product you want to sell. The public product read is unauthenticated — no token required — and resolves a product by its URL **slug** on your company subdomain:
 
     ```javascript
     const response = await fetch(
-      'https://api.fluid.app/api/v202604/products/prod_abc123',
-      {
-        headers: {
-          'Authorization': 'Bearer <your_public_token>'
-        }
-      }
+      'https://{company}.fluid.app/api/v202604/products/scrute-farms-beet-blend'
     );
 
-    const product = await response.json();
-    console.log(product.name, product.variants);
+    const { product } = await response.json();
+    console.log(product.title, product.variants);
     ```
 
-    The response includes variant IDs, pricing, inventory status, and media. You'll use the variant ID when adding items to the cart.
+    The product is returned under a `product` envelope. It carries the display `title`, `pricing`, stock status, media, and a `variants` array — each variant has the `id` you pass when adding items to the cart. See the [Storefront endpoints](/api-reference/storefront-v2026-04) reference for the full response schema.
   </Step>
 
   <Step title="Create a Cart">
-    Create a new cart for the current session. You can optionally associate the cart with a customer at creation time.
+    Create a new cart for the current session with `POST /api/checkout/v2026-04/carts`. The body requires `fluid_shop` (your company subdomain) and `country_code` (an ISO country code); you can seed the cart with an `items` array in the same call. Creating a cart is a public operation — it needs no Bearer token.
 
     ```bash
-    curl -X POST https://api.fluid.app/api/carts \
-      -H "Authorization: Bearer <your_public_token>" \
+    curl -X POST https://api.fluid.app/api/checkout/v2026-04/carts \
       -H "Content-Type: application/json" \
       -d '{
-        "currency": "USD"
+        "fluid_shop": "acme",
+        "country_code": "US"
       }'
     ```
 
-    The response includes a `cart_token` — store this in the user's session or local storage. You'll use it for all subsequent cart operations.
-
-    ```json
-    {
-      "cart_token": "cart_7x9mK2pLqN",
-      "items": [],
-      "subtotal": 0,
-      "checkout_url": "https://checkout.fluid.app/cart_7x9mK2pLqN"
-    }
-    ```
+    The created cart is returned under a `cart` key, including the `cart_token` — store this in the user's session or local storage, since it identifies the cart for every subsequent operation. The hosted checkout link comes back as `meta.checkout_url`. See the [Checkout endpoints](/api-reference/checkout-v2026-04) reference for the full response schema.
   </Step>
 
   <Step title="Add Items to the Cart">
@@ -84,11 +70,11 @@ Fluid gives you everything you need to build a fully functional shopping cart �
 
     **Option C — Direct API call**
 
-    Use `PATCH /api/carts/{cart_token}` to update the cart server-side:
+    Use `POST /api/checkout/v2026-04/carts/{cart_token}/items` to add line items server-side. The body takes an `items` array — each entry needs a `variant_id` and a `quantity`:
 
     ```bash
-    curl -X PATCH https://api.fluid.app/api/carts/cart_7x9mK2pLqN \
-      -H "Authorization: Bearer <your_public_token>" \
+    curl -X POST https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/items \
+      -H "Authorization: Bearer <your_token>" \
       -H "Content-Type: application/json" \
       -d '{
         "items": [
@@ -99,6 +85,8 @@ Fluid gives you everything you need to build a fully functional shopping cart �
         ]
       }'
     ```
+
+    See the [Checkout endpoints](/api-reference/checkout-v2026-04) reference for the full request and response schema.
   </Step>
 
   <Step title="Display the Cart Count">
@@ -127,7 +115,7 @@ Fluid gives you everything you need to build a fully functional shopping cart �
 
     **Via the cart response:**
 
-    The `checkout_url` field returned when you created the cart is always valid. Redirect the user directly to that URL at any point.
+    The `meta.checkout_url` returned when you created the cart is always valid. Redirect the user directly to that URL at any point.
   </Step>
 
 </Steps>
@@ -138,6 +126,8 @@ Subscribe to cart events using Fluid webhooks to trigger downstream actions — 
 
 ### Register a Webhook
 
+Create a subscription with `POST /api/company/webhooks`. A subscription pairs a `resource` with an `event` on that resource (the short event name, e.g. `updated`), the `url` Fluid delivers to, and an `auth_token` shared secret you use to verify deliveries:
+
 ```bash
 curl -X POST https://api.fluid.app/api/company/webhooks \
   -H "Authorization: Bearer <your_company_token>" \
@@ -145,17 +135,20 @@ curl -X POST https://api.fluid.app/api/company/webhooks \
   -d '{
     "webhook": {
       "resource": "cart",
-      "event": "cart_updated",
+      "event": "updated",
       "url": "https://yourapp.com/webhooks/cart",
       "active": true,
-      "http_method": "post"
+      "http_method": "post",
+      "auth_token": "<a-long-random-secret>"
     }
   }'
 ```
 
-Register a second webhook for `cart_abandoned` the same way, pointing to the URL that handles your recovery flow.
+Discover the valid `resource`/`event` pairs before you register with `GET /api/company/webhooks/resources`. For registering, managing, verifying, and inspecting webhooks in full, see the [Register and handle webhooks](/api/guides/webhooks) guide.
 
 ### Handle Incoming Events
+
+Every delivery arrives as the envelope `{ id, identifier, name, timestamp, payload }`, with the resource data keyed by its own name inside `payload` — a cart delivery carries `payload.cart`. Always verify the signature against your `auth_token` before trusting a delivery (see the [webhooks guide](/api/guides/webhooks) for the exact HMAC scheme):
 
 ```javascript
 const express = require('express');
@@ -163,24 +156,15 @@ const app = express();
 app.use(express.json());
 
 app.post('/webhooks/cart', (req, res) => {
-  const { event, data } = req.body;
+  // Verify the X-Fluid-Signature header first — see the webhooks guide.
+  const { name, payload } = req.body;
+  const cart = payload.cart;
 
-  if (event === 'cart_updated') {
-    const { cart_token, items, subtotal } = data;
-    console.log(`Cart ${cart_token} updated — ${items.length} items, subtotal $${subtotal}`);
-    // Sync to your database or analytics pipeline
-  }
-
-  if (event === 'cart_abandoned') {
-    const { cart_token, customer_email } = data;
-    console.log(`Cart ${cart_token} abandoned by ${customer_email}`);
-    // Enqueue an abandonment email
-  }
+  console.log(`Received ${name} for cart ${cart.cart_token}`);
+  // Enqueue the work and acknowledge quickly.
 
   res.sendStatus(200);
 });
 
 app.listen(3000);
 ```
-
-Fluid also supports **WebSockets** and **Server-Sent Events (SSE)** if you need real-time updates pushed directly to the browser rather than your server.
