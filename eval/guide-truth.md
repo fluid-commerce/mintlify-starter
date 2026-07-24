@@ -561,7 +561,7 @@ gates the listed content until it is synced:
   `company/v1` — but is not in `.github/synced-specs.json`. No `public-v2026-04` successor exists or
   is in flight.
 - **`checkout-v2026-04` is the surface for a *direct REST* cart integration, not for the SDK.** Its
-  path form `/api/checkout/v2026-04/carts/{token}/...` is legitimately different from the
+  path form `/api/checkout/v2026-04/carts/{cart_token}/...` is legitimately different from the
   storefront/company `/api/v202604/<resource>` house-rule form; both are valid per their own specs,
   and prose should link to the generated reference rather than hand-type a path so the form is not
   mistaken for a banned version. This is what `api/guides/headless-commerce.mdx` and
@@ -602,3 +602,61 @@ gates the listed content until it is synced:
 - **No real changelog/release-notes source exists.** The only changelog in the corpus is fictional
   Redocly starter-template content ("Warp API"); a genuine release-notes page is net-new content, not
   a migration.
+
+## Phase 9.6b — claim verification and contract corrections (CURRENT-2709)
+
+The 60-claim queue from Phase 9.6a has a complete disposition. Detailed run evidence belongs on
+CURRENT-2709; this section records only decisions that later migration phases must preserve.
+
+| Verdict | Claims | Meaning |
+| ------- | -----: | ------- |
+| supported | 21 | The claim may advance with its verified scope intact. |
+| corrected | 27 | Only the corrected form may advance. |
+| deferred | 9 | Publication waits on a named contract, owner, or follow-up phase. |
+| discarded | 3 | The claim is false, fictional, or unsuitable for technical documentation. |
+
+Six deferred claims (`#6`, `#7`, `#16`, `#17`, `#26`, `#27`) are deliberately owned by
+CURRENT-2724. The other deferred claims are locale fallback behavior (`#39`), the
+`getAuthenticatedUser()` return contract (`#41`), and current legal entity/address text (`#57`).
+
+### Corrected published contracts
+
+- The four published FairShare corrections from 9.6a are now applied to `sdk/components.mdx` and
+  `sdk/cart-api.mdx`: the nested `captureLead` contact payload, `playlist-id`/`media-id`, the
+  `{eventName, data}` event shape, and the two-value lead-capture `contact-method`.
+- FairShare registers four web components, including `<fluid-banner-widget>`. Generated widget
+  manifests are authoritative for tag and prop discovery; the production entry script is only a
+  loader and is not sufficient evidence for that inventory.
+- `getAuthenticatedUser()` currently stores an object but reads it through the string storage API.
+  Do not publish either an object-return or serialized-return contract until the SDK implementation
+  and type contract agree.
+- `checkout-v2026-04` cart access is cart-token scoped. Of its 25 cart operations, 22 are public and
+  three require a Bearer token: sync, volume-rep assignment, and manual discount creation. The
+  source contract normalizes the cart path parameter to `{cart_token}` without changing operation
+  IDs.
+- The checkout Add Items operation is a batch mutation, not an unconditional
+  `{variant_id, quantity}` pair. It also accepts `cart_item_id` with `quantity: 0` to remove a
+  specific line. Removing an already-absent item from an existing cart is idempotent and returns the
+  current cart with `200`.
+
+### Migration decisions
+
+- Keep the direct `checkout-v2026-04` lifecycle distinct from the FairShare
+  `public-v2025-06` lifecycle. `bundleSelections` is sent as `bundle_selections`; nested
+  `bundled_items` are a different level of that payload.
+- `refreshCart()` clears local cart state after a `410`; `setCartToken()` rejects a completed token
+  without clearing it. Do not generalize either behavior to every cart method.
+- Theme schema and variable references must be rebuilt from runtime variable builders and Drops.
+  Do not migrate the legacy JSON catalogs or unsupported selector types. The storefront cart route
+  is `/cart`, not `/:credit/cart`.
+- Affiliate lookup is a wrapped `POST` response, not a plain-object `GET`. Droplet exchange
+  responses are nested under `droplet_installation` and `credentials`. Publish either only after
+  its owning unsynced contract is adopted.
+- Both subscription surfaces are real. The legacy unversioned surface and
+  `checkout-v2026-04` have different authentication and pagination contracts; handwritten prose
+  must not import the legacy surface's offset terminology.
+- The webhook inventory guide is discarded: neither `inventory.updated` nor
+  `/webhooks/subscriptions` exists. The legacy changelog and unverified marketing promises are also
+  discarded.
+- DAM upload limits are 200 MB for images and 2 GB for videos. Token, Droplet, DAM, orchestration,
+  and mobile-widget claims remain publication-gated on their unsynced owning contracts.
