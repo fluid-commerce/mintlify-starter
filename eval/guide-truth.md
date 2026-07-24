@@ -704,3 +704,31 @@ therefore remains unchanged.
 - Other census entries tied to unsynced Droplet, DAM, theme-admin, mobile-widget, orchestration, and
   token surfaces retain their Phase 9.6a deferrals. Discarded CRM, inventory, changelog, and
   marketing pages do not regain eligibility through this migration.
+
+## Phase 9.6c.1 — consumer-blocked theme and SDK fast path (CURRENT-2724)
+
+CURRENT-2724 publishes eight narrowly scoped theme and SDK corrections without adopting the
+unsynced FairShare REST surface. The following bundle decisions are durable:
+
+- The synced storefront Product show response exposes bundle data as the top-level
+  `product.bundle_groups[]` field. The legacy `product.product_bundle_groups[]` shape is absent.
+  The new product-bundles guide is registered against `storefront-v2026-04`, with that field shape
+  and its workflow-critical group fields mechanically gated.
+- Product-bundles legitimately touches two synced contracts. Storefront supplies the bundle
+  definition; checkout consumes the selection. Because the claims checker resolves one spec per
+  guide, storefront facts remain mechanical and checkout facts are explicit semantic cross-spec
+  claims verified against `checkout-v2026-04`. This follows the existing narrow multi-spec pattern
+  and avoids a checker redesign for one guide.
+- Checkout Add Items accepts `bundled_items[]` on a parent item. Each child requires `variant_id`
+  and `quantity`, and can carry `product_bundle_group_id`, `subscription`, and
+  `subscription_plan_id`. `mutually_exclusive_groups_selected` is absent from the synced checkout
+  request schema and is deliberately omitted from the guide and SDK examples.
+- The FairShare SDK remains a separate cart lifecycle from direct checkout. Its runtime mapping
+  preserves extra nested bundle-child fields, so JavaScript can send `product_bundle_group_id`.
+  The public TypeScript bundled-item declaration currently lists `variant_id`, `quantity`,
+  `display_to_customer`, `subscription`, and `subscription_plan_id` but can omit
+  `product_bundle_group_id`; the docs call out the local type-extension workaround instead of
+  claiming complete type support.
+- The omission sweep accepted exhaustive bundle pricing, inventory, country, and administrative
+  configuration as reference territory. The guide keeps only the render → select → submit workflow
+  and links to generated endpoint references for the full contracts.
