@@ -660,3 +660,47 @@ CURRENT-2724. The other deferred claims are locale fallback behavior (`#39`), th
   discarded.
 - DAM upload limits are 200 MB for images and 2 GB for videos. Token, Droplet, DAM, orchestration,
   and mobile-widget claims remain publication-gated on their unsynced owning contracts.
+
+## Phase 9.6c — verified Redocly workflow migration (CURRENT-2710)
+
+Phase 9.6c migrates only claims that survived the 9.6b verification pass and do not depend on an
+unsynced API surface. The migration adds client-side FairShare workflows and theme-authoring
+workflows; it does not add endpoint contracts to hand-written prose. The API guide claims registry
+therefore remains unchanged.
+
+### Migrated and consolidated workflows
+
+- Affiliate hydration, GitHub integration, linked CSS-variable presets, root-theme configuration,
+  and supported storefront paths have dedicated theme pages. Affiliate hydration omits the
+  nonexistent `rescanForSentinels()` API, and the canonical cart route remains `/cart`.
+- The CLI guide includes the verified theme-skill installation workflow.
+- FairShare media events and client-side CTA configuration have a dedicated SDK page. Cart operation
+  events, custom checkout handlers, initialization boundaries, reset behavior, session errors, and
+  event flushing are consolidated into the existing SDK pages.
+- Existing theme and SDK overview pages link to the migrated workflows. Legacy Redocly URLs are not
+  carried into the new pages; redirect continuity belongs to Phase 9.6e.
+
+| Redocly source group | Mintlify disposition |
+| -------------------- | --------------------- |
+| `themes/affiliate-hydration.md` + SDK affiliate-hydration page | Consolidated into `themes/affiliate-hydration.mdx` |
+| Base, Fluid, and Vox theme-configuration pages | Consolidated into `themes/root-theme-configuration.mdx`; volatile per-theme token catalogs discarded |
+| GitHub integration, linked CSS presets, supported paths | Migrated to dedicated `themes/*.mdx` pages |
+| Theme CLI | Consolidated into `themes/cli.mdx` |
+| Theme authoring guides | Existing overview/developer/page-editor pages retain parity; custom layouts and corrected History review/compare/publish workflows added |
+| SDK media/playlist event and CTA pages | Consolidated into `sdk/media.mdx` |
+| SDK cart-operation, cart adoption, refresh, variant, enrollment, and checkout-handler pages | Consolidated into `sdk/cart-api.mdx` at SDK altitude |
+| SDK initialization, reset, session, and flush pages | Consolidated into installation/components pages |
+| Theme reusable option groups | Assigned to CURRENT-2724 schema-components coverage |
+
+### Publication boundaries
+
+- The eight fast-path corrections assigned to CURRENT-2724 remain outside this phase:
+  blocks/components, theme variables, image transformations, media tags, cart feedback, product
+  bundles, schema components, and bundled `addCartItems()` fields.
+- FairShare REST workflows remain gated on adoption of `public-v2025-06`. Client SDK prose must not
+  imply that those methods use the direct `checkout-v2026-04` lifecycle.
+- The custom catch-ups guide remains gated on syncing its owning `company-v0` contract. Do not add a
+  `GET /{id}` workflow: neither the source spec nor the controller implements a show operation.
+- Other census entries tied to unsynced Droplet, DAM, theme-admin, mobile-widget, orchestration, and
+  token surfaces retain their Phase 9.6a deferrals. Discarded CRM, inventory, changelog, and
+  marketing pages do not regain eligibility through this migration.

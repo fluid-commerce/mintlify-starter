@@ -67,7 +67,30 @@ const localCart = window.FairShareSDK.getLocalCart();
 
 // Get the total number of items in the cart
 const itemCount = window.FairShareSDK.getCartItemCount();
+
+// Fetch fresh state and notify every cart widget
+const refreshedCart = await window.FairShareSDK.refreshCart();
 ```
+
+`getCart()` fetches the cart. `refreshCart()` also dispatches the cart-update
+event that tells mounted widgets to render the fresh state.
+
+To adopt a cart created outside the SDK, validate and store its token:
+
+```javascript
+const adoptedCart =
+  await window.FairShareSDK.setCartToken("7Hq2Kd9Rm4bV1nX");
+```
+
+`setCartToken()` updates local state, mounted widgets, and any configured
+real-time cart subscription after validation succeeds. It rejects an empty,
+unavailable, or completed token. Validation and fetch failures that happen
+before adoption leave the existing local cart intact. Some later failures can
+reject after local state has changed, so inspect the current cart in your error
+handler. Only one adoption can run at a time.
+
+The CDN loader also recognizes a `cart_token` query parameter. After a
+successful adoption, it removes that parameter with `history.replaceState`.
 
 ### Modifying the Cart
 
@@ -88,12 +111,21 @@ await window.FairShareSDK.updateCartItems([
   { variant_id: 123, quantity: 3 },
 ]);
 
-// Remove all items from the cart
+// Replace the variant on one cart line
+await window.FairShareSDK.updateCartItemVariant({
+  itemId: 456,
+  variantId: 789,
+});
+
+// Clear the SDK's local cart state
 await window.FairShareSDK.clearCart();
 
 // Create a new cart session
 await window.FairShareSDK.createCart();
 ```
+
+`clearCart()` resets the local client state. It does not call a dedicated
+server-side clear-cart operation.
 
 ### Subscriptions
 
@@ -113,6 +145,30 @@ Enrollment packs bundle products for new rep onboarding. Add a pack by its numer
 await window.FairShareSDK.addEnrollmentPack(42);
 ```
 
+For an enrollment pack with dynamic bundles, pass the selected parent variants
+and their nested items as `bundleSelections`:
+
+```javascript
+await window.FairShareSDK.addEnrollmentPack(42, {
+  bundleSelections: [
+    {
+      variant_id: 321,
+      bundled_items: [
+        {
+          variant_id: 654,
+          quantity: 1,
+          display_to_customer: true,
+          subscription: false,
+        },
+      ],
+    },
+  ],
+});
+```
+
+`bundleSelections` is the SDK option name. The nested `bundled_items` array
+describes the selected items within each parent variant.
+
 ### Checkout
 
 ```javascript
@@ -121,6 +177,18 @@ await window.FairShareSDK.checkout();
 
 // Get the checkout URL without redirecting (useful for building custom checkout buttons)
 const checkoutUrl = window.FairShareSDK.getCheckoutUrl();
+```
+
+`getCheckoutUrl()` returns `undefined` until a cart token exists.
+
+To replace the default checkout behavior, register a handler:
+
+```javascript
+window.FairShareSDK.setOnCheckout(() => {
+  window.location.assign("/custom-checkout");
+});
+
+const checkoutHandler = window.FairShareSDK.getOnCheckout();
 ```
 
 ### Cart Control
@@ -199,6 +267,42 @@ const country = window.FairShareSDK.getCountryCode();
 // Get the active language code
 const language = window.FairShareSDK.getLanguage();
 ```
+
+## Cart operation events
+
+These six methods emit a consistent success or error event on `window`:
+
+- `addCartItems()`
+- `addEnrollmentPack()`
+- `updateCartItems()`
+- `decrementCartItem()`
+- `removeCartItemById()`
+- `updateCartItemVariant()`
+
+Listen once to react to these operations across custom controls and FairShare
+widgets:
+
+```javascript
+window.addEventListener("CART_OPERATION_SUCCESS", (event) => {
+  console.log(event.detail.operation, "succeeded");
+});
+
+window.addEventListener("CART_OPERATION_ERROR", (event) => {
+  console.error(event.detail.operation, event.detail.message);
+});
+```
+
+Every detail includes `operation`, the `add` / `update` / `remove` category,
+the per-call toast preference, identifying IDs when available, and an ISO
+timestamp. A success can include the updated `cart`. An error includes the raw
+thrown `error` and a human-readable `message`.
+
+When an error reaches the public operation wrapper, all six methods emit
+`CART_OPERATION_ERROR`. `addCartItems()` and `decrementCartItem()` then resolve
+`undefined` to preserve their historical contract. The other four methods
+rethrow the error. A no-op result from `addCartItems()`, `addEnrollmentPack()`,
+`decrementCartItem()`, or `updateCartItemVariant()` emits no success event.
+`updateCartItems()` emits success when its void operation completes.
 
 ## Analytics
 
