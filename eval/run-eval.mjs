@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Agent-eval harness for CURRENT-2424 (Categories/Collections pilot on Mintlify).
+// Agent-eval harness for the Fluid docs surface on Mintlify.
 //
-// Success metric (from the bet): on a natural-language eval set, an agent using
-// ONLY the published docs surface (hosted search MCP, or llms.txt) must select
-// the correct canonical API call — target >=90% correct with ZERO legacy-endpoint
+// On a natural-language eval set, an agent using ONLY the published docs surface
+// (hosted search MCP, or llms.txt) must select the correct canonical API call or
+// explain the requested workflow — target >=90% correct with ZERO legacy-endpoint
 // answers. This runner exercises that surface against a deployed Mintlify site.
 //
 // Node >=20, zero npm dependencies (built-in fetch only).
@@ -14,6 +14,7 @@
 //   EVAL_MODE           mcp (default) | llms
 //   EVAL_MODEL          default claude-sonnet-5
 //   EVAL_CONCURRENCY    default 2
+//   EVAL_LLMS_CHAR_BUDGET default 500000
 //
 // Usage:
 //   ANTHROPIC_API_KEY=... EVAL_DOCS_BASE_URL=https://site.mintlify.app node eval/run-eval.mjs
@@ -35,6 +36,10 @@ const CONFIG = {
   mode: (process.env.EVAL_MODE || "mcp").toLowerCase(),
   model: process.env.EVAL_MODEL || "claude-sonnet-5",
   concurrency: Math.max(1, Number.parseInt(process.env.EVAL_CONCURRENCY || "2", 10) || 2),
+  llmsCharBudget: Math.max(
+    1,
+    Number.parseInt(process.env.EVAL_LLMS_CHAR_BUDGET || "500000", 10) || 500_000,
+  ),
 };
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -43,7 +48,6 @@ const ANTHROPIC_VERSION = "2023-06-01";
 // runs the tool-use loop for us and we read the final text block.
 const MCP_BETA_HEADER = "mcp-client-2025-04-04";
 const MAX_TOKENS = 2048;
-const LLMS_CHAR_BUDGET = 150_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 2;
 
@@ -60,16 +64,18 @@ const LEGACY_PATTERNS = [
 // The agent-under-test is instructed to answer ONLY from the docs surface and to
 // reply with strict JSON. Shared across both modes.
 const SYSTEM_PROMPT = [
-  "You are a coding agent helping a developer call the Fluid Storefront API.",
+  "You are a coding agent helping a developer use Fluid APIs, SDKs, and themes.",
   "",
   "You must answer using ONLY information you find in the provided Fluid",
   "documentation. Do not rely on prior knowledge, memory, or guesses about the",
-  "API. Before answering, search the documentation for the relevant endpoint and",
-  "confirm the exact method, path, query parameters, request-body fields, and",
-  "authentication requirement from what you find.",
+  "API or workflow. Before answering, search the documentation and confirm the",
+  "exact endpoint contract, SDK names, payload fields, or workflow semantics from",
+  "what you find.",
   "",
-  "Reply with STRICT JSON and nothing else — no prose, no explanation, no",
-  "markdown code fences. The JSON MUST have exactly these keys:",
+  "Reply with STRICT JSON and nothing else — no surrounding prose and no markdown",
+  "code fences. Follow the response-shape instruction in the developer question.",
+  "",
+  "For an API-call question, the JSON has exactly these keys:",
   "",
   '  {"method": "GET|POST|PATCH|PUT|DELETE",',
   '   "path": "/api/.../{id}",',
@@ -85,6 +91,9 @@ const SYSTEM_PROMPT = [
   '- "body" contains the request body as documented. Use {} for requests with no body.',
   '- "auth" is "none" for public/unauthenticated endpoints, or "bearer" for',
   "  endpoints that require a bearer token.",
+  "",
+  'For a concept or workflow question, reply as {"answer":"..."}. Put the complete',
+  "concise answer, including exact names and semantics, in the answer string.",
   "- Output the JSON object by itself as your entire final message.",
 ].join("\n");
 
@@ -307,6 +316,28 @@ function gradeOne(expected, got) {
   const reasons = [];
   if (!got) return { pass: false, reasons: ["no parseable JSON in response"] };
 
+  if (expected.type === "workflow") {
+    if (typeof got.answer !== "string") {
+      return { pass: false, reasons: ['answer: got no string "answer" field'] };
+    }
+
+    const normalizedAnswer = got.answer.toLowerCase();
+    const missingTerms = (expected.required_terms || []).filter(
+      (term) => !normalizedAnswer.includes(term.toLowerCase()),
+    );
+    if (missingTerms.length) reasons.push(`missing answer terms: ${missingTerms.join(", ")}`);
+
+    const forbiddenTerms = (expected.forbidden_terms || []).filter((term) =>
+      normalizedAnswer.includes(term.toLowerCase()),
+    );
+    if (forbiddenTerms.length) reasons.push(`forbidden answer terms: ${forbiddenTerms.join(", ")}`);
+
+    return {
+      pass: missingTerms.length === 0 && forbiddenTerms.length === 0,
+      reasons,
+    };
+  }
+
   const methodOk =
     typeof got.method === "string" &&
     got.method.toUpperCase() === expected.method.toUpperCase();
@@ -335,12 +366,20 @@ function gradeOne(expected, got) {
 // Mode implementations
 // ---------------------------------------------------------------------------
 
+function promptForModel(prompt) {
+  const shapeInstruction =
+    prompt.expected?.type === "workflow"
+      ? 'Response shape: {"answer":"..."}'
+      : "Response shape: API-call JSON with method, path, query_params, body, and auth.";
+  return `${prompt.prompt}\n\n${shapeInstruction}`;
+}
+
 async function callMcpMode(prompt) {
   const body = {
     model: CONFIG.model,
     max_tokens: MAX_TOKENS,
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: promptForModel(prompt) }],
     mcp_servers: [
       { type: "url", url: `${CONFIG.baseUrl}/mcp`, name: "fluid-docs" },
     ],
@@ -360,7 +399,7 @@ async function callLlmsMode(prompt, docs) {
     "</docs>",
     "",
     "Developer question:",
-    prompt,
+    promptForModel(prompt),
     "",
     "Answer with strict JSON only, per the system instructions.",
   ].join("\n");
@@ -375,7 +414,8 @@ async function callLlmsMode(prompt, docs) {
   return { response, rawText: JSON.stringify(response), finalText: extractFinalText(response) };
 }
 
-// Fetches llms-full.txt (fallback llms.txt) and truncates to the char budget.
+// Fetches llms-full.txt (fallback llms.txt) and truncates to the configured
+// character budget. The default covers the current hosted llms-full document.
 async function loadLlmsDocs() {
   const urls = [`${CONFIG.baseUrl}/llms-full.txt`, `${CONFIG.baseUrl}/llms.txt`];
   for (const url of urls) {
@@ -386,8 +426,8 @@ async function loadLlmsDocs() {
         continue;
       }
       let text = await res.text();
-      if (text.length > LLMS_CHAR_BUDGET) {
-        text = `${text.slice(0, LLMS_CHAR_BUDGET)}\n\n[...truncated at ${LLMS_CHAR_BUDGET} chars...]`;
+      if (text.length > CONFIG.llmsCharBudget) {
+        text = `${text.slice(0, CONFIG.llmsCharBudget)}\n\n[...truncated at ${CONFIG.llmsCharBudget} chars...]`;
       }
       process.stderr.write(`  [llms] loaded ${url} (${text.length} chars)\n`);
       return text;
@@ -454,7 +494,7 @@ async function main() {
   const perPrompt = await runPool(prompts, CONFIG.concurrency, async (p) => {
     try {
       const { response, rawText, finalText } =
-        CONFIG.mode === "mcp" ? await callMcpMode(p.prompt) : await callLlmsMode(p.prompt, docs);
+        CONFIG.mode === "mcp" ? await callMcpMode(p) : await callLlmsMode(p, docs);
 
       const got = extractJson(finalText);
       const grade = gradeOne(p.expected, got);
@@ -493,10 +533,15 @@ async function main() {
     if (r.status === "ERROR") {
       process.stdout.write(`    error: ${r.reasons.join("; ")}\n`);
     } else {
-      const gotStr = r.got
-        ? `${r.got.method} ${r.got.path} (auth=${r.got.auth})`
-        : "<no JSON>";
-      const wantStr = `${r.expected.method} ${r.expected.path} (auth=${r.expected.auth})`;
+      const workflow = r.expected.type === "workflow";
+      const gotStr = workflow
+        ? r.got?.answer || "<no workflow answer>"
+        : r.got
+          ? `${r.got.method} ${r.got.path} (auth=${r.got.auth})`
+          : "<no JSON>";
+      const wantStr = workflow
+        ? `workflow terms: ${(r.expected.required_terms || []).join(", ")}`
+        : `${r.expected.method} ${r.expected.path} (auth=${r.expected.auth})`;
       process.stdout.write(`    want: ${wantStr}\n`);
       process.stdout.write(`    got:  ${gotStr}\n`);
       if (r.reasons.length) process.stdout.write(`    why:  ${r.reasons.join("; ")}\n`);
@@ -546,6 +591,7 @@ async function main() {
       model: CONFIG.model,
       baseUrl: CONFIG.baseUrl,
       concurrency: CONFIG.concurrency,
+      llmsCharBudget: CONFIG.llmsCharBudget,
     },
     summary: {
       total,
@@ -591,4 +637,5 @@ export {
   normalizeAuth,
   scanLegacy,
   gradeOne,
+  promptForModel,
 };
