@@ -497,3 +497,108 @@ guide-walked operations on each surface.
   own structure, the cart/checkout guides, and (for `commerce-v2026-04` totals) the
   backend recalculator — never by importing orchestration-guide facts. Worth confirming
   the intended guide↔surface mapping when guides are slimmed in 9.5e.
+
+## Phase 9.6a — Redocly census dispositions (CURRENT-2708)
+
+Census of the legacy Redocly corpus (`fluid/redoc/docs/`, 127 authored `.md` pages) against the
+synced OpenAPI specs, deciding what earns migration into Mintlify. Redocly prose was treated as
+evidence to investigate, not truth to copy. Only **settled, structural** outcomes are recorded here;
+the per-claim adversarial verification queue (contradictions still to resolve) lives on the phase's
+Linear issue, not in this doc.
+
+### Corpus and disposition tally (settled)
+
+127 pages, independently counted (`find … -name '*.md' | wc -l`): guides 33, themes 21, SDK 67
+(cart 31 + components/events/settings 36), supporting 6.
+
+| Disposition | Count | Meaning |
+| ----------- | ----- | ------- |
+| migrate | 10 | verified, unique, API surface synced |
+| rewrite | 14 | valuable workflow, prose drifted / violated house rules |
+| consolidate | 57 | merge into an existing Mintlify page |
+| defer | 19 | owning API surface not synced yet |
+| discard | 27 | false / obsolete / duplicate / out-of-scope |
+
+The 57 `consolidate` pages fold overwhelmingly into `sdk/cart-api.mdx`, `sdk/components.mdx`,
+`sdk/installation.mdx`, and the theme root-configuration / developer-guide pages; the 10 `migrate`
+pages are the confirmed unaudited theme gaps (image-transformations, media-tag,
+linked-css-variable-presets, supported-paths, schema-components, blocks-and-components,
+affiliate-hydration, cart-feedback, github-integration) plus `sdk/files-sdk`.
+
+### Unsynced-surface deferral map (structural — verified by grep-absence in `api-reference/*.yaml`)
+
+Synced set = `storefront-v2026-04`, `checkout-v2026-04`, `payment-v2026-04`, `payments-v2026-04`,
+`commerce-v2026-04`, `auth-v0`, `webhooks-v0`. Each surface below is absent from that set and
+gates the listed content until it is synced:
+
+| Unsynced surface | Endpoints (as seen in source) | Gated content |
+| ---------------- | ----------------------------- | ------------- |
+| **fairshare-public-v2025-06** | `/api/public/v2025-06/*` (**commerce/carts + carts/{t}/items, items/{id}/subscribe, items/{id}/variant, enroll, enrollment, enrollment_packs/{slug}**, affiliates/lookup, events/leads/capture, events/checkout/started, events/media/video_analytics, events/pages\|urls/visit, media/{slug}, playlists/{slug}, session, browser/fingerprint) plus `/api/v202506/carts/*` gateway callbacks | the ENTIRE REST backing of the `@fluid-app` FairShare SDK — **cart mutations included**, so effectively **all ~57 SDK pages** (rows #58–#121 less the purely client-side ones), not a subset. Owning spec `public-v2025-06.yaml` is live/current but unsynced |
+| **integrations-v0 (Droplets)** | `/api/droplets*`, `/api/droplet_installations*` (+`/exchange`) | droplet-subscription-webhook, google-analytics-droplet, drop-zone-external-usage, mobile-app/use-cases; extras of creating-droplets |
+| **~~CRM / rep-v0 (`crm/v202506`)~~ — NOT A SURFACE** | `/api/company\|user/crm/v202506/{activities,catch_ups,contacts,events,notes,tasks}` — **in no spec and no Rails route**; `catch_ups` really live at `/api/catch_ups` | custom-catch-ups-guide + the mobile-app CRM pages. **Not sync-unblockable** — see the structural fact below; re-classify toward discard / rewrite-from-routes |
+| **themes-admin API** | `/api/application_themes*`, `/api/application_theme_templates*` | themes/api-reference; admin-API dump inside themes/themes.md |
+| **root-themes / marketplace API** | `/api/root_themes*` | theme-marketplace |
+| **DAM API (dam-v0)** | `/api/dam/assets`, `/api/dam/assets/{code}/variants`, `/api/dam/query` | dam-upload-endpoints; DAM-picker SDK backend |
+| **Global Embeds** | `/api/global_embeds` CRUD | google-analytics-droplet |
+| **Drop zones** | drop-zone config/placement API | drop-zone-external-usage |
+| **Mobile Widgets + users v2025-06** | `/api/company/mobile_widgets`, `/api/v2025-06/users/{token}` | mobile-widget-implementation |
+| **mobile-playlists** | (thin; SDK-doc pointer) | mobile-app/playlists |
+| **Web Builder component API** | undefined ("TBD" in source) | adding-components-for-web-builder |
+| **tokens-v2025-06** | `/api/v2025-06/{partner_tokens,tokens/public\|partner}` | authentication guide's token-mgmt claims (expected gap — house rules allow `/api/v2025-06/tokens/*`) |
+| **fluid_orchestration** | `/api/fluid_orchestration/*` | payment-processing guide (see 9.5b note) |
+| **legacy carts / catalog / admin** | `/api/carts` (carts-v0), `company/v1`, `catalog-v1`, `admin-v0`, `/v1/...` | build-shopping-cart, headless-commerce, targeted-marketing — all discarded (superseded by synced-spec rewrites); do not resync |
+
+### Newly confirmed structural facts
+
+- **The FairShare SDK's REST surface is entirely unsynced — including cart mutations.** Verified
+  against `origin/main` SDK source (`packages/api-client/src/generated/routes/**`): **every** REST
+  call the `@fluid-app` SDK makes is `/api/public/v2025-06/*` (30 paths) or `/api/v202506/carts/*`
+  (13 gateway-callback paths), and `grep -r '2026-04' packages/` returns **nothing** — the SDK has
+  **zero** v2026-04 references. Cart mutations are **not** an exception: they target
+  `/api/public/v2025-06/commerce/carts/*`. So the unsynced surface gates the REST-backed claims of
+  effectively **all ~57 FairShare SDK pages**, not a handful. The owning spec
+  (`public-v2025-06.yaml`, 67 paths, regenerated 2026-07-23) is live and current — materially unlike
+  `company/v1` — but is not in `.github/synced-specs.json`. No `public-v2026-04` successor exists or
+  is in flight.
+- **`checkout-v2026-04` is the surface for a *direct REST* cart integration, not for the SDK.** Its
+  path form `/api/checkout/v2026-04/carts/{token}/...` is legitimately different from the
+  storefront/company `/api/v202604/<resource>` house-rule form; both are valid per their own specs,
+  and prose should link to the generated reference rather than hand-type a path so the form is not
+  mistaken for a banned version. This is what `api/guides/headless-commerce.mdx` and
+  `guides/build-shopping-cart.mdx` correctly document. Consequence: **two full cart lifecycles ship
+  in parallel** (`public-v2025-06`, 30 paths, what the SDK calls; `checkout-v2026-04`, 58 paths, what
+  a direct integrator calls). Publishing both without explicit framing would be actively confusing.
+  (Complements gap #8, which covers the checkout cart auth model.)
+- **Four already-published SDK facts diverge from verified SDK truth** — re-verified against
+  `origin/main` **and** the live production CDN bundle after an initial pass against a stale checkout
+  produced one false negative (see the caveat below). All four are confirmed wrong on the published
+  pages; corrections tracked on CURRENT-2708:
+  - `captureLead` payload is `{message?, contact:{name?,email?,phone?}}`, **not**
+    `{first_name,…}`. Severity is **data loss, not cosmetic**: the server ignores the unknown keys,
+    so following the published shape silently drops all contact data. No field union is enforced.
+  - The media widget attribute is `playlist-id`/`media-id`. `library-id` has **no alias and is
+    silently ignored**. The registered tag is `<fluid-media-widget>`, not `<fluid-media>`.
+  - `trackFairshareEvent` takes `{eventName, data}` and returns `void` (do not await). The valid
+    `eventName` set is exactly **`"CHECKOUT_STARTED"`**; `{event, properties}` is a silent no-op.
+  - Lead-capture `contact-method` is `"email" | "phone"` (default `"email"`) — the published
+    `email|phone|both` third value does not exist.
+  Root cause is upstream: the SDK's own `packages/web-widgets/README.md` still documents the wrong
+  `captureLead` and `trackFairshareEvent` shapes on `origin/main`, so fixing Mintlify alone will let
+  this regress. Filed against `fluid-commerce/fluid-npm`.
+- **Verification caveat (method, not content).** The local `fluid-fairshare` checkout was 24 commits
+  behind `origin/main` during the 9.6a census, which produced a false "0 hits — doc ahead of code"
+  finding for the cart-feedback / cart-operation-events surface. That API is in fact **live in
+  production** (verified in the CDN bundle) and needs only one corrected default: the button-loading
+  spinner has been **on by default** since `web-widgets` 0.16.0, making `data-fluid-button-loading`
+  a kill switch (`!== "false"`), not an enable switch. Every SDK finding was subsequently re-run
+  against `origin/main`; cart-feedback was the only false negative. **Verify SDK claims against
+  `origin/main` or the shipped bundle, never a local working tree.**
+- **`crm/v202506` does not exist.** The seven mobile-app CRM pages were deferred on a "CRM/rep-v0"
+  surface that is in **no OpenAPI document and no Rails route** (`grep 'crm' config/routes/` yields
+  only the `draw` line; `catch_ups` actually live at `/api/catch_ups`). Syncing `rep-v0` would not
+  unblock them — it documents a different unversioned shape. Those rows are not sync-unblockable and
+  should be re-classified toward discard / rewrite-from-routes pending a product owner confirming
+  whether a rep CRM API is public at all.
+- **No real changelog/release-notes source exists.** The only changelog in the corpus is fictional
+  Redocly starter-template content ("Warp API"); a genuine release-notes page is net-new content, not
+  a migration.
