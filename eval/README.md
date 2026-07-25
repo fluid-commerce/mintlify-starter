@@ -31,10 +31,28 @@ SDK and theme workflow expectations are verified against the durable Phase 9.6
 decisions. A hosted run proves whether the corresponding target content has
 actually deployed and is discoverable.
 
+## Where this runs — local only, never CI
+
+The graded eval (`run-eval.mjs`) is a **manual harness you run locally. It is not
+wired into CI and must not be.** It costs API tokens on every run and depends on a
+live deploy, so it is a deliberate, occasional check — typically once per migration
+phase, to prove that published content is actually discoverable. Record each run on
+the phase's Linear issue.
+
+CI (`.github/workflows/validate.yml`) runs only deterministic, offline checks that
+need no credentials: `mint validate`, `check-guide-claims.mjs` and its self-test,
+and this directory's unit tests (`*.test.mjs`). The unit tests cover this harness's
+grading and parsing logic without touching the network, which is why `node --test`
+passes with no `ANTHROPIC_API_KEY` set. **Nothing in CI requires an API key.**
+
+So if you are looking at the key requirement below and wondering what is broken:
+nothing. `ANTHROPIC_API_KEY` is only needed by the person running the graded eval
+by hand, because the harness is literally paying a model to sit the exam.
+
 ## Prerequisites
 
 - **Node ≥ 20** (uses built-in `fetch`; zero npm dependencies).
-- An **Anthropic API key** (`ANTHROPIC_API_KEY`).
+- An **Anthropic API key** (`ANTHROPIC_API_KEY`) — for local graded runs only, per above.
 - A **deployed Mintlify site** that exposes the agent surface. The `llms.txt`,
   `llms-full.txt`, and `/mcp` endpoints exist **only on the hosted deploy**, not in
   the local working tree — so the runner takes the deploy's base URL as config
@@ -83,6 +101,22 @@ node eval/run-eval.mjs
   truncates only when it exceeds `EVAL_LLMS_CHAR_BUDGET`, and passes it as context
   in the user message. The 500k-character default covers the current hosted
   document, including SDK and theme pages that appeared beyond the old 150k cutoff.
+
+  Two things this mode reports, both learned the hard way:
+
+  - **The fetch bypasses the CDN cache.** Hosted llms files are served with
+    `cache-control: max-age=86400`, so a plain request can return a copy generated
+    before the most recent deploy — which grades stale content and reports failures
+    against pages that are already live. The runner sends no-cache headers plus a
+    cache-busting query parameter, and logs the response's `last-modified` so every
+    run records which revision it graded. Check that timestamp before trusting a
+    failure; verifying by byte size alone will fool you, because a cached copy and
+    a fresh one can differ while looking equally plausible.
+  - **Truncation is never silent.** If the document exceeds the budget, the runner
+    warns with how many characters went ungraded. Treat that warning as a failed
+    run, not a caveat — the pages past the cutoff were not evaluated. As of the
+    Phase 9.6 migrations the hosted document is ~413k characters against the 500k
+    default, so the next sizeable content wave will need a higher budget.
   This is a cheaper, MCP-independent sanity check of the same docs content.
 
 Both modes use the same system prompt: the model is a coding agent that must answer
