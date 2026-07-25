@@ -454,6 +454,24 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     its own terms — subdomain form in `create_cart`/`send_magic_link`, full-host form
     in `query_product`'s `metadata.fluid_shop` — rather than unifying the convention.
     Unifying is a spec-behavior change, out of scope; still flagged upstream.
+12. **`checkout-v2026-04` paginates by offset, with no documented exception.**
+    Found by the first `check-hosted-docs.mjs` run (CURRENT-2711) and confirmed against
+    the synced artifact: `api-reference/checkout-v2026-04.yaml` carries 11 `per_page`
+    occurrences — eight list operations (`list_customer_addresses`,
+    `list_customer_payment_methods`, `list_customer_points`, `list_reps`,
+    `get_store_drop_zones`, `list_subscriptions`, `list_users`, `list_customer_orders`)
+    plus a pagination response schema (around lines 2607–2629 and 7203–7211). AGENTS.md
+    bans `page` / `per_page` / `offset` and sanctions exactly one surface, `webhooks-v0`,
+    so a current v2026-04 surface is shipping offset pagination with no documented
+    exception. The generated reference pages reflect the spec, so the terms reach the
+    agent surface: `api-reference/customer-orders/list-customer-orders` and
+    `api-reference/customer-payment-methods/list-customer-payment-methods` are the two
+    the checker's prompt coverage reaches today, and both fail its leakage scan.
+    **Not fixable here.** The spec is a synced artifact that must never be hand-edited,
+    so the resolution is either an upstream move to cursor pagination in `fluid` or a
+    third documented AGENTS.md exception naming this surface. The checker deliberately
+    does **not** sanction these pages: doing so to make the run green would retire the
+    only check that found them. Left failing on purpose.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
@@ -794,30 +812,135 @@ a coverage failure**: its disposition is migrate, but it stays unpublished until
   originally sketched. Reusable option groups are covered; the exhaustive per-component reference is
   accepted reference territory, consistent with the 9.6c.1 omission sweep.
 
-### Open questions for the docs owner (recorded, deliberately unresolved)
+### The graded eval is retired; the hosted check is deterministic and key-free
 
-These were found during reconciliation and are not safe to settle from the evidence alone:
+`eval/run-eval.mjs` and its tests are deleted, replaced by `eval/check-hosted-docs.mjs`. The old
+harness paid a model to answer each prompt from the docs and graded the answer, so both of its modes
+required an `ANTHROPIC_API_KEY`. The replacement calls Mintlify's unauthenticated `/mcp`
+`search_fluid` tool with each prompt's own text. Nothing in `eval/` calls a model or needs a
+credential now.
 
-- **`guides/creating-droplets.mdx` contradicts a 9.6b verdict and another published page.** It still
-  publishes the flat token-exchange response and `event: 'order_created'`, both of which 9.6b
-  verdicted corrected (claims 44/45: the response nests under `droplet_installation` + `credentials`
-  + `meta`, and registration takes `{resource, event}`). `api/guides/webhooks.mdx` documents the
-  registration correctly, so the two pages now disagree. Leaving the disproven shape published and
-  withholding the nested shape pending the unsynced `integrations-v0` adoption are opposite
-  readings; the fix differs accordingly.
-- **`trackCheckoutStartedSync` is documented nowhere.** Its page is a consolidate row and
-  `trackCheckoutStarted` is published, but the awaitable variant appears in no page and no claim
-  covers it. Either the distinction was dropped deliberately without a parity note, or it is a real
-  omission.
-- **Authentication and payment-routing guidance may now be uncovered.** Two rows were discarded as
-  duplicates of `guides/authentication.mdx` and `guides/payment-processing.mdx`, both since deleted.
-  `api/authentication.mdx` may or may not be the intended successor.
-- **Two label-only ambiguities shift the tally by one.** `cart-operation-events` is recorded as
-  migrate per the 9.6a corrections, though its content was delivered by consolidation into
-  `sdk/cart-api.mdx` and `themes/cart-feedback.mdx` (as consolidate: migrate 11 / consolidate 57).
-  `getAuthenticatedUser` is recorded as a deferred page, though the deferral may apply only to its
-  return contract (as consolidate: consolidate 57 / defer 10). The content outcome is unchanged
-  either way.
+The checker grades in **two separable stages**, and the separation is the load-bearing design
+decision. `search_fluid` returns a truncated slice of each matching page, so asserting a full
+contract against that slice measures snippet luck, not discoverability — and a failure could not be
+read as either a ranking problem or a docs problem. So:
+
+- **Stage 1 — retrieval:** does search return the page that documents the answer? For API prompts
+  that page is resolved mechanically from `llms-full.txt` by matching the generated contract line
+  `<method> <path>`, so no hand-maintained prompt-to-page mapping exists to drift. Workflow prompts
+  declare `target_page` (a string, or an array where a workflow legitimately spans a guide plus the
+  reference it points at) because a workflow is not one operation and nothing in the corpus identifies
+  its owning page mechanically.
+- **Stage 2 — contract:** fetch that page's full markdown (`<base>/<page>.md`, cache-busted the same
+  way the llms files are) and check the contract there. A generated reference page inlines the
+  operation's OpenAPI fragment, which is what makes this richer than prose matching.
+
+What a green run now means:
+
+- **Proven:** the answer is published, discoverable through the hosted agent surface, and correct in
+  its contract detail — method, path, auth, query-parameter names, and request-body fields for API
+  prompts; required and forbidden vocabulary for workflow prompts. Also per run: `llms.txt` and
+  `llms-full.txt` are live and non-trivial, and no unsanctioned legacy marker appears in the corpus,
+  in retrieved content, or on any fetched target page.
+- **No longer proven:** that a model given those docs produces the correct answer. The ≥ 90% /
+  zero-legacy acceptance metric described a model's answers and does not transfer; the checker
+  requires everything to pass instead.
+- **`auth` is checked, from the spec and never from prose.** Every hosted `.md` page opens with an
+  agent-instructions banner reading "Authenticate with the header Authorization: Bearer <token>", so
+  any prose-based check would report bearer for all 57 API prompts. The check reads the inlined
+  security requirement (`- bearer_auth: []`); the `securitySchemes` definition renders without the
+  leading dash, which is what distinguishes a requirement from a declaration.
+- **That same banner had to be stripped before the legacy scan.** It names `per_page` (in order to
+  forbid it) and lists every spec filename including `webhooks-v0.yaml`. Left in, it produced a
+  `per_page` hit on all 57 fetched pages *and* satisfied the webhooks-v0 sanction on all 57 — a check
+  that fires everywhere and forgives everywhere. `stripAgentBanner` removes the leading block quote so
+  each page is scanned on its own content.
+- **`forbidden_terms` are page-scoped, which restored them as real assertions.** Scanned against a
+  ten-page search dump, a term was unusable if it appeared anywhere in the corpus, including in a
+  "use X, not Y" correction. Scoped to the page that owns the workflow, absence is meaningful again.
+  Two of the four terms dropped earlier are restored: `product_bundles_attributes` (verified absent
+  from both of `product-bundle-read-shape`'s target pages) and `bundleSelections` on
+  `product-bundle-direct-cart-write` (verified absent from `api-reference/cart-items/add-items-to-cart`).
+  Two stay dropped, deliberately: `data-fluid-button-loading="true"` is printed on
+  `themes/cart-feedback` in a corrective sentence, and `bundleSelections` on
+  `sdk-add-cart-items-bundled-payload` is correctly documented on that prompt's owning page,
+  `sdk/cart-api`. Retargeting an SDK question to a theme guide to make a negative assertion pass would
+  misattribute ownership, so it was not done.
+- **The two stages are gated differently, because they are not equally stable.** Stage 2 must be
+  **100%** — it applies fixed assertions to a fetched page, so any failure is a real docs gap or a
+  wrong expectation. Stage 1 is gated as a **rate, ≥ 90%**, reusing the project's own documented
+  success metric ("pass rate ≥ 90%, zero legacy-endpoint answers") now applied to retrieval rather
+  than to a model's answers; gating a live search engine's ranking per prompt would make the build a
+  coin flip on borderline queries. Every stage-1 miss is named in the output regardless of the rate,
+  so a regression stays visible rather than being absorbed by the tolerance. A prompt that misses
+  stage 1 but passes stage 2 is reported as `MISS`, not `FAIL`.
+- **There is no retry-until-green.** One query per prompt decides the verdict, the way a real agent
+  asks once. Retrying until a page ranks would launder a discoverability weakness into a pass. The
+  optional `--repeat N` flag issues N queries and reports per-prompt hit rates as a **diagnostic
+  only** — the verdict always comes from the first query, so the gate is identical with or without it.
+- **Fetching whole pages removed most of the observed flakiness.** Under the old snippet-based
+  assertion, API passes moved 37 → 40 → 40 across three runs and one prompt reported 1 then 4 missing
+  terms. At page granularity, four consecutive full runs returned the same 60/63 with the same three
+  misses, and each of those three reproduces 0/5 under `--repeat 5` — they are stable ranking facts,
+  not noise. Confirm a stage-1 miss with a targeted re-run anyway; it costs one query.
+
+### `product-bundle-read-shape` expectations corrected
+
+The prompt could never pass, for two independent reasons, and its notes now carry the evidence.
+
+- It required `product_bundle_groups` — the **legacy shape `themes/product-bundles` explicitly
+  disavows** ("Use `product.bundle_groups[]`, not the legacy `product.product_bundle_groups[]`
+  shape"). It scored as satisfied only because the page names the legacy shape inside that warning.
+  The required term is now the dotted `product.bundle_groups`, which the legacy name does not
+  contain as a substring, so the current shape is what actually gets checked. The legacy name is
+  deliberately **not** added to `forbidden_terms`: the corrective warning would trip it, and the
+  subscriptions spec legitimately exposes `subscription.variant.product.product_bundle_groups[]`.
+- It required `pricing_type` and `country_pricing`, which appear in no published `.mdx`, not in
+  `api-reference/storefront-v2026-04.yaml`, and not in `llms-full.txt`. Phase 9.6c.1 above accepted
+  exhaustive bundle pricing and country configuration as reference territory, so those requirements
+  contradicted a durable decision. Both are removed, and the prompt no longer asks for them.
+
+The kept group fields are verified in the storefront `ProductBundleGroup` schema: `group_type`,
+`min_selections`, `max_selections`, `selection_type`, `bundle_group_items`, and the item's
+`bundled_variant_id`. `group_type` is **spec-only** — it reaches readers through the spec-driven
+Product show reference, not the prose page. That is why this prompt declares two target pages: the
+theme guide supplies the render shape, the generated storefront Product show reference supplies
+`group_type`, and Phase 9.6c.1 already records that this workflow spans two synced contracts.
+
+### Three checkout `auth` expectations corrected against the spec
+
+Enabling the `auth` check surfaced three prompts whose expectations the synced spec contradicts. All
+three claimed `security: bearer_auth` in their notes; all three are now `"none"`:
+
+- `checkout-apply-discount-code` — `checkout_v2026_04_apply_cart_discount` declares an explicit
+  `security: []`.
+- `checkout-magic-link-returning-buyer-probe` — `checkout_v2026_04_send_cart_magic_link` declares an
+  explicit `security: []`.
+- `checkout-add-cart-items` — the operation declares no `security` key and `checkout-v2026-04.yaml`
+  carries no top-level `security`, so by OpenAPI semantics there is no requirement.
+
+This is not a downgrade of the contract: these cart endpoints are credentialed by the opaque cart
+token in the path, which the spec models as no security scheme and the generated page states as
+"cart-token authentication carried in the path, with no bearer token or API key". The eval's `auth`
+field only distinguishes `none` from `bearer`, so `none` is the correct value. The stale notes are
+corrected in place rather than deleted, so the disagreement stays visible.
+
+### Spec line numbers are not usable as evidence — do not add more
+
+`prompts.json` notes carry roughly 83 spec line citations accumulated across earlier phases, and they
+are unreliable. Three were spot-checked against the current specs and all three pointed at unrelated
+operations: `webhooks-register` cites `webhooks-v0.yaml` line 1562 for registering a webhook, but that
+line is `summary: Delete company event`. This is not carelessness by whoever wrote them — the specs
+re-sync hourly from the source-of-truth mirror, so a line number is correct only until the next sync
+touches anything above it. A rotted pointer is worse than none, because a reader who follows it lands
+on a different operation and can "confirm" the wrong fact.
+
+All 83 were removed in this phase. What remains is the stable evidence that was already alongside them
+and does not rot: `operationId` for the 51 notes that carry one, and for the rest a schema name
+(`AddItemsRequest`, `BundleChildInput`, `LangWrite`, `CategoryWrite`), a camelCase operation name, a
+field name, or the owning page. Cite those, plus the literal declaration where it matters — for example
+`security: []`. Do not reintroduce line numbers: they are unusable as evidence against an hourly-synced
+artifact, however accurate they are the moment they are written.
 
 ### Scope caveat carried forward
 
