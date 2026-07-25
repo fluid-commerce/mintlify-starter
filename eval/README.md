@@ -1,7 +1,8 @@
-# Agent-eval harness — CURRENT-2424 (Categories/Collections pilot)
+# Hosted docs agent-eval harness
 
-This directory holds the agent-eval harness for the **Categories/Collections pilot on
-Mintlify** (Linear CURRENT-2424).
+This directory holds the agent-eval harness for Fluid's hosted Mintlify docs. The
+harness started as the CURRENT-2424 Categories/Collections pilot and now covers
+the published API, SDK, and theme surfaces.
 
 It also holds the **guide truth gate** (Linear CURRENT-2587): `guide-claims.json`
 (claims registry for the task guides) and `check-guide-claims.mjs` (deterministic
@@ -12,21 +13,23 @@ issue, not in the repo.
 
 ## Purpose
 
-The bet behind CURRENT-2424 is that publishing the Fluid Storefront API docs to a
-Mintlify site — with a hosted agent surface (`llms.txt`, `llms-full.txt`, and a
-search `/mcp` endpoint) — lets a coding agent pick the **correct canonical API call**
-for a natural-language task, without ever seeing the OpenAPI spec directly.
+The bet is that publishing Fluid docs to a Mintlify site — with a hosted agent
+surface (`llms.txt`, `llms-full.txt`, and a search `/mcp` endpoint) — lets a coding
+agent select the **correct canonical API call** or explain an implementation
+workflow from a natural-language task, without using a legacy docs site.
 
-The success metric: on a natural-language eval set, an agent using **only** the
-published docs surface must select the correct canonical call —
+The success metric: on the natural-language eval set, an agent using **only** the
+published docs surface must return the current answer —
 
 - **pass rate ≥ 90%**, and
 - **zero legacy-endpoint answers** (no `company/v1`, `/api/v1/`, `v2025-06`/`v202506`,
   or `per_page`).
 
-`eval/prompts.json` is the **pilot subset** (10 prompts, Categories + Collections
-only) of an eventual **fixed 25-prompt** set. Every expected answer was verified
-against `api-reference/storefront-v2026-04.yaml` in this repo.
+`eval/prompts.json` currently contains 63 prompts: 57 API-call prompts and 6
+CURRENT-2711 workflow prompts. API answers are verified against the synced specs.
+SDK and theme workflow expectations are verified against the durable Phase 9.6
+decisions. A hosted run proves whether the corresponding target content has
+actually deployed and is discoverable.
 
 ## Prerequisites
 
@@ -35,8 +38,8 @@ against `api-reference/storefront-v2026-04.yaml` in this repo.
 - A **deployed Mintlify site** that exposes the agent surface. The `llms.txt`,
   `llms-full.txt`, and `/mcp` endpoints exist **only on the hosted deploy**, not in
   the local working tree — so the runner takes the deploy's base URL as config
-  (`EVAL_DOCS_BASE_URL`). You cannot run the eval end-to-end until the pilot site is
-  deployed.
+  (`EVAL_DOCS_BASE_URL`). You cannot run the eval end-to-end until the target site
+  is deployed.
 
 ## Configuration (environment variables)
 
@@ -47,6 +50,7 @@ against `api-reference/storefront-v2026-04.yaml` in this repo.
 | `EVAL_MODE`         | no       | `mcp`            | `mcp` (hosted search MCP connector) or `llms` (fetch `llms-full.txt`). |
 | `EVAL_MODEL`        | no       | `claude-sonnet-5`| The agent-under-test model. |
 | `EVAL_CONCURRENCY`  | no       | `2`              | Parallel prompts in flight. |
+| `EVAL_LLMS_CHAR_BUDGET` | no   | `500000`         | Maximum hosted `llms-full.txt` characters supplied in `llms` mode. |
 
 ## Usage
 
@@ -62,8 +66,8 @@ EVAL_DOCS_BASE_URL=https://fluid-docs.mintlify.app \
 EVAL_MODE=llms \
 node eval/run-eval.mjs
 
-# Override model / concurrency
-EVAL_MODEL=claude-opus-4-8 EVAL_CONCURRENCY=4 \
+# Override model, concurrency, or llms-full context budget
+EVAL_MODEL=claude-opus-4-8 EVAL_CONCURRENCY=4 EVAL_LLMS_CHAR_BUDGET=750000 \
 ANTHROPIC_API_KEY=sk-ant-... EVAL_DOCS_BASE_URL=https://fluid-docs.mintlify.app \
 node eval/run-eval.mjs
 ```
@@ -76,15 +80,19 @@ node eval/run-eval.mjs
   tool-use loop server-side; the runner reads the final text block. This is the
   closest match to how a real coding agent consumes the hosted docs.
 - **`llms`** — fetches `<base>/llms-full.txt` (falling back to `<base>/llms.txt`),
-  truncates to ~150k chars, and passes it as context in the user message. A cheaper,
-  MCP-independent sanity check of the same docs content.
+  truncates only when it exceeds `EVAL_LLMS_CHAR_BUDGET`, and passes it as context
+  in the user message. The 500k-character default covers the current hosted
+  document, including SDK and theme pages that appeared beyond the old 150k cutoff.
+  This is a cheaper, MCP-independent sanity check of the same docs content.
 
 Both modes use the same system prompt: the model is a coding agent that must answer
 **only** from the docs surface, search before answering, and reply with strict JSON.
+The prompt entry selects either the API-call response shape or the workflow response
+shape.
 
 ## Expected-answer schema (`prompts.json`)
 
-Each prompt entry:
+API-call prompts omit `expected.type` and retain the original schema:
 
 ```jsonc
 {
@@ -107,9 +115,30 @@ The model is asked to reply with:
 {"method": "...", "path": "...", "query_params": {}, "body": {}, "auth": "none|bearer"}
 ```
 
+Workflow prompts use deterministic required and forbidden terms:
+
+```jsonc
+{
+  "id": "sdk-enrollment-bundle-selections",
+  "prompt": "<natural-language workflow question>",
+  "expected": {
+    "type": "workflow",
+    "required_terms": ["addEnrollmentPack", "bundleSelections", "bundled_items"],
+    "forbidden_terms": ["bundle_selections"]
+  },
+  "notes": "<evidence / rationale>"
+}
+```
+
+The workflow response is also strict JSON:
+
+```json
+{"answer":"A concise answer containing the exact documented names and semantics."}
+```
+
 ## Grading rules (pure code — no LLM judge)
 
-A prompt **PASSES** when all of the following hold:
+An API-call prompt **PASSES** when all of the following hold:
 
 1. **method** matches (case-insensitive).
 2. **path** matches the template: static segments must match exactly; each
@@ -122,6 +151,11 @@ A prompt **PASSES** when all of the following hold:
    and `{"filter":{"country":…}}` satisfy a required `filter[country]`.
 5. **all `required_body_fields`** are present as names anywhere in the answer's
    `body` (collected recursively, so a `category`/`collection` wrapper is fine).
+
+A workflow prompt **PASSES** when the response has a string `answer`, every
+`required_terms` entry appears in that string, and no `forbidden_terms` entry
+appears. Term comparisons are case-insensitive literal substring checks. They do
+not use an LLM judge.
 
 Separately, the harness scans the **entire raw response** for legacy patterns:
 `company/v1/`, `/api/v1/`, `v2025[-_]?06`, `v202506`, `per_page`. Any hit flags the
@@ -146,7 +180,8 @@ errors), the prompt is marked **ERRORED** (not failed) and the run continues.
 
 The pure grading and parsing helpers in `run-eval.mjs` (`normalizePath`,
 `isParamSegment`, `pathMatches`, `flattenNames`, `normalizeAuth`, `scanLegacy`,
-`gradeOne`, `extractJson`, `parseAnyObject`, `extractFinalText`, `isRetryableStatus`)
+`gradeOne`, `promptForModel`, `extractJson`, `parseAnyObject`, `extractFinalText`,
+`isRetryableStatus`)
 are exported and characterized by `run-eval.test.mjs` using Node's built-in test
 runner (`node:test` + `node:assert/strict`) — zero dependencies. `run-eval.mjs` only
 runs its `main()` when executed directly, so importing it for tests has no side
@@ -162,18 +197,11 @@ CI runs this in `validate.yml` (with `eval/` as the working directory — a bare
 network/orchestration layer (Anthropic requests, MCP connector, retry pool) is
 deliberately untested here — it needs a live deploy and is exercised by real eval runs.
 
-## Growing to the full 25-prompt set
+## Maintaining the eval set
 
-The pilot is 10 prompts scoped to Categories + Collections. Later phases extend
-`prompts.json` toward the fixed 25-prompt set by adding coverage for the other
-published surfaces, following the same `expected`-schema and spec-verification
-discipline:
-
-- **auth-v0** — token/session acquisition and the bearer-auth flow.
-- **webhooks** — `categories.deleted` / `collections.deleted` subscription and
-  payload-shape tasks.
-- **checkout surfaces** — cart, payments, and subscription canonical calls.
-
-Each new prompt must be verified against the authoritative spec before it is added,
-and the acceptance criteria (≥ 90% correct, zero legacy answers) hold for the full
-set, not just the pilot.
+Verify every new API prompt against its authoritative synced spec. Verify SDK and
+theme workflow prompts against the published target plus the durable evidence in
+`guide-truth.md`. Keep required terms specific enough to prove discovery without
+requiring incidental prose, and use forbidden terms for known stale shapes or
+wrong semantics. The acceptance criteria (≥ 90% correct and zero legacy answers)
+apply to the complete set.

@@ -24,6 +24,7 @@ import {
   normalizeAuth,
   scanLegacy,
   gradeOne,
+  promptForModel,
 } from "./run-eval.mjs";
 
 describe("isRetryableStatus", () => {
@@ -385,5 +386,69 @@ describe("gradeOne", () => {
       body: { category: { status: "scheduled", publish_at: "2026-07-01T08:00:00Z" } },
     });
     assert.equal(res.pass, true);
+  });
+
+  const EXPECTED_WORKFLOW = {
+    type: "workflow",
+    required_terms: ["bundleSelections", "bundled_items", "variant_id"],
+    forbidden_terms: ["bundle_selections"],
+  };
+
+  it("passes a workflow answer containing every required term", () => {
+    const res = gradeOne(EXPECTED_WORKFLOW, {
+      answer:
+        "Pass bundleSelections to addEnrollmentPack(); each selection uses variant_id and nested bundled_items.",
+    });
+    assert.equal(res.pass, true);
+    assert.deepEqual(res.reasons, []);
+  });
+
+  it("matches workflow terms case-insensitively", () => {
+    const res = gradeOne(
+      { type: "workflow", required_terms: ["CART_OPERATION_SUCCESS"] },
+      { answer: "Listen for cart_operation_success on window." },
+    );
+    assert.equal(res.pass, true);
+  });
+
+  it("fails a workflow answer that omits a required term", () => {
+    const res = gradeOne(EXPECTED_WORKFLOW, {
+      answer: "Call addEnrollmentPack() with bundleSelections.",
+    });
+    assert.equal(res.pass, false);
+    assert.ok(res.reasons.some((r) => /missing answer terms/.test(r) && /bundled_items/.test(r)));
+  });
+
+  it("fails a workflow answer that includes a forbidden term", () => {
+    const res = gradeOne(EXPECTED_WORKFLOW, {
+      answer:
+        "Pass bundleSelections (also called bundle_selections) with variant_id and bundled_items.",
+    });
+    assert.equal(res.pass, false);
+    assert.ok(res.reasons.some((r) => /forbidden answer terms/.test(r) && /bundle_selections/.test(r)));
+  });
+
+  it("requires workflow answers to use the strict answer field", () => {
+    const res = gradeOne(EXPECTED_WORKFLOW, { explanation: "bundleSelections" });
+    assert.equal(res.pass, false);
+    assert.match(res.reasons[0], /answer/);
+  });
+});
+
+describe("promptForModel", () => {
+  it("requests the existing API-call response shape by default", () => {
+    const prompt = promptForModel({
+      prompt: "Which endpoint?",
+      expected: { method: "GET", path: "/api/example", auth: "none" },
+    });
+    assert.match(prompt, /API-call JSON/);
+  });
+
+  it("requests the workflow answer response shape for workflow prompts", () => {
+    const prompt = promptForModel({
+      prompt: "How does this workflow work?",
+      expected: { type: "workflow", required_terms: ["example"] },
+    });
+    assert.match(prompt, /\{"answer":"\.\.\."\}/);
   });
 });
