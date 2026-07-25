@@ -732,3 +732,97 @@ unsynced FairShare REST surface. The following bundle decisions are durable:
 - The omission sweep accepted exhaustive bundle pricing, inventory, country, and administrative
   configuration as reference territory. The guide keeps only the render → select → submit workflow
   and links to generated endpoint references for the full contracts.
+
+## Phase 9.6d — migration closure reconciliation (CURRENT-2711)
+
+Closure gate for the Redocly migration: every authored page reconciled to a final outcome, and every
+migrate / rewrite / consolidate outcome checked against a page that actually exists in the published
+nav. The full 127-row ledger is a run record and lives on CURRENT-2711; only the settled outcomes are
+recorded here.
+
+### Corrected disposition tally (supersedes the Phase 9.6a tally)
+
+The 9.6a tally above was never re-rolled-up after later phases changed individual dispositions. These
+are the final counts; 11 of the 127 rows changed.
+
+| Disposition | 9.6a | Final | Meaning |
+| ----------- | ---- | ----- | ------- |
+| migrate | 10 | **12** | verified, unique, API surface synced |
+| rewrite | 14 | **13** | valuable workflow, prose drifted / violated house rules |
+| consolidate | 57 | **56** | merge into an existing Mintlify page |
+| defer | 19 | **11** | owning API surface not synced yet |
+| discard | 27 | **35** | false / obsolete / duplicate / out-of-scope |
+
+The changed rows, with the phase whose evidence moved them:
+
+- **The eight `mobile-app/*` CRM pages** (activities, catch-ups, contacts, events, notes, overview,
+  tasks, use-cases) moved **defer → discard**. `crm/v202506` was never a surface, so these pages are
+  not sync-unblockable: none of their 62 endpoint rows is correct as written, and the catch-up and
+  user-scoped event writes they document have no route at all (9.6b/9.6c).
+- **`guides/custom-catch-ups-guide.md`** moved **defer → migrate as current content** — its URLs,
+  auth, and route are verbatim correct and owned by `company-v0` (9.6c). Publication stays gated on
+  that sync, so it is the one eligible page with no published home (see the reconciliation gap
+  below). Do not add a `GET /{id}` workflow: neither the spec nor the controller implements one.
+- **`sdk/fairshare/cart/cart-operation-events.md`** moved **rewrite (hard blocker) → migrate**. The
+  doc-ahead-of-code blocker was a false negative produced by a 24-commit-stale local
+  `fluid-fairshare` checkout; the API is live in the shipped CDN bundle (9.6a corrections, 9.6b
+  claim 21). This is the origin of the binding rule that SDK claims are verified against
+  `origin/main` or the shipped bundle, never a local working tree.
+- **`sdk/fairshare/components/getAuthenticatedUser.md`** moved **consolidate → defer**. Claim 41
+  deferred its return contract (the SDK writes an object but reads through string storage), and the
+  dependency is an upstream SDK/type fix rather than a spec sync.
+
+Rows #60–#85 keep their dispositions but their spec attribution was wrong: those SDK pages were
+mapped to `checkout-v2026-04`, a surface the SDK never calls. They belong to the unsynced
+`fairshare-public-v2025-06` surface. The dispositions hold because 9.6c published them at SDK
+altitude only — verified by grep-absence of `public/v2025-06`, `v202506`, and `crm/v202506` from
+every published `.mdx`.
+
+### Reconciliation result
+
+81 rows are in scope (12 migrate + 13 rewrite + 56 consolidate). **80 of 81 targets are present**,
+and navigation is whole: 41 `.mdx` files, all 41 in `docs.json`, no orphans and no nav entries
+pointing at absent files. Deferred content is correctly absent — neither `lookupAffiliate` nor
+`custom_catch_ups` appears in any published page.
+
+The single gap is `guides/custom-catch-ups-guide.md`, which is a **deferred-unsynced exception, not
+a coverage failure**: its disposition is migrate, but it stays unpublished until `company-v0` syncs.
+
+### Accepted omissions (deliberate — do not re-litigate without cause)
+
+- `themes/schema-components.md` (182 KB of source) ships as one page rather than the split that was
+  originally sketched. Reusable option groups are covered; the exhaustive per-component reference is
+  accepted reference territory, consistent with the 9.6c.1 omission sweep.
+
+### Open questions for the docs owner (recorded, deliberately unresolved)
+
+These were found during reconciliation and are not safe to settle from the evidence alone:
+
+- **`guides/creating-droplets.mdx` contradicts a 9.6b verdict and another published page.** It still
+  publishes the flat token-exchange response and `event: 'order_created'`, both of which 9.6b
+  verdicted corrected (claims 44/45: the response nests under `droplet_installation` + `credentials`
+  + `meta`, and registration takes `{resource, event}`). `api/guides/webhooks.mdx` documents the
+  registration correctly, so the two pages now disagree. Leaving the disproven shape published and
+  withholding the nested shape pending the unsynced `integrations-v0` adoption are opposite
+  readings; the fix differs accordingly.
+- **`trackCheckoutStartedSync` is documented nowhere.** Its page is a consolidate row and
+  `trackCheckoutStarted` is published, but the awaitable variant appears in no page and no claim
+  covers it. Either the distinction was dropped deliberately without a parity note, or it is a real
+  omission.
+- **Authentication and payment-routing guidance may now be uncovered.** Two rows were discarded as
+  duplicates of `guides/authentication.mdx` and `guides/payment-processing.mdx`, both since deleted.
+  `api/authentication.mdx` may or may not be the intended successor.
+- **Two label-only ambiguities shift the tally by one.** `cart-operation-events` is recorded as
+  migrate per the 9.6a corrections, though its content was delivered by consolidation into
+  `sdk/cart-api.mdx` and `themes/cart-feedback.mdx` (as consolidate: migrate 11 / consolidate 57).
+  `getAuthenticatedUser` is recorded as a deferred page, though the deferral may apply only to its
+  return contract (as consolidate: consolidate 57 / defer 10). The content outcome is unchanged
+  either way.
+
+### Scope caveat carried forward
+
+"Zero pages unaccounted for" covers the 127 authored Markdown pages only. The legacy site also served
+37 `/docs/openapi/<spec>` reference routes, a `_spec/*` OpenAPI-JSON family, and a 20-link landing
+page — none censused. `/docs/openapi/rep-v0` (10 inbound internal links) and `/docs/openapi/carts-v0`
+(8) are the corpus's most-linked targets and have no Mintlify page. URL continuity for that namespace
+is CURRENT-2719.
