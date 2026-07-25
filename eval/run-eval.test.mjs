@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  cacheBustedUrl,
   isRetryableStatus,
   extractFinalText,
   extractJson,
@@ -450,5 +451,26 @@ describe("promptForModel", () => {
       expected: { type: "workflow", required_terms: ["example"] },
     });
     assert.match(prompt, /\{"answer":"\.\.\."\}/);
+  });
+});
+
+describe("cacheBustedUrl", () => {
+  it("appends the nonce as a new query string", () => {
+    assert.equal(
+      cacheBustedUrl("https://docs.example.com/llms-full.txt", 1234),
+      "https://docs.example.com/llms-full.txt?cb=1234",
+    );
+  });
+
+  it("preserves an existing query string", () => {
+    assert.equal(
+      cacheBustedUrl("https://docs.example.com/llms.txt?v=2", 99),
+      "https://docs.example.com/llms.txt?v=2&cb=99",
+    );
+  });
+
+  it("returns a different URL for each nonce so no edge copy is reused", () => {
+    const url = "https://docs.example.com/llms-full.txt";
+    assert.notEqual(cacheBustedUrl(url, 1), cacheBustedUrl(url, 2));
   });
 });

@@ -414,22 +414,44 @@ async function callLlmsMode(prompt, docs) {
   return { response, rawText: JSON.stringify(response), finalText: extractFinalText(response) };
 }
 
+// Appends a cache-busting query parameter, preserving any existing query string.
+function cacheBustedUrl(url, nonce) {
+  return `${url}${url.includes("?") ? "&" : "?"}cb=${nonce}`;
+}
+
+// Hosted llms files are served with a 24-hour cache directive, so an edge can
+// return a copy generated before the most recent deploy. Grading that copy
+// reports failures against content that is already published, so bypass the
+// cache and log which revision was actually graded.
+const NO_CACHE_HEADERS = { "cache-control": "no-cache", pragma: "no-cache" };
+
 // Fetches llms-full.txt (fallback llms.txt) and truncates to the configured
 // character budget. The default covers the current hosted llms-full document.
 async function loadLlmsDocs() {
   const urls = [`${CONFIG.baseUrl}/llms-full.txt`, `${CONFIG.baseUrl}/llms.txt`];
   for (const url of urls) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(cacheBustedUrl(url, Date.now()), {
+        headers: NO_CACHE_HEADERS,
+      });
       if (!res.ok) {
         process.stderr.write(`  [llms] ${url} -> ${res.status}, trying next\n`);
         continue;
       }
       let text = await res.text();
-      if (text.length > CONFIG.llmsCharBudget) {
+      const lastModified = res.headers.get("last-modified") || "unknown";
+      const fetched = text.length;
+      if (fetched > CONFIG.llmsCharBudget) {
         text = `${text.slice(0, CONFIG.llmsCharBudget)}\n\n[...truncated at ${CONFIG.llmsCharBudget} chars...]`;
+        process.stderr.write(
+          `  [llms] WARNING: truncated ${fetched} chars to ${CONFIG.llmsCharBudget}; ` +
+            `${fetched - CONFIG.llmsCharBudget} chars of published docs were not graded. ` +
+            `Raise EVAL_LLMS_CHAR_BUDGET to cover the whole document.\n`,
+        );
       }
-      process.stderr.write(`  [llms] loaded ${url} (${text.length} chars)\n`);
+      process.stderr.write(
+        `  [llms] loaded ${url} (${text.length} chars, last-modified ${lastModified})\n`,
+      );
       return text;
     } catch (err) {
       process.stderr.write(`  [llms] ${url} failed: ${err.message}, trying next\n`);
@@ -626,6 +648,7 @@ if (isMain) {
 
 // Pure grading/parsing helpers — exported for unit testing (see run-eval.test.mjs).
 export {
+  cacheBustedUrl,
   isRetryableStatus,
   extractFinalText,
   extractJson,
