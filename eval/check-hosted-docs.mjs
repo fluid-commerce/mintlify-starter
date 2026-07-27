@@ -114,6 +114,27 @@ const BANNER_LABEL = "(agent-instructions banner)";
 const OFFSET_PAGINATED_SECTIONS =
   /^(?:api-reference\/)?(?:webhooks|callback-registrations|company-events|webhook-schemas)\b/;
 
+// The seven `checkout-v2026-04` list operations that are genuinely offset-paginated
+// in the implementation, verified against the Rails actions rather than the spec.
+// Listed page by page rather than by tag, because `directory`, `store`, and
+// `subscriptions` also contain operations that paginate by cursor or not at all — a
+// tag-wide carve-out would forgive a real leak on a neighbouring page.
+//
+// `customer-orders/list-customer-orders` is here for a different reason and is NOT an
+// offset endpoint: it takes `page[cursor]`/`page[limit]`, but its response meta also
+// emits `per_page`, `current_page`, and `total_pages` alongside the cursors, so the
+// generated page carries the marker. Its `current_page` is hardcoded to 1 upstream.
+const OFFSET_PAGINATED_PAGES = new Set([
+  "customer-addresses/list-customer-addresses",
+  "customer-payment-methods/list-customer-payment-methods",
+  "customer-points/list-customer-points-ledger",
+  "directory/list-reps",
+  "directory/list-users",
+  "store/list-drop-zones",
+  "subscriptions/list-subscriptions",
+  "customer-orders/list-customer-orders",
+]);
+
 // ---------------------------------------------------------------------------
 // Small utilities
 // ---------------------------------------------------------------------------
@@ -490,14 +511,17 @@ function splitLlmsSections(text) {
   return sections;
 }
 
-// The two AGENTS.md exceptions, and only those:
+// The AGENTS.md exceptions, and only those:
 //   1. The agent-instructions banner names legacy markers in order to forbid them.
 //   2. `webhooks-v0` list endpoints genuinely use offset `page`/`per_page`, and the
 //      generated reference reflects the spec. Prose pages get no such licence.
+//   3. The named `checkout-v2026-04` pages whose offset pagination is real — see
+//      OFFSET_PAGINATED_PAGES. Exact pages only, never a whole tag.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
   if (/\bper_page\b/.test(marker)) {
     if (OFFSET_PAGINATED_SECTIONS.test(label)) return true;
+    if (OFFSET_PAGINATED_PAGES.has(label.replace(/^api-reference\//, ""))) return true;
     if (sectionText.includes("webhooks-v0.yaml")) return true;
   }
   return false;
