@@ -135,6 +135,112 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "customer-orders/list-customer-orders",
 ]);
 
+// The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
+// `@fluid-app` SDK actually calls, adopted in Phase 9.6f. Its paths are genuinely
+// `/api/public/v2025-06/...` and `/api/v202506/carts/...`, so every one of these pages
+// carries a version marker the legacy scan otherwise treats as a leak.
+//
+// Enumerated page by page, never by tag or by a `v2025-06` pattern class, for two
+// reasons. A blanket version sanction would re-legitimise the legacy admin/partner
+// surface (`admin-v2025-06`, `/api/v2025-06/*`) that earlier phases removed — a
+// different API that must keep failing. And three of these tags are SHARED with the
+// v2026-04 surfaces: `carts` also holds 12 `checkout-v2026-04` pages, `orders` one, and
+// `paypal` four, where a version marker would be a real leak. Prefix-sanctioning
+// `carts/` would forgive all 17.
+//
+// This list is the `mint export` path inventory, not a hand-derived guess:
+//   npx mint@latest export --output /tmp/e.zip && unzip -Z1 /tmp/e.zip \
+//     | grep 'index.html$' | sed 's|^api-reference/||; s|/index.html$||'
+// filtered to the pages the `public-v2025-06` nav group adds. A page path is
+// `<tag>/<summary>` case-folded with spaces hyphenated, so an upstream summary edit
+// renames its page and drops it out of this set. That fails loudly — the run reports an
+// unsanctioned hit naming the new page — which is the right direction: regenerate the
+// list from the export rather than loosening the key.
+const PUBLIC_SDK_V2025_06_PAGES = new Set([
+  "affiliate/retrieve-affiliate-information",
+  "carts/add-enrollment-to-existing-cart",
+  "carts/adds-items-to-cart",
+  "carts/applies-a-discount-to-the-cart",
+  "carts/check-order-status-check-order-status",
+  "carts/client-token-client-token",
+  "carts/completes-cart-checkout",
+  "carts/confirm-magic-link-for-cart",
+  "carts/create-dlocal",
+  "carts/create-magic-link-for-cart",
+  "carts/create-payment-create-payment",
+  "carts/create-ppro",
+  "carts/creates-a-cart",
+  "carts/ipn-ipn",
+  "carts/removes-item-from-cart",
+  "carts/removes-rep_buyer-and-customer-for-the-cart",
+  "carts/retrieves-a-cart",
+  "carts/retrieves-cart-company-information",
+  "carts/retrieves-enroll-for-cart",
+  "carts/sets-cart-payment-method",
+  "carts/sets-cart-shipping-method",
+  "carts/shipping-address-change-shipping-address-change",
+  "carts/shipping-method-change-shipping-method-change",
+  "carts/subscribes-a-cart-item",
+  "carts/syncs-cart-with-authenticated-customer",
+  "carts/updates-a-cart",
+  "carts/updates-a-cart-items-variant",
+  "carts/updates-cart-address",
+  "carts/updates-subscribe:false-to-cart-item",
+  "carts/updates-the-country-of-a-cart-also-updates-the-currency-code",
+  "carts/updates-the-language-of-a-cart",
+  "checkout/record-a-checkout-starting",
+  "commerce/update-cart-items-prices",
+  "enrollment-packs/get-enrollment-pack-by-slug",
+  "events/save-a-new-lead-capture",
+  "events/save-a-new-page-visit",
+  "events/save-a-new-url-visit",
+  "fingerprint/start-a-new-fingerprint",
+  "forms/get-form-by-public-token",
+  "forms/submit-a-form-response",
+  "forms/verify-form-password",
+  "media/create-video-analytics-event",
+  "media/get-media-by-slug",
+  "media/get-media-by-slug-deprecated",
+  "orders/retrieves-an-order-with-points-redemption",
+  "payment/creates-a-klarna-payment-session",
+  "payment/updates-a-klarna-session",
+  "paypal/authorize-order-in-paypal",
+  "paypal/create-order-in-paypal",
+  "playlist/get-playlist-by-slug",
+  "playlist/get-playlist-by-slug-deprecated",
+  "product/get-product-by-slug-in-a-foreign-local-includes-the-correct-variants",
+  "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
+  "public/auth-auth",
+  "public/countries-countries",
+  "public/db-port-db-port",
+  "public/get-apple-pay-domain",
+  "public/health-health",
+  "public/homepage-render-homepage-render",
+  "public/realtime-realtime",
+  "public/update-volumes-update-volumes",
+  "root-themes/get-root-theme-by-id",
+  "root-themes/list-root-themes",
+  "session/start-a-new-session",
+  "settings/retrieve-page-settings",
+  "widgets/retrieve-banner-widget",
+  "widgets/retrieve-cart-widget",
+  "widgets/retrieve-chat-widget",
+  "widgets/retrieve-popup-widget",
+]);
+
+// AGENTS.md also permits the Public SDK surface's version label on these exact
+// hand-written pages. Keep this list narrow: the exception applies to prose that
+// differentiates the SDK contract, not to every SDK or API page.
+const PUBLIC_SDK_V2025_06_PROSE_PAGES = new Set([
+  "api/choosing-a-cart-surface",
+  "sdk/cart-api",
+]);
+
+// Matches only a bare version token — what `scanLegacy` captures for the two
+// version patterns. Deliberately anchored so the Public SDK sanction can never
+// forgive `per_page`, `company/v1/`, or `/api/v1/` on the same page.
+const V2025_06_MARKER = /^v2025[-_]?06$/i;
+
 // ---------------------------------------------------------------------------
 // Small utilities
 // ---------------------------------------------------------------------------
@@ -517,12 +623,23 @@ function splitLlmsSections(text) {
 //      generated reference reflects the spec. Prose pages get no such licence.
 //   3. The named `checkout-v2026-04` pages whose offset pagination is real — see
 //      OFFSET_PAGINATED_PAGES. Exact pages only, never a whole tag.
+//   4. The named `public-v2025-06` reference pages, whose paths genuinely carry the
+//      version, plus the exact prose pages that explain this surface — see the two
+//      PUBLIC_SDK_V2025_06 sets. The version marker only: `per_page` and the v1
+//      markers still fail on those same pages.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
+  const page = label.replace(/^api-reference\//, "");
   if (/\bper_page\b/.test(marker)) {
     if (OFFSET_PAGINATED_SECTIONS.test(label)) return true;
-    if (OFFSET_PAGINATED_PAGES.has(label.replace(/^api-reference\//, ""))) return true;
+    if (OFFSET_PAGINATED_PAGES.has(page)) return true;
     if (sectionText.includes("webhooks-v0.yaml")) return true;
+  }
+  if (
+    V2025_06_MARKER.test(marker) &&
+    (PUBLIC_SDK_V2025_06_PAGES.has(page) || PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page))
+  ) {
+    return true;
   }
   return false;
 }
