@@ -1303,3 +1303,36 @@ The spec declares `page` / `per_page` and offset response metadata on
 `public_v2025_06_index_public_drop_zones` and `public_v2025_06_root-themes-index`. This is not yet
 sanctioned. Per gap #12, implementation rather than the specification settles pagination behavior.
 Verify the two Rails actions before adding any house-rule or hosted-check exception.
+
+## Phase 9.6g — close production-advertised docs links (CURRENT-2722)
+
+Two runtime consumers advertised paths that did not exist. They now resolve to authored,
+navigated pages rather than approximate redirects:
+
+- `/migration/server-side-attribution` is the destination of the FairShare SDK warning
+  for four removed client-side attribution-pattern attributes. The page stays at SDK
+  migration altitude: remove the attributes, rely on automatic URL-based attribution,
+  and use an explicit rep override only when intended. It asserts no REST contract.
+- `/api/public/forms` is the successor destination emitted by the sunset unauthenticated
+  form-by-ID response. The replacement is the token-addressed forms family in the Public
+  SDK API. The authored page explains that migration boundary and links to the three
+  generated operation pages; it does not duplicate parameters, schemas, or status codes.
+  The temporary `/docs/openapi/forms-v0` redirect now lands on this successor page
+  instead of the generic API overview.
+
+### Runtime docs URLs are registered contracts
+
+`eval/advertised-docs-links.json` is the registry for URLs emitted to third parties by
+production code. `eval/check-advertised-docs-links.mjs` runs in CI and requires every
+entry to use the canonical `https://docs.fluid.app` origin, omit query strings and
+fragments, map to an authored Markdown page, and appear in `docs.json` navigation. Its
+unit tests run with the rest of `eval/*.test.mjs`.
+
+The checker cannot discover new URLs in every consumer repository. The cross-repository
+convention is therefore load-bearing: any production change that introduces a
+`docs.fluid.app` URL must register it in the same change or link to the docs change that
+does. Reviewers should reject an unregistered runtime URL.
+
+Generated operation slugs are not valid registry targets. Their summary-derived paths
+can change on an hourly spec sync. Runtime consumers point to stable authored landing
+pages, which may link onward to generated contracts.

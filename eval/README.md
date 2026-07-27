@@ -4,7 +4,7 @@ This directory holds the checks for Fluid's hosted Mintlify docs. It started as 
 CURRENT-2424 Categories/Collections pilot and now covers the published API, SDK, and
 theme surfaces.
 
-Two independent things live here:
+Three independent things live here:
 
 - **The guide truth gate** (Linear CURRENT-2587): `guide-claims.json` (claims registry
   for the task guides) and `check-guide-claims.mjs` (deterministic checker that runs in
@@ -13,6 +13,9 @@ Two independent things live here:
 - **The hosted-docs checker** (`check-hosted-docs.mjs`): a deterministic, credential-free
   check that the answers to the natural-language prompts in `prompts.json` are
   discoverable through the hosted agent surface *and* correct where they are documented.
+- **The advertised-link checker** (`check-advertised-docs-links.mjs`): an offline CI
+  check that every production-emitted URL registered in `advertised-docs-links.json`
+  maps to an authored page included in `docs.json` navigation.
 
 One-off run records (adversarial verification, omission sweeps, hosted-check runs) live
 on the phase's Linear issue, not in the repo. Durable decisions go in `guide-truth.md`.
@@ -287,8 +290,29 @@ typically once per migration phase, and record the run on the phase's Linear iss
 
 CI (`.github/workflows/validate.yml`) runs only deterministic, offline checks that need
 no credentials and no deploy: `mint validate`, `check-guide-claims.mjs` and its self-test,
-and this directory's unit tests (`*.test.mjs`). **Nothing in CI requires an API key** —
-and now nothing in this directory does either.
+`check-advertised-docs-links.mjs`, and this directory's unit tests (`*.test.mjs`).
+**Nothing in CI requires an API key** — and now nothing in this directory does either.
+
+## Production-advertised docs URLs
+
+Production code can expose a docs URL in a browser warning, response header, error, or
+other runtime output. Treat that URL as a contract.
+
+Before shipping a new `docs.fluid.app` URL:
+
+1. Create an authored page at the exact path.
+2. Add the page to `docs.json` navigation.
+3. Register the URL and its consumer in `advertised-docs-links.json`.
+4. Run `node eval/check-advertised-docs-links.mjs`.
+
+The checker deliberately requires an authored navigation page. Do not point production
+code at a generated operation slug, because an upstream operation summary can rename it.
+Use a stable authored landing page and link from that page to generated endpoint
+contracts.
+
+This repository cannot scan every consumer repository in CI. Reviewers of a production
+`docs.fluid.app` URL must therefore require the manifest update in the same change or in
+a linked docs change.
 
 ## Expected-answer schema (`prompts.json`)
 
