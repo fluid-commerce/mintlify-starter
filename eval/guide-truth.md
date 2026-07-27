@@ -1336,3 +1336,96 @@ does. Reviewers should reject an unregistered runtime URL.
 Generated operation slugs are not valid registry targets. Their summary-derived paths
 can change on an hourly spec sync. Runtime consumers point to stable authored landing
 pages, which may link onward to generated contracts.
+
+## CURRENT-2822 — Drop Zones and Global Embeds dispositions
+
+CURRENT-2822 closes two deferred Redocly topics without publishing the untrusted
+company-management contract. The authored guides stay conceptual, while generated
+references remain authoritative for the two public Drop Zones readers.
+
+### Verified ownership and publication boundaries
+
+- `company-v0` owns Drop Zones management (`Api::DropZonesController`,
+  `Api::DropZones::*Action`, and `DropZones::ContextTokenMinter`) and Global Embeds
+  management (`Api::GlobalEmbedsController` and `Api::GlobalEmbeds::*Action`). These
+  are Fluid Admin workflows, not a published external integration contract.
+- `checkout-v2026-04` owns the canonical direct-REST reader:
+  `checkout_v2026_04_get_store_drop_zones`, published at
+  `/api-reference/store/list-drop-zones`.
+- `public-v2025-06` owns the FairShare SDK reader:
+  `public_v2025_06_index_public_drop_zones`, published at
+  `/api-reference/public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+  It is SDK-internal. New direct REST integrations use Checkout.
+- Both public operations call `Api::Public::DropZones::IndexAction`. That action
+  scopes to active records whose configured page is `checkout` or
+  `order_confirmation`. This shared implementation settles the visibility claim
+  carried by the guide.
+
+### Why `company-v0` remains unsynced
+
+`.github/synced-specs.json` does not include `company-v0`. The current document is a
+broad aggregate of unversioned Admin endpoints rather than a focused external
+Company contract. Its Drop Zones mutations still use `JsonValue` responses, and
+many inferred schemas admit overly broad string/number/integer/null unions. Publishing
+that document would give generated pages false authority over contracts that have not
+met the bar applied to the synced surfaces.
+
+The durable dependency is a focused Company specification for Drop Zones and Global
+Embeds. It must model the management operations, authorization, request and response
+shapes, and context-token boundary against the controllers, action services,
+serializers, Admin clients, and integration tests. Only after that focused spec is
+trusted, added to the sync manifest, and validated should management endpoint
+references replace the guides' no-published-reference statements.
+
+### Legacy claim decisions
+
+The old Drop Zones guide's exhaustive location table is not carried forward. Runtime
+placement constants can evolve, and the current management contract is not fit to
+publish them. The authored guide names only the verified Admin, checkout, and
+order-confirmation contexts.
+
+The old guide also claimed that a cart token is always appended, that a B2B company
+identifier is conditionally appended, and that the token grants a list of cart
+mutations. Those parameter and authorization claims are not carried forward. The
+replacement says only that checkout embeds receive current-cart context. Admin detail
+embeds instead receive signed record context, verified through `AdminDropZone`,
+`Api::DropZonesController#context_token`, and `DropZones::ContextTokenMinter`. The two
+contexts are deliberately documented as non-interchangeable.
+
+The old Google Analytics guide's CRUD examples, token example, cache timing, and
+all-public-theme framing are also not carried forward. Current Admin supports
+`draft`/`active`, `head`/`body`, and `storefront`/`checkout`; the new guide documents
+that workflow and its security implications without presenting an API contract.
+
+### Generated references and pagination
+
+The Checkout Drop Zones page is adopted as-is. The companion source-spec change for
+the Public SDK page replaces an unrelated tag description, identifies the page as
+SDK-internal, directs REST integrations to Checkout, and records the verified 404 and
+422 responses. The hourly sync remains the only path for that generated change into
+this repository. Endpoint parameters, schemas, status codes, and the location
+inventory stay on generated pages rather than being duplicated in authored prose.
+
+The Public SDK operation `public_v2025_06_index_public_drop_zones` is a verified exact
+offset-pagination exception. `Api::Public::DropZones::IndexAction` validates integer
+`page` / `per_page`, applies `.page(...).per(...)`, and returns
+`pagination_meta`. `eval/check-hosted-docs.mjs` therefore permits `per_page` only on
+`public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+No tag-wide or Public-SDK-wide exception is allowed. In particular, the existing
+root-themes negative test remains unchanged.
+
+### Redirects, Admin links, and Global Embeds
+
+The legacy authored Drop Zones and Google Analytics guide URLs now redirect to the
+new conceptual guides. The old generated Swagger Drop Zones and Global Embeds URLs
+also redirect to those stable authored pages because there is no trustworthy
+management reference destination.
+
+The companion `CURRENT-2721` Fluid Admin change points the Drop Zones and Global
+Embeds hero links directly to their new guides. `/api/overview` remains unchanged
+because it serves unrelated features. Both runtime URLs are registered in
+`eval/advertised-docs-links.json`.
+
+No generated Global Embeds endpoint reference is published in this phase. Admin is
+the supported management workflow until the focused Company spec dependency above is
+complete.

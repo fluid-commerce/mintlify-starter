@@ -124,6 +124,10 @@ const OFFSET_PAGINATED_SECTIONS =
 // offset endpoint: it takes `page[cursor]`/`page[limit]`, but its response meta also
 // emits `per_page`, `current_page`, and `total_pages` alongside the cursors, so the
 // generated page carries the marker. Its `current_page` is hardcoded to 1 upstream.
+//
+// The Public SDK Drop Zones page is also exact by operation. It shares the verified
+// offset implementation used by Checkout's List drop zones operation. No other Public
+// SDK page inherits this exception.
 const OFFSET_PAGINATED_PAGES = new Set([
   "customer-addresses/list-customer-addresses",
   "customer-payment-methods/list-customer-payment-methods",
@@ -133,6 +137,7 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "store/list-drop-zones",
   "subscriptions/list-subscriptions",
   "customer-orders/list-customer-orders",
+  "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
 ]);
 
 // The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
@@ -625,8 +630,9 @@ function splitLlmsSections(text) {
 //      OFFSET_PAGINATED_PAGES. Exact pages only, never a whole tag.
 //   4. The named `public-v2025-06` reference pages, whose paths genuinely carry the
 //      version, plus the exact prose pages that explain this surface — see the two
-//      PUBLIC_SDK_V2025_06 sets. The version marker only: `per_page` and the v1
-//      markers still fail on those same pages.
+//      PUBLIC_SDK_V2025_06 sets. That sanction covers only the version marker.
+//      The exact Public SDK Drop Zones page separately permits `per_page` through
+//      OFFSET_PAGINATED_PAGES; the v1 markers still fail there.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
   const page = label.replace(/^api-reference\//, "");
