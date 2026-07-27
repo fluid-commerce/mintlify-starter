@@ -835,6 +835,45 @@ describe("isSanctionedLegacyHit", () => {
     assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/webhooks/list-webhooks"), false);
     assert.equal(isSanctionedLegacyHit("/api/v1/", "api-reference/webhooks/list-webhooks"), false);
   });
+
+  it("sanctions per_page on the seven verified offset checkout pages", () => {
+    // Offset confirmed in the Rails actions, not just the spec. See AGENTS.md.
+    for (const page of [
+      "api-reference/customer-addresses/list-customer-addresses",
+      "api-reference/customer-payment-methods/list-customer-payment-methods",
+      "api-reference/customer-points/list-customer-points-ledger",
+      "api-reference/directory/list-reps",
+      "api-reference/directory/list-users",
+      "api-reference/store/list-drop-zones",
+      "api-reference/subscriptions/list-subscriptions",
+    ]) {
+      assert.equal(isSanctionedLegacyHit("per_page", page), true, page);
+    }
+  });
+
+  it("sanctions customer-orders, whose cursor response still emits per_page", () => {
+    // Cursor-paginated in code; the marker comes from its response metadata.
+    assert.equal(
+      isSanctionedLegacyHit("per_page", "api-reference/customer-orders/list-customer-orders"),
+      true,
+    );
+  });
+
+  it("does NOT sanction a neighbouring page sharing a sanctioned page's tag", () => {
+    // The carve-out is page-by-page precisely so that `directory`, `store`, and
+    // `subscriptions` — which also hold operations that paginate by cursor or not
+    // at all — cannot launder a real leak on a sibling page.
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/subscriptions/create-a-subscription"), false);
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/directory/show-a-rep"), false);
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/store/get-store"), false);
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/customer-orders/show-customer-order"), false);
+  });
+
+  it("never sanctions a legacy version on a verified offset checkout page", () => {
+    // The exception covers offset pagination only, not legacy surfaces.
+    assert.equal(isSanctionedLegacyHit("v202506", "api-reference/subscriptions/list-subscriptions"), false);
+    assert.equal(isSanctionedLegacyHit("/api/v1/", "api-reference/directory/list-users"), false);
+  });
 });
 
 describe("scanLegacyAttributed", () => {

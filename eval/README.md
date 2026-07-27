@@ -348,7 +348,15 @@ and is exercised by real runs.
 Verify every new API prompt against its authoritative synced spec. Verify SDK and theme
 workflow prompts against the published target plus the durable evidence in
 `guide-truth.md`, and give each one a `target_page` you have confirmed carries every
-required term. Keep required terms specific enough to prove discovery without requiring
+required term.
+
+**Never cite spec line numbers in a note.** The specs re-sync hourly, so a line reference
+rots even when it starts correct, and a stale one lands the next reader on the wrong
+operation — which is worse than no citation, because it invites confirming the wrong
+fact. An audit during the CURRENT-2711 rebuild found every checkable line citation in
+this file stale (32 of 32) and rewrote all 47 affected notes. Cite what survives a
+re-sync: the `operationId`, the schema name, the literal declaration (`security: []`,
+`required: - items`), or the published page path. Keep required terms specific enough to prove discovery without requiring
 incidental prose, and specific enough to distinguish a current name from a legacy one.
 Use forbidden terms only for names genuinely absent from the target page — a page that
 prints a name in order to correct it cannot forbid it.

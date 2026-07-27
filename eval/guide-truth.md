@@ -454,24 +454,52 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     its own terms — subdomain form in `create_cart`/`send_magic_link`, full-host form
     in `query_product`'s `metadata.fluid_shop` — rather than unifying the convention.
     Unifying is a spec-behavior change, out of scope; still flagged upstream.
-12. **`checkout-v2026-04` paginates by offset, with no documented exception.**
-    Found by the first `check-hosted-docs.mjs` run (CURRENT-2711) and confirmed against
-    the synced artifact: `api-reference/checkout-v2026-04.yaml` carries 11 `per_page`
-    occurrences — eight list operations (`list_customer_addresses`,
+12. **RESOLVED — `checkout-v2026-04` offset pagination is real, and the house rule was
+    wrong.** Found by the first `check-hosted-docs.mjs` run (CURRENT-2711), then verified
+    against the Rails implementation rather than the spec, which changed the conclusion
+    twice and is worth recording as written.
+
+    **Seven** operations are genuinely offset-paginated — `list_customer_addresses`,
     `list_customer_payment_methods`, `list_customer_points`, `list_reps`,
-    `get_store_drop_zones`, `list_subscriptions`, `list_users`, `list_customer_orders`)
-    plus a pagination response schema (around lines 2607–2629 and 7203–7211). AGENTS.md
-    bans `page` / `per_page` / `offset` and sanctions exactly one surface, `webhooks-v0`,
-    so a current v2026-04 surface is shipping offset pagination with no documented
-    exception. The generated reference pages reflect the spec, so the terms reach the
-    agent surface: `api-reference/customer-orders/list-customer-orders` and
-    `api-reference/customer-payment-methods/list-customer-payment-methods` are the two
-    the checker's prompt coverage reaches today, and both fail its leakage scan.
-    **Not fixable here.** The spec is a synced artifact that must never be hand-edited,
-    so the resolution is either an upstream move to cursor pagination in `fluid` or a
-    third documented AGENTS.md exception naming this surface. The checker deliberately
-    does **not** sanction these pages: doing so to make the run green would retire the
-    only check that found them. Left failing on purpose.
+    `get_store_drop_zones`, `list_subscriptions`, `list_users` — each backed by a Kaminari
+    `.page(...).per(...)` call, with a response shape matching
+    `ControllerAction#pagination_meta`. There is **zero drift**: every one of the seven
+    matches its spec exactly, and `fluid/docs/openapi/checkout-v2026-04.yaml` is
+    byte-identical to the synced copy. It is a deliberate design choice, not an oversight:
+    cursor support exists on the very base class these actions inherit
+    (`ControllerAction#cursor_pagination_meta`) and was not used, and
+    `payment_methods_action.rb` additionally declares
+    `optional(:per_page).value(:integer, gt?: 0, lteq?: 100)`.
+
+    **`list_customer_orders` is not one of them.** It is genuinely cursor-paginated
+    (`Rotulus::Page…at!(params.dig(:page, :cursor))`) and its spec correctly declares
+    `page[cursor]` / `page[limit]`. The earlier count of eight came from reading the spec's
+    `per_page` occurrences without separating request parameters from response metadata:
+    this endpoint's cursor response also emits `per_page`, `current_page`, and
+    `total_pages`, and `current_page` is hardcoded to `1`. Never present those three as
+    working offset controls on it.
+
+    **Passing `page[cursor]` to one of the seven returns 422, not page 1.** An earlier note
+    claimed silent first-page behaviour, and a first correction claimed a 500 from
+    Kaminari; both were wrong. `ControllerAction` validates against `Pagination.schema`
+    (`optional(:page).value(:integer, gt?: 0)`) before the action runs, so the cursor form
+    fails the `int?` predicate and returns `errors: {page: ["must be an integer"]}`.
+    Kaminari never receives it. The failure is loud and safe, and the comparison drawn to
+    the `captureLead` silent-data-loss defect does not hold. Established by reading the
+    dry-schema and dry-types sources and tracing the call path, not by executing a request;
+    a request spec asserting 422 would settle it conclusively.
+
+    **Resolution:** AGENTS.md now carries a second pagination exception naming the seven,
+    and `check-hosted-docs.mjs` sanctions exactly those pages plus
+    `customer-orders/list-customer-orders` (for its response metadata, not its request
+    contract). Sanctioning is page-by-page rather than by tag, because `directory`,
+    `store`, and `subscriptions` also contain operations that do not paginate this way and
+    a tag-wide carve-out would forgive a real leak on a neighbouring page.
+
+    The general lesson, since it cost two wrong answers: the spec describes the contract,
+    but only the implementation settles behaviour, and a single layer read in isolation
+    produces confident wrong conclusions. The Kaminari reasoning was correct about code
+    that never executes.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
@@ -883,6 +911,29 @@ What a green run now means:
   terms. At page granularity, four consecutive full runs returned the same 60/63 with the same three
   misses, and each of those three reproduces 0/5 under `--repeat 5` — they are stable ranking facts,
   not noise. Confirm a stage-1 miss with a targeted re-run anyway; it costs one query.
+
+### Citation hygiene: operationIds and literal declarations, never line numbers
+
+Auditing `prompts.json` during the CURRENT-2711 rebuild found that **every checkable line citation in
+the file was stale — 32 of 32.** Each note that named both an `operationId` and a spec line range
+pointed at the wrong place, typically by 90–500 lines, because the specs re-sync hourly and grow as
+descriptions are enriched. Two examples of what a reader following them hit: `checkout-add-cart-items`
+cited a range whose lines held a price-discount block from a different operation, and
+`checkout-apply-discount-code` cited a range ending on a different operation's `operationId`. A
+citation that lands on the wrong operation is worse than no citation, because it invites confirming
+the wrong fact.
+
+So line numbers are the wrong instrument for this repo regardless of whether they start correct, and
+all 47 affected notes were rewritten to drop them. **Cite only things that survive a re-sync:** the
+`operationId`, the schema name, the literal declaration (`security: []`, `required: - items`), or the
+published page path. The same audit found one fabricated pair of schema names —
+`AddItemsRequest` / `BundleChildInput` in `product-bundle-direct-cart-write`, neither of which exists
+in any synced spec, because that request body is defined inline with no named schema — now corrected
+to the real `items[].bundled_items[]` structure.
+
+Every `operationId` named across the 63 notes was re-verified present in the spec the note names, and
+because stage 2 now checks `auth` mechanically against each page's inlined security requirement, all
+57 API notes' auth claims are confirmed against the spec by the run itself rather than by prose.
 
 ### `product-bundle-read-shape` expectations corrected
 
