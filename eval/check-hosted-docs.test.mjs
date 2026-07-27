@@ -859,6 +859,34 @@ describe("isSanctionedLegacyHit", () => {
     );
   });
 
+  it("sanctions per_page on the exact Public SDK Drop Zones page", () => {
+    const page =
+      "api-reference/public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public";
+    assert.equal(isSanctionedLegacyHit("per_page", page), true);
+    assert.equal(
+      isSanctionedLegacyHit(
+        "per_page",
+        "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
+      ),
+      true,
+    );
+  });
+
+  it("does NOT extend the Public SDK Drop Zones offset exception to neighbouring pages", () => {
+    assert.equal(
+      isSanctionedLegacyHit("per_page", "api-reference/public-drop-zones/get-a-drop-zone"),
+      false,
+    );
+    assert.equal(
+      isSanctionedLegacyHit("per_page", "api-reference/public/get-apple-pay-domain"),
+      false,
+    );
+    assert.equal(
+      isSanctionedLegacyHit("per_page", "api-reference/carts/creates-a-cart"),
+      false,
+    );
+  });
+
   it("does NOT sanction a neighbouring page sharing a sanctioned page's tag", () => {
     // The carve-out is page-by-page precisely so that `directory`, `store`, and
     // `subscriptions` — which also hold operations that paginate by cursor or not
