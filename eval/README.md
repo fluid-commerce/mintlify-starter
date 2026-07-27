@@ -154,10 +154,25 @@ targeted run.
 
 `llms-full.txt`, every prompt's retrieved content, and every fetched target page are
 scanned for `company/v1/`, `/api/v1/`, `v2025[-_]?06`, `v202506`, and `per_page`. Each
-hit is attributed to the page carrying it. Only two exceptions are sanctioned, both
-straight out of AGENTS.md: the `llms-full.txt` agent-instructions banner (which names
-the legacy markers in order to forbid them) and the genuinely offset-paginated
-`webhooks-v0` reference sections. Any other hit fails the run.
+hit is attributed to the page carrying it. Four exceptions are sanctioned, each straight
+out of AGENTS.md and each **scoped to one marker and one set of pages** — never to a
+whole tag or a whole marker:
+
+| Sanctioned | Marker | Scope |
+| ---------- | ------ | ----- |
+| The `llms-full.txt` agent-instructions banner | any | It names the legacy markers in order to forbid them. |
+| `webhooks-v0` reference sections | `per_page` | That surface's list endpoints are genuinely offset-paginated. Prose pages get no such licence. |
+| The seven verified offset `checkout-v2026-04` list pages, plus `customer-orders/list-customer-orders` for its response metadata | `per_page` | `OFFSET_PAGINATED_PAGES` — exact pages, because `directory`, `store`, and `subscriptions` also hold operations that do not paginate that way. |
+| The 69 generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
+
+Any other hit fails the run. Two properties of the last one are load-bearing. It is keyed
+on the exact page, not a `v2025-06` pattern class, so the legacy admin/partner surface
+(`admin-v2025-06`, `/api/v2025-06/*` — a different API) keeps failing. And three of that
+spec's tags are **shared** with the v2026-04 surfaces — `carts` also holds 12
+`checkout-v2026-04` pages, `orders` one, `paypal` four — so a `carts/` prefix would have
+forgiven a real leak on 17 current pages. The page list is the `mint export` path
+inventory (the regeneration command is in the source comment); an upstream summary edit
+renames a page and drops it out of the set, which fails loudly rather than silently.
 
 Two things this check learned the hard way:
 

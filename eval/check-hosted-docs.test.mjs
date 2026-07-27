@@ -874,6 +874,68 @@ describe("isSanctionedLegacyHit", () => {
     assert.equal(isSanctionedLegacyHit("v202506", "api-reference/subscriptions/list-subscriptions"), false);
     assert.equal(isSanctionedLegacyHit("/api/v1/", "api-reference/directory/list-users"), false);
   });
+
+  it("sanctions the version marker on the adopted public-v2025-06 reference pages", () => {
+    // Phase 9.6f. These pages' paths are genuinely /api/public/v2025-06/... and
+    // /api/v202506/carts/..., so the marker is the contract, not a leak.
+    for (const page of [
+      "api-reference/carts/creates-a-cart",
+      "api-reference/carts/adds-items-to-cart",
+      "api-reference/enrollment-packs/get-enrollment-pack-by-slug",
+      "api-reference/orders/retrieves-an-order-with-points-redemption",
+      "api-reference/paypal/create-order-in-paypal",
+      "api-reference/widgets/retrieve-cart-widget",
+      "api-reference/public/health-health",
+    ]) {
+      assert.equal(isSanctionedLegacyHit("v2025-06", page), true, page);
+      assert.equal(isSanctionedLegacyHit("v202506", page), true, page);
+    }
+    // Both marker spellings the two legacy patterns can capture, including the
+    // case-insensitive underscore form.
+    assert.equal(isSanctionedLegacyHit("V2025_06", "api-reference/session/start-a-new-session"), true);
+    // The label is accepted with or without the api-reference/ prefix, matching how
+    // llms-full.txt section labels and prompts' target_page labels differ.
+    assert.equal(isSanctionedLegacyHit("v2025-06", "carts/creates-a-cart"), true);
+  });
+
+  it("does NOT sanction a v2026-04 page sharing a tag with a public-v2025-06 page", () => {
+    // The load-bearing negative. `carts` holds 12 checkout-v2026-04 pages, `orders`
+    // one, and `paypal` four; a version marker on any of those is a real leak, so the
+    // carve-out is page-by-page and a `carts/` prefix would have forgiven all 17.
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/carts/create-a-cart"), false);
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/carts/complete-checkout"), false);
+    assert.equal(isSanctionedLegacyHit("v202506", "api-reference/orders/show-order"), false);
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/paypal/authorize-a-paypal-order"), false);
+  });
+
+  it("does NOT sanction the legacy admin/partner v2025-06 surface", () => {
+    // admin-v2025-06 and /api/v2025-06/* are a different API that earlier phases
+    // removed. A blanket version sanction would have silently re-legitimised it.
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/tokens/list-partner-tokens"), false);
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/companies/list-companies"), false);
+    assert.equal(isSanctionedLegacyHit("v2025-06", "api/authentication"), false);
+    assert.equal(isSanctionedLegacyHit("v202506", "sdk/components"), false);
+  });
+
+  it("sanctions the version marker on the exact prose pages that explain the Public SDK API", () => {
+    for (const page of ["api/choosing-a-cart-surface", "sdk/cart-api"]) {
+      assert.equal(isSanctionedLegacyHit("v2025-06", page), true, page);
+      assert.equal(isSanctionedLegacyHit("v202506", page), true, page);
+      assert.equal(isSanctionedLegacyHit("per_page", page), false, page);
+      assert.equal(isSanctionedLegacyHit("/api/v1/", page), false, page);
+    }
+  });
+
+  it("sanctions only the version marker on a public-v2025-06 page", () => {
+    // Adoption licenses the version in the path, nothing else. Whether the Public SDK
+    // surface's offset `page`/`per_page` params are genuine is unverified against the
+    // implementation, so per_page still fails there.
+    const page = "api-reference/root-themes/list-root-themes";
+    assert.equal(isSanctionedLegacyHit("v2025-06", page), true);
+    assert.equal(isSanctionedLegacyHit("per_page", page), false);
+    assert.equal(isSanctionedLegacyHit("/api/v1/", page), false);
+    assert.equal(isSanctionedLegacyHit("company/v1/", page), false);
+  });
 });
 
 describe("scanLegacyAttributed", () => {
@@ -898,6 +960,38 @@ describe("scanLegacyAttributed", () => {
     const res = scanLegacyAttributed([{ label: "api/guides/categories", text: "GET /api/v202604/categories?page[limit]=50" }]);
     assert.deepEqual(res.sanctioned, []);
     assert.deepEqual(res.unsanctioned, []);
+  });
+
+  it("forgives the public-v2025-06 section but not its checkout twin, on real labels", () => {
+    // End-to-end through the label derivation splitLlmsSections actually performs, so
+    // the sanctioned page spellings are pinned against the Source: URL form rather
+    // than against a hand-written label. Both sections carry the same marker; only the
+    // Public SDK one owns it.
+    const doc = [
+      "> ## Agent Instructions",
+      "> Never use /api/company/v1/ or /api/v1/ paths — they are legacy.",
+      "",
+      "# Creates a cart",
+      "Source: https://docs.fluid.app/api-reference/carts/creates-a-cart",
+      "",
+      "/api-reference/public-v2025-06.yaml post /api/public/v2025-06/commerce/carts",
+      "",
+      "# Create a cart",
+      "Source: https://docs.fluid.app/api-reference/carts/create-a-cart",
+      "",
+      "/api-reference/checkout-v2026-04.yaml post /api/checkout/v2026-04/carts",
+      "Superseded the old /api/v2025-06/carts endpoint.",
+    ].join("\n");
+
+    const { sanctioned, unsanctioned } = scanLegacyAttributed(splitLlmsSections(doc));
+    assert.deepEqual(sanctioned, [
+      { marker: "company/v1/", label: "(agent-instructions banner)" },
+      { marker: "/api/v1/", label: "(agent-instructions banner)" },
+      { marker: "v2025-06", label: "api-reference/carts/creates-a-cart" },
+    ]);
+    assert.deepEqual(unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
+    ]);
   });
 });
 

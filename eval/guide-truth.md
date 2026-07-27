@@ -1225,3 +1225,81 @@ fixed it; no `.mintignore` change was needed. `mint export` had tolerated the sa
 `/eval/guide-truth` or `/AGENTS` page, so nothing internal was ever published — this was a
 build-parser fault, not a content leak. **Prose in this file is MDX-parsed: fence or backtick every
 inline angle-bracket placeholder.**
+
+## Phase 9.6f — adopt public-v2025-06 (CURRENT-2725)
+
+The Public SDK API — the REST surface the `@fluid-app` FairShare SDK actually calls — is now part
+of the synced reference inventory. It contains 67 paths and 69 operations. Eighteen paths sit
+outside `/api/public/v2025-06/`, so the version identifies the specification rather than a uniform
+path prefix.
+
+### The two cart surfaces stay published and differentiated
+
+The Checkout API remains the forward surface for a new direct REST integration. The Public SDK API
+remains the SDK's own browser-facing contract. They use the same cart records and cart engine, and a
+cart token identifies the same cart through either front door, but their operation and request
+shapes differ. Neither is a replacement for the other.
+
+The Public SDK API nav group sits immediately after Checkout. `api/choosing-a-cart-surface.mdx`
+records the audience decision table and the 21-operation equivalence map. The page also carries the
+binding warning: do not mix the surfaces within one cart lifecycle, because unsubscribing a bundle
+line reprices bundle children and releases the derived price lock on the Public SDK API while the
+Checkout API only clears the subscription fields.
+
+Both OpenAPI `info.description` blocks state audience, unique capability, authentication model, and
+the reciprocal boundary. The shared choosing page is their stable cross-link because an OpenAPI nav
+group has no landing page.
+
+### The paired upstream contract corrections close the publication prerequisites
+
+The backend spec change adds 23 described root tags to `public-v2025-06`, which satisfies the strict
+tag-description lint and replaces the ungroomed auto-group ordering after the next mirror sync. It
+also marks `country_code` and `fluid_shop` required on cart creation and documents the shared `410`
+processed/enrollment-authorized cart response on the guarded Public SDK cart operations. The
+Checkout spec receives the reciprocal group description.
+
+Those are source-of-truth changes in `fluid/docs/openapi/`; the checked-in mirror in this repository
+must not be hand-edited to anticipate them. The mirror and hosted group description update only
+after the upstream PR merges, the GCS publish finishes, and the docs sync runs. That propagation
+delay is expected and makes the docs PR dependent on the upstream PR.
+
+### Generated operation links were verified from the real export
+
+Mint CLI 4.2.742 exported 367 pages. All 113 cart-operation destinations in the audit inventory
+exist, and every generated page embeds the intended operation ID and API path. The rule observed in
+this export is `/api-reference/<first-tag-slug>/<summary-slug>`; underscores and colons remain in
+the observed slugs. Tag directories and OpenAPI nav groups have no landing pages, so operation-level
+links are the only truthful reference targets.
+
+The 42 distinct destinations used by the cart equivalence map, every Public SDK link in
+`sdk/cart-api.mdx`, and the redirect destination `/api-reference/carts/creates-a-cart` were verified
+against the archive before publication. The redirect remains temporary per Phase 9.6e.
+
+### The leakage exception is exact by page and marker
+
+`PUBLIC_SDK_V2025_06_PAGES` sanctions the 69 generated operation pages.
+`PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
+the hand-written pages that must name the SDK's real version. Both sets forgive only the
+`v2025-06` / `v202506` marker.
+
+The unrelated admin/partner surface remains unsanctioned. So do `per_page`, `company/v1/`, and
+`/api/v1/` on every Public SDK page. Tests pin the shared `carts`, `orders`, and `paypal` tag
+neighbours so the exception cannot leak onto current v2026-04 operations.
+
+### `/api/public/stable/` is live, but it is not a blanket alias
+
+The routes mounted from the Public SDK API's shared v1 route set are live under both
+`/api/public/v2025-06/` and `/api/public/stable/`. The SDK uses the stable form for realtime
+authentication. The video-analytics operation is mounted in a separate versioned namespace and has
+no stable twin. The 18 spec operations outside `/api/public/v2025-06/` are likewise not rewritten
+through this alias.
+
+Use the explicit version for a pinned contract. Use `stable` only when deliberately following the
+current Public SDK version.
+
+### Open — two pagination contracts still need implementation verification
+
+The spec declares `page` / `per_page` and offset response metadata on
+`public_v2025_06_index_public_drop_zones` and `public_v2025_06_root-themes-index`. This is not yet
+sanctioned. Per gap #12, implementation rather than the specification settles pagination behavior.
+Verify the two Rails actions before adding any house-rule or hosted-check exception.
