@@ -1004,7 +1004,7 @@ is CURRENT-2719.
 ## Phase 9.6e — URL continuity for the legacy Redocly namespace (CURRENT-2719)
 
 Mintlify serves `docs.fluid.app` directly, so a `docs.json` `redirects` array covers the whole legacy
-namespace with no DNS, edge, or proxy change. The shipped map is **225 entries**, using only
+namespace with no DNS, edge, or proxy change. The shipped map is **165 entries**, using only
 `source`/`destination`/`permanent`. Only settled outcomes are recorded here; the map is the diff and
 the run record is on the issue.
 
@@ -1016,7 +1016,7 @@ already live: `/docs/themes/theme-variables`, `/docs/themes/template-types`,
 returns 307 for *everything* regardless of the flag, so the permanent/temporary semantics cannot be
 observed locally — only the fact that an entry fires and where it points.
 
-An earlier revision of this map marked 156 entries permanent on the reasoning that a verified,
+An earlier revision of this map marked 156 of its entries permanent on the reasoning that a verified,
 genuine final home deserves a 308. That was the wrong default, for three reasons:
 
 - **The risk is asymmetric and one direction is irreversible.** 307 → 308 is always available later.
@@ -1089,9 +1089,36 @@ Routing was purely file-path derived: no frontmatter `slug`/`permalink` override
 the corpus, and `redocly.yaml` carries no path-prefix directive. The `/docs/` prefix existed only
 because the content folder is named `docs/`. Trailing slashes 301'd to the bare path.
 
-`.md`-suffixed sources are also carried, and they are **not** legacy-URL continuity: Realm stripped
-the extension when routing, so `/docs/themes/theme-variables.md` never served. They are defensive
-coverage for link strings that demonstrably exist in the wild.
+### Mintlify matches `source` case-sensitively, and derives `.md` handling for free
+
+Two behaviours that decide how many entries the map actually needs. Both were measured against
+production, because `mint dev` reproduces neither.
+
+**`source` matching is case-sensitive.** With `/docs/themes/theme-variables` live,
+`/docs/themes/Theme-Variables` and `/docs/themes/THEME-VARIABLES` both 404; with the mixed-case
+`/docs/sdk/fairshare/cart/addCartItems` live, the differently-cased `AddCartItems` 404s. So a
+mixed-case entry covers exactly the one spelling it names — it is not a case-insensitive catch.
+
+That makes mixed-case entries *non-redundant but also non-valuable here*, because Realm lowercased
+every slug, so **no mixed-case legacy URL ever served**. Writing 47 of them would have added surface
+for strings that 404'd on Redocly too, while implying they were once URLs. They are not carried. The
+single exception is `/docs/sdk/fairshare/cart/addCartItems`, which an earlier phase already shipped
+and which is live in production — removing it would be a regression against current behaviour, not a
+cleanup.
+
+**`.md` handling is derived from the base entry and must not be written explicitly.** Mintlify
+strips a `.md` suffix, matches the base `source`, and re-appends `.md` to the destination:
+`/docs/themes/template-types.md` → `/themes/blocks-and-components.md` with no `.md` entry anywhere in
+the config, while `/docs/themes/supported-paths.md` 404s precisely because its *base* has no entry.
+The `.md` target is real — `/themes/theme-variables.md` serves the agent-facing markdown variant.
+
+So explicit `.md` entries are worse than useless: an earlier revision of this map added 16 pointing at
+the **HTML** page, which overrode the derived behaviour and would have sent an agent that asked for
+markdown to HTML instead. They are removed. Every base entry now yields correct `.md` behaviour for
+free.
+
+Legacy `.md`-suffixed links do exist in committed source, but Realm stripped extensions when routing,
+so those URLs never served either — there is no continuity being dropped.
 
 ### Slug renames need explicit entries — there were more than the two tracked
 
