@@ -874,7 +874,7 @@ What a green run now means:
   zero-legacy acceptance metric described a model's answers and does not transfer; the checker
   requires everything to pass instead.
 - **`auth` is checked, from the spec and never from prose.** Every hosted `.md` page opens with an
-  agent-instructions banner reading "Authenticate with the header Authorization: Bearer <token>", so
+  agent-instructions banner reading "Authenticate with the header `Authorization: Bearer <token>`", so
   any prose-based check would report bearer for all 57 API prompts. The check reads the inlined
   security requirement (`- bearer_auth: []`); the `securitySchemes` definition renders without the
   leading dash, which is what distinguishes a requirement from a declaration.
@@ -1000,3 +1000,228 @@ artifact, however accurate they are the moment they are written.
 page — none censused. `/docs/openapi/rep-v0` (10 inbound internal links) and `/docs/openapi/carts-v0`
 (8) are the corpus's most-linked targets and have no Mintlify page. URL continuity for that namespace
 is CURRENT-2719.
+
+## Phase 9.6e — URL continuity for the legacy Redocly namespace (CURRENT-2719)
+
+Mintlify serves `docs.fluid.app` directly, so a `docs.json` `redirects` array covers the whole legacy
+namespace with no DNS, edge, or proxy change. The shipped map is **165 entries**, using only
+`source`/`destination`/`permanent`. Only settled outcomes are recorded here; the map is the diff and
+the run record is on the issue.
+
+### Every entry is `permanent: false`, deliberately
+
+`permanent: true` emits **308** and `false` emits **307** — verified against the entries that were
+already live: `/docs/themes/theme-variables`, `/docs/themes/template-types`,
+`/docs/sdk/fairshare/cart/addcartitems`, and `/` all returned 308 in production. Note `mint dev`
+returns 307 for *everything* regardless of the flag, so the permanent/temporary semantics cannot be
+observed locally — only the fact that an entry fires and where it points.
+
+An earlier revision of this map marked 156 of its entries permanent on the reasoning that a verified,
+genuine final home deserves a 308. That was the wrong default, for three reasons:
+
+- **The risk is asymmetric and one direction is irreversible.** 307 → 308 is always available later.
+  308 → 307 is not: a 308 is cacheable by default and browsers hold it more or less indefinitely, so
+  a client that hits a wrong permanent redirect keeps being sent to the wrong place after the config
+  is corrected, until its cache is cleared. There is no server-side retraction.
+- **This project's own record shows destinations churn.** 11 of the 127 dispositions changed between
+  9.6a and 9.6d; `a2056ea` deleted two redirect entries that 9.6e restored; four slugs were renamed
+  after publication (`paged-editor`, `themes-cli`, `github_integration`, `template-types`). Two
+  further phases will still move content — CURRENT-2725 adopts `public-v2025-06`, and CURRENT-2722
+  creates two pages that shipped code already advertises. Declaring a destination final now bets
+  against the observed base rate in this very corpus.
+- **The usual argument for 308 barely applies here.** Permanent redirects are standard in a migration
+  to transfer link equity and retire the old URLs from the index. But these URLs had been **404ing**
+  since the Redocly cutover, and search engines drop 404s, so most of that equity is already gone.
+  308 buys much less than it would in a live-to-live cutover, while costing the irreversibility above.
+
+The residual cost is accepted: search engines will not consolidate legacy URLs onto their successors,
+so any that are still indexed will linger. That is recoverable by promoting to 308 later; a poisoned
+client cache is not.
+
+Promotion is therefore a deliberate, evidence-led step rather than a default — see CURRENT-2738. The
+gate should be that destinations have held still across the remaining phases *and* that an analytics
+cycle shows which legacy URLs are actually being hit.
+
+One limitation worth stating plainly: the 9 entries that shipped in earlier phases were already
+serving 308 in production, so any browser that already cached them keeps that permanent redirect.
+Flipping them to 307 changes behaviour only for clients that had not yet hit them.
+
+### The legacy URL surface is larger than the 127-page census
+
+The scope caveat above named the gap; this phase measured it. The census counted authored Markdown
+only, and its own group figures (sdk 67 + guides 33 + themes 21) sum to **121, not 127** — six pages
+were omitted, all of which served 200: `/docs/about-us` and its two children, `/docs/legal/terms`,
+`/docs/legal/responsible-use`, and `/docs/changelog`.
+
+The full legacy HTML surface is **172 routes**: 127 authored pages + 37 `/docs/openapi/<spec>` (one
+per `apis:` entry in `redoc/redocly.yaml`) + 7 `/docs/apis/client/<name>.client` + the homepage.
+Two of those families were invisible to every prior count because they are derived, not authored:
+
+- **`/docs/apis/*` is an older generation of API-reference URL, and it is the one shipped code links
+  to.** Every `fluid-admin` link uses `/docs/apis/swagger[/…]` or `/docs/apis/fluid.api/…`, never
+  `/docs/openapi/*`. Both generations were live. A map built from the authored corpus covers none of
+  them, which is why they were the most urgent entries in this phase despite appearing in no census.
+- **`/docs/apis/client/<name>.client`** — OpenAPI JSON under `docs/` auto-routed, with `.client` part
+  of the slug. `components.json` did *not* route; it is a shared-components file.
+
+### Redocly Realm lowercased every route slug — no legacy URL contained an uppercase character
+
+This was recorded as undocumented and hedged around with dual-case entries. It is settled: running
+the engine against the corpus and probing all 127 routes both ways returned **200 for all 127
+lowercase forms and 404 for all 47 mixed-case forms**, and `routesBySlug` applies `toLowerCase()` in
+`@redocly/realm/dist/server/store.js`. So the "47 of 127 uppercase" figure counts mixed-case
+**filenames**; the count is right and the classification was not.
+
+Case-folding is the only transformation. Underscores and dots survive and there is **no kebab
+conversion** — the distinction between a working entry and a dead one:
+
+| served (200) | never served (404) |
+| --- | --- |
+| `/docs/themes/base_theme_configuration` | `/docs/themes/base-theme-configuration` |
+| `/docs/sdk/fairshare/cart/addcartitems` | `/docs/sdk/fairshare/cart/add-cart-items` |
+
+Sources therefore use the lowercase-with-underscores form. Mixed-case twins are kept because
+Mintlify's own `source` case-sensitivity is still undocumented and the legacy corpus authored
+mixed-case links — three such links in `themes/developer-guide.md` were already 404ing on the legacy
+site for exactly this reason.
+
+Routing was purely file-path derived: no frontmatter `slug`/`permalink` override exists anywhere in
+the corpus, and `redocly.yaml` carries no path-prefix directive. The `/docs/` prefix existed only
+because the content folder is named `docs/`. Trailing slashes 301'd to the bare path.
+
+### Mintlify matches `source` case-sensitively, and derives `.md` handling for free
+
+Two behaviours that decide how many entries the map actually needs. Both were measured against
+production, because `mint dev` reproduces neither.
+
+**`source` matching is case-sensitive.** With `/docs/themes/theme-variables` live,
+`/docs/themes/Theme-Variables` and `/docs/themes/THEME-VARIABLES` both 404; with the mixed-case
+`/docs/sdk/fairshare/cart/addCartItems` live, the differently-cased `AddCartItems` 404s. So a
+mixed-case entry covers exactly the one spelling it names — it is not a case-insensitive catch.
+
+That makes mixed-case entries *non-redundant but also non-valuable here*, because Realm lowercased
+every slug, so **no mixed-case legacy URL ever served**. Writing 47 of them would have added surface
+for strings that 404'd on Redocly too, while implying they were once URLs. They are not carried. The
+single exception is `/docs/sdk/fairshare/cart/addCartItems`, which an earlier phase already shipped
+and which is live in production — removing it would be a regression against current behaviour, not a
+cleanup.
+
+**`.md` handling is derived from the base entry and must not be written explicitly.** Mintlify
+strips a `.md` suffix, matches the base `source`, and re-appends `.md` to the destination:
+`/docs/themes/template-types.md` → `/themes/blocks-and-components.md` with no `.md` entry anywhere in
+the config, while `/docs/themes/supported-paths.md` 404s precisely because its *base* has no entry.
+The `.md` target is real — `/themes/theme-variables.md` serves the agent-facing markdown variant.
+
+So explicit `.md` entries are worse than useless: an earlier revision of this map added 16 pointing at
+the **HTML** page, which overrode the derived behaviour and would have sent an agent that asked for
+markdown to HTML instead. They are removed. Every base entry now yields correct `.md` behaviour for
+free.
+
+Legacy `.md`-suffixed links do exist in committed source, but Realm stripped extensions when routing,
+so those URLs never served either — there is no continuity being dropped.
+
+### Slug renames need explicit entries — there were more than the two tracked
+
+A path-preserving rule silently 404s every one of these: `themes/paged-editor` → `themes/page-editor`;
+`themes/themes-cli` → `themes/cli`; `themes/github_integration` → `themes/github-integration`
+(underscore → hyphen); `themes/template-types` → `themes/blocks-and-components`;
+`guides/creating-and-using-droplets` → `guides/creating-droplets`; `guides/dam-file-picker-guide` and
+`guides/dam-picker-sdk-guide` → `guides/dam-picker` (two → one); `guides/authentication-guide` →
+`api/authentication`.
+
+### The generated-path rule is fully determined, and it matches Realm's
+
+Generated reference pages are addressed `/api-reference/<tag>/<summary>`, and both segments get the
+same treatment: **case is folded**, **underscores are preserved**, **spaces become hyphens**.
+Established from the `mint export` path inventory with negative evidence in both directions:
+`tags: [Gateways]` serves at `gateways` and `api-reference/Gateways/` has zero entries;
+`tags: [order_edits]` stays `order_edits` and `order-edits` has zero entries. `Merchant
+Configuration` → `merchant-configuration`; `summary: Undo_skip subscription` →
+`undo_skip-subscription`. This is the same rule Realm applied, which is why the legacy and current
+namespaces share a case-folded, underscore-preserving shape.
+
+Seven of the 37 legacy `/docs/openapi/*` routes reach a generated page — `storefront-v2026-04` →
+`storefront/public-product-by-slug`, `checkout-v2026-04` and `carts-v0` → `carts/create-a-cart`,
+`webhooks-v0` → `webhooks/create-a-webhook`, `payment-v2026-04` → `gateways/list-gateways`,
+`auth-v0` → `auth-token/create-auth-token`, `payments-v2026-04` →
+`payments/set-the-cart-payment-method`. Every one was confirmed present in the export inventory
+*before* being written, not derived and hoped for. The other 30 reach `/api/overview` by policy, not
+by failure.
+
+`commerce-v2025-06` routes to `/api/overview` deliberately, even though
+`order_edits/atomically-apply-one-or-more-edits-to-an-existing-order` resolves: the Commerce group
+holds only the two `commerce-v2026-04` order-edit operations while the legacy surface was broader, so
+pointing there would assert coverage that does not exist. `commerce-v2026-04.yaml` is on disk but
+absent from `apis:`, so it never had a legacy route.
+
+For `/docs/openapi/*` and `/docs/apis/*` the durable fix is per-surface landing pages, so these are
+the last entries that should ever be considered for promotion to 308.
+
+### The `themes-cli` anchor re-maps by reader need, not heading name
+
+Legacy `themes-cli.md:171` `## Start Up Guide` opened with an `### Installation` subsection offering
+RubyGems and Homebrew. `themes/cli.mdx` has no "Start Up Guide"; its `## Installation` carries those
+same two options, while `## Getting Started Workflow` is the closer match by *name* but different
+content near the page end. The live consumer links that anchor from copy about installing the CLI and
+uninstalling an older `fluid_cli`, so the destination is `/themes/cli#installation`.
+
+A Mintlify `source` cannot carry an anchor — only a `destination` can. So an anchored legacy URL
+cannot be routed separately from its unanchored twin, and all `themes-cli` traffic lands on
+`#installation`, including the unanchored "Master the CLI" consumer. Accepted deliberately.
+
+### A redirect to a page that does not document the content is a regression, not continuity
+
+Deferred and discarded content is verifiably absent from published pages by design, so pointing a
+reader at a plausible neighbour would assert coverage that does not exist. **19 legacy URLs are
+recorded accepted 404s** rather than nearest-conceptual redirects:
+
+- `sdk/fairshare/components/getAuthenticatedUser`, `sdk/fairshare/settings/lookupAffiliate` —
+  deferred; absent from every published page.
+- The eight `guides/mobile-app/*` CRM pages including `overview` — discarded because false.
+  `crm/v202506` was never a surface and none of their 62 endpoint rows is correct.
+- `guides/mobile-app/native-widgets`, `guides/mobile-app/playlists`, `sdk/mobile-sdk` — stubs and
+  placeholders.
+- `guides/data-dashboard`, `guides/inventory-management`, `guides/targeted-marketing`,
+  `legal/terms`, `legal/responsible-use`, `changelog` — fictional, disproven, or out of scope.
+
+No blanket catch-all wildcard is added, and the map contains **no wildcards at all**. A catch-all
+would hide which URLs are actually being hit; one analytics cycle of real 404 data is the cheaper way
+to decide the long tail. A consequence worth recording: because there are no wildcards, the
+undocumented precedence between a specific entry and an overlapping wildcard is moot here, so a
+passing build says nothing about that precedence.
+
+### Consumers outside this repo cannot be fixed by redirects
+
+`/_spec/*.json` is a build-time JSON fetch surface and Mintlify serves no JSON there; five distinct
+`_spec` URLs are fetched by committed codegen across seven `fluid-mono` packages, which need editing
+rather than redirecting. Two shipped runtime emitters advertise Mintlify-namespace paths that do not
+exist — `/api/public/forms` in a `Link: rel="successor-version"` response header and
+`/migration/server-side-attribution` in a browser deprecation warning. Creating those pages is
+tracked separately, and aiming a successor-version pointer at an approximate page is worse than its
+404. No SDK-generated output file contains a `docs.fluid.app` URL: every reference in the workspace is
+hand-written source, prose, or a test fixture.
+
+### Two count corrections to earlier phases
+
+- The 9.6a SDK sub-split above ("cart 31 + components/events/settings 36") is a mis-roll-up. Actual:
+  cart 26, components 19, events 11, settings 6, top-level 5 = **67**. The 67 total and the 127 /
+  guides 33 / themes 21 tallies are correct.
+- `guides/mobile-app/` holds **10** pages, not 11 — the eight CRM pages plus `native-widgets` and
+  `playlists`, with no `index.md`. `mobile-app` was never a first-level segment, so no
+  `/docs/mobile-app/*` namespace existed.
+
+### Verification, and a footgun that made one check silently vacuous
+
+Four instruments, each proving something the others do not: `mint validate` for schema (CI runs it);
+`mint broken-links --check-anchors --check-redirects --check-snippets` for destination liveness and
+anchor resolution; `mint export` to confirm a generated destination exists *before* writing it; and
+`mint dev` for runtime proof that entries actually fire, since a schema-valid array that never matches
+would satisfy the first two.
+
+`mint broken-links` was **aborting on this repo before checking anything**, because this file's own
+line 877 carried a bare `<token>` in prose that MDX parsed as a JSX tag and `eval/` is not in
+`.mintignore`. The run looked like tooling flakiness while verifying nothing. Backticking the header
+fixed it; no `.mintignore` change was needed. `mint export` had tolerated the same file and emits no
+`/eval/guide-truth` or `/AGENTS` page, so nothing internal was ever published — this was a
+build-parser fault, not a content leak. **Prose in this file is MDX-parsed: fence or backtick every
+inline angle-bracket placeholder.**
