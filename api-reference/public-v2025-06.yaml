@@ -1,6 +1,38 @@
 openapi: 3.1.0
 info:
   title: Fluid Public SDK API
+  description: |-
+    **Fluid Public SDK API — the REST surface behind the `@fluid-app` FairShare
+    SDK.**
+
+    This is what the SDK calls on your behalf from the browser. Read it to
+    understand what the SDK sends and receives, to verify a payload, or to call an
+    SDK-backed endpoint directly. It also owns the browser-side platform surface
+    that exists nowhere else: event tracking, lead capture, media and playlists,
+    embeddable widgets, forms, sessions, settings, browser fingerprinting,
+    affiliate lookup, root themes, and Pusher auth.
+
+    Its cart endpoints (`/api/public/v2025-06/commerce/carts/…`) are
+    **session-aware**: they accept `fluid_session` and populate visitor session
+    and rep attribution on the cart. They also cover enrollment-pack carts
+    (`…/enroll`, `…/enrollment`) and payment-gateway callbacks, which the Checkout
+    API does not.
+
+    Most browser and cart operations require no bearer token. The cart token in
+    the path scopes cart requests. Synchronizing an authenticated customer,
+    overriding cart item prices, and overriding cart item volumes require a
+    bearer token.
+
+    **Building a checkout from scratch, server-side? Use the Fluid Checkout API
+    (`checkout-v2026-04`) instead** — it is the forward surface and the only one
+    with customer accounts and subscription management. See
+    [Choosing a cart surface](https://docs.fluid.app/api/choosing-a-cart-surface)
+    for the operation map and boundary.
+
+    Note: the version label names this spec, not a single path prefix. Endpoints
+    here live under `/api/public/v2025-06/`, its partial
+    `/api/public/stable/` alias, `/api/public/`, `/api/v202506/carts/`, and the
+    cart price-override path under `/api/carts/`.
   version: v2025-06
   contact:
     email: support@fluid.app
@@ -15,13 +47,108 @@ servers:
     company:
       default: myco
       description: Company subdomain
+tags:
+- name: carts
+  description: Create, read, and mutate session-aware carts (items, address, country,
+    language, discounts, shipping method, payment method, magic-link login, checkout).
+- name: checkout
+  description: Checkout-started event emitted when a shopper enters the checkout flow.
+- name: commerce
+  description: Admin-authenticated cart price overrides.
+- name: orders
+  description: Public order lookup by token, including earned loyalty points.
+- name: product
+  description: Localized product lookup by slug for storefronts and themes.
+- name: enrollment-packs
+  description: Enrollment pack lookup by slug, for enrollment-pack carts.
+- name: payment
+  description: Klarna session creation and updates for a cart.
+- name: paypal
+  description: PayPal order creation, authorization, and shipping callbacks for a
+    cart.
+- name: events
+  description: Browser-side event ingestion — page visits, URL visits, and lead capture.
+- name: session
+  description: Visitor session creation, the basis of cart and rep attribution.
+- name: fingerprint
+  description: Browser fingerprint registration used to link sessions to a visitor.
+- name: lead
+  description: Lead capture from storefront and theme forms.
+- name: forms
+  description: Public form retrieval, password verification, and response submission.
+- name: media
+  description: Media lookup by slug and video analytics events.
+- name: playlist
+  description: Playlist (library) lookup by slug.
+- name: widgets
+  description: Embeddable storefront widgets — banners, carts, chats, and popups.
+- name: page
+  description: Page-visit tracking for storefront and theme pages.
+- name: url
+  description: Short-link and URL visit tracking.
+- name: settings
+  description: Company storefront settings the SDK reads at boot — company, cart,
+    and affiliate configuration.
+- name: affiliate
+  description: Affiliate lookup used to resolve a rep from a share link or handle.
+- name: root-themes
+  description: Root theme catalog backing the theme editor and storefront rendering.
+- name: public
+  description: Public utilities — health checks, Pusher auth, Apple Pay domain
+    verification, leaderboards, and cart item volumes.
+- name: public-drop-zones
+  description: Drop-zone lookup for shipping destinations without a street address.
 components:
   securitySchemes:
     bearer_auth:
       type: http
       scheme: bearer
       description: Bearer token authentication
+  responses:
+    ProcessedCartResponse:
+      description: >-
+        The cart is locked and can no longer be modified. Cart-mutation endpoints
+        return this when the cart has already been processed (converted to an
+        order) or, for enrollment carts, is in an authorized payment state. The
+        body carries the full cart plus the store URL so the client can display
+        the locked cart and redirect.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/LockedCartErrorResponse"
   schemas:
+    LockedCartErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - shop_url
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            shop_url:
+              type: string
+            cart:
+              "$ref": "#/components/schemas/Cart"
     Meta:
       type: object
       properties:
@@ -1944,19 +2071,16 @@ components:
           - string
           - 'null'
     CartCreateRequestBodyApplicationJsonSchema:
-      type:
-      - object
-      - 'null'
+      type: object
+      required:
+      - country_code
+      - fluid_shop
       properties:
         country_code:
-          type:
-          - string
-          - 'null'
+          type: string
           description: ISO 2-letter country code
         fluid_shop:
-          type:
-          - string
-          - 'null'
+          type: string
           description: The domain of your Fluid shop (excluding the scheme)
         fluid_session:
           type:
@@ -6609,6 +6733,8 @@ paths:
     patch:
       summary: Update cart items prices
       operationId: public_v2025_06_commerce-carts-update-cart-items-prices
+      description: Overrides line-item prices on the cart. Used by admin tooling;
+        requires a bearer token.
       tags:
       - commerce
       security:
@@ -6621,6 +6747,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -6630,6 +6758,7 @@ paths:
         '401':
           description: Unauthorized
       requestBody:
+        required: true
         content:
           application/json:
             schema:
@@ -6823,6 +6952,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/CartItemsAllSkippedResponse422ApplicationJsonSchema"
       requestBody:
+        required: true
         content:
           application/json:
             schema:
@@ -6835,6 +6965,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-get
+      description: Returns the full cart — items, totals, addresses, and available
+        payment methods — for a cart token.
       parameters:
       - name: cart_token
         in: path
@@ -6854,6 +6986,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Cart retrieved successfully
           content:
@@ -6872,6 +7006,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-update
+      description: Updates the cart email and phone; a blank email clears it and
+        recalculates email-gated discounts.
       parameters:
       - name: cart_token
         in: path
@@ -6905,6 +7041,8 @@ paths:
                   format: email
                   description: Customer email address
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Cart updated successfully
           content:
@@ -6930,6 +7068,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_address-update
+      description: Sets the cart's ship-to or bill-to address and recalculates shipping
+        and tax.
       parameters:
       - name: cart_token
         in: path
@@ -6937,6 +7077,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -6961,6 +7103,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_info-get
+      description: Returns the cart's company and storefront context without the full
+        cart payload.
       parameters:
       - name: cart_token
         in: path
@@ -6980,6 +7124,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Cart info retrieved successfully
           content:
@@ -7011,6 +7157,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_language-update
+      description: Sets the cart language, which drives translated product and pack copy
+        on later responses.
       parameters:
       - name: cart_token
         in: path
@@ -7018,6 +7166,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7044,6 +7194,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-checkout
+      description: Submits the cart for payment and converts it to an order.
       parameters:
       - name: cart_token
         in: path
@@ -7070,6 +7221,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_magic_link-confirm
+      description: Confirms a magic-link code and attaches the authenticated customer to
+        the cart.
       parameters:
       - name: cart_token
         in: path
@@ -7089,6 +7242,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7113,6 +7268,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-discount-apply
+      description: Applies a promo discount code to the cart and recalculates totals.
       parameters:
       - name: cart_token
         in: path
@@ -7120,6 +7276,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7144,6 +7302,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-enroll
+      description: Returns the enrollment form and pack context for an enrollment-pack
+        cart.
       parameters:
       - name: cart_token
         in: path
@@ -7191,6 +7351,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_enrollment-create
+      description: Creates the enrollment record for an enrollment-pack cart from the
+        submitted form answers.
       parameters:
       - name: cart_token
         in: path
@@ -7198,6 +7360,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7279,6 +7443,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_items-add
+      description: Adds one or more variants — including dynamic bundles — to the cart.
       parameters:
       - name: cart_token
         in: path
@@ -7305,11 +7470,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '410':
-          description: Cart is processed and can't be modified
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/StandardErrorResponse"
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '422':
           description: Every requested item was skipped and nothing was added, or
             the request referenced an unknown cart_item_id / carried invalid item
@@ -7415,6 +7576,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_item-remove
+      description: Removes a line item from the cart and recalculates totals.
       parameters:
       - name: cart_token
         in: path
@@ -7439,6 +7601,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Item removed successfully
           content:
@@ -7458,6 +7622,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_item-subscribe
+      description: Converts a one-time line item into a subscription on the given plan.
       parameters:
       - name: cart_token
         in: path
@@ -7493,6 +7658,8 @@ paths:
                   type: integer
                   description: ID of the subscription plan to apply. Optional if the product has a default subscription plan configured; required otherwise (returns 422 when missing and no default exists).
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Item subscribed successfully
           content:
@@ -7517,6 +7684,7 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_item-unsubscribe
+      description: Converts a subscription line item back to a one-time purchase.
       parameters:
       - name: cart_token
         in: path
@@ -7541,6 +7709,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Item unsubscribed successfully
           content:
@@ -7557,6 +7727,8 @@ paths:
   "/api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/update_volumes":
     patch:
       operationId: public_v2025_06_public_commerce_carts_items_update_volumes_patch
+      description: Overrides a line item's CV and QV volumes. Used by admin tooling;
+        requires a bearer token.
       summary: Update Volumes update volumes
       tags:
       - public
@@ -7572,6 +7744,10 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
+        '401':
+          description: Unauthorized
         '200':
           description: Success
           content:
@@ -7584,7 +7760,8 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
-      security: []
+      security:
+      - bearer_auth: []
   "/api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/variant":
     patch:
       summary: Updates a cart item's variant
@@ -7619,6 +7796,8 @@ paths:
         schema:
           type: integer
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7645,6 +7824,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-logout
+      description: Detaches the authenticated customer from the cart, leaving the cart
+        itself intact.
       parameters:
       - name: cart_token
         in: path
@@ -7664,6 +7845,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Logout successful
           content:
@@ -7683,6 +7866,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_magic_link-create
+      description: Sends a magic-link login code to the cart email so the shopper can
+        sign in during checkout.
       parameters:
       - name: cart_token
         in: path
@@ -7702,6 +7887,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
           description: Not found
           content:
@@ -7765,6 +7952,8 @@ paths:
         schema:
           type: integer
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '201':
           description: Payment method set successfully
           content:
@@ -7814,6 +8003,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart_shipping_method-update
+      description: Selects one of the cart's quoted shipping methods and recalculates
+        totals.
       parameters:
       - name: cart_token
         in: path
@@ -7821,6 +8012,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
@@ -7873,6 +8066,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '401':
           description: Unauthorized
         '200':
@@ -7887,6 +8082,8 @@ paths:
       tags:
       - carts
       operationId: public_v2025_06_cart-country-update
+      description: Sets the cart's country, which re-prices items and refreshes shipping
+        and tax.
       parameters:
       - name: cart_token
         in: path
@@ -7894,6 +8091,8 @@ paths:
         schema:
           type: string
       responses:
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
           description: Success
           content:
