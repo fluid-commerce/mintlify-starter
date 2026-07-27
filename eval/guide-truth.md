@@ -1004,10 +1004,47 @@ is CURRENT-2719.
 ## Phase 9.6e — URL continuity for the legacy Redocly namespace (CURRENT-2719)
 
 Mintlify serves `docs.fluid.app` directly, so a `docs.json` `redirects` array covers the whole legacy
-namespace with no DNS, edge, or proxy change. The shipped map is **225 entries** (the 9 pre-existing
-ones preserved byte-identical), `permanent: true` on 156 and `false` on 69, using only
+namespace with no DNS, edge, or proxy change. The shipped map is **225 entries**, using only
 `source`/`destination`/`permanent`. Only settled outcomes are recorded here; the map is the diff and
 the run record is on the issue.
+
+### Every entry is `permanent: false`, deliberately
+
+`permanent: true` emits **308** and `false` emits **307** — verified against the entries that were
+already live: `/docs/themes/theme-variables`, `/docs/themes/template-types`,
+`/docs/sdk/fairshare/cart/addcartitems`, and `/` all returned 308 in production. Note `mint dev`
+returns 307 for *everything* regardless of the flag, so the permanent/temporary semantics cannot be
+observed locally — only the fact that an entry fires and where it points.
+
+An earlier revision of this map marked 156 entries permanent on the reasoning that a verified,
+genuine final home deserves a 308. That was the wrong default, for three reasons:
+
+- **The risk is asymmetric and one direction is irreversible.** 307 → 308 is always available later.
+  308 → 307 is not: a 308 is cacheable by default and browsers hold it more or less indefinitely, so
+  a client that hits a wrong permanent redirect keeps being sent to the wrong place after the config
+  is corrected, until its cache is cleared. There is no server-side retraction.
+- **This project's own record shows destinations churn.** 11 of the 127 dispositions changed between
+  9.6a and 9.6d; `a2056ea` deleted two redirect entries that 9.6e restored; four slugs were renamed
+  after publication (`paged-editor`, `themes-cli`, `github_integration`, `template-types`). Two
+  further phases will still move content — CURRENT-2725 adopts `public-v2025-06`, and CURRENT-2722
+  creates two pages that shipped code already advertises. Declaring a destination final now bets
+  against the observed base rate in this very corpus.
+- **The usual argument for 308 barely applies here.** Permanent redirects are standard in a migration
+  to transfer link equity and retire the old URLs from the index. But these URLs had been **404ing**
+  since the Redocly cutover, and search engines drop 404s, so most of that equity is already gone.
+  308 buys much less than it would in a live-to-live cutover, while costing the irreversibility above.
+
+The residual cost is accepted: search engines will not consolidate legacy URLs onto their successors,
+so any that are still indexed will linger. That is recoverable by promoting to 308 later; a poisoned
+client cache is not.
+
+Promotion is therefore a deliberate, evidence-led step rather than a default — see CURRENT-2738. The
+gate should be that destinations have held still across the remaining phases *and* that an analytics
+cycle shows which legacy URLs are actually being hit.
+
+One limitation worth stating plainly: the 9 entries that shipped in earlier phases were already
+serving 308 in production, so any browser that already cached them keeps that permanent redirect.
+Flipping them to 307 changes behaviour only for clients that had not yet hit them.
 
 ### The legacy URL surface is larger than the 127-page census
 
@@ -1090,8 +1127,8 @@ holds only the two `commerce-v2026-04` order-edit operations while the legacy su
 pointing there would assert coverage that does not exist. `commerce-v2026-04.yaml` is on disk but
 absent from `apis:`, so it never had a legacy route.
 
-All `/docs/openapi/*` and `/docs/apis/*` entries are `permanent: false`; the durable fix is
-per-surface landing pages.
+For `/docs/openapi/*` and `/docs/apis/*` the durable fix is per-surface landing pages, so these are
+the last entries that should ever be considered for promotion to 308.
 
 ### The `themes-cli` anchor re-maps by reader need, not heading name
 
