@@ -36,6 +36,7 @@ import {
   checkApiContract,
   checkWorkflowContract,
   scanLegacy,
+  removeCheckoutPublicSdkBoundary,
   splitLlmsSections,
   stripAgentBanner,
   isSanctionedLegacyHit,
@@ -79,24 +80,24 @@ describe("parseArgs", () => {
 
 describe("retrievalRateVerdict", () => {
   it("passes at or above the 90% floor", () => {
-    assert.equal(retrievalRateVerdict(60, 63).ok, true);
+    assert.equal(retrievalRateVerdict(63, 66).ok, true);
     assert.equal(retrievalRateVerdict(9, 10).ok, true);
-    assert.equal(retrievalRateVerdict(63, 63).ok, true);
+    assert.equal(retrievalRateVerdict(66, 66).ok, true);
   });
 
   it("fails below the floor", () => {
-    assert.equal(retrievalRateVerdict(56, 63).ok, false);
+    assert.equal(retrievalRateVerdict(59, 66).ok, false);
     assert.equal(retrievalRateVerdict(8, 10).ok, false);
-    assert.equal(retrievalRateVerdict(0, 63).ok, false);
+    assert.equal(retrievalRateVerdict(0, 66).ok, false);
   });
 
   it("reports the rate so it can be printed next to the floor", () => {
-    assert.equal(retrievalRateVerdict(60, 63).rate.toFixed(3), "0.952");
+    assert.equal(retrievalRateVerdict(63, 66).rate.toFixed(3), "0.955");
   });
 
   it("accepts an explicit floor", () => {
-    assert.equal(retrievalRateVerdict(60, 63, 1).ok, false);
-    assert.equal(retrievalRateVerdict(60, 63, 0.5).ok, true);
+    assert.equal(retrievalRateVerdict(63, 66, 1).ok, false);
+    assert.equal(retrievalRateVerdict(63, 66, 0.5).ok, true);
   });
 
   it("fails an empty run rather than reporting a vacuous 100%", () => {
@@ -494,8 +495,8 @@ describe("the stage-1 rate floor boundary", () => {
     assert.equal(runVerdict({ contractFailures: 0, retrievalOk: v.ok, surfaceFailures: 0, unsanctionedLegacy: 0 }), false);
   });
 
-  it("passes the current real numbers: 60/63 stage 1, clean stage 2", () => {
-    const v = retrievalRateVerdict(60, 63);
+  it("passes the current real numbers: 63/66 stage 1, clean stage 2", () => {
+    const v = retrievalRateVerdict(63, 66);
     assert.equal(v.ok, true);
     assert.equal(runVerdict({ contractFailures: 0, retrievalOk: v.ok, surfaceFailures: 0, unsanctionedLegacy: 0 }), true);
   });
@@ -594,7 +595,8 @@ describe("authFromPage", () => {
   });
 
   it("ignores the agent-instructions banner every page carries", () => {
-    // Every page opens with this line, so a prose match would report bearer for all 57.
+    // Every page opens with this line, so a prose match would report bearer for
+    // every API prompt.
     assert.equal(
       authFromPage("> Authenticate with the header Authorization: Bearer <token>; public reads need no auth."),
       "none",
@@ -967,6 +969,76 @@ describe("isSanctionedLegacyHit", () => {
 });
 
 describe("scanLegacyAttributed", () => {
+  const checkoutContract =
+    "````yaml /api-reference/checkout-v2026-04.yaml post /api/checkout/v2026-04/carts";
+  const publicSdkContract =
+    "````yaml /api-reference/public-v2025-06.yaml post /api/public/v2025-06/commerce/carts";
+  const reciprocalBoundary = [
+    "**If you are using the `@fluid-app` FairShare SDK in a theme or storefront,",
+    "you are not calling this surface** — the SDK calls the Fluid Public SDK API",
+    "(`public-v2025-06`).",
+  ].join("\n\n");
+
+  it("sanctions the exact reciprocal boundary on a generated Checkout page", () => {
+    const result = scanLegacyAttributed([
+      {
+        label: "api-reference/carts/create-a-cart",
+        text: `${checkoutContract}\n${reciprocalBoundary}`,
+      },
+    ]);
+    assert.deepEqual(result.sanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
+    ]);
+    assert.deepEqual(result.unsanctioned, []);
+  });
+
+  it("does not sanction an arbitrary version mention on a generated Checkout page", () => {
+    const result = scanLegacyAttributed([
+      {
+        label: "api-reference/carts/create-a-cart",
+        text: `${checkoutContract}\nThe older v2025-06 cart API is also available.`,
+      },
+    ]);
+    assert.deepEqual(result.sanctioned, []);
+    assert.deepEqual(result.unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
+    ]);
+  });
+
+  it("does not let a shared carts tag replace Checkout contract proof", () => {
+    const result = scanLegacyAttributed([
+      {
+        label: "api-reference/carts/complete-checkout",
+        text: `${publicSdkContract}\n${reciprocalBoundary}`,
+      },
+    ]);
+    assert.deepEqual(result.sanctioned, []);
+    assert.deepEqual(result.unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/complete-checkout" },
+    ]);
+    const stripped = removeCheckoutPublicSdkBoundary(
+      `${publicSdkContract}\n${reciprocalBoundary}`,
+    );
+    assert.equal(stripped.sanctioned, false);
+  });
+
+  it("still fails an additional marker beside the safe text on the same Checkout page", () => {
+    const result = scanLegacyAttributed([
+      {
+        label: "api-reference/carts/create-a-cart",
+        text:
+          `${checkoutContract}\n${reciprocalBoundary}\n` +
+          "A separate migration note still recommends v2025-06.",
+      },
+    ]);
+    assert.deepEqual(result.sanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
+    ]);
+    assert.deepEqual(result.unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
+    ]);
+  });
+
   it("splits sanctioned from unsanctioned and keeps the owning section label", () => {
     const { sanctioned, unsanctioned } = scanLegacyAttributed([
       { label: "(agent-instructions banner)", text: "never use per_page" },
