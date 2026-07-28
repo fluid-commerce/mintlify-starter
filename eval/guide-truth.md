@@ -1429,3 +1429,32 @@ because it serves unrelated features. Both runtime URLs are registered in
 No generated Global Embeds endpoint reference is published in this phase. Admin is
 the supported management workflow until the focused Company spec dependency above is
 complete.
+
+## CURRENT-2431 — launch-readiness closeout
+
+The hosted legacy scan now preserves Checkout's approved reciprocal audience boundary
+without weakening the version gate. Mintlify inlines `checkout-v2026-04`'s
+`info.description` on every generated Checkout operation page, including the exact
+sentence that says the FairShare SDK calls the Fluid Public SDK API
+(`public-v2025-06`). That sentence is current contract framing, not legacy guidance.
+
+The checker sanctions one occurrence only when both conditions hold:
+
+- The full reciprocal sentence matches exactly, allowing only Mintlify's whitespace
+  reflow of the YAML block scalar.
+- The same page carries a generated contract line for
+  `api-reference/checkout-v2026-04.yaml` and an `/api/checkout/v2026-04/*` path.
+
+The checker removes that occurrence before scanning the remaining page text. A changed
+or arbitrary version mention, a shared `carts` tag neighbour without Checkout contract
+proof, or a second `v2025-06` / `v202506` marker on the same Checkout page remains an
+unsanctioned failure. This is deliberately not a page-list, tag, or spec-wide exception.
+
+Three direct API prompts now cover representative `public-v2025-06` operations: SDK
+cart creation, SDK cart completion, and the SDK-internal public Drop Zones reader.
+Their methods, paths, security requirements, required request/query fields, and
+operation IDs are anchored to stable spec declarations rather than line numbers. Each
+prompt reminds readers that a new direct REST integration uses `checkout-v2026-04`.
+With these additions, all eight specs in `.github/synced-specs.json` have direct API
+prompt coverage: 14 storefront, 8 auth, 8 Checkout, 3 Public SDK, 9 payment, 7 cart
+payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workflows).

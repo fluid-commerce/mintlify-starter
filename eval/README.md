@@ -93,7 +93,7 @@ this stronger than prose matching. Two consequences worth knowing:
 
 - **Auth is read from the spec, never from prose.** Every hosted page opens with an
   agent-instructions banner reading "Authenticate with the header `Authorization: Bearer
-  <token>`", so a prose-based check would report `bearer` for all 57 API prompts. Only a
+  <token>`", so a prose-based check would report `bearer` for all 60 API prompts. Only a
   security *requirement* counts, and it is distinguishable because the `securitySchemes`
   declaration renders without the leading dash.
 - **Params and body fields are matched in their spec shapes**, not as bare words. `name:
@@ -145,7 +145,8 @@ from the first query of each prompt — one question per prompt, the way a real 
 would ask. This is deliberate: retrying until a page happens to rank would launder a
 genuine discoverability weakness into a pass.
 
-What the variance actually looks like today: the earlier snippet-based assertion was
+What the variance looked like before the three Public SDK API prompts were added: the
+earlier snippet-based assertion was
 visibly flaky (API passes moved 37 → 40 → 40 across three runs, and one prompt reported
 1 then 4 missing terms). Fetching whole pages removed almost all of it. Four consecutive
 full runs have returned the same 60/63 with the same three misses, and each of those
@@ -157,9 +158,9 @@ targeted run.
 
 `llms-full.txt`, every prompt's retrieved content, and every fetched target page are
 scanned for `company/v1/`, `/api/v1/`, `v2025[-_]?06`, `v202506`, and `per_page`. Each
-hit is attributed to the page carrying it. Four exceptions are sanctioned, each straight
-out of AGENTS.md and each **scoped to one marker and one set of pages** — never to a
-whole tag or a whole marker:
+hit is attributed to the page carrying it. Five exceptions are sanctioned, each straight
+out of AGENTS.md and scoped to one marker plus an exact page set or exact text
+occurrence — never to a whole tag or marker:
 
 | Sanctioned | Marker | Scope |
 | ---------- | ------ | ----- |
@@ -167,9 +168,11 @@ whole tag or a whole marker:
 | `webhooks-v0` reference sections | `per_page` | That surface's list endpoints are genuinely offset-paginated. Prose pages get no such licence. |
 | The seven verified offset `checkout-v2026-04` list pages, plus `customer-orders/list-customer-orders` for its response metadata | `per_page` | `OFFSET_PAGINATED_PAGES` — exact pages, because `directory`, `store`, and `subscriptions` also hold operations that do not paginate that way. |
 | The 69 generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
+| Checkout's reciprocal Public SDK boundary | `v2025-06` only | The exact `info.description` sentence saying that the FairShare SDK calls the Fluid Public SDK API, and only when the same generated page carries a `checkout-v2026-04.yaml` contract line at an `/api/checkout/v2026-04/*` path. |
 
-Any other hit fails the run. Two properties of the last one are load-bearing. It is keyed
-on the exact page, not a `v2025-06` pattern class, so the legacy admin/partner surface
+Any other hit fails the run. Two properties of the Public SDK page-list exception are
+load-bearing. It is keyed on the exact page, not a `v2025-06` pattern class, so the
+legacy admin/partner surface
 (`admin-v2025-06`, `/api/v2025-06/*` — a different API) keeps failing. And three of that
 spec's tags are **shared** with the v2026-04 surfaces — `carts` also holds 12
 `checkout-v2026-04` pages, `orders` one, `paypal` four — so a `carts/` prefix would have
@@ -177,16 +180,21 @@ forgiven a real leak on 17 current pages. The page list is the `mint export` pat
 inventory (the regeneration command is in the source comment); an upstream summary edit
 renames a page and drops it out of the set, which fails loudly rather than silently.
 
+The Checkout boundary is narrower still. The checker removes one exact safe occurrence
+before it scans the rest of the page. Changing the sentence, copying it onto a
+shared-tag neighbour without Checkout contract proof, or adding another `v2025-06` /
+`v202506` marker to the same current Checkout page leaves an unsanctioned hit.
+
 Two things this check learned the hard way:
 
 - **The per-page agent banner has to be stripped first.** It says "Never use …
   `page`/`per_page` params" *and* lists every spec filename including
-  `webhooks-v0.yaml`. Left in, it produced a `per_page` hit on all 57 fetched pages and
-  simultaneously satisfied the webhooks-v0 sanction on all 57 — a check that fires
+  `webhooks-v0.yaml`. Left in, it produced a `per_page` hit on every fetched generated
+  page and simultaneously satisfied the webhooks-v0 sanction on every page — a check that fires
   everywhere and forgives everywhere. `stripAgentBanner` removes the leading block quote
   so each page is judged on its own content.
 - **Coverage is bounded by the prompt set.** The scan sees `llms-full.txt` plus only the
-  pages the 63 prompts retrieve or target — not the whole site. And `llms-full.txt` is
+  pages the 66 prompts retrieve or target — not the whole site. And `llms-full.txt` is
   terse for generated reference pages: one contract line and a description, without the
   parameter detail. That is why the two `per_page` leaks on `checkout-v2026-04` list
   operations surfaced only through `/mcp` and the fetched pages, and why more of that
@@ -260,8 +268,9 @@ EVAL_DOCS_BASE_URL=https://fluid-docs.mintlify.app node eval/check-hosted-docs.m
 | `EVAL_CONCURRENCY` | optional | `4` | Parallel searches in flight. |
 | `EVAL_LLMS_MIN_CHARS` | optional | `100000` | Size floor for `llms-full.txt`. |
 
-Target pages are fetched once each and shared across prompts, so a full run makes 63
-search calls plus roughly 57 page fetches.
+Target pages are fetched once each and shared across prompts, so a full run makes 66
+search calls. Target-page fetches are deduplicated; stage-1 misses add fetches for the
+pages that did rank so the checker can report whether an alternate carried the contract.
 
 ## The CDN cache trap
 
@@ -349,7 +358,19 @@ Workflow prompts declare their target page and use required and forbidden terms:
 }
 ```
 
-The set currently holds 63 prompts: 57 API-call prompts and 6 workflow prompts.
+The set currently holds 66 prompts: 60 API-call prompts and 6 workflow prompts. Direct
+API coverage spans all eight published specs:
+
+| Synced spec | API prompts |
+| ----------- | ----------: |
+| `storefront-v2026-04.yaml` | 14 |
+| `auth-v0.yaml` | 8 |
+| `checkout-v2026-04.yaml` | 8 |
+| `public-v2025-06.yaml` | 3 |
+| `payment-v2026-04.yaml` | 9 |
+| `payments-v2026-04.yaml` | 7 |
+| `commerce-v2026-04.yaml` | 3 |
+| `webhooks-v0.yaml` | 8 |
 
 ## Output & exit code
 

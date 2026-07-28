@@ -241,6 +241,20 @@ const PUBLIC_SDK_V2025_06_PROSE_PAGES = new Set([
   "sdk/cart-api",
 ]);
 
+// `checkout-v2026-04` carries one reciprocal audience boundary in its
+// info.description. Mintlify inlines that description on every generated Checkout
+// operation page. Sanction only this exact sentence, and only when the same page
+// proves its owning spec and current Checkout path on the generated contract line.
+//
+// Whitespace is flexible because Mintlify reflows YAML block scalars in hosted
+// markdown. Every word, code span, emphasis boundary, and punctuation mark remains
+// exact. The occurrence is removed before the rest of the page is scanned, so a
+// second version marker on the same current page still fails.
+const CHECKOUT_PUBLIC_SDK_BOUNDARY =
+  /\*\*If you are using the `@fluid-app` FairShare SDK in a theme or storefront,\s+you are not calling this surface\*\* — the SDK calls the Fluid Public SDK API\s+\(`public-v2025-06`\)\./;
+const CHECKOUT_GENERATED_CONTRACT =
+  /^`{3,}yaml \/api-reference\/checkout-v2026-04\.yaml (?:get|post|patch|put|delete) \/api\/checkout\/v2026-04(?:\/\S*)?$/m;
+
 // Matches only a bare version token — what `scanLegacy` captures for the two
 // version patterns. Deliberately anchored so the Public SDK sanction can never
 // forgive `per_page`, `company/v1/`, or `/api/v1/` on the same page.
@@ -540,7 +554,7 @@ function hasBodyField(pageText, field) {
 
 // Auth comes from the inlined spec's security requirement, not from prose. Every
 // page opens with an agent-instructions banner that says "Authorization: Bearer
-// <token>", so any prose-based check would report bearer for all 57 prompts. A
+// <token>", so any prose-based check would report bearer for every API prompt. A
 // requirement renders as `- bearer_auth: []`; the `securitySchemes` definition
 // renders as `bearer_auth:` with no dash, so the dash is what distinguishes them.
 function authFromPage(pageText) {
@@ -604,6 +618,21 @@ function scanLegacy(rawText) {
   return hits;
 }
 
+function removeCheckoutPublicSdkBoundary(rawText) {
+  if (
+    typeof rawText !== "string" ||
+    !CHECKOUT_GENERATED_CONTRACT.test(rawText)
+  ) {
+    return { text: rawText, sanctioned: false };
+  }
+  const match = rawText.match(CHECKOUT_PUBLIC_SDK_BOUNDARY);
+  if (!match) return { text: rawText, sanctioned: false };
+  return {
+    text: rawText.slice(0, match.index) + rawText.slice(match.index + match[0].length),
+    sanctioned: true,
+  };
+}
+
 // llms-full.txt is an agent-instructions banner followed by one `# Title` /
 // `Source: <url>` section per page. `# ` at line start is the section delimiter —
 // page bodies use `##` and deeper, so it does not collide. Each section carries
@@ -633,6 +662,9 @@ function splitLlmsSections(text) {
 //      PUBLIC_SDK_V2025_06 sets. That sanction covers only the version marker.
 //      The exact Public SDK Drop Zones page separately permits `per_page` through
 //      OFFSET_PAGINATED_PAGES; the v1 markers still fail there.
+//   5. The exact reciprocal Public SDK sentence in `checkout-v2026-04`'s
+//      info.description, removed occurrence-by-occurrence before this page-level
+//      sanction function runs. A generated Checkout contract line is required.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
   const page = label.replace(/^api-reference\//, "");
@@ -656,9 +688,13 @@ function scanLegacyAttributed(sections) {
   const sanctioned = [];
   const unsanctioned = [];
   for (const section of sections) {
-    for (const marker of scanLegacy(section.text)) {
+    const checkoutBoundary = removeCheckoutPublicSdkBoundary(section.text);
+    if (checkoutBoundary.sanctioned) {
+      sanctioned.push({ marker: "v2025-06", label: section.label });
+    }
+    for (const marker of scanLegacy(checkoutBoundary.text)) {
       const hit = { marker, label: section.label };
-      if (isSanctionedLegacyHit(marker, section.label, section.text)) sanctioned.push(hit);
+      if (isSanctionedLegacyHit(marker, section.label, checkoutBoundary.text)) sanctioned.push(hit);
       else unsanctioned.push(hit);
     }
   }
@@ -667,8 +703,8 @@ function scanLegacyAttributed(sections) {
 
 // Every hosted `.md` page opens with the same block-quoted documentation-index and
 // agent-instructions banner. It says "Never use ... page/per_page params" and lists
-// every spec filename, so leaving it in makes the legacy scan report a hit on all 57
-// pages AND makes the webhooks-v0 sanction match all 57 — a check that fires
+// every spec filename, so leaving it in makes the legacy scan report a hit on every
+// fetched page AND makes the webhooks-v0 sanction match every page — a check that fires
 // everywhere and forgives everywhere. Strip it and scan the page's own content.
 function stripAgentBanner(pageText) {
   if (typeof pageText !== "string") return "";
@@ -1133,6 +1169,7 @@ export {
   checkApiContract,
   checkWorkflowContract,
   scanLegacy,
+  removeCheckoutPublicSdkBoundary,
   splitLlmsSections,
   stripAgentBanner,
   isSanctionedLegacyHit,
