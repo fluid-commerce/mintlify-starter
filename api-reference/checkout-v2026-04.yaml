@@ -5973,6 +5973,118 @@ components:
       - enrollment
       - meta
       additionalProperties: false
+    CheckoutVgsThreeDsChallengeResponse:
+      description: |
+        Returned by cart completion when the card issuer requires a VGS 3DS
+        challenge. No order exists yet: render `challenge_form` (posting to
+        `challenge_url` when present), then complete the cart again once the
+        challenge resolves.
+      type: object
+      properties:
+        three_ds_provider:
+          type: string
+          enum:
+          - vgs
+        challenge_form:
+          type:
+          - string
+          - 'null'
+          description: HTML form to render for the issuer challenge.
+        challenge_url:
+          type:
+          - string
+          - 'null'
+          description: Issuer URL the challenge form posts to.
+        transaction_id:
+          type:
+          - string
+          - 'null'
+          description: VGS 3DS transaction id, echoed back when resuming.
+        merchant_tx_id:
+          type:
+          - string
+          - 'null'
+          description: Merchant-side 3DS transaction id held on the cart.
+        status:
+          type: string
+          description: 3DS resolution status; `challenge_required` on this branch.
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+      required:
+      - three_ds_provider
+      - challenge_form
+      - challenge_url
+      - transaction_id
+      - merchant_tx_id
+      - status
+      - meta
+      additionalProperties: false
+    CheckoutBlikAgreementPendingResponse:
+      description: |
+        Returned by cart completion when a recurring BLIK payment needs its OTP
+        confirmed before the agreement can be created. Collect the OTP, then
+        complete the cart again.
+      type: object
+      properties:
+        blik_agreement_pending:
+          type: boolean
+          enum:
+          - true
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+      required:
+      - blik_agreement_pending
+      - meta
+      additionalProperties: false
+    CheckoutRedirectResponse:
+      description: |
+        Returned by cart completion when the provider hosts the next step. Send
+        the buyer to `redirect_url`; the order is created when the provider's
+        webhook completes the checkout.
+      type: object
+      properties:
+        redirect_url:
+          type: string
+          description: Provider-hosted URL to send the buyer to.
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+      required:
+      - redirect_url
+      - meta
+      additionalProperties: false
+    CheckoutPrePurchaseEnrollmentResponse:
+      description: |
+        Returned by cart completion when the cart is an enrollment cart carrying
+        a pre-purchase form. No order exists yet — collect the enrollment fields
+        via the enrollments endpoints, then complete the cart again.
+      type: object
+      properties:
+        enrollment:
+          type: object
+          properties:
+            state:
+              type: string
+              enum:
+              - complete
+              - incomplete
+            token:
+              type: string
+              description: Enrollment slug, used to address the enrollment.
+            cart_token:
+              type:
+              - string
+              - 'null'
+          required:
+          - state
+          - token
+          - cart_token
+          additionalProperties: false
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+      required:
+      - enrollment
+      - meta
+      additionalProperties: false
     CheckoutStoreAddressFieldListResponse:
       type: object
       properties:
@@ -10147,8 +10259,15 @@ paths:
         `requires_3ds` branch) — it does not originate on this surface; see the Cart
         payment reference for how to obtain it. Completion is final: once the cart
         converts to an order it is locked and any further mutation returns `410`.
-        Returns `404` when the cart is not found and `422` when the cart cannot be
-        completed.
+
+        Completion is not always a single step. Depending on the payment provider
+        and the cart's contents this returns the finished order (`200`), a VGS 3DS
+        challenge or a pending BLIK agreement to satisfy before retrying (`200`),
+        a pre-purchase enrollment form to collect (`202`), or a hosted-page
+        `redirect_url` to send the buyer to (`302`). Clients must branch on the
+        response shape rather than assuming an order. Returns `404` when the cart
+        is not found, `409` when a checkout is already in flight for this cart,
+        and `422` when the cart cannot be completed.
       parameters:
       - name: cart_token
         in: path
@@ -10176,17 +10295,107 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
         '200':
-          description: Returns the completed order
+          description: |
+            Checkout resolved without leaving the site. Either the order was
+            created, or the payment provider needs one more step from the buyer
+            before an order can exist — a VGS 3DS challenge, or a BLIK agreement
+            awaiting its OTP. Branch on the response shape.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/OrderResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/OrderResponse"
+                - "$ref": "#/components/schemas/CheckoutVgsThreeDsChallengeResponse"
+                - "$ref": "#/components/schemas/CheckoutBlikAgreementPendingResponse"
+        '202':
+          description: |
+            The cart is an enrollment cart carrying a pre-purchase form. No order
+            exists yet — collect the enrollment fields, then complete again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CheckoutPrePurchaseEnrollmentResponse"
+        '302':
+          description: |
+            The provider requires the buyer to authenticate or pay on a hosted
+            page (Citcon, PPRO, dLocal, and other auto-assignable providers).
+            Send the buyer to `redirect_url`; the order is created when the
+            provider's webhook completes the checkout. The body is JSON — this is
+            not an HTTP redirect and carries no `Location` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CheckoutRedirectResponse"
+        '409':
+          description: |
+            A checkout is already in flight for this cart. Retries are rejected
+            until the in-flight attempt finishes, so a second order is never
+            placed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
         '422':
           description: Unprocessable Entity
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+      requestBody:
+        description: |
+          All fields are optional. They carry provider-specific fraud, device,
+          and consent context gathered by the client at submit time; the cart
+          itself already holds the items, addresses, shipping, and payment
+          method.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                kount_session_id:
+                  type: string
+                  description: Kount fraud session id, persisted onto the cart's
+                    metadata for the fraud check.
+                checkout_from_admin:
+                  type: boolean
+                  description: Marks the checkout as admin-initiated rather than
+                    buyer-initiated.
+                browser_info:
+                  type: object
+                  additionalProperties: false
+                  description: Buyer browser fingerprint required by VGS 3DS
+                    authentication.
+                  properties:
+                    color_depth:
+                      type: integer
+                    screen_height:
+                      type: integer
+                    screen_width:
+                      type: integer
+                    time_zone:
+                      type: integer
+                    java_enabled:
+                      type: boolean
+                    java_script_enabled:
+                      type: boolean
+                    language:
+                      type: string
+                payment_method_data:
+                  type: object
+                  additionalProperties:
+                    "$ref": "#/components/schemas/JsonValue"
+                  description: Provider-specific submit-time data — for example
+                    Mercado Pago's `device_id` or BLIK's `blik_verification_code`.
+                device_data:
+                  type: string
+                  description: Braintree Data Collector device fingerprint.
+                accepted_agreement_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Ids of the agreements the buyer accepted at
+                    checkout.
       security: []
   "/api/checkout/v2026-04/carts/{cart_token}/country":
     post:
