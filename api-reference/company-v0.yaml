@@ -16401,6 +16401,191 @@ components:
               type: string
               format: date-time
               description: ISO 8601 timestamp when the response was built.
+    CompanyTrafficFlowsResponse:
+      description: Store-traffic flows for a period — the resolved window, the days
+        of it the channel rollups could answer, the ranked channel-to-content
+        ribbons with their folded remainder, and the two counts a client states
+        coverage from, wrapped in the standard API response envelope.
+      type: object
+      additionalProperties: false
+      required:
+      - period
+      - covered_window
+      - capture_start
+      - flows
+      - folded_destinations
+      - accounted_visits
+      - stamped_visits
+      - status
+      - meta
+      properties:
+        period:
+          type: object
+          additionalProperties: false
+          required:
+          - name
+          - starts_on
+          - ends_on
+          - bucket
+          properties:
+            name:
+              type: string
+              description: The resolved period name (e.g. last_30_days).
+            starts_on:
+              type: string
+              format: date
+              description: Inclusive first day of the requested window (YYYY-MM-DD,
+                UTC).
+            ends_on:
+              type: string
+              format: date
+              description: Inclusive last day of the requested window (YYYY-MM-DD,
+                UTC).
+            bucket:
+              type: string
+              description: The bucket granularity of the period window (always "day").
+        covered_window:
+          type:
+          - object
+          - 'null'
+          description: |
+            The days of the requested period the flows could be drawn over — the
+            requested window intersected with the days this store's channel
+            rollups have carried rows. Every count in the payload is taken over
+            this window rather than the requested one, the coverage denominator
+            included.
+
+            Null when the two do not meet, which means the period lies entirely
+            before the channel rollups began. Null arrives with empty flows and
+            zeroed counts, and is deliberately distinct from a covered window
+            whose flows are empty — that means the days were answerable and
+            nothing was visited. Do not coerce one into the other.
+          additionalProperties: false
+          required:
+          - starts_on
+          - ends_on
+          properties:
+            starts_on:
+              type: string
+              format: date
+              description: Inclusive first answerable day (YYYY-MM-DD, UTC).
+            ends_on:
+              type: string
+              format: date
+              description: Inclusive last answerable day (YYYY-MM-DD, UTC).
+        capture_start:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: |
+            The day this store's channel rollups first carried a row
+            (YYYY-MM-DD, UTC), or null when they never have. Reported whether or
+            not the requested period overlaps it, so a client can say when the
+            flows begin rather than presenting an empty period as an absence of
+            traffic.
+
+            A null covered_window with a capture_start set is a period that ends
+            before capture; a null covered_window with a null capture_start is a
+            store that has never had a rollup row at all.
+        flows:
+          type: array
+          description: |
+            One ribbon per (channel, destination) pair with visits over the
+            covered window, ranked destinations only. Channels with no traffic in
+            the window are absent rather than zero-filled.
+
+            Destinations are cut to a bounded ranked set server-side, and each
+            channel with folded traffic carries one remainder ribbon — resource
+            null, other true — so the ribbons still sum to accounted_visits.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - channel
+            - resource
+            - visits
+            - other
+            properties:
+              channel:
+                type: string
+                description: The acquisition channel the ribbon leaves (reps,
+                  email, paid, social, organic, referral, or direct).
+              resource:
+                type:
+                - object
+                - 'null'
+                description: The destination the ribbon lands on, or null on a
+                  folded remainder ribbon, which lands nowhere nameable.
+                additionalProperties: false
+                required:
+                - id
+                - title
+                - type
+                properties:
+                  id:
+                    type: integer
+                    description: The destination resource's id, within its own
+                      content type rather than globally unique.
+                  title:
+                    type: string
+                    description: The destination's display title, so a client
+                      renders a name rather than an id.
+                  type:
+                    type: string
+                    description: The destination's content type (products, pages,
+                      posts, media, libraries, or enrollment_packs).
+              visits:
+                type: integer
+                description: Bot-free channel-stamped visits from this channel to
+                  this destination over the covered window. Visits, not distinct
+                  visitors — a counting rollup cannot recover the latter.
+              other:
+                type: boolean
+                description: True on the single folded remainder ribbon for this
+                  channel, false on a real destination. A flag rather than a title
+                  to string-match.
+        folded_destinations:
+          type: integer
+          description: How many distinct destinations the fold replaced across
+            every channel, counting a destination reached by three channels once.
+            Zero when nothing was folded, in which case no ribbon carries other.
+        accounted_visits:
+          type: integer
+          description: The sum of the visits on the ribbons this payload carries,
+            the folded remainder included, so a merchant adding the diagram up
+            arrives at this number.
+        stamped_visits:
+          type: integer
+          description: |
+            Channel-stamped visits over the same covered window, read from the
+            store's channel rollup — the traffic there was, against the
+            accounted_visits the diagram draws.
+
+            Gross, bots included, while every ribbon is bot-free. So
+            accounted_visits over stamped_visits is bot-free over gross and
+            under-claims coverage: the real share of nameable traffic is at least
+            what this payload implies, never less. Two checkable numbers rather
+            than one computed percentage, so the client owns the phrasing.
+        status:
+          type: integer
+          description: The HTTP status code echoed in the response envelope.
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_uuid
+          - timestamp
+          properties:
+            request_uuid:
+              type:
+              - string
+              - 'null'
+              description: The request correlation id, or null when unset.
+            timestamp:
+              type: string
+              format: date-time
+              description: ISO 8601 timestamp when the response was built.
     CompanyTrafficGeographyResponse:
       description: Store-traffic geography for a period — the resolved window, the
         days of it geography could answer, the ranked country breakdown, and the
@@ -21128,6 +21313,66 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/CompanyTrafficCampaignsResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '422':
+          description: Unsupported period
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/analytics/traffic/flows":
+    get:
+      summary: Get traffic flows
+      tags:
+      - analytics
+      operationId: company_v0_get_analytics_traffic_flows
+      description: |
+        Returns which acquisition channel sent traffic to which piece of
+        content, for a named reporting period — the Sankey behind the Sources
+        tab's flow card.
+
+        The payload carries the resolved period window, the days of it the
+        channel rollups could answer, one ribbon per (channel, destination) pair
+        with its bot-free visits, and the two counts a client states coverage
+        from. Ribbon values are visits, not distinct visitors.
+
+        Destinations are ranked and cut server-side. Each channel with folded
+        traffic carries one remainder ribbon — resource null, other true — whose
+        visits are the exact tail it replaced, so the ribbons always sum to
+        accounted_visits. folded_destinations counts the distinct destinations
+        the fold replaced, and is zero when nothing was folded.
+
+        covered_window is null for a period lying entirely before the channel
+        rollups began, which is distinct from a covered window with no flows in
+        it. capture_start reports when the rollups began either way, so an empty
+        period reads as an empty period rather than as an absence of traffic.
+
+        stamped_visits is gross while the ribbons are bot-free, so the coverage
+        ratio under-claims and never over-claims.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: period
+        in: query
+        required: false
+        description: |
+          Named reporting period (default last_30_days). Supported names:
+          today, last_7_days, last_30_days, last_90_days, last_12_months,
+          this_month, last_month. An unsupported name returns 422.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CompanyTrafficFlowsResponse"
         '401':
           description: Unauthorized
           content:
