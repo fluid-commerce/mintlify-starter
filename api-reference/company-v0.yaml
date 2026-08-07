@@ -16722,19 +16722,22 @@ components:
               description: ISO 8601 timestamp when the response was built.
     CompanyTrafficGeographyResponse:
       description: Store-traffic geography for a period — the resolved window, the
-        days of it geography could answer, the ranked country breakdown, and a
-        nested city breakdown carrying its own capture window, wrapped in the
-        standard API response envelope.
+        days of it geography could answer, the ranked country breakdown with the
+        revenue delivered to each country, and a nested city breakdown carrying
+        its own capture window, wrapped in the standard API response envelope.
       type: object
       additionalProperties: false
       required:
       - period
       - effective_window
+      - revenue_window
       - capture_start
       - countries
       - cities
       - total_visitors
       - unplaced_visitors
+      - accounted_revenue
+      - paid_revenue
       - status
       - meta
       properties:
@@ -16791,6 +16794,40 @@ components:
               type: string
               format: date
               description: Inclusive last answerable day (YYYY-MM-DD, UTC).
+        revenue_window:
+          type: object
+          description: |
+            The days the revenue figures cover — the whole requested period, on
+            the order's own clock. An order falls inside it by created_at, over
+            the half-open UTC range [starts_on 00:00, (ends_on + 1) 00:00), the
+            same predicate every conversion figure on this tab applies.
+
+            Never null, unlike effective_window, and it covers a **different and
+            longer span**. Orders have carried a delivery country for years,
+            while visit geography only reaches capture_start and can never be
+            backfilled — an IP that was never recorded cannot be recovered. So on
+            a period reaching back past capture, a country row shows revenue for
+            the whole window beside visitors for only part of it. Neither number
+            is wrong; each is right over its own span. Do not render the two
+            columns as one measurement — say which days each covers, rather than
+            leaving a reader to infer the gap from a suspiciously low visitor
+            count. The gap closes as capture accrues and never inverts: revenue
+            always covers at least as much of the window as visitors do.
+          additionalProperties: false
+          required:
+          - starts_on
+          - ends_on
+          properties:
+            starts_on:
+              type: string
+              format: date
+              description: Inclusive first day revenue is counted over
+                (YYYY-MM-DD, UTC).
+            ends_on:
+              type: string
+              format: date
+              description: Inclusive last day revenue is counted over (YYYY-MM-DD,
+                UTC).
         capture_start:
           type:
           - string
@@ -16811,6 +16848,13 @@ components:
             to exactly one country — the country of their most recent placed visit
             in the window — so the rows are disjoint and
             Σ(visitors) + unplaced_visitors == total_visitors holds exactly.
+
+            A row's visitors and revenue answer two different questions and are
+            not a numerator and a denominator: visitors counts people an IP
+            placed in this country, revenue sums orders whose delivery address is
+            here. **Never divide one by the other into a conversion rate** — the
+            two populations are not the same people and the quotient means
+            nothing. They also cover different spans; see revenue_window.
           items:
             type: object
             additionalProperties: false
@@ -16821,6 +16865,7 @@ components:
             - page_views
             - share
             - other
+            - revenue
             properties:
               code:
                 type: string
@@ -16851,6 +16896,31 @@ components:
                 type: boolean
                 description: True for the single folded remainder row, false for a
                   real country.
+              revenue:
+                type: string
+                description: |
+                  Revenue delivered to this country over revenue_window, as a
+                  decimal string in the platform base currency (the sum of each
+                  order's amount_in_base), rounded once to the base currency's
+                  minor units. A country with visitors and no orders serves a
+                  decimal zero ("0.00" in a two-minor-unit base currency), never
+                  null — zero revenue is a measurement, null would mean "not
+                  knowable".
+
+                  Sourced from the order's own delivery country, not from the
+                  visit geography the rest of the row is built from, so it
+                  answers a different question than visitors beside it and must
+                  never be divided into a conversion rate.
+
+                  **This column covers storefront purchases and does not
+                  decompose store revenue.** Imported orders are outside the
+                  population entirely rather than missing from it, and they are
+                  a material share of platform revenue, so the column totalling
+                  less than a merchant's whole book is the design and not a gap
+                  in it. It is the same population the conversion figures on
+                  this tab measure — only orders a shopper session attributed —
+                  so imports, integrations, renewals, admin orders and drafts
+                  are absent from both, and the two agree by design.
         cities:
           type: object
           description: |
@@ -17014,6 +17084,33 @@ components:
             Shares are against total_visitors and are deliberately not
             renormalised, so Σ(shares) is the placed fraction rather than 1. The
             gap is this number, and it is meant to stay visible.
+        accounted_revenue:
+          type: string
+          description: |
+            The revenue the country rows add up to over revenue_window, as a
+            decimal string in the platform base currency — so a merchant totting
+            the column up arrives at this number. The folded "(other)" row is
+            included, exactly as it is in the column.
+        paid_revenue:
+          type: string
+          description: |
+            Every purchased order's revenue over the same revenue_window,
+            whatever country it was delivered to or whether it named one at all,
+            as a decimal string in the platform base currency — the whole of the
+            population the country column is cut from.
+
+            Paired with accounted_revenue this is what makes the rows auditable:
+            two checkable numbers rather than one computed percentage, so the
+            client owns the phrasing. The identity is exact — accounted_revenue
+            plus the revenue of purchased orders carrying no delivery country
+            equals paid_revenue — and the two do not usually diverge, so a gap
+            between them is worth looking into rather than the ordinary state of
+            things.
+
+            Read it as the population's total, not as store revenue. It covers
+            storefront purchases and excludes imported orders, which are a
+            material share of platform revenue, so neither this number nor the
+            column beneath it is a merchant's whole book.
         status:
           type: integer
           description: The HTTP status code echoed in the response envelope.
