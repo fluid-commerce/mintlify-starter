@@ -6,8 +6,13 @@ info:
   description: Consumer-agnostic, cart-scoped payment endpoints under
     /api/payments/v2026-04/carts/{cart_token}. The same endpoints serve checkout,
     admin, and portal identically. Authentication is cart-token based (the token
-    in the path); no JWT or API key is required. This spec is the source of truth
-    for generated payment API clients and is intentionally separate from
+    in the path); no JWT or API key is required. The one exception is paying
+    with a saved payment method on the set-payment-method endpoint, which
+    requires a customer/user JWT (in the body, an Authorization header, or the
+    session) and fails with 422 without one. Unknown request keys are stripped server-side
+    rather than rejected, so the server accepts payloads that the strict
+    request schemas in this document would flag. This spec is the source of
+    truth for generated payment API clients and is intentionally separate from
     payment-v2026-04.yaml, which documents the bearer-authenticated
     gateway/transaction admin surface at /api/payment/v2026-04.
   contact:
@@ -123,6 +128,29 @@ components:
           type: string
           description: Optional human-readable failure summary; some legacy
             payment-method error paths omit it.
+    ParameterMissingResponse:
+      description: Legacy fail envelope for a rescued missing-parameter error.
+        Carries no meta.
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - data
+      properties:
+        status:
+          type: string
+          enum:
+          - fail
+          description: Always `fail` for this envelope.
+        data:
+          type: object
+          additionalProperties: false
+          required:
+          - error
+          properties:
+            error:
+              type: string
+              description: Human-readable description of the missing request key.
     ProcessedCartMeta:
       description: Meta for the processed-cart guard. Carries the shop URL and the
         full processed cart. The cart is returned as an open object here; its
@@ -242,6 +270,7 @@ components:
         mode:
           type: string
           description: VGS Collect operating mode for this tokenization attempt.
+            Currently always `vault`.
         requires_3ds:
           type: boolean
           description: '`true` when the resolved payment account requires 3D Secure;
@@ -266,8 +295,11 @@ components:
         payment_account_id:
           type: integer
           description: Id of the CreditCard payment account resolved and pinned to
-            the cart for this tokenization; routing is fixed to this account for the
-            rest of the flow.
+            the cart for this tokenization. Routing normally stays fixed to this
+            account for the rest of the flow, but a stale pin is invalidated and
+            re-resolved when the account set that produced it changes (for example
+            after a gateway configuration change), so a later call can return a
+            different account.
         meta:
           "$ref": "#/components/schemas/Meta"
     VerifyResponse:
@@ -334,9 +366,12 @@ components:
           type: boolean
           description: '`true` when the PayPal order was created.'
         order_id:
-          type: string
+          type:
+          - string
+          - 'null'
           description: PayPal order id; pass it to the client SDK to approve, then
-            to the authorize endpoint.
+            to the authorize endpoint. `null` when PayPal rejected the order —
+            treat a `201` with a `null` order id as a failure.
         authorization_id:
           type: string
           description: PayPal capture id (Fastlane orders only).
@@ -380,12 +415,12 @@ components:
       properties:
         success:
           type: boolean
-          description: '`true` when the shipping change was applied and the PayPal
-            order was patched.'
+          description: '`true` when the cart''s address was updated and recalculated.
+            The PayPal order PATCH is issued but its result is not checked, so
+            `success: true` does not confirm PayPal accepted the patched totals.'
         order_id:
           type: string
-          description: PayPal order id that was patched with the recalculated
-            totals.
+          description: PayPal order id the recalculated totals were sent to.
         meta:
           "$ref": "#/components/schemas/Meta"
     BraintreeClientTokenResponse:
@@ -508,10 +543,16 @@ paths:
   "/api/payments/v2026-04/carts/{cart_token}/payment_method":
     put:
       summary: Set the cart payment method
-      description: Sets the payment method on the cart (idempotent). The request
-        and response shapes vary by payment type. The declared contract requires
-        type; the saved-payment-method flow (payment_method_id) is the only flow
-        that may omit payment_method.
+      description: |
+        Sets the payment method on the cart (idempotent). The request and response
+        shapes vary by payment type. The declared contract requires type; the
+        saved-payment-method flow (payment_method_id) is the only flow that may
+        omit payment_method. The saved-payment-method flow also requires a
+        customer/user JWT (body `jwt`, `Authorization` header, or session) and
+        fails with `422` without one. Returns `400` when a type-specific
+        required key is absent. Enrollment carts awaiting deferred capture accept card
+        payments only: a non-card `type` (or a non-card saved method) is rejected
+        with `422` and a `credit_card_required_for_enrollment` message.
       tags:
       - payments
       operationId: payments_v2026_04_set_payment_method
@@ -660,6 +701,16 @@ paths:
                   summary: PayPal order id returned for a paypal flow
                   value:
                     order_id: 5O190127TN364715T
+        '400':
+          description: |
+            Type-specific required key missing — `credit_card` without
+            `payment_method`, or `apple_pay` without `token`. Rendered as a
+            legacy `{status: "fail", data: {error}}` envelope, unlike the other
+            error statuses on this endpoint.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ParameterMissingResponse"
         '404':
           description: Cart, payment, or saved payment method not found
           content:
@@ -726,7 +777,7 @@ paths:
                       vault_id: tntabc123
                       environment: sandbox
                       route_id: rt_9x8y7z
-                      mode: preflight
+                      mode: vault
                       requires_3ds: false
                     requires_3ds: false
                     payment_account_id: 4021
@@ -826,8 +877,9 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: 3DS not required, not configured, already in progress, or
-            card not registered
+          description: 3DS not required, not configured, already in progress,
+            card not registered, the 3DS state could not be reset, or the VGS 3DS
+            API returned an error (surfaced with generic customer-facing copy)
           content:
             application/json:
               schema:
@@ -838,7 +890,7 @@ paths:
       summary: Get PayPal client SDK token
       description: |
         Returns the PayPal client SDK token the browser uses to initialize the
-        PayPal JS SDK for this cart. The token is scoped to the PayPal
+        PayPal JS SDK for this cart. The token is issued by the PayPal
         `PaymentAccount` named by `payment_account_id`. Cart-token authenticated
         (the token in the path is the credential; no bearer token). Returns `422`
         when `payment_account_id` is missing or the merchant's PayPal account is not
@@ -1346,7 +1398,8 @@ paths:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
           description: Invalid parameters, zero-amount cart, duplicate
-            authorization, or gateway failure
+            authorization, a payment account that does not belong to the cart's
+            company, or gateway failure
           content:
             application/json:
               schema:
@@ -1358,9 +1411,12 @@ paths:
       description: |
         Creates a Klarna payment session for the cart and returns the `session_id`
         and `client_token` used to render the Klarna widget client-side. The
-        optional `intent` selects the Klarna session intent. Cart-token
-        authenticated. Returns `400` when Klarna rejects the session, `404` when the
-        cart is not found, and `410` when the cart has already been processed.
+        session intent is derived server-side from the cart's contents (`buy`, or
+        `buy_and_tokenize` when the cart contains a subscription); the optional
+        `intent` field is accepted for compatibility but ignored. Cart-token
+        authenticated. Returns `400` when Klarna rejects the session, `404` when
+        the cart is not found, `410` when the cart has already been processed, and
+        `422` when the request body fails validation.
       tags:
       - klarna
       operationId: payments_v2026_04_klarna_create_session
@@ -1385,14 +1441,12 @@ paths:
               properties:
                 intent:
                   type: string
+                  description: Accepted for compatibility but ignored — the
+                    session intent is derived from the cart's contents.
             examples:
               default:
                 summary: Create a Klarna session
                 value: {}
-              with_intent:
-                summary: Create a Klarna session with an explicit intent
-                value:
-                  intent: buy
       responses:
         '201':
           description: Session created
@@ -1428,6 +1482,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
       security: []
     patch:
       summary: Update a Klarna payment session
@@ -1511,9 +1571,13 @@ paths:
   "/api/payments/v2026-04/carts/{cart_token}/apple_pay/validate":
     post:
       summary: Validate an Apple Pay merchant session
-      description: Requests a merchant session from Apple's startSession endpoint
-        on behalf of the storefront domain. Requires a Referer header matching a
-        verified domain.
+      description: |
+        Requests a merchant session from Apple's startSession endpoint on behalf
+        of the storefront domain. Requires a `Referer` header naming the
+        storefront: the referer host must match a verified Apple Pay domain or a
+        shared checkout domain, otherwise the request is rejected with `422`
+        before Apple is contacted. The payment account used for the Apple session
+        may differ from the account pinned for routing.
       tags:
       - apple-pay
       operationId: payments_v2026_04_apple_pay_validate
@@ -1526,6 +1590,16 @@ paths:
           request to a single cart and is the credential for these endpoints —
           cart-token authentication carried in the path, with no bearer token or API
           key.
+        schema:
+          type: string
+      - name: Referer
+        in: header
+        required: true
+        description: |
+          Storefront page URL initiating the Apple Pay session. The host must
+          match a verified Apple Pay domain or a shared checkout domain; requests
+          without a referer, or with an unrecognized host, are rejected with
+          `422`.
         schema:
           type: string
       requestBody:

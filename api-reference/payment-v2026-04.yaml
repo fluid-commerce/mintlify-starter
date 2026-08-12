@@ -3,8 +3,23 @@ openapi: 3.1.0
 info:
   title: Fluid Payment API
   version: v2026-04
-  description: Payment gateway and transaction management API. Supports API key authentication
-    (fp_live_*/fp_test_*) and JWT bearer tokens.
+  description: |
+    Payment gateway and transaction management API — the standalone Fluid
+    Payments surface for external platforms.
+
+    Two credentials are accepted on every operation:
+    - **API keys** (`fp_live_*` / `fp_test_*`), scoped to a payments merchant.
+      Live and sandbox keys are separate credentials; `fp_live_*` keys also
+      require the merchant's API access to be enabled. Requests authenticated
+      with an `fp_test_*` key run in sandbox mode: transactions are created
+      with a sandbox source and never move real funds.
+    - **JWT bearer tokens** at admin tier (company admin or root admin). A
+      non-admin JWT is rejected with `403`.
+
+    Transactions created outside this API (checkout, storefront, admin) are
+    not visible to its read endpoints and cannot be captured, voided, or
+    credited here. API-key-authenticated operations emit signed webhooks to
+    the merchant's configured webhook URL (see the `webhooks` section).
   contact:
     email: support@fluid.app
   license:
@@ -18,16 +33,26 @@ tags:
     purchase, authorize, and $0 verification.
 - name: Transactions
   description: Read transactions and run transaction lifecycle operations —
-    capture, void, and credit/refund.
+    capture, void, and refund. Scoped to transactions created through this API
+    (live or sandbox); transactions from checkout, storefront, or admin flows
+    are not visible here.
 - name: Merchant Configuration
   description: Root-admin-only access to a merchant's VGS, Kount, 3DS acquirer,
     payout, and platform-fee settings.
+- name: Webhooks
+  description: Signed payment-event notifications POSTed to the merchant's
+    configured webhook URL. Fired only for transactions created through
+    API-key-authenticated requests.
 components:
   securitySchemes:
     bearer_auth:
       type: http
       scheme: bearer
-      description: API key (fp_live_*/fp_test_*) or JWT bearer token
+      description: |
+        Merchant API key (`fp_live_*` for live, `fp_test_*` for sandbox) or an
+        admin-tier JWT (company admin or root admin). Non-admin JWTs are
+        rejected with `403`; live API keys additionally require the merchant's
+        API access to be enabled.
   schemas:
     Meta:
       type: object
@@ -160,7 +185,10 @@ components:
           type: array
           items:
             type: string
-          description: Card brands / payment sources the gateway accepts (e.g. `visa`, `mastercard`).
+          description: |
+            Card brands / payment sources the gateway accepts (e.g. `visa`,
+            `mastercard`). Populated only for `CreditCard` gateways with a recognized
+            provider adapter; `[]` for all other integration types.
         country_codes:
           type: array
           items:
@@ -171,8 +199,10 @@ components:
           additionalProperties:
             "$ref": "#/components/schemas/JsonValue"
           description: |
-            Provider-specific configuration key/values for the gateway. The shape varies
-            by `integration_type`; secret values are obfuscated on read.
+            Provider-specific configuration key/values for the gateway, returned as
+            stored. The shape varies by `integration_type`. Secrets never appear here:
+            provider credentials live in the write-only `credentials` request field
+            and are excluded from every response.
         created_at:
           type: string
           format: date-time
@@ -190,6 +220,7 @@ components:
       - amount_cents
       - currency_code
       - processing_fee_cents
+      - platform_fee_cents
       - credited_amount_cents
       - retain_on_success
       - metadata
@@ -211,7 +242,10 @@ components:
           type:
           - string
           - 'null'
-          description: UUID (v7) of the vaulted card used; `null` when no card is associated.
+          description: |
+            UUID (v7) of the vaulted card used; `null` when no card is associated.
+            Note this is not the payment method slug accepted by request bodies —
+            the write-side slug and this read-side UUID do not round-trip.
         card_network:
           type:
           - string
@@ -239,11 +273,11 @@ components:
           - void
           - refund
           - verify
-          - general_credit
           description: |
             Operation this transaction represents. `purchase` and `authorize` are
-            initiated on a gateway; `capture`, `void`, `refund`, and `general_credit`
-            act against a prior transaction; `verify` is a $0 payment-method check.
+            initiated on a gateway; `capture`, `void`, and `refund` act against a
+            prior transaction; `verify` is a $0 payment-method check. The credit
+            endpoint always records its transaction as `refund`.
         status:
           type: string
           enum:
@@ -251,10 +285,20 @@ components:
           - declined
           - error
           - pending
+          - unsent
+          - sent
+          - received
+          - expired
+          - reconciling
           description: |
-            Outcome of the transaction: `success`, `declined` (rejected by the
-            provider), `error` (processing failure), or `pending` (awaiting a final
-            result from the provider).
+            Outcome of the transaction. Terminal outcomes: `success`, `declined`
+            (rejected by the provider), and `error` (processing failure). Non-terminal
+            values can also appear on reads: `pending` and `received` (awaiting a
+            final provider result), `unsent` and `sent` (dispatch in progress — a
+            transaction can persist here when processing is interrupted),
+            `reconciling` (a capture whose final state is being confirmed with the
+            provider), and `expired` (the transaction lapsed without reaching a
+            terminal outcome).
         amount_cents:
           type:
           - integer
@@ -378,10 +422,10 @@ components:
           type: string
           description: Primary street address line.
         address2:
-          type:
-          - string
-          - 'null'
-          description: Secondary address line (unit, suite, etc.); `null` when not provided.
+          type: string
+          description: |
+            Secondary address line (unit, suite, etc.). Omit the key entirely when
+            not applicable — an explicit JSON `null` fails validation with `422`.
         city:
           type: string
           description: City.
@@ -417,7 +461,10 @@ components:
             `CreditCard`, `PayPal`); defaults to the gateway's configured type.
         payment_method_id:
           type: string
-          description: Payment method slug
+          description: |
+            Payment method slug identifying a vaulted payment method. An unknown slug
+            fails with `404`. This slug is not the UUID returned in the transaction's
+            `payment_method_id` read field.
         reference_token:
           type: string
           description: Optional merchant-supplied reference stored on the transaction.
@@ -484,6 +531,25 @@ components:
           description: Enterprise webhook signing key. Obfuscated on read; omit or send obfuscated value to preserve the stored secret.
     MerchantConfiguration:
       type: object
+      required:
+      - vgs_client_id
+      - vgs_client_secret
+      - vgs_environment
+      - kount_enterprise
+      - kount_api_key
+      - kount_environment
+      - kount_client_id
+      - kount_channel_prefix
+      - kount_webhook_signing_key
+      - kount_accounts
+      - network_tokens_enabled
+      - vgs_cmp_vault_id
+      - vgs_proxy_username
+      - vgs_proxy_password
+      - network_3ds_setting
+      - payouts_settings
+      - platform_fee_rate
+      - platform_fee_fixed
       properties:
         vgs_client_id:
           type:
@@ -505,9 +571,7 @@ components:
           -
           description: VGS environment
         kount_enterprise:
-          type:
-          - boolean
-          - 'null'
+          type: boolean
           example: false
           description: When true, this merchant uses its own Kount 360 account; credentials
             come from kount_api_key + kount_webhook_signing_key. When false, Fluid's
@@ -555,9 +619,7 @@ components:
           items:
             "$ref": "#/components/schemas/KountAccount"
         network_tokens_enabled:
-          type:
-          - boolean
-          - 'null'
+          type: boolean
           description: Whether network tokens are enabled
         vgs_cmp_vault_id:
           type:
@@ -575,8 +637,10 @@ components:
           - 'null'
           description: VGS proxy password (obfuscated on read)
         network_3ds_setting:
-          type: object
-          description: Per-network 3DS acquirer settings
+          type:
+          - object
+          - 'null'
+          description: Per-network 3DS acquirer settings; `null` when never configured.
           properties:
             visa_acquirer_bin:
               type: string
@@ -603,8 +667,10 @@ components:
             discover_acquirer_requestor_name:
               type: string
         payouts_settings:
-          type: object
-          description: Payout collection settings
+          type:
+          - object
+          - 'null'
+          description: Payout collection settings; `null` when never configured.
           properties:
             payout_collection_enabled:
               type: boolean
@@ -774,7 +840,9 @@ components:
           - test
           - sandbox
           description: |
-            Environment the gateway runs in: `live`, `test`, or `sandbox`.
+            Environment the gateway runs in: `live`, `test`, or `sandbox`. The server
+            does not validate this value — anything other than `test` or `sandbox`
+            (including a typo) is treated as `live`.
         credentials:
           type: object
           additionalProperties:
@@ -786,7 +854,9 @@ components:
           type: array
           items:
             type: string
-          description: ISO 3166-1 alpha-2 country codes the gateway should be enabled for.
+          description: |
+            ISO 3166-1 alpha-2 country codes the gateway should be enabled for. Codes
+            not enabled for the company are silently ignored rather than rejected.
         settings:
           type: object
           additionalProperties:
@@ -808,7 +878,9 @@ components:
           type: array
           items:
             type: string
-          description: ISO 3166-1 alpha-2 country codes the gateway is enabled for; omit to leave unchanged.
+          description: |
+            ISO 3166-1 alpha-2 country codes the gateway is enabled for; omit to
+            leave unchanged. Codes not enabled for the company are silently ignored.
         settings:
           type: object
           additionalProperties:
@@ -850,6 +922,103 @@ components:
         additionalProperties:
           "$ref": "#/components/schemas/ErrorValue"
       - type: 'null'
+    PaymentWebhookEvent:
+      type: object
+      description: |
+        Payload POSTed to the merchant's configured webhook URL when a payment
+        transitions to a terminal state. Deliveries are signed: the
+        `X-Fluid-Signature` header carries the hex HMAC-SHA256 of the raw JSON
+        body, keyed with the merchant's webhook secret, and `X-Fluid-Event`
+        carries the event name. Delivery is at-least-once (up to 5 retries with
+        exponential backoff on connection failures, timeouts, and 5xx
+        responses; 10-second timeout), so receivers must tolerate duplicates.
+        Webhooks fire only for transactions created by API-key-authenticated
+        requests, and only when the merchant has both a webhook URL and a
+        webhook secret configured. The destination must be a public HTTPS URL:
+        a delivery that fails outbound-safety validation at any point — a
+        non-HTTPS scheme, a private or internal host, an unresolvable
+        hostname, too many redirects, or any other unsafe-URL condition — is
+        skipped entirely and never retried.
+      required:
+      - event
+      - created_at
+      - data
+      properties:
+        event:
+          type: string
+          enum:
+          - payment.completed
+          - payment.declined
+          - payment.error
+          - payment.voided
+          - payment.refunded
+          - payment.captured
+          description: |
+            Event name. `payment.completed` fires for a successful purchase or
+            authorization; `payment.captured`, `payment.voided`, and
+            `payment.refunded` fire for successful captures, voids, and
+            refunds; `payment.declined` and `payment.error` fire when any of
+            those operations is declined by the provider or fails processing.
+            Verifications never emit webhooks.
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp (UTC) of when the event was emitted.
+        data:
+          type: object
+          description: Snapshot of the transaction the event describes.
+          required:
+          - id
+          - action
+          - status
+          - amount_cents
+          - currency_code
+          - gateway_transaction_id
+          - gateway_id
+          - parent_transaction_id
+          - metadata
+          properties:
+            id:
+              type: string
+              description: Transaction slug — fetchable via the show-transaction endpoint.
+            action:
+              type: string
+              description: Transaction action (`purchase`, `authorize`, `capture`, `void`, or `refund`).
+            status:
+              type: string
+              description: Transaction status at emission time (`success`, `declined`, or `error`).
+            amount_cents:
+              type:
+              - integer
+              - 'null'
+              description: |
+                Amount in the currency's smallest unit at the processor's scale;
+                `null` when no amount applies.
+            currency_code:
+              type: string
+              description: ISO 4217 currency code.
+            gateway_transaction_id:
+              type:
+              - string
+              - 'null'
+              description: Provider-assigned transaction identifier; `null` when the provider never responded.
+            gateway_id:
+              type:
+              - string
+              - 'null'
+              description: Slug of the gateway that processed the transaction.
+            parent_transaction_id:
+              type:
+              - string
+              - 'null'
+              description: |
+                Slug of the originating transaction for captures, voids, and
+                refunds; `null` otherwise.
+            metadata:
+              type: object
+              additionalProperties:
+                "$ref": "#/components/schemas/JsonValue"
+              description: Merchant metadata stored on the transaction.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -867,6 +1036,13 @@ components:
         key per logical request: reusing one key across different operations
         (for example a purchase and then a capture) replays the first
         operation's cached status and body instead of performing the second.
+
+        Idempotency applies to API-key-authenticated requests only. On
+        JWT-authenticated requests the header is accepted but ignored — no
+        deduplication, no `409`, no replay. The cache stores whatever the
+        first execution returned, including error responses such as `404` or
+        `422`. Keys longer than 255 characters are rejected with an unhandled
+        `500`.
       schema:
         type: string
         maxLength: 255
@@ -913,6 +1089,19 @@ components:
         application/json:
           schema:
             "$ref": "#/components/schemas/ErrorResponse"
+    NotImplemented:
+      description: |
+        The operation is reserved but not implemented; the request performs no
+        work.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    WebhookAck:
+      description: |
+        Return any 2xx status to acknowledge receipt. 5xx responses,
+        connection failures, and timeouts are retried up to 5 times with
+        exponential backoff; 4xx responses are logged and not retried.
 security:
 - bearer_auth: []
 paths:
@@ -965,7 +1154,9 @@ paths:
         Creates a new payment gateway for the authenticated merchant from the
         `gateway` payload. Returns `201` with the created gateway. `credentials` are
         write-only and never returned. Returns `422` when required fields are missing
-        or `integration_type`/`mode` is invalid.
+        or `integration_type` is not a recognized integration class. `mode` is not
+        validated: any value other than `test` or `sandbox` produces a live gateway.
+        `country_codes` entries not enabled for the company are silently ignored.
       tags:
       - Gateways
       requestBody:
@@ -1015,9 +1206,9 @@ paths:
       operationId: showGateway
       summary: Get a gateway
       description: |
-        Retrieves a single gateway by slug, UUID, or numeric ID. Read-only; secret
-        values in `settings` are obfuscated. Returns `404` when no gateway matches the
-        identifier for the authenticated merchant.
+        Retrieves a single gateway by slug, UUID, or numeric ID. Read-only; provider
+        `credentials` are write-only and never included in the response. Returns `404`
+        when no gateway matches the identifier for the authenticated merchant.
       tags:
       - Gateways
       responses:
@@ -1039,8 +1230,9 @@ paths:
       description: |
         Updates an existing gateway. Only the fields present in the `gateway` payload
         are changed (PATCH semantics); omit `credentials` to preserve stored secrets.
-        Returns `200` with the updated gateway. Returns `404` when the gateway does not
-        exist and `422` on validation failure.
+        `PUT` is also routed to this operation with identical semantics. Returns `200`
+        with the updated gateway. Returns `404` when the gateway does not exist and
+        `422` on validation failure.
       tags:
       - Gateways
       requestBody:
@@ -1110,10 +1302,15 @@ paths:
       description: |
         Charges the payment method immediately (authorize and capture in a single
         step) for `amount_cents` on the gateway. Creates a `purchase` transaction and
-        returns it with `201`. Pass an `Idempotency-Key` header to make retries safe —
-        a replay returns the original result with `X-Idempotent-Replayed: true`.
-        Returns `404` when the gateway is not found, `409` when a request with the same
-        key is still in flight, and `422` when the request fails validation.
+        returns it with `201`. A `201` means the request was processed, not that
+        funds moved — read the outcome from `data.status` (`success`, `declined`, or
+        `error`). Pass an `Idempotency-Key` header to make retries safe — a replay
+        returns the original result with `X-Idempotent-Replayed: true`. Returns `404`
+        when the gateway or a referenced `payment_method_id` is not found, `409` when
+        a request with the same key is still in flight, and `422` when the request
+        fails validation. On success, API-key-authenticated requests emit a
+        `payment.completed` webhook (declines emit `payment.declined`, processing
+        failures `payment.error`).
       tags:
       - Gateways
       parameters:
@@ -1152,6 +1349,61 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/TransactionDataResponse"
+              examples:
+                success:
+                  summary: Approved purchase
+                  value:
+                    data:
+                      id: fpi_01hxyzabc123
+                      gateway_id: stripe-usd
+                      payment_method_id: 018f2c1a-9c4b-7e6d-9f10-3b4c5d6e7f80
+                      card_network: visa
+                      parent_transaction_id: null
+                      action: purchase
+                      status: success
+                      amount_cents: 4999
+                      currency_code: USD
+                      payment_source: CreditCard
+                      gateway_transaction_id: ch_3PQr7s2eZvKYlo2C
+                      reference_token: order_12345
+                      description: null
+                      processing_fee_cents: 175
+                      platform_fee_cents: 130
+                      credited_amount_cents: 0
+                      retain_on_success: false
+                      metadata: {}
+                      created_at: '2026-04-01T12:00:00Z'
+                      updated_at: '2026-04-01T12:00:00Z'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+                declined:
+                  summary: Provider declined — still `201`; outcome is in `data.status`
+                  value:
+                    data:
+                      id: fpi_01hxyzdef456
+                      gateway_id: stripe-usd
+                      payment_method_id: 018f2c1a-9c4b-7e6d-9f10-3b4c5d6e7f80
+                      card_network: visa
+                      parent_transaction_id: null
+                      action: purchase
+                      status: declined
+                      amount_cents: 4999
+                      currency_code: USD
+                      payment_source: CreditCard
+                      gateway_transaction_id: null
+                      reference_token: order_12345
+                      description: null
+                      processing_fee_cents: 0
+                      platform_fee_cents: 0
+                      credited_amount_cents: 0
+                      retain_on_success: false
+                      metadata: {}
+                      created_at: '2026-04-01T12:00:00Z'
+                      updated_at: '2026-04-01T12:00:00Z'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
           headers:
             X-Idempotent-Replayed:
               description: Present and `true` when this response is a cached
@@ -1184,10 +1436,13 @@ paths:
       description: |
         Authorizes (holds funds on) the payment method for `amount_cents` without
         capturing. Creates an `authorize` transaction and returns it with `201`;
-        capture it later via the transaction capture endpoint or release it with void.
-        Pass an `Idempotency-Key` header to make retries safe. Returns `404` when the
-        gateway is not found, `409` on an in-flight duplicate key, and `422` when the
-        request fails validation.
+        capture it later via the transaction capture endpoint or release it with
+        void. A `201` means the request was processed — read the outcome from
+        `data.status` (`success`, `declined`, or `error`). Pass an `Idempotency-Key`
+        header to make retries safe. Returns `404` when the gateway or a referenced
+        `payment_method_id` is not found, `409` on an in-flight duplicate key, and
+        `422` when the request fails validation. On success, API-key-authenticated
+        requests emit a `payment.completed` webhook.
       tags:
       - Gateways
       parameters:
@@ -1257,9 +1512,11 @@ paths:
       summary: Verify a payment method ($0 auth)
       description: |
         Runs a zero-amount authorization to confirm a payment method is valid without
-        charging it. Creates a `verify` transaction and returns it with `201`. The
-        request body is optional. Returns `404` when the gateway is not found and `422`
-        when the request fails validation.
+        charging it. Creates a `verify` transaction and returns it with `201`; the
+        verification outcome is in `data.status` (`success`, `declined`, or `error`).
+        The request body is optional. Returns `404` when the gateway or a referenced
+        `payment_method_id` is not found and `422` when the request fails validation.
+        Verifications never emit webhooks.
       tags:
       - Gateways
       requestBody:
@@ -1275,10 +1532,18 @@ paths:
                   properties:
                     payment_source:
                       type: string
+                      description: |
+                        Overrides the integration class used for the verification
+                        (e.g. `CreditCard`); defaults to the gateway's configured
+                        type.
                     payment_method_id:
                       type: string
+                      description: |
+                        Slug of the vaulted payment method to verify; an unknown
+                        slug fails with `404`.
                     currency_code:
                       type: string
+                      description: ISO 4217 currency code to run the $0 authorization in.
             examples:
               verify:
                 summary: Zero-dollar verification of a saved payment method
@@ -1301,14 +1566,70 @@ paths:
           "$ref": "#/components/responses/NotFound"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+  "/api/payment/v2026-04/gateways/{id}/store":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Gateway slug
+    post:
+      operationId: storeGateway
+      summary: Vault a payment method (reserved, not implemented)
+      description: |
+        Reserved endpoint for vaulting a payment method against the gateway.
+        Not implemented: every request returns `501` with an error envelope and
+        performs no work. Authentication is still enforced, so `401`/`403`
+        apply before the `501`.
+      tags:
+      - Gateways
+      responses:
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '501':
+          "$ref": "#/components/responses/NotImplemented"
+  "/api/payment/v2026-04/gateways/{id}/general_credit":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Gateway slug
+    post:
+      operationId: generalCreditGateway
+      summary: Issue a general credit (reserved, not implemented)
+      description: |
+        Reserved endpoint for crediting a payment method without a prior
+        transaction (a standalone credit). Not implemented: every request
+        returns `501` with an error envelope and performs no work.
+        Authentication is still enforced, so `401`/`403` apply before the
+        `501`. To refund an existing transaction, use the transaction credit
+        endpoint instead.
+      tags:
+      - Gateways
+      responses:
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '501':
+          "$ref": "#/components/responses/NotImplemented"
   "/api/payment/v2026-04/transactions":
     get:
       operationId: listTransactions
       summary: List transactions
       description: |
         Lists transactions for the authenticated merchant using `limit`/`offset`
-        pagination. Read-only. Requires a valid API key or JWT bearer token (`401` if
-        missing/invalid, `403` if the credential is not authorized).
+        pagination, newest first (`created_at` descending). Only transactions created
+        through this API (live or sandbox) appear — checkout, storefront, and admin
+        transactions are never included. The response carries no total count; page
+        forward until a page comes back short or empty. Read-only. Requires a valid
+        API key or JWT bearer token (`401` if missing/invalid, `403` if the
+        credential is not authorized).
       tags:
       - Transactions
       parameters:
@@ -1333,6 +1654,34 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/TransactionListResponse"
+              examples:
+                transactions:
+                  summary: One captured purchase, newest first
+                  value:
+                    data:
+                    - id: fpi_01hxyzabc123
+                      gateway_id: stripe-usd
+                      payment_method_id: 018f2c1a-9c4b-7e6d-9f10-3b4c5d6e7f80
+                      card_network: visa
+                      parent_transaction_id: null
+                      action: purchase
+                      status: success
+                      amount_cents: 4999
+                      currency_code: USD
+                      payment_source: CreditCard
+                      gateway_transaction_id: ch_3PQr7s2eZvKYlo2C
+                      reference_token: order_12345
+                      description: null
+                      processing_fee_cents: 175
+                      platform_fee_cents: 130
+                      credited_amount_cents: 0
+                      retain_on_success: false
+                      metadata: {}
+                      created_at: '2026-04-01T12:00:00Z'
+                      updated_at: '2026-04-01T12:00:00Z'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
@@ -1351,9 +1700,11 @@ paths:
       operationId: showTransaction
       summary: Get a transaction
       description: |
-        Retrieves a single transaction by slug, including its action, status, amounts,
-        and fee breakdown. Read-only. Returns `404` when no transaction matches the
-        slug for the authenticated merchant.
+        Retrieves a single transaction by slug, including its action, status,
+        amounts, and fee breakdown. Read-only. Only transactions created through
+        this API (live or sandbox) are addressable: a slug belonging to a checkout,
+        storefront, or admin transaction returns `404`, as does any slug unknown to
+        the authenticated merchant.
       tags:
       - Transactions
       responses:
@@ -1384,9 +1735,12 @@ paths:
         Captures funds previously held by an authorization. Send `amount_cents` for a
         partial capture; omit it to capture the full authorized amount. Creates a
         `capture` transaction linked to the authorization via `parent_transaction_id`
-        and returns it with `201`. Pass an `Idempotency-Key` header to make retries
-        safe. Returns `404` when the authorization is not found, `409` on an in-flight
-        duplicate key, and `422` when the authorization cannot be captured.
+        and returns it with `201`; read the capture outcome from `data.status`. Pass
+        an `Idempotency-Key` header to make retries safe. Returns `404` when the
+        authorization is not found — including authorizations that were not created
+        through this API — `409` on an in-flight duplicate key, and `422` when the
+        authorization cannot be captured. On success, API-key-authenticated requests
+        emit a `payment.captured` webhook.
       tags:
       - Transactions
       parameters:
@@ -1427,6 +1781,34 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/TransactionDataResponse"
+              examples:
+                capture:
+                  summary: Full capture of an authorization
+                  value:
+                    data:
+                      id: fpi_01hxyzghi789
+                      gateway_id: stripe-usd
+                      payment_method_id: 018f2c1a-9c4b-7e6d-9f10-3b4c5d6e7f80
+                      card_network: visa
+                      parent_transaction_id: fpi_01hxyzabc123
+                      action: capture
+                      status: success
+                      amount_cents: 4999
+                      currency_code: USD
+                      payment_source: CreditCard
+                      gateway_transaction_id: ch_3PQr7s2eZvKYlo2C
+                      reference_token: null
+                      description: null
+                      processing_fee_cents: 175
+                      platform_fee_cents: 130
+                      credited_amount_cents: 0
+                      retain_on_success: false
+                      metadata: {}
+                      created_at: '2026-04-02T09:30:00Z'
+                      updated_at: '2026-04-02T09:30:00Z'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-02T09:30:00Z'
           headers:
             X-Idempotent-Replayed:
               description: Present and `true` when this response is a cached
@@ -1459,9 +1841,12 @@ paths:
       description: |
         Voids (cancels) an authorization before it is captured, releasing the held
         funds. Creates a `void` transaction linked via `parent_transaction_id` and
-        returns it with `200`. Pass an `Idempotency-Key` header to make retries safe.
-        Returns `404` when the authorization is not found, `409` on an in-flight
-        duplicate key, and `422` when the authorization cannot be voided.
+        returns it with `200`; read the void outcome from `data.status`. Pass an
+        `Idempotency-Key` header to make retries safe. Returns `404` when the
+        authorization is not found — including authorizations that were not created
+        through this API — `409` on an in-flight duplicate key, and `422` when the
+        authorization cannot be voided. On success, API-key-authenticated requests
+        emit a `payment.voided` webhook.
       tags:
       - Transactions
       parameters:
@@ -1481,6 +1866,7 @@ paths:
                       type: object
                       additionalProperties:
                         "$ref": "#/components/schemas/JsonValue"
+                      description: Arbitrary merchant key/value pairs to store with the void transaction.
             examples:
               void:
                 summary: Void an authorization
@@ -1522,14 +1908,18 @@ paths:
       operationId: creditTransaction
       summary: Credit/refund a transaction
       description: |
-        Refunds or credits a prior transaction. Send `amount_cents` for a partial
-        refund; omit it to refund the full amount. Partial refunds accumulate in the
-        source transaction's `credited_amount_cents`. Creates a `refund`/
-        `general_credit` transaction linked via `parent_transaction_id` and returns it
-        with `201`. Pass an `Idempotency-Key` header to make retries safe. Returns
-        `404` when the transaction is not found, `409` on an in-flight duplicate key,
-        and `422` when the requested amount exceeds the refundable balance or the
-        transaction cannot be refunded.
+        Refunds a prior transaction. Send `amount_cents` for a partial refund; omit
+        it to refund the full amount. Partial refunds accumulate in the source
+        transaction's `credited_amount_cents`. Creates a `refund` transaction linked
+        via `parent_transaction_id` and returns it with `201`; read the refund
+        outcome from `data.status`. The refundable balance is not pre-checked: an
+        over-refund is submitted to the provider and typically comes back as a `201`
+        with `data.status: declined` or `error`. Pass an `Idempotency-Key` header to
+        make retries safe. Returns `404` when the transaction is not found —
+        including transactions that were not created through this API — `409` on an
+        in-flight duplicate key, and `422` when the request fails validation (for
+        example `amount_cents: 0`). On success, API-key-authenticated requests emit
+        a `payment.refunded` webhook.
       tags:
       - Transactions
       parameters:
@@ -1570,6 +1960,34 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/TransactionDataResponse"
+              examples:
+                refund:
+                  summary: Partial refund recorded as a `refund` transaction
+                  value:
+                    data:
+                      id: fpi_01hxyzjkl012
+                      gateway_id: stripe-usd
+                      payment_method_id: 018f2c1a-9c4b-7e6d-9f10-3b4c5d6e7f80
+                      card_network: visa
+                      parent_transaction_id: fpi_01hxyzabc123
+                      action: refund
+                      status: success
+                      amount_cents: 1000
+                      currency_code: USD
+                      payment_source: CreditCard
+                      gateway_transaction_id: re_3PQr7s2eZvKYlo2C
+                      reference_token: null
+                      description: null
+                      processing_fee_cents: 0
+                      platform_fee_cents: 0
+                      credited_amount_cents: 0
+                      retain_on_success: false
+                      metadata: {}
+                      created_at: '2026-04-03T15:45:00Z'
+                      updated_at: '2026-04-03T15:45:00Z'
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-03T15:45:00Z'
           headers:
             X-Idempotent-Replayed:
               description: Present and `true` when this response is a cached
@@ -1595,7 +2013,10 @@ paths:
       required: true
       schema:
         type: integer
-      description: Merchant ID or company ID (both are unique-indexed)
+      description: |
+        Company ID of the merchant. The lookup resolves by company ID only — the
+        payments-merchant row ID is not accepted, so a merchant whose row ID differs
+        from its company ID returns `404` when addressed by row ID.
     get:
       operationId: showMerchantConfiguration
       summary: Get merchant payment configuration
@@ -1610,6 +2031,44 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/MerchantConfigurationResponse"
+              examples:
+                configuration:
+                  summary: Merchant on Fluid's portfolio Kount account
+                  value:
+                    data:
+                      vgs_client_id: ACt7mrewpsQ8cnrKX9wDCLwM
+                      vgs_client_secret: 1a2b********9z
+                      vgs_environment: live
+                      kount_enterprise: false
+                      kount_api_key: null
+                      kount_environment: production
+                      kount_client_id: null
+                      kount_channel_prefix: acme
+                      kount_webhook_signing_key: null
+                      kount_accounts:
+                      - environment: production
+                        enterprise: false
+                        channel_prefix: acme
+                        api_key: null
+                        client_id: null
+                        webhook_signing_key: null
+                      network_tokens_enabled: true
+                      vgs_cmp_vault_id: tntabc12345
+                      vgs_proxy_username: USfoobar
+                      vgs_proxy_password: ab12********cd
+                      network_3ds_setting:
+                        visa_acquirer_bin: '400551'
+                        visa_acquirer_merchant_id: '123456789012345'
+                      payouts_settings:
+                        payout_collection_enabled: true
+                        payout_collection_schedule: daily
+                        minimum_payout_amount: 25
+                        last_payout_collection_at: '2026-04-01T06:00:00Z'
+                      platform_fee_rate: 1.9
+                      platform_fee_fixed: 0.35
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
@@ -1684,3 +2143,137 @@ paths:
                     description: Field-level error messages
                   meta:
                     "$ref": "#/components/schemas/Meta"
+webhooks:
+  payment.completed:
+    post:
+      operationId: webhookPaymentCompleted
+      summary: payment.completed
+      description: |
+        Sent when a purchase or authorization created through this API
+        succeeds. Delivered as an HTTP POST to the merchant's configured
+        webhook URL with `X-Fluid-Event: payment.completed` and an
+        `X-Fluid-Signature` header carrying the hex HMAC-SHA256 of the raw
+        body, keyed with the merchant's webhook secret. Verify the signature
+        with a constant-time comparison before trusting the payload.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+            examples:
+              completed:
+                summary: Successful purchase
+                value:
+                  event: payment.completed
+                  created_at: '2026-04-01T12:00:01Z'
+                  data:
+                    id: fpi_01hxyzabc123
+                    action: purchase
+                    status: success
+                    amount_cents: 4999
+                    currency_code: USD
+                    gateway_transaction_id: ch_3PQr7s2eZvKYlo2C
+                    gateway_id: stripe-usd
+                    parent_transaction_id: null
+                    metadata: {}
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
+  payment.captured:
+    post:
+      operationId: webhookPaymentCaptured
+      summary: payment.captured
+      description: |
+        Sent when a capture created through this API succeeds. Same delivery,
+        signature, and retry contract as `payment.completed`.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
+  payment.voided:
+    post:
+      operationId: webhookPaymentVoided
+      summary: payment.voided
+      description: |
+        Sent when a void created through this API succeeds. Same delivery,
+        signature, and retry contract as `payment.completed`.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
+  payment.refunded:
+    post:
+      operationId: webhookPaymentRefunded
+      summary: payment.refunded
+      description: |
+        Sent when a refund created through this API succeeds (full or
+        partial). Same delivery, signature, and retry contract as
+        `payment.completed`.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
+  payment.declined:
+    post:
+      operationId: webhookPaymentDeclined
+      summary: payment.declined
+      description: |
+        Sent when the provider declines a purchase, authorization, capture,
+        void, or refund created through this API. The declined transaction is
+        in `data` with `status: declined`. Same delivery, signature, and retry
+        contract as `payment.completed`.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
+  payment.error:
+    post:
+      operationId: webhookPaymentError
+      summary: payment.error
+      description: |
+        Sent when a purchase, authorization, capture, void, or refund created
+        through this API fails with a processing error (gateway timeout,
+        network failure). The transaction is in `data` with `status: error`.
+        Same delivery, signature, and retry contract as `payment.completed`.
+      tags:
+      - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentWebhookEvent"
+      responses:
+        '200':
+          "$ref": "#/components/responses/WebhookAck"
