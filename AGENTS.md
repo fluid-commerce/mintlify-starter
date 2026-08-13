@@ -14,6 +14,9 @@ auto-generated from it. Do not store run reports or logs in the repo — post ru
 records on the relevant Linear issue and record durable decisions in
 `eval/guide-truth.md`.
 
+Before changing the spec sync configuration or investigating a sync failure,
+read `eval/guide-truth.md` → **CI wiring** and **Resolving a conflict**.
+
 ## About this project
 
 - This is a documentation site built on [Mintlify](https://mintlify.com)

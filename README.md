@@ -44,6 +44,26 @@ View your local preview at `http://localhost:3000`.
 
 Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
 
+## OpenAPI spec sync
+
+The Fluid backend publishes generated OpenAPI specs to a public GCS mirror. The
+[OpenAPI sync workflow](.github/workflows/sync-openapi-spec.yml) pulls those
+specs into this repository every hour. You can also run the workflow manually.
+Mintlify generates the endpoint reference pages from the committed specs.
+
+Use [.github/synced-specs.json](.github/synced-specs.json) to add or remove a
+synced spec. Each entry maps a GCS URL to a file under `api-reference/`. Do not
+edit the synced files under `api-reference/` directly.
+
+The workflow runs `mint validate` before publishing a change. It commits valid
+specs to `main` and quarantines invalid specs on the `spec-sync-blocked` branch.
+After a successful sync, the guide-claims checker reports contradictions between
+the generated reference and hand-written guides in a `guide-spec-conflict`
+issue.
+
+Read [the guide truth runbook](eval/guide-truth.md#ci-wiring) before changing the
+sync configuration or resolving a validation or guide-claim conflict.
+
 ## Need help?
 
 ### Troubleshooting
