@@ -8,9 +8,9 @@ The task guides in `api/guides/*.mdx` are bound to a claims registry
 vice versa — fails CI. Read `eval/guide-truth.md` first: it defines the claim
 schema, the checker's semantics, the durable verification decisions (accepted
 omissions, low-confidence claims, upstream spec gaps), and the adoption procedure
-for new guides. The OpenAPI spec is synced hourly from a GCS mirror
-(`.github/synced-specs.json` controls which specs); endpoint reference pages are
-auto-generated from it. Do not store run reports or logs in the repo — post run
+for new guides. Generated API references are synced hourly from GCS mirrors
+(`.github/synced-api-references.json` controls which artifacts); endpoint and SDK
+reference pages are auto-generated from them. Do not store run reports or logs in the repo — post run
 records on the relevant Linear issue and record durable decisions in
 `eval/guide-truth.md`.
 
@@ -67,7 +67,7 @@ read `eval/guide-truth.md` → **CI wiring** and **Resolving a conflict**.
 
 ## Content boundaries
 
-- The OpenAPI specs under `api-reference/` are generated, synced artifacts — `.github/synced-specs.json` is the control surface listing which specs sync (hourly from the source-of-truth repo; the spec wins on conflict). Never hand-edit them.
+- The OpenAPI and TypeDoc files under `api-reference/` are generated, synced artifacts — `.github/synced-api-references.json` is the control surface listing which references sync hourly from their source-of-truth mirrors. Never hand-edit them.
 - Endpoint-level details (params, schemas, status codes) belong to the auto-generated Endpoints pages driven by the synced spec. Hand-written prose pages must not duplicate or restate per-endpoint contracts — that duplication is the drift problem this repo eliminated.
 - No internal implementation names in published content: Rails class/module/gem names, internal service names, and code file paths stay out of docs. Evidence and audit-trail references belong in PRs and issues, not published pages.
 - Every factual claim in a guide must be registered in `eval/guide-claims.json` and pass `eval/check-guide-claims.mjs` (see the Guide truth gate section).
