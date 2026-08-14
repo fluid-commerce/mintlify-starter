@@ -13,7 +13,7 @@ registry), **mechanically enforceable** (a deterministic checker in CI), and
 | Piece | File | When it runs |
 | ----- | ---- | ------------ |
 | Claims registry | `eval/guide-claims.json` | Committed; updated whenever a guide changes |
-| Mechanical checker | `eval/check-guide-claims.mjs` | CI: every PR/push (`validate.yml`) and every spec sync (`sync-openapi-spec.yml`) |
+| Mechanical checker | `eval/check-guide-claims.mjs` | CI: every PR/push (`validate.yml`) and every OpenAPI sync (`sync-generated-api-references.yml`) |
 | Adversarial semantic verification | procedure below; run record posted on the phase's Linear issue | One-off at guide authoring/major-edit time (LLM; never in CI) |
 | Reverse omission sweep | procedure below; durable decisions recorded in this doc | One-off at guide authoring/major-edit time |
 
@@ -183,10 +183,11 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`node eval/check-guide-claims.mjs`). A PR that edits a guide without updating the
   registry (or vice versa) fails here — this is the hard gate for human-authored
   changes.
-- **`sync-openapi-spec.yml`** — hourly, **manifest-driven** and **flow-and-flag**.
-  `.github/synced-specs.json` is the control surface for *which* specs sync (each
-  entry pulled from its mirror into its repo path); spec truth then flows to the
-  docs/MCP unconditionally — **additions and removals both publish** on the sync,
+- **`sync-generated-api-references.yml`** — hourly, **manifest-driven** and
+  **flow-and-flag** for OpenAPI changes. `.github/synced-api-references.json` is the
+  control surface for OpenAPI and TypeDoc references (each entry is pulled from its
+  mirror into its repo path). Reference truth then flows to the docs/MCP
+  unconditionally — **additions and removals both publish** on the sync,
   because the reference pages are *auto-generated* from the spec (docs.json points a
   navigation group at the spec with no explicit page list).
   - **Hard gate — `mint validate` (quarantine).** A broken spec would break the
@@ -224,7 +225,7 @@ intact.
 
 Progress on (b): fluid#19972 adds an upstream `mint validate` gate to the GCS
 upload itself — the fluid repo's `docs.yml` clones this repo, overlays each spec
-listed in `.github/synced-specs.json`, and runs `mint validate` before `rsync`ing
+listed in `.github/synced-api-references.json`, and runs `mint validate` before `rsync`ing
 to the mirror. Once that merges, a build-breaking spec should never reach the
 mirror, and this workflow's validate quarantine becomes rare defense-in-depth
 (it still guards docs.json edits and any other writer of the bucket). The claims
@@ -504,7 +505,7 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
 Applied the 9.5a description bar to the six remaining synced specs
-(`.github/synced-specs.json`, excluding storefront). Spec edits land in `fluid`
+(`.github/synced-api-references.json`, excluding storefront). Spec edits land in `fluid`
 (`docs/openapi/*.yaml`); this repo records the durable decisions and the truth-gate
 result. All changes were **additive** (descriptions + named examples only) — a
 structural diff vs `master` confirmed identical paths, methods, security, status
@@ -604,7 +605,7 @@ gates the listed content until it is synced:
   `/api/public/v2025-06/commerce/carts/*`. So the unsynced surface gates the REST-backed claims of
   effectively **all ~57 FairShare SDK pages**, not a handful. The owning spec
   (`public-v2025-06.yaml`, 67 paths, regenerated 2026-07-23) is live and current — materially unlike
-  `company/v1` — but is not in `.github/synced-specs.json`. No `public-v2026-04` successor exists or
+  `company/v1` — but is not in `.github/synced-api-references.json`. No `public-v2026-04` successor exists or
   is in flight.
 - **`checkout-v2026-04` is the surface for a *direct REST* cart integration, not for the SDK.** Its
   path form `/api/checkout/v2026-04/carts/{cart_token}/...` is legitimately different from the
@@ -1363,7 +1364,7 @@ references remain authoritative for the two public Drop Zones readers.
 
 ### Why `company-v0` remains unsynced
 
-`.github/synced-specs.json` does not include `company-v0`. The current document is a
+`.github/synced-api-references.json` does not include `company-v0`. The current document is a
 broad aggregate of unversioned Admin endpoints rather than a focused external
 Company contract. Its Drop Zones mutations still use `JsonValue` responses, and
 many inferred schemas admit overly broad string/number/integer/null unions. Publishing
@@ -1455,6 +1456,6 @@ cart creation, SDK cart completion, and the SDK-internal public Drop Zones reade
 Their methods, paths, security requirements, required request/query fields, and
 operation IDs are anchored to stable spec declarations rather than line numbers. Each
 prompt reminds readers that a new direct REST integration uses `checkout-v2026-04`.
-With these additions, all eight specs in `.github/synced-specs.json` have direct API
+With these additions, all eight specs in `.github/synced-api-references.json` have direct API
 prompt coverage: 14 storefront, 8 auth, 8 Checkout, 3 Public SDK, 9 payment, 7 cart
 payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workflows).

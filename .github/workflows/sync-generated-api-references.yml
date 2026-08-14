@@ -1,4 +1,4 @@
-name: Sync OpenAPI spec
+name: Sync generated API references
 
 # Before replacing this cron with Mintlify-native remote-spec sync, read
 # eval/guide-truth.md → "Future: replacing the cron with Mintlify-native sync".
@@ -15,11 +15,11 @@ permissions:
   issues: write
 
 concurrency:
-  group: sync-openapi-spec
+  group: sync-generated-api-references
   cancel-in-progress: false
 
 env:
-  MANIFEST: .github/synced-specs.json
+  MANIFEST: .github/synced-api-references.json
   CONFLICT_LABEL: guide-spec-conflict
   CLAIMS_OUTPUT: /tmp/claims-output.txt
 
@@ -33,29 +33,40 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # Manifest-driven: .github/synced-specs.json is the control surface for which
-      # specs sync. Each entry is pulled from its mirror into its repo path. Add an
-      # entry to sync a new spec — no edit to this workflow needed.
-      - name: Fetch specs from mirrors
+      # Manifest-driven: .github/synced-api-references.json is the control surface
+      # for generated references. Each entry is pulled from its public mirror into
+      # its repo path. Add an entry to sync a new reference without editing this
+      # workflow.
+      - name: Fetch references from mirrors
         run: |
           while IFS= read -r entry; do
             url="$(jq -r '.url' <<<"$entry")"
             path="$(jq -r '.path' <<<"$entry")"
             echo "Fetching $url -> $path"
+            mkdir -p "$(dirname "$path")"
             curl -fsSL "$url" -o "$path"
           done < <(jq -c '.[]' "$MANIFEST")
 
-      - name: Detect spec changes
+      - name: Detect reference changes
         id: diff
         run: |
           paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ')"
-          if git diff --quiet -- $paths; then
+          changes="$(git status --porcelain -- $paths)"
+          if [ -z "$changes" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No spec changes detected; nothing to sync."
+            echo "No reference changes detected; nothing to sync."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Spec change detected:"
+            echo "Reference change detected:"
             git --no-pager diff --stat -- $paths
+          fi
+
+          openapi_paths="$(jq -r '.[] | select(.format == "openapi") | .path' "$MANIFEST" | tr '\n' ' ')"
+          openapi_changes="$(git status --porcelain -- $openapi_paths)"
+          if [ -z "$openapi_changes" ]; then
+            echo "openapi_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "openapi_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Node
@@ -64,11 +75,11 @@ jobs:
         with:
           node-version: 22
 
-      # HARD GATE: an invalid spec / docs config must never publish — the docs
-      # auto-generate endpoint pages from the spec, so a broken spec breaks the
+      # HARD GATE: an invalid reference or docs config must never publish. The docs
+      # auto-generate pages from these files, so a broken reference breaks the
       # build. continue-on-error lets us branch: validate success → flow to main;
       # validate failure → quarantine below (and the run exits 1).
-      - name: Validate docs config and synced spec(s)
+      - name: Validate docs config and synced references
         id: validate
         if: steps.diff.outputs.changed == 'true'
         continue-on-error: true
@@ -80,15 +91,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # FLOW: spec is valid → publish to main UNCONDITIONALLY. Claim conflicts do
-      # NOT block; spec truth (additions AND removals) flows to the docs/MCP.
-      - name: Commit and push synced spec(s) to main
+      # FLOW: valid references publish to main unconditionally. OpenAPI claim
+      # conflicts do not block; contract additions and removals both flow to the
+      # docs and MCP.
+      - name: Commit and push synced references to main
         if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
         run: |
           paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ')"
           git add $paths
           files="$(git diff --cached --name-only | tr '\n' ' ')"
-          git commit -m "chore: sync OpenAPI spec(s) from mirror: ${files}"
+          git commit -m "chore: sync generated API references: ${files}"
           git push origin main
 
       # FLAG (non-gating): run the guide-claims checker against the just-pushed
@@ -96,12 +108,12 @@ jobs:
       # for the conflict issue below; it does NOT fail the run.
       - name: Check guide claims against synced spec
         id: claims
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
+        if: steps.diff.outputs.openapi_changed == 'true' && steps.validate.outcome == 'success'
         continue-on-error: true
         run: node eval/check-guide-claims.mjs 2>&1 | tee "$CLAIMS_OUTPUT"
 
       - name: Open/update guide-spec conflict issue
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success' && steps.claims.outcome == 'failure'
+        if: steps.diff.outputs.openapi_changed == 'true' && steps.validate.outcome == 'success' && steps.claims.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -138,24 +150,24 @@ jobs:
               --label "$CONFLICT_LABEL" --body-file "$body"
           fi
 
-      # QUARANTINE: validate failed → the invalid spec never reaches main. Park it
-      # on spec-sync-blocked with a PR for a human; the run exits 1.
-      - name: Quarantine invalid spec on a blocked PR
+      # QUARANTINE: validation failures never reach main. Park invalid references
+      # on a blocked branch with a PR for a human; the run exits 1.
+      - name: Quarantine invalid references on a blocked PR
         if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ')"
           git add $paths
-          git commit -m "chore: BLOCKED spec sync — mint validate failed"
-          git push --force origin HEAD:spec-sync-blocked
+          git commit -m "chore: BLOCKED reference sync — mint validate failed"
+          git push --force origin HEAD:reference-sync-blocked
           gh pr create \
             --base main \
-            --head spec-sync-blocked \
-            --title "chore: BLOCKED spec sync — mint validate failed" \
-            --body "Automated spec sync from the mirror was blocked because \`mint validate\` failed on the fetched spec — the docs auto-generate from it, so a broken spec would break the hosted build. The change is quarantined here and the hosted docs stay on the last-good spec. (Guide-claim conflicts are no longer a blocker — those flow to \`main\` and open a \`${CONFLICT_LABEL}\` issue instead; this PR is strictly about build validation.) Fix the spec upstream or in this PR until \`mint validate\` passes, then merge. See the failing workflow run for details." \
+            --head reference-sync-blocked \
+            --title "chore: BLOCKED reference sync — mint validate failed" \
+            --body "Automated API reference sync was blocked because \`mint validate\` failed on a fetched reference. The change is quarantined here, and the hosted docs stay on the last-good references. OpenAPI guide-claim conflicts still flow to \`main\` and open a \`${CONFLICT_LABEL}\` issue; this PR is strictly about build validation. Fix the source artifact or this PR until \`mint validate\` passes, then merge. See the failing workflow run for details." \
             || echo "PR already exists; leaving it open."
 
-      - name: Fail the run if validation quarantined the spec
+      - name: Fail the run if validation quarantined references
         if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
         run: exit 1
