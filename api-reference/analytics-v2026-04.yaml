@@ -1,0 +1,2394 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Analytics Dashboard v2026-04 API
+  version: v2026-04
+  description: |
+    Endpoints backing the fluid-admin Analytics section
+    (Home / Traffic / Brand Buzz). One endpoint per card on each tab;
+    the frontend polls independently so each card can have its own
+    refresh cadence.
+
+    Every endpoint is gated by the `ANALYTICS_DASHBOARD` feature flag
+    on the requesting company. When the flag is off the endpoint
+    returns 404 — the fluid-admin sidebar hides the section too, so
+    the flag-gated 404 only shows up when someone hits the URL
+    directly.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+- url: https://{company}.fluid.app
+  description: Production server with company subdomain
+  variables:
+    company:
+      default: myco
+      description: Company subdomain
+tags:
+- name: analytics_dashboard_home_overview
+  description: |
+    Home > Overview tab cards. Card 1 (header tiles) is served here;
+    cards 2-11 land in subsequent PRs.
+- name: analytics_dashboard_home_live
+  description: |
+    Home > Live tab cards. Card 1 (header tiles) is served here;
+    cards 2-6 land in subsequent PRs.
+- name: analytics_dashboard_home_field
+  description: |
+    Home > Field tab cards. Card 1 (field momentum header) is served
+    here; cards 2-5 land in subsequent PRs.
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Requires a company-admin token
+        whose role holds `reports.view`. Additionally, the caller's
+        company must have `ANALYTICS_DASHBOARD` enabled — otherwise
+        every endpoint returns 404.
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/LegacyUnauthorizedResponse"
+    Forbidden:
+      description: |
+        Token present but the caller is not a company admin (or is one
+        without `reports.view`). Both branches render via legacy
+        `authorize_*` helpers whose response predates the structured
+        error envelope, so the body is the flat legacy shape.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/LegacyForbiddenResponse"
+    NotFound:
+      description: |
+        The `ANALYTICS_DASHBOARD` feature flag is disabled for the
+        requesting company.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Unprocessable:
+      description: An Analytics service returned a business-rule failure.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    InvalidCountry:
+      description: |
+        The `country` query param is set to an ISO code the requesting
+        company is not configured for.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+  parameters:
+    CountryQueryParam:
+      name: country
+      in: query
+      required: false
+      description: |
+        ISO alpha-2 code of one of the requesting company's configured
+        countries (see `GET /countries`). When present, every service
+        on this endpoint filters its data to that country and reports
+        money in the country's own currency. Omit (or send `"all"`)
+        for the aggregate-across-countries view, which is the default
+        and matches pre-Phase-004 behavior. Unknown ISO codes or ones
+        the company is not configured for return `400`.
+      schema:
+        type: string
+        example: US
+    TimeZoneQueryParam:
+      name: tz
+      in: query
+      required: false
+      description: |
+        IANA timezone name (e.g. `America/Denver`) or Rails-style
+        alias (`Eastern Time (US & Canada)`) used to anchor
+        "today" boundaries and hour-of-day bucketing. The
+        frontend sends
+        `Intl.DateTimeFormat().resolvedOptions().timeZone`.
+        Unknown or malformed values silently fall back to UTC —
+        callers omit the param when the endpoint doesn't need
+        wall-clock alignment (see CURRENT-3077).
+      schema:
+        type: string
+        example: America/Denver
+  schemas:
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+      required:
+      - timestamp
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+          required:
+          - message
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - error
+    # Shape returned by Api::BaseController#render_unauthorized. Distinct
+    # from the structured ErrorResponse we use for 404/422 — the
+    # unauthenticated response predates the error-envelope convention.
+    LegacyUnauthorizedResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+      - message
+    # Shape returned by the legacy authorize_admin_tier / authorize_permission
+    # helpers when the caller has a valid token but isn't authorized.
+    # authorize_admin_tier renders `{ message: string }` and
+    # authorize_permission renders `{ error: string }`; both are the flat
+    # legacy shape (not the structured error envelope used for 404 / 422).
+    LegacyForbiddenResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        error:
+          type: string
+      minProperties: 1
+    Money:
+      type: string
+      description: |
+        Decimal amount, expressed as a string to preserve arbitrary
+        precision across the wire. Parsed to Number on the client and
+        formatted with `Intl.NumberFormat`. Once the in-flight
+        money-cents-migration lands, this will switch to a
+        `{ amount_cents: integer, currency: string }` object.
+      example: "180.25"
+    Currency:
+      type: string
+      description: ISO 4217 three-letter code (uppercase).
+      example: USD
+      minLength: 3
+      maxLength: 3
+    SparklinePoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        revenue:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - revenue
+    DashboardCountriesResponse:
+      type: object
+      description: |
+        The requesting company's configured countries, so the FE
+        country selector can render its options. The `default` flag
+        mirrors the company's stored default country.
+      properties:
+        countries:
+          type: array
+          items:
+            type: object
+            properties:
+              iso:
+                type: string
+                description: ISO alpha-2 code (e.g. `US`, `CA`, `BR`).
+                minLength: 2
+                maxLength: 2
+              name:
+                type: string
+                description: Country display name.
+              currency:
+                type: string
+                description: The company-country's default currency ISO code.
+              default:
+                type: boolean
+                description: True on the row the company reports through by default.
+            required:
+            - iso
+            - name
+            - currency
+            - default
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - countries
+    DashboardHeaderResponse:
+      type: object
+      properties:
+        yesterday:
+          type: object
+          properties:
+            revenue:
+              "$ref": "#/components/schemas/Money"
+            orders_count:
+              type: integer
+              minimum: 0
+            typical_revenue:
+              "$ref": "#/components/schemas/Money"
+            currency:
+              "$ref": "#/components/schemas/Currency"
+            sparkline:
+              type: array
+              items:
+                "$ref": "#/components/schemas/SparklinePoint"
+          required:
+          - revenue
+          - orders_count
+          - typical_revenue
+          - currency
+          - sparkline
+        mtd:
+          type: object
+          properties:
+            revenue:
+              "$ref": "#/components/schemas/Money"
+            orders_count:
+              type: integer
+              minimum: 0
+            currency:
+              "$ref": "#/components/schemas/Currency"
+          required:
+          - revenue
+          - orders_count
+          - currency
+        tracking_to:
+          type: object
+          properties:
+            projected_revenue:
+              "$ref": "#/components/schemas/Money"
+            currency:
+              "$ref": "#/components/schemas/Currency"
+            algorithm:
+              type: string
+              description: |
+                Which projection algorithm produced this number. v1
+                is `linear` (MTD × days_in_month / days_elapsed);
+                future values may include `dow_median` or
+                `linear_plus_scheduled_subs`.
+              example: linear
+            days_elapsed:
+              type: integer
+              minimum: 0
+            days_in_month:
+              type: integer
+              minimum: 28
+              maximum: 31
+          required:
+          - projected_revenue
+          - currency
+          - algorithm
+          - days_elapsed
+          - days_in_month
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - yesterday
+      - mtd
+      - tracking_to
+    # A single day on the current-month trend line — carries both the
+    # day's raw revenue and the running total. Comparator series only
+    # need the running total (they're background lines), so they use
+    # DashboardTrendComparatorPoint below.
+    DashboardTrendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        cumulative_revenue:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - revenue
+      - cumulative_revenue
+    DashboardTrendComparatorPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        cumulative_revenue:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - cumulative_revenue
+    # Expected-range band; the operator sees a shaded ribbon between
+    # cumulative_lower and cumulative_upper with the median as its
+    # centre line. Values are cumulative through the given date.
+    DashboardTrendBandPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        cumulative_lower:
+          "$ref": "#/components/schemas/Money"
+        cumulative_median:
+          "$ref": "#/components/schemas/Money"
+        cumulative_upper:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - cumulative_lower
+      - cumulative_median
+      - cumulative_upper
+    DashboardTrendResponse:
+      type: object
+      properties:
+        current_month:
+          type: array
+          description: |
+            One entry per day of the current calendar month up through
+            today. cumulative_revenue is a running sum reset on the
+            first of the month.
+          items:
+            "$ref": "#/components/schemas/DashboardTrendPoint"
+        last_month:
+          type: array
+          description: |
+            The full previous calendar month's cumulative-revenue
+            curve, for the vs-last-month toggle.
+          items:
+            "$ref": "#/components/schemas/DashboardTrendComparatorPoint"
+        last_year:
+          type: array
+          description: |
+            The same calendar month one year ago, for the vs-last-year
+            toggle.
+          items:
+            "$ref": "#/components/schemas/DashboardTrendComparatorPoint"
+        expected_band:
+          type: array
+          description: |
+            Cumulative expected-range envelope for the current month,
+            computed from the DOW-based Q1/median/Q3 of the trailing
+            180 days of paid revenue. Empty when the tenant has no
+            history in the trailing window yet.
+          items:
+            "$ref": "#/components/schemas/DashboardTrendBandPoint"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - current_month
+      - last_month
+      - last_year
+      - expected_band
+      - currency
+    Percentage:
+      type: string
+      description: |
+        A percentage share, expressed as a decimal string rounded to
+        one decimal place. `"100.0"` when a single bucket accounts for
+        the full total; `"0.0"` when the divisor was zero.
+      example: "42.5"
+    DashboardOrderCompositionBucket:
+      type: object
+      properties:
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        orders_count:
+          type: integer
+          minimum: 0
+      required:
+      - revenue
+      - orders_count
+    DashboardOrderCompositionTotals:
+      type: object
+      properties:
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        orders_count:
+          type: integer
+          minimum: 0
+        revenue_pct:
+          "$ref": "#/components/schemas/Percentage"
+        orders_pct:
+          "$ref": "#/components/schemas/Percentage"
+      required:
+      - revenue
+      - orders_count
+      - revenue_pct
+      - orders_pct
+    DashboardOrderCompositionDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        buckets:
+          type: object
+          description: |
+            Keys are bucket names (e.g. `subscription`, `enrollment`,
+            `rep_bought`, `customer_bought`) for the axis this day
+            belongs to. Buckets with no orders on this day are omitted;
+            the frontend renders missing keys as zero-height stacks.
+          additionalProperties:
+            "$ref": "#/components/schemas/DashboardOrderCompositionBucket"
+      required:
+      - date
+      - buckets
+    DashboardRevenueQualityCohort:
+      type: object
+      properties:
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        orders_count:
+          type: integer
+          minimum: 0
+        revenue_pct:
+          "$ref": "#/components/schemas/Percentage"
+      required:
+      - revenue
+      - orders_count
+      - revenue_pct
+    DashboardRevenueQualityResponse:
+      type: object
+      properties:
+        new_vs_returning:
+          type: object
+          description: |
+            Keyed by cohort. `new` is any paid order whose buyer has no
+            prior paid order in this company; `returning` is any paid
+            order whose buyer already has one — per-order classification
+            (spec decision D-4).
+          properties:
+            new:
+              "$ref": "#/components/schemas/DashboardRevenueQualityCohort"
+            returning:
+              "$ref": "#/components/schemas/DashboardRevenueQualityCohort"
+          required:
+          - new
+          - returning
+        subs_vs_one_time:
+          type: object
+          description: |
+            Keyed by subscription mode. An order is `subscription` when
+            its `subscription_id` is populated (both initial checkouts
+            and renewals); everything else is `one_time`.
+          properties:
+            subscription:
+              "$ref": "#/components/schemas/DashboardRevenueQualityCohort"
+            one_time:
+              "$ref": "#/components/schemas/DashboardRevenueQualityCohort"
+          required:
+          - subscription
+          - one_time
+        aov:
+          type: object
+          description: |
+            Average order value for the current month. `blended`
+            covers all paid orders; `new_customer` and
+            `returning_customer` split the same set by cohort. Values
+            are Money strings; empty cohorts return `"0.0"` rather
+            than divide-by-zero.
+          properties:
+            blended:
+              "$ref": "#/components/schemas/Money"
+            new_customer:
+              "$ref": "#/components/schemas/Money"
+            returning_customer:
+              "$ref": "#/components/schemas/Money"
+          required:
+          - blended
+          - new_customer
+          - returning_customer
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - new_vs_returning
+      - subs_vs_one_time
+      - aov
+      - currency
+    DashboardOrderCompositionResponse:
+      type: object
+      properties:
+        daily_by_source:
+          type: array
+          description: |
+            One entry per day of the current calendar month up through
+            today. Each day's `buckets` are keyed by order source
+            (`subscription`, `enrollment`, `web`, `mobile`,
+            `backoffice`, `admin`).
+          items:
+            "$ref": "#/components/schemas/DashboardOrderCompositionDay"
+        daily_by_buyer:
+          type: array
+          description: |
+            One entry per day. Each day's `buckets` are keyed by buyer
+            type (`rep_bought`, `customer_bought`) — the same order
+            can appear in `daily_by_source` under its source bucket
+            and here under its buyer bucket; the two axes overlap by
+            design (spec decision D-2 option A).
+          items:
+            "$ref": "#/components/schemas/DashboardOrderCompositionDay"
+        source_totals:
+          type: object
+          description: |
+            MTD totals + percentage shares keyed by source. All source
+            buckets are present, including ones with zero orders (so
+            the frontend can render a stable legend).
+          additionalProperties:
+            "$ref": "#/components/schemas/DashboardOrderCompositionTotals"
+        buyer_totals:
+          type: object
+          description: MTD totals + percentage shares keyed by buyer bucket.
+          additionalProperties:
+            "$ref": "#/components/schemas/DashboardOrderCompositionTotals"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - daily_by_source
+      - daily_by_buyer
+      - source_totals
+      - buyer_totals
+      - currency
+    DashboardSubscriptionScheduledBar:
+      type: object
+      properties:
+        week_start:
+          type: string
+          format: date
+        week_end:
+          type: string
+          format: date
+        revenue:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - week_start
+      - week_end
+      - revenue
+    DashboardSubscriptionEngineResponse:
+      type: object
+      properties:
+        scheduled:
+          type: array
+          description: |
+            One entry per week for the next four calendar weeks
+            starting today. Sums `commerce_subscriptions.price` on
+            active + past_due subs whose `next_bill_date` falls in
+            each 7-day slot.
+          items:
+            "$ref": "#/components/schemas/DashboardSubscriptionScheduledBar"
+        scheduled_total:
+          "$ref": "#/components/schemas/Money"
+        subscribers:
+          type: object
+          properties:
+            active:
+              type: integer
+              minimum: 0
+              description: |
+                Current count of subscriptions in status `active` or
+                `past_due`. Past-due is included because dunning is
+                still in flight and the sub can still recover.
+            net_new_this_month:
+              type: integer
+              description: |
+                (subscriptions that started active this month) −
+                (subscriptions cancelled this month). Positive =
+                growth, negative = net churn.
+          required:
+          - active
+          - net_new_this_month
+        recovery:
+          type: object
+          description: |
+            Recovery rate = the fraction of failed billing events in
+            the range whose subscription later produced a succeeded
+            billing event. `baseline_rate` is the same metric over
+            the trailing 6 months (before this month).
+          properties:
+            rate:
+              "$ref": "#/components/schemas/Percentage"
+            baseline_rate:
+              "$ref": "#/components/schemas/Percentage"
+          required:
+          - rate
+          - baseline_rate
+        cancels:
+          type: object
+          properties:
+            this_month:
+              type: integer
+              minimum: 0
+            typical:
+              type: integer
+              minimum: 0
+              description: |
+                Trailing 6-month monthly average of cancels, rounded
+                to the nearest integer.
+          required:
+          - this_month
+          - typical
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - scheduled
+      - scheduled_total
+      - subscribers
+      - recovery
+      - cancels
+      - currency
+    DashboardPaymentRecoveryResponse:
+      type: object
+      description: |
+        Dunning effectiveness for the current calendar month. Amounts
+        are attributed by the failing subscription's current `price`,
+        one entry per subscription per bucket. Recovery is derived
+        from BillingEvent transitions because
+        `subscriptions.last_failed_at` clears to NULL on success.
+      properties:
+        failed_amount:
+          "$ref": "#/components/schemas/Money"
+        failed_count:
+          type: integer
+          minimum: 0
+        recovered_amount:
+          "$ref": "#/components/schemas/Money"
+        recovered_count:
+          type: integer
+          minimum: 0
+        retrying_amount:
+          "$ref": "#/components/schemas/Money"
+        retrying_count:
+          type: integer
+          minimum: 0
+        written_off_amount:
+          "$ref": "#/components/schemas/Money"
+        written_off_count:
+          type: integer
+          minimum: 0
+        won_back_pct:
+          "$ref": "#/components/schemas/Percentage"
+        baseline_won_back_pct:
+          "$ref": "#/components/schemas/Percentage"
+        top_retrying_reasons:
+          type: array
+          description: |
+            Up to two human-readable category labels describing the
+            dominant failure reasons among the retrying
+            subscriptions (e.g. "insufficient funds", "expired
+            cards"). Empty when nothing is retrying or no reasons
+            categorised.
+          items:
+            type: string
+          maxItems: 2
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - failed_amount
+      - failed_count
+      - recovered_amount
+      - recovered_count
+      - retrying_amount
+      - retrying_count
+      - written_off_amount
+      - written_off_count
+      - won_back_pct
+      - baseline_won_back_pct
+      - top_retrying_reasons
+      - currency
+    DashboardChannelEconomicsRow:
+      type: object
+      description: |
+        One channel's economics over the trailing 30-day window.
+        Revenue is attributed via
+        `metrics_order_traffic_attributions.channel` (stamped at
+        order creation), visitors is bot-free distinct visitors on
+        the channel, and delta_pct is the page-view delta versus
+        the preceding 30-day window — lifted straight from the
+        Traffic > Sources view so Home and Traffic never disagree.
+      properties:
+        key:
+          type: string
+          enum:
+          - reps
+          - email
+          - paid
+          - social
+          - organic
+          - referral
+          - direct
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        visitors:
+          type: integer
+          minimum: 0
+        revenue_per_visitor:
+          "$ref": "#/components/schemas/Money"
+        delta_pct:
+          description: |
+            Page-view percentage change vs the preceding 30 days,
+            rounded to 1dp. Null when the previous window had no
+            traffic to divide by.
+          oneOf:
+          - type: string
+          - type: 'null'
+      required:
+      - key
+      - revenue
+      - visitors
+      - revenue_per_visitor
+      - delta_pct
+    DashboardChannelEconomicsResponse:
+      type: object
+      description: |
+        Per-channel revenue, visitors, and delta for the trailing
+        30 days. Seven canonical channels in fixed order —
+        reps, email, paid, social, organic, referral, direct —
+        even when a channel had no traffic (rows are zero-filled,
+        never omitted).
+      properties:
+        rows:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardChannelEconomicsRow"
+          minItems: 7
+          maxItems: 7
+        unattributed_revenue:
+          allOf:
+          - "$ref": "#/components/schemas/Money"
+          - description: |
+              Recognized-order revenue in the window that has no
+              attribution row (mobile / backoffice / SDK / raw
+              checkouts). Exposed at the envelope level so no
+              per-channel `revenue_per_visitor` mixes an
+              untracked-cohort numerator with a tracked-cohort
+              denominator. Consumers can present it as a "not
+              attributed" supplemental line alongside the seven
+              channel rows.
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - rows
+      - unattributed_revenue
+      - currency
+    DashboardRecentOrderRow:
+      type: object
+      description: |
+        One order on the recent-orders live feed. Newest first;
+        amount is denominated in the company's base currency (so
+        mixed-currency stores compare cleanly on the card).
+        Customer / location are read from the order's
+        shipping_address so the row is display-ready without
+        walking the customer / contact / member axis.
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        number:
+          oneOf:
+          - type: string
+          - type: 'null'
+        customer_name:
+          type: string
+        product_title:
+          type: string
+        amount:
+          "$ref": "#/components/schemas/Money"
+        location_city:
+          oneOf:
+          - type: string
+          - type: 'null'
+        location_country:
+          description: ISO 3166-1 alpha-2 country code (uppercase), or null.
+          oneOf:
+          - type: string
+          - type: 'null'
+        rep_name:
+          description: |
+            Present when a rep's share drove the order; absent
+            (null) on unattributed orders.
+          oneOf:
+          - type: string
+          - type: 'null'
+        sale_at:
+          type: string
+          format: date-time
+        thumbnail_url:
+          description: |
+            The first item's product image URL. Nil when the
+            product has no image; the FE falls back to a gradient
+            icon tile.
+          oneOf:
+          - type: string
+            format: uri
+          - type: 'null'
+      required:
+      - id
+      - number
+      - customer_name
+      - product_title
+      - amount
+      - location_city
+      - location_country
+      - rep_name
+      - sale_at
+      - thumbnail_url
+    DashboardRecentOrdersResponse:
+      type: object
+      description: |
+        Latest revenue-recognized orders (paid /
+        partially_refunded / marked_paid) for a company. Ordered
+        newest-first by sale_date; ties broken by id descending.
+      properties:
+        orders:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardRecentOrderRow"
+          maxItems: 50
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - orders
+      - currency
+    DashboardBestSellerRow:
+      type: object
+      description: |
+        One product's best-seller ranking. Revenue is denominated
+        in the company's base currency; title is captured on the
+        first item's row so a subsequently renamed product still
+        reads correctly on historical rows.
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        product_id:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        thumbnail_url:
+          oneOf:
+          - type: string
+            format: uri
+          - type: 'null'
+        units:
+          type: integer
+          minimum: 0
+        revenue:
+          "$ref": "#/components/schemas/Money"
+        avg_price:
+          "$ref": "#/components/schemas/Money"
+        spark:
+          type: array
+          description: |
+            Trailing seven-day daily revenue in base currency,
+            oldest → newest. Zero-filled for days without a sale
+            so the FE sparkline's x-axis stays uniform across
+            products. Feeds the Trend column on the Best sellers
+            card.
+          items:
+            "$ref": "#/components/schemas/Money"
+          minItems: 7
+          maxItems: 7
+      required:
+      - rank
+      - product_id
+      - title
+      - thumbnail_url
+      - units
+      - revenue
+      - avg_price
+      - spark
+    DashboardBestSellersResponse:
+      type: object
+      description: |
+        Top-selling products for the current calendar month,
+        ranked by revenue descending. Empty array when the
+        company has no revenue-recognized orders in the window.
+      properties:
+        rows:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardBestSellerRow"
+          maxItems: 6
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - rows
+      - currency
+    DashboardPriceBucket:
+      type: object
+      description: |
+        One price band in the catalogue-price histogram. Bounds
+        are half-open (min inclusive, max exclusive). The open-
+        ended top band (max: null) captures every high-value
+        product without a hard ceiling.
+      properties:
+        label:
+          type: string
+        min:
+          "$ref": "#/components/schemas/Money"
+        max:
+          oneOf:
+          - "$ref": "#/components/schemas/Money"
+          - type: 'null'
+        count:
+          type: integer
+          minimum: 0
+        share:
+          description: |
+            count / catalogue_size, rounded to 4dp, as a decimal
+            string in [0, 1].
+          type: string
+      required:
+      - label
+      - min
+      - max
+      - count
+      - share
+    DashboardPriceDistributionResponse:
+      type: object
+      description: |
+        Active-catalogue price histogram on the company's default
+        country. Products without a default-country variant drop
+        out — they aren't sellable in the operator's home market
+        and would otherwise inflate the low band.
+      properties:
+        buckets:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardPriceBucket"
+          minItems: 7
+          maxItems: 7
+        catalogue_size:
+          type: integer
+          minimum: 0
+        median_price:
+          "$ref": "#/components/schemas/Money"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - buckets
+      - catalogue_size
+      - median_price
+      - currency
+    DashboardLiveHeaderResponse:
+      type: object
+      description: |
+        Four tiles that sit above the Home > Live intraday chart:
+        visitors on the site right now, revenue and orders on the
+        store-local calendar day, and reps active today. The
+        vs-typical delta shows how today's revenue-so-far compares
+        to the average of the trailing twelve same-weekday dates
+        at this same wall-clock instant.
+      properties:
+        visitors_now:
+          type: integer
+          minimum: 0
+          description: |
+            Distinct bot-free sessions in the trailing five
+            minutes.
+        visitors_sparkline:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+          minItems: 30
+          maxItems: 30
+          description: |
+            Thirty one-minute buckets of distinct-session counts,
+            oldest → newest. Zero-filled for quiet minutes so the
+            chart's x-axis stays uniform across polls.
+        revenue_today:
+          "$ref": "#/components/schemas/Money"
+        orders_today:
+          type: integer
+          minimum: 0
+        reps_active_today:
+          type: integer
+          minimum: 0
+          description: |
+            Distinct member ids that either closed a sale or
+            fired a share-attributed visit on the store-local
+            calendar day.
+        typical_revenue:
+          "$ref": "#/components/schemas/Money"
+        delta_vs_typical:
+          "$ref": "#/components/schemas/Money"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - visitors_now
+      - visitors_sparkline
+      - revenue_today
+      - orders_today
+      - reps_active_today
+      - typical_revenue
+      - delta_vs_typical
+      - currency
+    DashboardIntradayPoint:
+      type: object
+      description: |
+        One point on the Home > Live "Today so far" chart. Nil
+        `revenue` / `cumulative_revenue` mark hours beyond the
+        current wall-clock hour on the "today" series so the FE
+        can stop drawing at the live cursor; the typical series
+        carries values for every hour of the day.
+      properties:
+        hour_of_day:
+          type: integer
+          minimum: 0
+          maximum: 23
+        revenue:
+          oneOf:
+          - "$ref": "#/components/schemas/Money"
+          - type: 'null'
+        cumulative_revenue:
+          oneOf:
+          - "$ref": "#/components/schemas/Money"
+          - type: 'null'
+      required:
+      - hour_of_day
+      - revenue
+      - cumulative_revenue
+    DashboardLiveIntradayResponse:
+      type: object
+      description: |
+        Two 24-point series over the store-local day: today's
+        cumulative revenue and the same-DOW 12-week average
+        baseline. `typical` is null when the tenant has fewer
+        than four matching-DOW dates on record (baseline below
+        the noise floor). `revenue_today` and `typical_by_now`
+        duplicate the cumulative values at the current hour so
+        the FE cursor callout doesn't have to walk the array.
+      properties:
+        today:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardIntradayPoint"
+          minItems: 24
+          maxItems: 24
+        typical:
+          oneOf:
+          - type: array
+            items:
+              "$ref": "#/components/schemas/DashboardIntradayPoint"
+            minItems: 24
+            maxItems: 24
+          - type: 'null'
+        weekday:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: |
+            Sunday = 0 … Saturday = 6. Lets the FE label the
+            typical line ("Typical Friday") without a second
+            call.
+        revenue_today:
+          "$ref": "#/components/schemas/Money"
+        typical_by_now:
+          oneOf:
+          - "$ref": "#/components/schemas/Money"
+          - type: 'null'
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - today
+      - typical
+      - weekday
+      - revenue_today
+      - typical_by_now
+      - currency
+    DashboardLiveActivityEvent:
+      type: object
+      description: |
+        One entry in the Live > Activity feed. `kind` drives the
+        icon + tint on the FE; `amount` is nil for shares (no
+        money moved) and present for orders / first-sales /
+        subscription rebills, always in the top-level `currency`.
+      properties:
+        id:
+          type: string
+          description: "`{kind}-{primary_key}` — stable react key."
+        kind:
+          type: string
+          enum: [ order, first_sale, share, subscription ]
+        occurred_at:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        text:
+          type: string
+        amount:
+          oneOf:
+          - "$ref": "#/components/schemas/Money"
+          - type: 'null'
+        location:
+          type:
+          - string
+          - 'null'
+        via_rep:
+          type:
+          - string
+          - 'null'
+      required:
+      - id
+      - kind
+      - occurred_at
+      - actor
+      - text
+      - amount
+      - location
+      - via_rep
+    DashboardLiveActivityResponse:
+      type: object
+      description: |
+        Home > Live "Activity" card (Card 4). Up to 7 newest-first
+        events across four source kinds: order, first_sale, share,
+        subscription. Milestone / viral event kinds from felipe's
+        design mock land in a follow-up once product locks their
+        signals.
+      properties:
+        events:
+          type: array
+          items:
+            "$ref": "#/components/schemas/DashboardLiveActivityEvent"
+          maxItems: 7
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - events
+      - currency
+    DashboardLiveWhereTheyAreResponse:
+      type: object
+      description: |
+        Home > Live "Where they are" card (Card 6). Ranked list
+        of countries with visitors on the site right now, plus
+        the total online count across all countries. Same
+        5-minute trailing window as the visitors-now header tile
+        and Top Pages card so counts stay consistent across the
+        tab. `online_total` is the sum across ALL countries in
+        the window, not just the top-N countries returned.
+      properties:
+        countries:
+          type: array
+          maxItems: 6
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                description: ISO country code as ingest stamped it.
+                example: "US"
+              visitors:
+                type: integer
+                minimum: 0
+            required:
+            - code
+            - visitors
+        online_total:
+          type: integer
+          minimum: 0
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - countries
+      - online_total
+    DashboardFieldMomentumResponse:
+      type: object
+      description: |
+        Home > Field momentum header (Phase 003 Card 1). Three tiles
+        that sit above the 14-day rep-activity chart. `active_yesterday`
+        counts distinct reps active on the store-local calendar
+        yesterday, where "active" means either a `share.visited` event
+        keyed to the rep via `analytics_events.member_id` OR a paid
+        order with `orders.attribution_member_id = rep.id`.
+        `typical_for_weekday` is the median across the twelve trailing
+        same-weekday dates, or `null` when fewer than four of those
+        dates carried any activity. `active_this_month` and
+        `rep_revenue_mtd` cover the current calendar month.
+      properties:
+        active_yesterday:
+          type: integer
+          minimum: 0
+        typical_for_weekday:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+          description: Same-weekday 12-week median; null when history is too thin.
+        weekday:
+          type: string
+          description: Day-name of yesterday in the store timezone (e.g. "Friday").
+          example: "Thursday"
+        active_this_month:
+          type: integer
+          minimum: 0
+        rep_revenue_mtd:
+          type: string
+          description: Decimal string of attribution-scoped revenue in the company default currency.
+          example: "12345.67"
+        rep_revenue_share_pct:
+          type:
+            - string
+            - "null"
+          description: |
+            `rep_revenue_mtd / total_company_revenue_mtd × 100`, rounded to one
+            decimal, as a decimal string. Null when total company revenue MTD
+            is zero — the FE hides the sub-label in that case rather than
+            rendering `0% of $0`.
+          example: "24.3"
+        currency:
+          type: string
+          description: ISO currency code (e.g. "USD").
+          example: "USD"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - active_yesterday
+      - typical_for_weekday
+      - weekday
+      - active_this_month
+      - rep_revenue_mtd
+      - rep_revenue_share_pct
+      - currency
+    DashboardFieldRisingRepsResponse:
+      type: object
+      description: |
+        Home > Field "Rising" card (Phase 003 Card 3). Up to five
+        reps whose trailing-7-day attributed revenue has cleared
+        1.5× their trailing-28-day daily average scaled to a week.
+        Ranked by that ratio descending. Empty when no rep meets
+        the threshold.
+      properties:
+        movers:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: The rep's display name (or "A rep" as a fallback).
+              detail:
+                type: string
+                description: One-line prose describing the momentum shape.
+                example: "revenue 2.4× last week's baseline"
+              monthly_revenue:
+                type: string
+                description: Decimal string of the rep's trailing-28-day attributed revenue.
+                example: "800.00"
+              spark:
+                type: array
+                minItems: 12
+                maxItems: 12
+                items:
+                  type: string
+                description: Twelve daily revenue points, oldest first (each as a decimal string).
+            required:
+              - name
+              - detail
+              - monthly_revenue
+              - spark
+        currency:
+          type: string
+          description: ISO currency code (e.g. "USD").
+          example: "USD"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - movers
+      - currency
+    DashboardFieldGoingQuietRepsResponse:
+      type: object
+      description: |
+        Home > Field "Going quiet" card (Phase 003 Card 4). Up to
+        five reps silent for at least 7 days who had at least 4
+        events in the prior 28 days. Ranked by days_quiet
+        descending; days_quiet capped at 90. Empty when no rep
+        qualifies.
+      properties:
+        movers:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: The rep's display name (or "A rep" fallback).
+              detail:
+                type: string
+                description: One-line prose describing the silence shape.
+                example: "silent since Aug 3"
+              monthly_revenue:
+                type: string
+                description: |
+                  Decimal string of the rep's trailing-28-day
+                  attributed revenue. FE surfaces as "at risk / mo".
+                example: "400.00"
+              days_quiet:
+                type: integer
+                minimum: 0
+                maximum: 90
+                description: Days since the rep's last activity (capped at 90).
+              spark:
+                type: array
+                minItems: 12
+                maxItems: 12
+                items:
+                  type: string
+                description: Twelve daily revenue points, oldest first (each a decimal string).
+            required:
+              - name
+              - detail
+              - monthly_revenue
+              - days_quiet
+              - spark
+        currency:
+          type: string
+          description: ISO currency code.
+          example: "USD"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - movers
+      - currency
+    DashboardFieldLeaderboardResponse:
+      type: object
+      description: |
+        Home > Field "Leaderboard" card (Phase 003 Card 5). Up to 50
+        reps ranked by current-calendar-month attributed revenue,
+        desc. Each row carries visitors (distinct share.visited
+        sessions), orders (attributed order count), revenue, a
+        12-point spark, an optional top-asset preview, and a
+        rank-change vs the prior calendar month (`null` when the
+        rep had zero activity last month — the FE renders that as
+        a "new" badge). Rows are pre-sorted by revenue; the FE
+        applies search / sort / move-type filtering client-side.
+      properties:
+        reps:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+                description: |
+                  The rep's `Company::Member` uuid. Stable across
+                  refetches and client-side sorts — the FE keys
+                  table rows off it so per-row local state
+                  (image-failure fallback, etc.) follows the rep
+                  instead of a shifting array position.
+              name:
+                type: string
+                description: The rep's display name (or "A rep" fallback).
+              visitors:
+                type: integer
+                minimum: 0
+                description: |
+                  Distinct `analytics_events.session_uuid` on
+                  `share.visited` rows keyed to this rep MTD.
+              orders:
+                type: integer
+                minimum: 0
+                description: |
+                  Count of revenue-recognized attributed orders
+                  (`orders.attribution_member_id = rep.id`) MTD.
+              revenue:
+                type: string
+                description: |
+                  Decimal string of the rep's MTD attributed
+                  `orders.amount_in_base` sum.
+                example: "1234.56"
+              spark:
+                type: array
+                minItems: 12
+                maxItems: 12
+                items:
+                  type: string
+                description: Twelve daily revenue points, oldest first (each a decimal string).
+              top_asset:
+                nullable: true
+                type: object
+                description: |
+                  Most-visited share target for this rep MTD.
+                  Resolved from `share.visited` events grouped by
+                  `share_id`, then dereferenced to the polymorphic
+                  target. Null when the rep has no share.visited
+                  activity this month.
+                properties:
+                  title:
+                    type: string
+                    description: Display title of the target resource.
+                  kind:
+                    type: string
+                    enum: [media, product, page, post, library, enrollment_pack, share]
+                    description: |
+                      Category of the target — mirrors the share's
+                      `relateable_type`. "share" is the fallback
+                      when the target type isn't one the FE
+                      renders a preview for.
+                  thumbnail_url:
+                    type: string
+                    nullable: true
+                    description: Optional preview image URL.
+                required:
+                  - title
+                  - kind
+                  - thumbnail_url
+              change:
+                type: integer
+                nullable: true
+                description: |
+                  Rank-position delta vs the prior calendar month
+                  (positive = climbed). `0` when the rep had prior
+                  activity but no prior-month attributed revenue
+                  (no prior rank on the revenue leaderboard) —
+                  the FE renders `0` as an em-dash. `null` when
+                  the rep had zero prior-month activity (no
+                  orders, no share.visited events) — the FE
+                  renders `null` as a "NEW" badge.
+            required:
+              - id
+              - name
+              - visitors
+              - orders
+              - revenue
+              - spark
+              - top_asset
+              - change
+        currency:
+          type: string
+          description: ISO currency code.
+          example: "USD"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - reps
+      - currency
+    DashboardFieldActivityChartResponse:
+      type: object
+      description: |
+        Home > Field 14-day rep activity chart (Phase 003 Card 2).
+        One series of 14 daily points ending yesterday (store-local
+        calendar). Each point carries `reps` — distinct reps active
+        that day (a `share.visited` event keyed to the rep via
+        `analytics_events.member_id` OR a paid order with
+        `orders.attribution_member_id = rep.id`) — and `typical`, the
+        median across the twelve prior same-weekday dates. `typical`
+        is `null` when fewer than four of those same-weekday dates
+        carried any activity.
+      properties:
+        series:
+          type: array
+          minItems: 14
+          maxItems: 14
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+                description: ISO 8601 date (store-local calendar).
+              reps:
+                type: integer
+                minimum: 0
+              typical:
+                type:
+                  - integer
+                  - "null"
+                minimum: 0
+                description: Same-weekday 12-week median; null when history is too thin.
+            required:
+              - date
+              - reps
+              - typical
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - series
+    DashboardLiveTopPagesResponse:
+      type: object
+      description: |
+        Home > Live "Top pages" card (Card 5). Ranked list of URL
+        paths visitors are on right now, distinct sessions in the
+        last 5 minutes. Bots filtered out to match the visitors-
+        now header tile.
+      properties:
+        pages:
+          type: array
+          maxItems: 6
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+                description: URL path (host + query string stripped).
+                example: "/cart"
+              active_viewers:
+                type: integer
+                minimum: 0
+            required:
+            - path
+            - active_viewers
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - pages
+    DashboardLiveMoneyInMotionResponse:
+      type: object
+      description: |
+        Home > Live "In motion" card (Card 3). Three (count, value)
+        rows counting money the storefront is exposed to right now:
+        active carts touched inside the abandoned threshold,
+        abandoned carts still inside the recovery window, and
+        subscription rebills that failed today.
+      properties:
+        active_carts:
+          type: integer
+          minimum: 0
+        active_carts_value:
+          "$ref": "#/components/schemas/Money"
+        abandoned_carts:
+          type: integer
+          minimum: 0
+        abandoned_carts_value:
+          "$ref": "#/components/schemas/Money"
+        failed_payments:
+          type: integer
+          minimum: 0
+        failed_payments_value:
+          "$ref": "#/components/schemas/Money"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - active_carts
+      - active_carts_value
+      - abandoned_carts
+      - abandoned_carts_value
+      - failed_payments
+      - failed_payments_value
+      - currency
+security:
+- bearer_auth: []
+paths:
+  "/api/v202604/analytics/dashboard/countries":
+    get:
+      operationId: getAnalyticsDashboardCountries
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home dashboard country selector options
+      description: |
+        Returns the requesting company's configured countries, so
+        the FE country selector can render its options. Selecting
+        a country writes an ISO code (`?country=US`) that every
+        other Home dashboard endpoint reads to scope its response.
+      responses:
+        '200':
+          description: Country selector payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardCountriesResponse"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+  "/api/v202604/analytics/dashboard/header":
+    get:
+      operationId: getAnalyticsDashboardHeader
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview header tiles (Yesterday, Revenue MTD, Tracking to)
+      description: |
+        Returns the three tiles that sit above the trend chart on the
+        Home > Overview tab. One request → one visual card, so the
+        frontend refetches all three together on a single polling
+        cadence.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Header tile payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardHeaderResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/payment_recovery":
+    get:
+      operationId: getAnalyticsDashboardPaymentRecovery
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview payment-recovery card (recovered / retrying / written-off + trailing baseline)
+      description: |
+        Returns dunning-effectiveness numbers for the current month:
+        the total failed-payment amount, its recovered / retrying /
+        written-off breakdown, the won-back percentage, and a trailing-
+        6-month baseline. Recovery is computed from BillingEvent
+        transitions (failed later followed by succeeded on the same
+        subscription) — `subscriptions.last_failed_at` clears to NULL
+        on success, so subscription columns can't be trusted.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Payment-recovery card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardPaymentRecoveryResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/recent_orders":
+    get:
+      operationId: getAnalyticsDashboardRecentOrders
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview recent-orders card (latest paid orders feed)
+      description: |
+        Returns the latest revenue-recognized orders for the
+        company (paid / partially_refunded / marked_paid), newest
+        first with id as the tie-break. Each row carries the
+        customer name (from the shipping address), the first
+        item's product title, order amount in company base
+        currency, city + country, the attributing rep (if any),
+        and an ISO8601 sale_at the frontend uses to compute
+        "X minutes ago" against its own clock.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Recent-orders card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardRecentOrdersResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/best_sellers":
+    get:
+      operationId: getAnalyticsDashboardBestSellers
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview best-sellers card (top products ranked by revenue MTD)
+      description: |
+        Returns up to ten best-selling products for the current
+        calendar month ranked by revenue in the company's base
+        currency, with total units and average price alongside
+        the product image.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Best-sellers card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardBestSellersResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/price_distribution":
+    get:
+      operationId: getAnalyticsDashboardPriceDistribution
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview price-distribution card (catalogue histogram)
+      description: |
+        Returns the active catalogue as a fixed 7-band price
+        histogram, plus the catalogue size and default currency.
+        Prices come from variant_countries.price for the
+        company's default country (products.price is essentially
+        empty on real tenants).
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Price-distribution card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardPriceDistributionResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_header":
+    get:
+      operationId: getAnalyticsDashboardLiveHeader
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live header tiles (visitors now, revenue today, orders today, reps active)
+      description: |
+        Returns the four tiles at the top of the Home > Live tab
+        plus the vs-typical delta the Revenue-today tile shows.
+        The tab polls this endpoint on a short cadence (~15 s), so
+        every query is bounded (five-minute visitor window, store-
+        local calendar day for revenue / orders / reps).
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Live-header card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveHeaderResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_intraday":
+    get:
+      operationId: getAnalyticsDashboardLiveIntraday
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live "Today so far" chart (cumulative today + same-DOW typical baseline)
+      description: |
+        Returns two 24-point hourly series over the store-local
+        day — today's cumulative revenue and the same-weekday
+        12-week average baseline overlaid behind it. The
+        baseline drops out entirely when the tenant has fewer
+        than four matching-DOW dates on record.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      - "$ref": "#/components/parameters/TimeZoneQueryParam"
+      responses:
+        '200':
+          description: Intraday-chart payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveIntradayResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_money_in_motion":
+    get:
+      operationId: getAnalyticsDashboardLiveMoneyInMotion
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live "In motion" card (active carts / abandoned / failed payments)
+      description: |
+        Returns three (count, value) rows counting money the
+        storefront is exposed to right now — active carts inside
+        the abandoned threshold, abandoned carts still inside
+        the recovery window, and today's failed subscription
+        rebills. Values are the potential-revenue-at-risk in
+        the company's default currency.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Money-in-motion payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveMoneyInMotionResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_activity":
+    get:
+      operationId: getAnalyticsDashboardLiveActivity
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live "Activity" card (recent event stream)
+      description: |
+        Returns up to 7 newest-first events across four source
+        kinds — order, first_sale (buyer's first order), share
+        (share.copied on analytics_events), and subscription
+        (successful billing event). No milestone / viral yet;
+        those land in a follow-up once product locks their
+        signals.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Activity feed payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveActivityResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_top_pages":
+    get:
+      operationId: getAnalyticsDashboardLiveTopPages
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live "Top pages" card (paths with active viewers right now)
+      description: |
+        Returns up to 6 URL paths ranked by distinct sessions in
+        the trailing 5-minute window. Bots filtered to match the
+        visitors-now header tile.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Top pages payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveTopPagesResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/live_where_they_are":
+    get:
+      operationId: getAnalyticsDashboardLiveWhereTheyAre
+      tags:
+      - analytics_dashboard_home_live
+      summary: Home > Live "Where they are" card (visitors by country right now)
+      description: |
+        Returns up to 6 countries ranked by distinct sessions in
+        the trailing 5-minute window, plus `online_total` — the
+        sum across all countries in that window (not just the
+        top-N). Bots filtered to match the visitors-now header
+        tile.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Where-they-are payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardLiveWhereTheyAreResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/channel_economics":
+    get:
+      operationId: getAnalyticsDashboardChannelEconomics
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview channel-economics card (per-channel revenue + $/visitor + delta)
+      description: |
+        Returns per-channel economics for the trailing 30 days.
+        Seven canonical channels in fixed order, each carrying
+        converted revenue, distinct visitors, revenue-per-visitor,
+        and the page-view delta versus the preceding 30-day window.
+        Composes the same Metrics::TrafficSourcesCalculator and
+        Metrics::Conversion::RowAssembler that power the
+        Traffic > Sources tab, so the two surfaces stay in sync on
+        the shared five-minute cache.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Channel-economics card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardChannelEconomicsResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/subscription_engine":
+    get:
+      operationId: getAnalyticsDashboardSubscriptionEngine
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview subscription-engine card (4-week schedule + health tiles)
+      description: |
+        Returns the forward-looking recurring-revenue snapshot: four
+        weekly scheduled-revenue bars for the next 28 days, the active
+        subscriber count (with net change this month), the recovery
+        rate (with a trailing 6-month baseline), and cancels this
+        month (with a trailing 6-month monthly-average baseline).
+
+        Active subscribers = `active` + `past_due` — past-due subs
+        still bill through dunning and still count as customers.
+        Recovery rate uses a simple failed→succeeded transition proxy;
+        Card 6 will formalise the full recovered / retrying /
+        written-off split.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Subscription-engine card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardSubscriptionEngineResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/revenue_quality":
+    get:
+      operationId: getAnalyticsDashboardRevenueQuality
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview revenue-quality card (new vs returning, subs vs one-time, AOV)
+      description: |
+        Returns the "Revenue quality" card that sits in "The month's
+        economics" section on Home > Overview. Splits the current
+        month's paid revenue three ways: new vs returning (per-order
+        cohort), subscription vs one-time (presence of
+        `subscription_id`), and three AOV values (blended,
+        new-customer, returning-customer).
+
+        Spec decision D-4 pinned the cohort definition to a per-order
+        classification — a customer's first-ever paid order is `new`
+        and every subsequent order is `returning`. Buyer identity is
+        `orders.member_id` (populated on every paid order — the
+        checkout flow mints a member row on first purchase; the
+        unique `members(company_id, email)` index keeps that identity
+        stable across returning purchases).
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Revenue-quality card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardRevenueQualityResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/order_composition":
+    get:
+      operationId: getAnalyticsDashboardOrderComposition
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview revenue-by-order-type card (two parallel stacked bars)
+      description: |
+        Returns the composition card that sits below the trend chart on
+        Home > Overview. The payload contains two parallel per-day
+        breakdowns — one bucketing paid revenue by order source and
+        one bucketing by whether the buyer is a rep — plus MTD totals
+        with percentage shares for each axis. The frontend renders
+        both bars side by side with a Revenue / Orders toggle.
+
+        Spec decision D-2 chose the two-parallel-bar layout (option A)
+        because the source and buyer axes overlap in the data (a
+        rep-bought web order lives in both `web` and `rep_bought`); a
+        single cascaded bucket would have masked that overlap.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Order-composition card payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardOrderCompositionResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/trend":
+    get:
+      operationId: getAnalyticsDashboardTrend
+      tags:
+      - analytics_dashboard_home_overview
+      summary: Home > Overview cumulative-revenue trend chart with comparators + band
+      description: |
+        Returns the cumulative-revenue trend chart that sits below the
+        header tiles on the Home > Overview tab. One payload holds the
+        current month's daily line, two comparator curves (vs last
+        month, vs last year), and a DOW-derived expected-range band —
+        the frontend toggles between comparators locally without a
+        second fetch.
+
+        The plan-overlay line and the "+$X vs plan" annotation from
+        the design depend on the not-yet-migrated `revenue_budgets`
+        table and are not returned here; the frontend renders without
+        them until that table lands (spec decision D-1).
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Trend chart payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardTrendResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/field_momentum":
+    get:
+      operationId: getAnalyticsDashboardFieldMomentum
+      tags:
+      - analytics_dashboard_home_field
+      summary: Home > Field momentum header (Phase 003 Card 1)
+      description: |
+        Returns the three tiles above the Field tab's 14-day rep-
+        activity chart: reps active on the store-local calendar
+        yesterday (with a same-weekday 12-week median for the
+        sub-label), reps active month-to-date, and the sum of
+        attribution-scoped revenue MTD in the company default
+        currency. `typical_for_weekday` is null when the tenant has
+        fewer than four same-weekday dates on record — the FE drops
+        the sub-label in that case.
+
+        When `country` is set: the two order-side aggregates
+        (`rep_revenue_mtd`, `rep_revenue_share_pct`) filter on
+        `orders.country_id`. The active-rep tiles (`active_yesterday`,
+        `active_this_month`) and `typical_for_weekday` remain
+        aggregate — share.visited events do not carry a reliable
+        country signal today (see BE service TomDoc for the
+        `analytics_events.country_code` coverage gap). Consumers
+        should present the active-rep counts as company-wide even
+        under a country pick until ingest populates the column.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Field momentum header payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardFieldMomentumResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/field_activity_chart":
+    get:
+      operationId: getAnalyticsDashboardFieldActivityChart
+      tags:
+      - analytics_dashboard_home_field
+      summary: Home > Field 14-day rep activity chart (Phase 003 Card 2)
+      description: |
+        Returns a 14-day series of distinct active reps per day
+        alongside a same-weekday 12-week median baseline. A rep is
+        "active" on a date if they had a `share.visited` event keyed
+        to them via `analytics_events.member_id` OR a paid order with
+        `orders.attribution_member_id = rep.id`. `typical` per point
+        is null when fewer than four prior same-weekday dates
+        carried any activity — the FE renders a gap in the baseline
+        line for that weekday.
+
+        When `country` is set: only the order-side rep pluck
+        filters on `orders.country_id`. The share.visited half of
+        each daily count stays company-wide because
+        `analytics_events.country_code` is unreliably populated
+        today. The `reps` and `typical` numbers are therefore
+        blended (country-scoped orders + aggregate shares); the
+        Field header's active-rep tiles carry the same blend so
+        the day-14 chart point matches the header's yesterday tile
+        under either filter state.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: 14-day rep activity chart payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardFieldActivityChartResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/field_rising_reps":
+    get:
+      operationId: getAnalyticsDashboardFieldRisingReps
+      tags:
+      - analytics_dashboard_home_field
+      summary: Home > Field "Rising" card (Phase 003 Card 3)
+      description: |
+        Returns up to five reps whose trailing-7-day attributed
+        revenue has cleared 1.5× their trailing-28-day daily average
+        scaled to a week. Ranked by that ratio descending. Each row
+        carries `name`, a one-line `detail`, trailing-28-day
+        `monthly_revenue`, and a 12-day `spark` of daily revenue.
+        Returns an empty `movers` array when no rep meets the
+        threshold.
+
+        When `country` is set: the single order-side scan filters
+        on `orders.country_id`, and the 7-day / 28-day windows are
+        computed from the same country-scoped row set so the ratio
+        stays self-consistent under the pick. The card doesn't
+        read `share.visited` events, so no aggregate share carve-
+        out applies here — all Rising numbers respect the country
+        filter cleanly.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Rising reps payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardFieldRisingRepsResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/field_going_quiet_reps":
+    get:
+      operationId: getAnalyticsDashboardFieldGoingQuietReps
+      tags:
+      - analytics_dashboard_home_field
+      summary: Home > Field "Going quiet" card (Phase 003 Card 4)
+      description: |
+        Returns up to five reps silent for 7+ days who had ≥ 4
+        events (attributed orders + share.visited rows) in the
+        prior 28 days. Ranked by days_quiet descending;
+        days_quiet capped at 90 so the badge stays readable.
+        Empty when no rep qualifies.
+
+        When `country` is set: only the order-side trailing-28-day
+        pluck filters on `orders.country_id`. The share.visited
+        activity check remains company-wide because
+        `analytics_events.country_code` is unreliably populated
+        today. A rep with only share activity in-country counts
+        as "active" under either filter state; the qualifying
+        threshold (≥ 4 events) and the `days_quiet` calculation
+        both blend country-scoped orders with aggregate shares.
+        Consumers should present the "going quiet" list as a
+        conservative signal under a country pick — a rep with
+        country-scoped orders but out-of-country share activity
+        would still not surface here.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Going quiet reps payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardFieldGoingQuietRepsResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/dashboard/field_leaderboard":
+    get:
+      operationId: getAnalyticsDashboardFieldLeaderboard
+      tags:
+      - analytics_dashboard_home_field
+      summary: Home > Field "Leaderboard" card (Phase 003 Card 5)
+      description: |
+        Returns up to 50 reps ranked by current-calendar-month
+        attributed revenue, desc. Each row carries visitors
+        (distinct share.visited sessions), orders (attributed
+        order count), revenue, a 12-point spark, an optional
+        top-asset preview, and a rank-change vs prior month
+        (null = "new" this month). Rows are pre-sorted by
+        revenue; the FE applies search / sort / filter
+        client-side.
+
+        When `country` is set: the ranking, spark, and rank-
+        change all filter on `orders.country_id` — both the
+        current-month AND prior-month scans, so the delta stays
+        honest under the pick. `visitors` (distinct share.visited
+        sessions) and the top-asset preview remain aggregate
+        because `analytics_events.country_code` and the rep
+        rollup tables are unreliably country-tagged today. The
+        rank itself is country-scoped; the visitor number on
+        each row still reflects company-wide share activity —
+        useful for scale but not directly comparable to the
+        country-scoped revenue.
+      parameters:
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Leaderboard payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DashboardFieldLeaderboardResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
