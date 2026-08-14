@@ -1132,14 +1132,23 @@ A path-preserving rule silently 404s every one of these: `themes/paged-editor` �
 
 ### The generated-path rule is fully determined, and it matches Realm's
 
-Generated reference pages are addressed `/api-reference/<tag>/<summary>`, and both segments get the
-same treatment: **case is folded**, **underscores are preserved**, **spaces become hyphens**.
+By default, generated reference pages are addressed `/api-reference/<tag>/<summary>`, and both
+segments get the same treatment: **case is folded**, **underscores are preserved**, **spaces become
+hyphens**.
 Established from the `mint export` path inventory with negative evidence in both directions:
 `tags: [Gateways]` serves at `gateways` and `api-reference/Gateways/` has zero entries;
 `tags: [order_edits]` stays `order_edits` and `order-edits` has zero entries. `Merchant
 Configuration` → `merchant-configuration`; `summary: Undo_skip subscription` →
 `undo_skip-subscription`. This is the same rule Realm applied, which is why the legacy and current
 namespaces share a case-folded, underscore-preserving shape.
+
+`company-v0` is the directory exception. It generates under
+`/api-reference/company-v0/<tag>/<summary>`. The Company and Checkout specifications contain
+operations with the same tag and summary, including `subscription-bundles/list-subscription-bundles`
+and `subscriptions/create-a-subscription`. When both specifications used the default directory,
+Mintlify generated two operations at each URL and client-side prefetch returned `500`. The explicit
+Company directory preserves the current Checkout URLs and gives every legacy Company operation a
+distinct route. A full `mint export` produced both versions of each colliding page as separate files.
 
 Seven of the 37 legacy `/docs/openapi/*` routes reach a generated page — `storefront-v2026-04` →
 `storefront/public-product-by-slug`, `checkout-v2026-04` and `carts-v0` → `carts/create-a-cart`,
