@@ -67,7 +67,7 @@ read `eval/guide-truth.md` → **CI wiring** and **Resolving a conflict**.
 
 ## Content boundaries
 
-- The OpenAPI and TypeDoc files under `api-reference/` are generated, synced artifacts — `.github/synced-api-references.json` is the control surface listing which references sync hourly from their source-of-truth mirrors. Never hand-edit them.
+- The OpenAPI files under `api-reference/` and TypeDoc files under `sdk-artifacts/` are generated, synced artifacts — `.github/synced-api-references.json` is the control surface listing which references sync hourly from their source-of-truth mirrors. Never hand-edit them.
 - Endpoint-level details (params, schemas, status codes) belong to the auto-generated Endpoints pages driven by the synced spec. Hand-written prose pages must not duplicate or restate per-endpoint contracts — that duplication is the drift problem this repo eliminated.
 - No internal implementation names in published content: Rails class/module/gem names, internal service names, and code file paths stay out of docs. Evidence and audit-trail references belong in PRs and issues, not published pages.
 - Every factual claim in a guide must be registered in `eval/guide-claims.json` and pass `eval/check-guide-claims.mjs` (see the Guide truth gate section).
