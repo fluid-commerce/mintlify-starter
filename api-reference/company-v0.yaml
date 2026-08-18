@@ -15014,6 +15014,15 @@ components:
                 type: boolean
               disabled:
                 type: boolean
+              billing_cycle_limit_reached:
+                type: boolean
+                description: Whether the current plan's maximum successful billing-cycle limit has been reached.
+                example: false
+              successful_billing_cycles:
+                type: integer
+                minimum: 0
+                description: Number of successful billing cycles recorded for the subscription.
+                example: 3
               failure_reason:
                 type:
                 - string
@@ -15232,6 +15241,9 @@ components:
       - categories
       - collections
       additionalProperties: false
+    CompanySubscriptionResponse:
+      description: A subscription API mutation response with the full subscription projection.
+      "$ref": "#/components/schemas/CompanySubscriptionSkipUndoResponse"
     CompanySubscriptionSkipUndoResponse:
       type: object
       properties:
@@ -15345,7 +15357,9 @@ components:
                   items:
                     "$ref": "#/components/schemas/JsonValue"
                 default_address:
-                  "$ref": "#/components/schemas/CompanySubscriptionAddress"
+                  anyOf:
+                  - "$ref": "#/components/schemas/CompanySubscriptionAddress"
+                  - type: 'null'
                 display_total_spent:
                   type: string
                 email:
@@ -15382,7 +15396,9 @@ components:
                   items:
                     "$ref": "#/components/schemas/CompanyPaymentMethod"
                 phone:
-                  type: string
+                  type:
+                  - string
+                  - 'null'
                 role:
                   type: string
                 sales_tax_id:
@@ -15506,6 +15522,15 @@ components:
               type: boolean
             disabled:
               type: boolean
+            billing_cycle_limit_reached:
+              type: boolean
+              description: Whether the current plan's maximum successful billing-cycle limit has been reached.
+              example: false
+            successful_billing_cycles:
+              type: integer
+              minimum: 0
+              description: Number of successful billing cycles recorded for the subscription.
+              example: 3
             id:
               type: integer
             last_bill_date:
@@ -15745,7 +15770,30 @@ components:
             variant:
               "$ref": "#/components/schemas/CompanySubscriptionVariant"
             volume_rep:
-              type: 'null'
+              type:
+              - object
+              - 'null'
+              properties:
+                id:
+                  type:
+                  - integer
+                  - 'null'
+                email:
+                  type:
+                  - string
+                  - 'null'
+                full_name:
+                  type:
+                  - string
+                  - 'null'
+                image_url:
+                  type:
+                  - string
+                  - 'null'
+                external_id:
+                  type:
+                  - string
+                  - 'null'
             volume_rep_member_id:
               type:
               - string
@@ -29561,6 +29609,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '422':
+          description: Validation failure or subscription activation blocked by the current plan billing-cycle limit
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       requestBody:
         content:
           application/json:
@@ -29729,7 +29783,7 @@ paths:
   "/api/subscriptions/{token}/reactivate":
     post:
       summary: Reactivate a cancelled subscription
-      description: Reactivate a previously cancelled subscription. Returns 422 when the subscription cannot be reactivated, including when its product variant is no longer available.
+      description: Reactivate a previously cancelled subscription. Returns 422 when the subscription cannot be reactivated, including when its maximum successful billing-cycle limit is reached or its product variant is no longer available.
       tags:
       - subscriptions
       operationId: commerce_v0_reactivate_subscription
@@ -29741,19 +29795,33 @@ paths:
         required: true
         schema:
           type: string
-      - name: next_bill_date
-        in: query
-        schema:
-          type: string
-          format: date
+      requestBody:
         required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                next_bill_date:
+                  type: string
+                  format: date
+                  description: Date to schedule the next bill. Cannot be combined with process_immediately.
+                process_immediately:
+                  type: boolean
+                  enum:
+                  - true
+                  description: Process reactivation billing immediately. Must be true when provided and cannot be combined with next_bill_date.
+                address_id:
+                  type: integer
+                  description: Saved customer address to use for the reactivated subscription.
       responses:
         '200':
           description: Success
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/JsonValue"
+                "$ref": "#/components/schemas/CompanySubscriptionResponse"
         '401':
           description: Unauthorized
           content:
@@ -29761,7 +29829,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '422':
-          description: Subscription cannot be reactivated
+          description: Subscription cannot be reactivated, including when its maximum successful billing-cycle limit has been reached
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription not found or not owned by the authenticated actor
           content:
             application/json:
               schema:
@@ -29795,13 +29869,25 @@ paths:
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/JsonValue"
+                "$ref": "#/components/schemas/CompanySubscriptionResponse"
         '401':
           description: Unauthorized
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '404':
+          description: Subscription not found or not owned by the authenticated actor
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Subscription cannot be resumed, including when its maximum successful billing-cycle limit has been reached
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/subscriptions/{token}/failed-cycle-waiver":
     get:
       summary: Preview a failed-cycle waiver
@@ -29893,7 +29979,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
-          description: Subscription state changed or the waiver could not be persisted
+          description: Subscription state changed, its maximum successful billing-cycle limit was reached, or the waiver could not be persisted
           content:
             application/json:
               schema:
@@ -29903,7 +29989,7 @@ paths:
       summary: Retry billing on a past-due subscription
       description: >-
         Queues an immediate retry on a past-due subscription against whatever payment method is currently on file. The customer may retry the saved method directly or update the method before making this
-        request. The endpoint is idempotent: it always returns 200 on a found subscription, regardless of status. Use the response's `queued` field to distinguish the two outcomes — `queued: true` means
+        request. The endpoint is idempotent for eligible subscriptions. It returns 422 when the current plan's maximum successful billing-cycle limit is reached or invalid. Otherwise, use the response's `queued` field to distinguish the two outcomes — `queued: true` means
         the subscription was past_due, its billing date had arrived, and a retry is pending; a rapid duplicate preserves the first retry time and does not enqueue another attempt. `queued: false` means
         no state change occurred, either because the subscription was not past_due or because its billing date has not yet arrived in the subscription's timezone (for example after a skip or a rescheduled
         next_bill_date). Billing cannot run before that date, so the request is a no-op rather than a deferred retry.
@@ -29931,6 +30017,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '422':
+          description: The current plan's maximum successful billing-cycle limit was reached or invalid, or retry state could not be persisted
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/subscriptions/{token}/reprocess":
     post:
       summary: Reprocess a past-due subscription
@@ -29974,7 +30066,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
-          description: Subscription is not past due, its billing date has not arrived, or the retry could not be persisted
+          description: Subscription is not past due, its billing date has not arrived, the current plan's maximum successful billing-cycle limit was reached or invalid, or the retry could not be persisted
           content:
             application/json:
               schema:
@@ -30070,7 +30162,10 @@ paths:
               schema:
                 "$ref": "#/components/schemas/JsonValue"
         '422':
-          description: Invalid schedule, active local billing date, or billing currently in progress
+          description: >-
+            Invalid schedule, active local billing date, billing currently in
+            progress, or a subscription that has completed its plan's maximum
+            billing cycles.
           content:
             application/json:
               schema:
