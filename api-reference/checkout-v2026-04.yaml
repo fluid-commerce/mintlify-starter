@@ -87,9 +87,10 @@ components:
       description: >-
         The cart is locked and can no longer be modified. Cart-mutation endpoints
         return this when the cart has already been processed (converted to an
-        order) or, for enrollment carts, is in an authorized payment state. The
-        body carries the full cart plus the store URL so the client can display
-        the locked cart and redirect.
+        order), carries an authorized or captured charge (its prices are settled
+        once money has moved), or, for enrollment carts, is in an authorized
+        payment state. The body carries the full cart plus the store URL so the
+        client can display the locked cart and redirect.
       content:
         application/json:
           schema:
@@ -146,6 +147,67 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
+    CartTotalChangedErrorResponse:
+      description: |
+        The cart no longer says the total the client sent as `expected_total`.
+        Nothing was charged. `meta.cart` is the current total, so the client
+        can show the shopper what changed before asking again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total as a decimal string, at
+                    the currency's minor units. Null when the cart carries no
+                    total at all, which no retry can satisfy.
+                  example: "128.85"
+                currency_code:
+                  type: string
+                  example: USD
     LockedCartErrorResponse:
       type: object
       additionalProperties: false
@@ -11265,13 +11327,22 @@ paths:
                 "$ref": "#/components/schemas/CheckoutPrePurchaseEnrollmentResponse"
         '409':
           description: |
-            A checkout is already in flight for this cart. Retries are rejected
-            until the in-flight attempt finishes, so a second order is never
-            placed.
+            One of two conflicts, told apart by `errors`.
+
+            `errors.checkout`: a checkout is already in flight for this cart.
+            Retries are rejected until the in-flight attempt finishes, so a
+            second order is never placed.
+
+            `errors.expected_total` (`meta.code` = `cart_total_changed`): the
+            cart no longer says the total the client sent as `expected_total`.
+            Nothing was charged. `meta.cart` carries the current total; refetch
+            the cart, show the shopper the new total, and submit again with it.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                anyOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '422':
           description: Unprocessable Entity
           content:
@@ -11284,6 +11355,12 @@ paths:
           and consent context gathered by the client at submit time; the cart
           itself already holds the items, addresses, shipping, and payment
           method.
+
+          `expected_total` and `expected_currency` are the one pair worth
+          always sending: they name the total the client showed the shopper,
+          and the charge boundary then refuses (`409`, `cart_total_changed`)
+          to charge anything else. Without them the cart is charged whatever
+          it says when the request is processed.
         content:
           application/json:
             schema:
@@ -11333,6 +11410,25 @@ paths:
                     type: integer
                   description: Ids of the agreements the buyer accepted at
                     checkout.
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal
+                    string in the cart currency's major unit (`"141.74"`), taken
+                    from `amount_total` of the cart the client last rendered --
+                    the whole total, including any portion a reward-points
+                    balance will cover, not the card line.
+                    Requires `expected_currency`. When the cart's total differs
+                    at the charge boundary the response is `409` with
+                    `meta.code` = `cart_total_changed` and nothing is charged.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was
+                    shown, from `currency_code` of the same cart. Requires
+                    `expected_total`.
+                  example: USD
       security: []
   "/api/checkout/v2026-04/carts/{cart_token}/country":
     post:
