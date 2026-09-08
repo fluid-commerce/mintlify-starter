@@ -1469,6 +1469,34 @@ With these additions, all eight specs in `.github/synced-api-references.json` ha
 prompt coverage: 14 storefront, 8 auth, 8 Checkout, 3 Public SDK, 9 payment, 7 cart
 payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workflows).
 
+## Section slots — pre-release authoring contract
+
+`themes/section-slots.mdx` describes the opt-in Liquid container feature, not an HTTP
+API or a JSON-template migration. Its claims use `check: semantic` and are verified
+against the paired container renderer and visual editor implementations. OpenAPI
+cannot prove this contract; a green mechanical check proves quote/coverage integrity,
+not runtime behavior. Keep the page's pre-release warning until both supporting
+releases are available.
+
+The public guide stays at theme-author altitude. Backend evidence is the
+`LiquidTags::SectionSlot` renderer, guarded child rendering in `LiquidTags::Section`,
+and their focused tests in `fluid`. Editor evidence is `container-sections.ts`, the
+section add/move and compatibility handlers, and the container editor tests in
+`fluid-mono`. Re-verify changed behavioral claims against both implementations.
+
+Durable authoring boundaries:
+
+- Adding a slot to an already-used definition requires initializing an empty assignment
+  array on existing placements. Publishing the definition alone does not reconcile them.
+- Section definitions do not automatically install into existing cloned company themes.
+  Do not broaden that into a claim that every root-theme resource is non-upgradeable:
+  assets and global fields have separate upgrade behavior.
+- The renderer's defensive skipping is not a repair workflow. Authors and agents must
+  generate valid ownership, IDs, and limits; the editor refuses invalid arrangements.
+- Exact deployment flags and administrative installation APIs are deliberately omitted
+  from the public authoring guide. The page requires feature availability without
+  presenting internal deployment configuration or an unsynced management contract.
+
 ## Checkout cart events guide — adoption record (CURRENT-3936)
 
 `guides/checkout-cart-events.mdx` is the first guide whose subject is a browser
