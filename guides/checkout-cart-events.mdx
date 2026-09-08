@@ -87,8 +87,9 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
       if (change.sequence <= lastSequence) return; // a replay, already handled
 
       lastSequence = change.sequence;
-      refreshFromCart().then((rendered) => {
-        if (rendered) stopFallback(); // see the fallback step below
+      refreshFromCart().then((outcome) => {
+        // See the fallback step below: a failed read must not strand the embed.
+        if (outcome === false) startFallback(); else stopFallback();
       });
     });
     ```
@@ -112,7 +113,8 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
     let inFlight = null;
     let trailing = null;
 
-    // Resolves true when the cart rendered, false when it did not; never rejects.
+    // Resolves true when the cart rendered, false when the read failed, and
+    // null when there is no cart to read on this surface; never rejects.
     // A caller that arrives mid-read gets the promise of the read that runs
     // AFTER the current one, so it never acts on a result older than its event.
     function refreshFromCart() {
@@ -122,7 +124,7 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
       }
       inFlight = (async () => {
         const response = await fetch(`/widget/cart?token=${encodeURIComponent(cartToken)}`);
-        if (response.status === 404) return false; // not a cart token on this surface
+        if (response.status === 404) return null; // not a cart token on this surface
         if (!response.ok) throw new Error(`Cart read failed (${response.status})`);
         render(await response.json());
         return true;
@@ -163,25 +165,31 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
     — not a cart token — so do not read the cart there at all. Read once
     immediately, then keep a slow poll — 30 seconds or more, paused while the
     tab is hidden. Stop it only after an event-driven read has **rendered
-    successfully**: a valid event whose read then fails must leave the poll
-    running, or the embed goes stale with no way to recover. Stop it, too, when
-    a read answers `404`, which means the token is not a cart token on this
-    surface:
+    successfully**, and **start it again** whenever an event-driven read fails:
+    once the poll is gone and the sequence has advanced, a replay is ignored,
+    so a failed read with no poll behind it would leave the embed stale until
+    the next cart change. Stop it, too, when a read answers `404`, which means
+    the token is not a cart token on this surface:
 
     ```javascript theme={null}
     let fallback = null;
+
+    function startFallback() {
+      if (fallback) return; // already polling
+      fallback = setInterval(() => {
+        if (document.visibilityState === "hidden") return;
+        refreshFromCart();
+      }, 30_000);
+    }
 
     function stopFallback() {
       if (fallback) clearInterval(fallback);
       fallback = null;
     }
 
-    refreshFromCart().then((rendered) => {
-      if (rendered === false) return; // 404: nothing to poll for on this surface
-      fallback = setInterval(() => {
-        if (document.visibilityState === "hidden") return;
-        refreshFromCart();
-      }, 30_000);
+    refreshFromCart().then((outcome) => {
+      if (outcome === null) return; // 404: nothing to poll for on this surface
+      startFallback();
     });
     ```
 
