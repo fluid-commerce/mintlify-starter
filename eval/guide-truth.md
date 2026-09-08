@@ -1469,14 +1469,14 @@ With these additions, all eight specs in `.github/synced-api-references.json` ha
 prompt coverage: 14 storefront, 8 auth, 8 Checkout, 3 Public SDK, 9 payment, 7 cart
 payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workflows).
 
-## Section slots — pre-release authoring contract
+## Section slots — authoring contract
 
 `themes/section-slots.mdx` describes the opt-in Liquid container feature, not an HTTP
 API or a JSON-template migration. Its claims use `check: semantic` and are verified
 against the paired container renderer and visual editor implementations. OpenAPI
 cannot prove this contract; a green mechanical check proves quote/coverage integrity,
-not runtime behavior. Keep the page's pre-release warning until both supporting
-releases are available.
+not runtime behavior. Keep the environment requirements explicit: merging the
+implementation does not itself enable new container authoring.
 
 The public guide stays at theme-author altitude. Backend evidence is the
 `LiquidTags::SectionSlot` renderer, guarded child rendering in `LiquidTags::Section`,
