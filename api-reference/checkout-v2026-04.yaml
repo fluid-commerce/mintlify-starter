@@ -147,6 +147,108 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
+    SubscriptionShowResponse:
+      description: |
+        The show response, which always carries the two fields the points
+        control reads.
+
+        Requiring them lives here rather than on the shared subscription
+        object, because the mutation responses render a different view and
+        omit both. `renewal_bundle` is an object here rather than nullable:
+        this operation always resolves a bundle, and a subscription that
+        renews alone reports itself as the single member.
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionResponse"
+      - type: object
+        required:
+        - subscription
+        properties:
+          subscription:
+            type: object
+            required:
+            - points_enabled
+            - renewal_bundle
+            properties:
+              renewal_bundle:
+                type: object
+    SubscriptionUpdateResponse:
+      description: |
+        The updated subscription, plus which subscriptions the write covered and
+        which it actually changed.
+
+        Both arrays are always present, including on a single-subscription write,
+        which resolves and changes itself. A client forced to tell "the fan-out
+        reported nothing" apart from "this server predates the field" would have
+        to guess, and guessing wrong means reporting a fan-out that never
+        happened. A no-op write resolves its bundle and changes nothing, so
+        `changed_subscription_tokens` is empty while `resolved_subscription_tokens`
+        is not.
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionResponse"
+      - type: object
+        required:
+        - resolved_subscription_tokens
+        - changed_subscription_tokens
+        properties:
+          resolved_subscription_tokens:
+            description: |
+              Every subscription token the write covered, ascending by subscription
+              id. A subscription that joined the bundle after the write took its
+              snapshot is deliberately outside the write and absent here.
+            type: array
+            items:
+              type: string
+          changed_subscription_tokens:
+            description: |
+              The subset of `resolved_subscription_tokens` whose stored row actually
+              changed. Empty when the write was a no-op.
+            type: array
+            items:
+              type: string
+    BundleMembershipConflictResponse:
+      description: |
+        A bundle-scoped write whose retry was spent. Nothing was written.
+
+        `meta.code` carries the machine-readable reason, the same way the checkout
+        409 for a changed cart total does. It is the only thing distinguishing this
+        from a validation failure at the client.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - base
+          properties:
+            base:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: bundle_membership_conflict
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the client sent as `expected_total`.
@@ -997,6 +1099,62 @@ components:
           - bundled_subscriptions
           - subscription_skips
           properties:
+            points_enabled:
+              description: |
+                Whether this company runs reward points at all. Show-only. The
+                points control has nothing to say when this is false, and
+                `auto_apply_points` alone cannot answer it: a false flag on a
+                points-enabled company is a customer who opted out, which is a
+                different thing to render.
+              type: boolean
+            renewal_bundle:
+              description: |
+                Every subscription that renews together with this one, because the
+                points are spent against one renewal order. Show-only; the show
+                response requires it via SubscriptionShowResponse, and a
+                subscription that renews alone reports itself as the single
+                member.
+
+                `auto_apply_points_state` is the aggregate across members, so a
+                client can render one control for the bundle without deriving the
+                state itself. `mixed` means the members disagree, which a
+                bundle-scoped write resolves.
+              type:
+              - object
+              - 'null'
+              additionalProperties: false
+              required:
+              - auto_apply_points_state
+              - members
+              properties:
+                auto_apply_points_state:
+                  type: string
+                  enum:
+                  - all
+                  - none
+                  - mixed
+                members:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - subscription_token
+                    - label
+                    - status
+                    - auto_apply_points
+                    properties:
+                      subscription_token:
+                        type: string
+                      label:
+                        description: |
+                          The member's product title, for display beside its toggle.
+                          Empty string when the variant or its product is gone.
+                        type: string
+                      status:
+                        type: string
+                      auto_apply_points:
+                        type: boolean
             subscription_discounts:
               type: array
               description: Active first-class discount attachments on this subscription.
@@ -14123,7 +14281,7 @@ paths:
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/SubscriptionResponse"
+                "$ref": "#/components/schemas/SubscriptionShowResponse"
         '404':
           description: Not Found
           content:
@@ -14137,9 +14295,15 @@ paths:
       operationId: checkout_v2026_04_update_subscription
       description: |
         Updates the subscription `{token}` from the supplied `subscription` payload
-        (PATCH semantics — only supplied keys change). Requires a bearer token.
+        (PATCH semantics - only supplied keys change). Requires a bearer token.
         Returns `422` on validation failure, `404` when not found, and `401` when
         unauthenticated.
+
+        `auto_apply_points_scope` decides how far an `auto_apply_points` write
+        reaches. Under `bundle` the accepted payload is deliberately narrower than
+        it is otherwise: see that property for the permitted set. A bundle write is
+        atomic across the renewal bundle and can return `409` when the bundle
+        cannot be read stably.
       security:
       - bearer_auth: []
       parameters:
@@ -14161,13 +14325,26 @@ paths:
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/SubscriptionResponse"
+                "$ref": "#/components/schemas/SubscriptionUpdateResponse"
         '422':
-          description: Unprocessable Entity
+          description: |
+            Validation failure. Under `auto_apply_points_scope: bundle` this also
+            covers a missing `auto_apply_points` and any property a bundle write
+            cannot apply, each named by its own key in `errors`.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: |
+            A bundle-scoped write could not read a stable renewal bundle. The
+            bundle was changed by another writer twice while this request was
+            being applied, so the single retry was spent. Nothing was written.
+            Refetch the subscription and submit again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BundleMembershipConflictResponse"
         '404':
           description: Not Found
           content:
@@ -14220,6 +14397,30 @@ paths:
                     metadata:
                       type: object
                       additionalProperties: true
+                    auto_apply_points:
+                      description: |
+                        Whether this subscription spends the customer's available
+                        points at renewal. Only the two real booleans are accepted;
+                        truthy shapes like `1` or `"true"` are rejected rather than
+                        coerced, because coercing one would opt the customer into
+                        spending points without them asking.
+                      type: boolean
+                    auto_apply_points_scope:
+                      description: |
+                        How far the `auto_apply_points` write reaches. `subscription`,
+                        the default when omitted, writes this record alone. `bundle`
+                        writes every subscription that renews with it, atomically,
+                        because the points are spent against one renewal order.
+
+                        Under `bundle` this endpoint accepts only what a bundle write
+                        can apply: `auto_apply_points` (required), plus
+                        `payment_method_id` and `quantity`, which land on `{token}`
+                        alone. Every other property above is refused with a `422`
+                        naming the offending key rather than being silently dropped.
+                      type: string
+                      enum:
+                      - subscription
+                      - bundle
   "/api/checkout/v2026-04/subscriptions/{token}/discounts":
     get:
       summary: List subscription discounts
@@ -14683,7 +14884,12 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '404':
-          description: Subscription not found or not owned by the authenticated customer
+          description: |
+            The subscription does not exist, or it is not visible to the
+            authenticated principal. A customer resolves their own
+            subscriptions; a rep those credited to them, plus their own; an
+            admin, or a server-side company, partner or droplet credential,
+            the whole company.
           content:
             application/json:
               schema:
@@ -14728,7 +14934,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '404':
-          description: Subscription not found or not owned by the authenticated customer
+          description: |
+            The subscription does not exist, or it is not writable by the
+            authenticated principal. A customer resolves their own
+            subscriptions; a rep those credited to them, plus their own; an
+            admin the whole company. Server-side company, partner and droplet
+            credentials resolve nothing for writes on this resource, and reach
+            its read operations only.
           content:
             application/json:
               schema:
@@ -14785,7 +14997,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '404':
-          description: Subscription not found or not owned by the authenticated customer
+          description: |
+            The subscription does not exist, or it is not writable by the
+            authenticated principal. A customer resolves their own
+            subscriptions; a rep only those credited to them, because retry is
+            not a self-service action; an admin the whole company. Server-side
+            company, partner and droplet credentials resolve nothing for writes
+            on this resource, and reach its read operations only.
           content:
             application/json:
               schema:
