@@ -110,11 +110,16 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
 
     ```javascript theme={null}
     let inFlight = null;
-    let queued = false;
+    let trailing = null;
 
     // Resolves true when the cart rendered, false when it did not; never rejects.
+    // A caller that arrives mid-read gets the promise of the read that runs
+    // AFTER the current one, so it never acts on a result older than its event.
     function refreshFromCart() {
-      if (inFlight) { queued = true; return inFlight; }
+      if (inFlight) {
+        trailing ??= inFlight.then(() => { trailing = null; return refreshFromCart(); });
+        return trailing;
+      }
       inFlight = (async () => {
         const response = await fetch(`/widget/cart?token=${encodeURIComponent(cartToken)}`);
         if (response.status === 404) return false; // not a cart token on this surface
@@ -126,17 +131,16 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
           console.warn("Cart read failed; keeping the last render", error);
           return false; // the last successful render stays on screen
         })
-        .finally(() => {
-          inFlight = null;
-          if (queued) { queued = false; refreshFromCart(); }
-        });
+        .finally(() => { inFlight = null; });
       return inFlight;
     }
     ```
 
     Serialize your refreshes as above: if an event arrives while a read is in
     flight, run one more read after it finishes rather than starting a second
-    one. Catch every failure and keep the last good render on screen, so a
+    one, and hand that later read's result to the caller that asked for it — a
+    result from a read that began before the event says nothing about it. Catch
+    every failure and keep the last good render on screen, so a
     read that fails never surfaces as an error in checkout. Rendering from the
     cart you fetched, never from the message, means a spoofed or stale message
     can at worst cause an extra read.

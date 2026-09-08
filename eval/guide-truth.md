@@ -1468,3 +1468,30 @@ prompt reminds readers that a new direct REST integration uses `checkout-v2026-0
 With these additions, all eight specs in `.github/synced-api-references.json` have direct API
 prompt coverage: 14 storefront, 8 auth, 8 Checkout, 3 Public SDK, 9 payment, 7 cart
 payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workflows).
+
+## Checkout cart events guide — adoption record (CURRENT-3936)
+
+`guides/checkout-cart-events.mdx` is the first guide whose subject is a browser
+`postMessage` contract rather than an HTTP surface. Its 54 claims (`cart-events`
+prefix) resolve against `api-reference/checkout-v2026-04.yaml` via `guideSpecs`;
+six are mechanical (Show a cart exists, has no security requirement, documents
+404; Update cart metadata exists). The rest are semantic and were verified against
+the **merged checkout implementation** (fluid-mono #8612, fluid #21820, deployed
+2026-09-08), which is this guide's source of truth in the absence of a spec. The
+adversarial pass and omission sweep are recorded on CURRENT-3936.
+
+### Accepted omissions (deliberate — do not re-litigate without cause)
+
+| Omitted fact | Rationale |
+| ------------ | --------- |
+| Per-endpoint semantics of Update cart metadata (shallow merge, reserved keys, completed-cart status) | Content boundary: the generated page owns them; the guide links. |
+| `{subdomain}.checkout.fluid.app` hosting for specific payment configurations | Covered by the documented subdomain suffix match; naming the trigger would restate internal configuration. |
+| The sender's change-detection fingerprint and burst-cap internals | Implementation detail; only the observable cap (20 per 10 s, trailing send) is asserted. |
+| The private droplet SDK helper for this contract | Not published; the guide documents the raw contract so any partner can implement it. |
+
+### Low-confidence claims
+
+None. The four claims the first draft got wrong (browser CORS on the checkout
+surface, the order token on confirmation, the staging host, the per-cart sequence)
+were each refuted against code during the adversarial pass and corrected before
+adoption.
