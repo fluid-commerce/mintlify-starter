@@ -1,0 +1,227 @@
+---
+title: "React to Cart Changes in a Checkout Drop Zone: Cart Events Guide"
+sidebarTitle: "Checkout Cart Events"
+description: "Learn how a checkout drop zone learns that the cart changed — the ready handshake, the cart-updated message, validation, fetching the cart, and the fallback for surfaces without events."
+---
+
+A checkout drop zone renders your app in an iframe beside the shopper's cart. Your app usually needs to react when that cart changes — a new line item, a different shipping address, a discount code. Checkout now tells you the moment a change settles, so you no longer poll for it. Follow the steps below to announce your embed, receive cart events safely, and read the cart.
+
+<Info>
+  A cart event is a **signal, not data**. It tells you the cart moved. Read the
+  authoritative cart from [Show a cart](/api-reference/carts/show-a-cart), which
+  needs only the cart token. Never treat the fields inside the message as the
+  cart itself.
+</Info>
+
+<Tip>
+  New to drop zones? Start with [Embed apps with drop zones](/api/guides/drop-zones)
+  to place your embed, and [Creating Droplets](/guides/creating-droplets) to
+  distribute it through the Marketplace. This guide picks up once your embed is
+  rendering on the checkout page.
+</Tip>
+
+## How checkout loads your embed
+
+Fluid renders your embed URL in a sandboxed iframe and appends the cart token as a query parameter, plus the company id when it is known:
+
+```text theme={null}
+https://loyalty.acmerewards.com/checkout-widget?token=ct_7f3k9m2p4q&company_id=980243114
+```
+
+The iframe sends no referrer, so your page cannot learn the parent's origin from `document.referrer`. Fluid-hosted checkout runs on a `fluid.app` subdomain, such as `https://checkout.fluid.app`, and posts every message to your embed's exact origin — a message never reaches a window on a different origin.
+
+<Steps>
+  <Step title="Announce that you are ready">
+    Your listener may be installed after checkout has already sent its first
+    message. Announce readiness as soon as your page loads, and checkout replays
+    its latest cart snapshot to you:
+
+    ```javascript theme={null}
+    const cartToken = new URLSearchParams(location.search).get("token");
+
+    window.parent.postMessage(
+      { type: "FLUID_CART_READY", version: 1, cart_token: cartToken },
+      "*",
+    );
+    ```
+
+    The token is already in your URL, supplied by the same parent, so posting the
+    handshake to `"*"` reveals nothing new. Checkout also replays the latest
+    snapshot when your iframe finishes loading, so a duplicate is harmless.
+  </Step>
+
+  <Step title="Listen for cart events and validate every one">
+    Checkout posts `FLUID_CART_UPDATED` to your window each time a change to
+    this cart settles on the server. Optimistic edits the shopper is still
+    typing do not fire. Validate the sender, the origin, the version, and the
+    cart token before you act, and ignore any sequence you have already seen:
+
+    ```javascript theme={null}
+    let lastSequence = -1;
+
+    function isCheckoutOrigin(rawOrigin) {
+      let origin;
+      try { origin = new URL(rawOrigin); } catch { return false; }
+      return origin.protocol === "https:" &&
+        (origin.hostname === "fluid.app" || origin.hostname.endsWith(".fluid.app"));
+    }
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent) return;
+      if (!isCheckoutOrigin(event.origin)) return;
+
+      const message = event.data;
+      if (!message || message.type !== "FLUID_CART_UPDATED" || message.version !== 1) return;
+
+      const change = message.payload;
+      if (!change || change.cart_token !== cartToken) return;
+      if (!Number.isSafeInteger(change.sequence) || change.sequence < 0) return;
+      if (change.sequence <= lastSequence) return; // a replay, already handled
+
+      lastSequence = change.sequence;
+      refreshFromCart();
+    });
+    ```
+
+    The `sequence` counts up per embed for the life of the checkout page. A
+    replay — from the ready handshake or an iframe reload — carries the same
+    number as the message it repeats, so the guard above makes it a no-op.
+  </Step>
+
+  <Step title="Read the cart and render">
+    Fetch the cart with [Show a cart](/api-reference/carts/show-a-cart). The cart
+    token in the path is the credential; no bearer token is needed, so you can
+    read from the browser or from your server. Serialize your refreshes: if an
+    event arrives while a read is in flight, run one more read after it finishes
+    rather than starting a second one.
+
+    ```javascript theme={null}
+    let inFlight = null;
+    let queued = false;
+
+    async function refreshFromCart() {
+      if (inFlight) { queued = true; return; }
+      inFlight = (async () => {
+        const response = await fetch(
+          `https://api.fluid.app/api/checkout/v2026-04/carts/${cartToken}`,
+        );
+        if (!response.ok) throw new Error(`Cart read failed (${response.status})`);
+        const { cart } = await response.json();
+        render(cart);
+      })().finally(() => {
+        inFlight = null;
+        if (queued) { queued = false; refreshFromCart(); }
+      });
+    }
+    ```
+
+    Rendering from the cart you fetched, never from the message, means a
+    spoofed or stale message can at worst cause an extra read.
+  </Step>
+
+  <Step title="Keep a fallback for surfaces without events">
+    Only the checkout page sends cart events. The same embed can also render on
+    order confirmation, where the cart is complete and nothing will change, and
+    on other surfaces that have no live cart to watch. Keep a slow poll — 30
+    seconds or more, paused while the tab is hidden — and stop it the first time
+    a valid event arrives:
+
+    ```javascript theme={null}
+    const fallback = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      refreshFromCart();
+    }, 30_000);
+
+    // Inside your message listener, after validation:
+    // clearInterval(fallback);
+    ```
+
+    Treat this fallback as permanent, not as scaffolding to remove later. It is
+    what makes your embed correct on every surface, not only on checkout.
+  </Step>
+
+  <Step title="Report your height">
+    Checkout sizes your iframe to the height you report. Send it after every
+    render, and again when your content changes:
+
+    ```javascript theme={null}
+    function reportHeight() {
+      window.parent.postMessage(
+        { type: "RESIZE", height: document.body.scrollHeight },
+        "*",
+      );
+    }
+
+    new ResizeObserver(reportHeight).observe(document.body);
+    ```
+
+    Checkout accepts heights between 1 and 9,999 pixels and ignores anything
+    else.
+  </Step>
+</Steps>
+
+## Message reference
+
+Checkout posts one message type to your embed:
+
+```json theme={null}
+{
+  "type": "FLUID_CART_UPDATED",
+  "version": 1,
+  "payload": {
+    "cart_token": "ct_7f3k9m2p4q",
+    "sequence": 4,
+    "email": "jordan.rivera@example.com",
+    "state": "start"
+  }
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `version` | The protocol version. Ignore any message whose version is not `1`; a future version will change the shape, never redefine this one. |
+| `payload.cart_token` | The cart the message is about. Must equal the token in your URL. |
+| `payload.sequence` | A non-negative integer that increases with each new snapshot sent to your embed. Replays repeat the last number. |
+| `payload.email` | The cart's email at the time of the snapshot, or `null`. A hint for deciding whether a refresh is worth it — not a source of truth. |
+| `payload.state` | The cart's state at the time of the snapshot, or `null`. Same caveat. |
+
+Your embed posts two message types to checkout:
+
+| Message | Fields | Effect |
+| ------- | ------ | ------ |
+| `FLUID_CART_READY` | `version: 1`, `cart_token` | Checkout replays its latest snapshot for that cart. |
+| `RESIZE` | `height` (number of pixels) | Checkout sets the iframe height. |
+
+Payment details never travel in a cart event. Card data, tokens, and available payment methods are excluded from both the message and the change detection behind it.
+
+## What triggers an event
+
+Any change to the cart that settles on the server: items added, removed, or changed; the shipping address or method; a discount applied or removed; the email; and metadata written through [Update cart metadata](/api-reference/carts/update-cart-metadata) — including writes your own app makes.
+
+<Warning>
+  Because your own metadata writes fire an event, an embed that writes metadata
+  unconditionally in response to every event will loop. Write only when the
+  value actually changes, and compare against the cart you just read.
+</Warning>
+
+Transport-only updates do not fire. A refetch of the same cart, a cache refresh, or a change to fields that only carry request timestamps produce no message, so a quiet checkout stays quiet.
+
+## Discount droplets: country-scoped registrations
+
+If your droplet prices discounts through the `update_cart_discount` callback, two behaviors are worth knowing:
+
+- Checkout selects your registration by the cart's destination — the shipping address country first, falling back to the cart's country before a shipping address exists. A registration scoped with `country_codes` is chosen when that destination matches, and the same destination is used when the callback is dispatched, so the registration check and the call never disagree. Manage scoping with [Create a callback registration](/api-reference/callback-registrations/create-a-callback-registration) and [Update a callback registration](/api-reference/callback-registrations/update-a-callback-registration).
+- When the last active registration for a company is removed or deactivated, any discount your droplet previously applied is cleared the next time checkout recalculates external discounts for that cart, so an uninstall does not leave a stale discount on the total.
+
+The request and response shapes for the callback are on [Show a callback schema](/api-reference/callback-schemas/show-a-callback-schema); ask it for `update_cart_discount`.
+
+## Security checklist
+
+- Accept a message only when `event.source === window.parent` — a sibling iframe on the same page shares your parent's origin but not its window.
+- Check `event.origin` against the checkout origins you expect. Fluid-hosted checkout is `https://` on `fluid.app` or a subdomain of it.
+- Require `version === 1` and a `cart_token` equal to your own.
+- Ignore a `sequence` at or below the last one you handled.
+- Render from [Show a cart](/api-reference/carts/show-a-cart), never from the message.
+- Keep your embed able to fail without blocking checkout: a failed read should leave your last good render in place, not throw an error into the page.
+
+For webhooks that fire after checkout completes, see [Register and handle webhooks](/api/guides/webhooks). For placing and managing the drop zone itself, see [Embed apps with drop zones](/api/guides/drop-zones).
