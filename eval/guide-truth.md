@@ -1472,7 +1472,7 @@ payments, 3 commerce, and 8 webhooks prompts (60 API prompts total, plus 6 workf
 ## Checkout cart events guide — adoption record (CURRENT-3936)
 
 `guides/checkout-cart-events.mdx` is the first guide whose subject is a browser
-`postMessage` contract rather than an HTTP surface. Its 57 claims (`cart-events`
+`postMessage` contract rather than an HTTP surface. Its 58 claims (`cart-events`
 prefix) resolve against `api-reference/checkout-v2026-04.yaml` via `guideSpecs`;
 4 are mechanical (Show a cart exists, has no security requirement, documents
 404; Update cart metadata exists). The rest are semantic and were verified against

@@ -42,16 +42,29 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
 
     ```javascript theme={null}
     const cartToken = new URLSearchParams(location.search).get("token");
+    const CHECKOUT_HOSTS = ["checkout.fluid.app", "checkout.fluid-staging.app"];
+    let checkoutOrigin = null; // learned from the first validated message
 
-    window.parent.postMessage(
-      { type: "FLUID_CART_READY", version: 1, cart_token: cartToken },
-      "*",
-    );
+    // Never post with "*": the message carries the cart token. A message whose
+    // target origin does not match the parent is dropped silently, so one post
+    // per origin you accept reaches checkout and nothing else.
+    function postToCheckout(message) {
+      const targets = checkoutOrigin
+        ? [checkoutOrigin]
+        : CHECKOUT_HOSTS.map((host) => `https://${host}`);
+      for (const target of targets) window.parent.postMessage(message, target);
+    }
+
+    postToCheckout({ type: "FLUID_CART_READY", version: 1, cart_token: cartToken });
     ```
 
-    The token is already in your URL, supplied by the same parent, so posting the
-    handshake to `"*"` reveals nothing new. Checkout also replays the latest
-    snapshot when your iframe finishes loading, so a duplicate is harmless.
+    Post the handshake only to origins you accept, never to `"*"` — the parent
+    window can navigate, and a wildcard would hand the cart token to whatever
+    document is there when the message is dispatched. A checkout served from a
+    subdomain of those hosts will not receive this first handshake; it still
+    replays when your iframe finishes loading, so nothing is lost, and a
+    duplicate is harmless. Once any validated message arrives, remember its
+    origin and post to that origin alone (next step).
   </Step>
 
   <Step title="Listen for cart events and validate every one">
@@ -63,8 +76,6 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
 
     ```javascript theme={null}
     let lastSequence = -1;
-
-    const CHECKOUT_HOSTS = ["checkout.fluid.app", "checkout.fluid-staging.app"];
 
     function isCheckoutOrigin(rawOrigin) {
       let origin;
@@ -86,6 +97,7 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
       if (!Number.isSafeInteger(change.sequence) || change.sequence < 0) return;
       if (change.sequence <= lastSequence) return; // a replay, already handled
 
+      checkoutOrigin = event.origin; // exact, validated: use it for every later post
       lastSequence = change.sequence;
       refreshFromCart().then((outcome) => {
         // See the fallback step below: a failed read must not strand the embed.
@@ -205,10 +217,9 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
 
     ```javascript theme={null}
     function reportHeight() {
-      window.parent.postMessage(
-        { type: "RESIZE", height: document.body.scrollHeight },
-        "*",
-      );
+      // Checkout ignores anything outside 1–9,999, so clamp rather than send raw.
+      const height = Math.min(9999, Math.max(1, Math.round(document.body.scrollHeight)));
+      postToCheckout({ type: "RESIZE", height });
     }
 
     new ResizeObserver(reportHeight).observe(document.body);
