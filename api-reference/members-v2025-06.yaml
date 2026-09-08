@@ -232,6 +232,55 @@ components:
         timestamp:
           type: string
           format: date-time
+    CustomerTokenExchangeResponse:
+      type: object
+      description: >-
+        An opaque, single-use handoff token. It is not a credential on its own: it must be redeemed at
+        the redeem operation, which returns the shopper session in a response header. No JWT appears in
+        this body.
+      required:
+      - handoff
+      - expires_in
+      - status
+      - meta
+      properties:
+        handoff:
+          type: string
+          description: Opaque single-use token. Redeem it once, promptly; it is consumed on redemption.
+        expires_in:
+          type: integer
+          description: Seconds until the handoff token expires.
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CustomerTokenRedeemResponse:
+      type: object
+      description: >-
+        Acknowledgement of a redeemed handoff token. The shopper session itself is returned in the
+        X-Customer-Token response header, never in this body.
+      required:
+      - success
+      - auth_type
+      - status
+      - meta
+      properties:
+        success:
+          type: boolean
+        auth_type:
+          type: string
+          description: The compatibility identity selected by the shopper-session minting seam.
+          enum:
+          - member
+          - customer
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return one or more of these
         fields depending on the controller path.
@@ -1105,6 +1154,146 @@ paths:
         '422':
           description: Validation failed (unknown country code, malformed dob, invalid sponsor/placement
             id, blank required address fields).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/members/{member_id}/customer-token-exchange:
+    post:
+      operationId: admin_v2025_06_member_customer_token_exchange
+      summary: Exchange a member for a shopper token
+      description: >-
+        Step one of a two-step handoff. Returns an opaque, single-use token bound to the member and the
+        calling company; redeem it at the redeem operation to obtain the shopper session. Accepts company
+        API tokens only; admin user-company, partner, public and droplet tokens are all rejected. A member
+        without a Customer in the calling company is rejected here rather than being materialized. The
+        session credential never appears in a response body — a shopper JWT is long-lived, and bodies are
+        routinely captured by logging and error tracking.
+      tags:
+      - members
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: member_id
+        in: path
+        required: true
+        description: The member's native UUID or its legacy bigint (legacy_user_company_id).
+        schema:
+          type: string
+      responses:
+        '200':
+          description: An opaque single-use handoff token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerTokenExchangeResponse'
+        '401':
+          description: Missing or invalid bearer token; session cookies are not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller did not present a company API token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No kept member matches the supplied id in the authenticated company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: The member has no active customer identity in the calling company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The handoff token store is unavailable; the request may be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/members/{member_id}/customer-token-exchange/redeem:
+    post:
+      operationId: admin_v2025_06_member_customer_token_exchange_redeem
+      summary: Redeem a handoff token for a shopper session
+      description: >-
+        Step two of the handoff. Consumes the opaque token from the exchange operation and returns the
+        member's shopper session in the X-Customer-Token response header. Single use: a token is destroyed
+        on redemption, and one issued for a different member or under a different company's credential is
+        rejected. The path member is part of the binding, so the session returned is always the one this
+        URL names.
+      tags:
+      - members
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: member_id
+        in: path
+        required: true
+        description: The member's native UUID or its legacy bigint (legacy_user_company_id).
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - handoff
+              properties:
+                handoff:
+                  type: string
+                  description: The opaque token returned by the exchange operation.
+      responses:
+        '200':
+          description: The handoff token was redeemed; the session is in the X-Customer-Token header.
+          headers:
+            X-Customer-Token:
+              description: The member's shopper bearer token. Treat it as a secret and do not log it.
+              schema:
+                type: string
+            Cache-Control:
+              description: Prevents storage of the token-bearing response by clients and intermediaries.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerTokenRedeemResponse'
+        '401':
+          description: Missing or invalid bearer token; session cookies are not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller did not present a company API token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No member with this id belongs to the authenticated company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: >-
+            The handoff token is missing, expired, already redeemed, or was issued for a different member
+            or company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The handoff token store is unavailable; the request may be retried.
           content:
             application/json:
               schema:
