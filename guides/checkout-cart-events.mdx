@@ -87,46 +87,59 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
       if (change.sequence <= lastSequence) return; // a replay, already handled
 
       lastSequence = change.sequence;
-      refreshFromCart();
+      refreshFromCart().then((rendered) => {
+        if (rendered) stopFallback(); // see the fallback step below
+      });
     });
     ```
 
     The `sequence` counts up **per cart, per checkout page** and is shared by
     every embed on that page, so two embeds see the same numbers and an embed
     that mounts late sees a first number above `1`. A replay — from the ready
-    handshake or an iframe reload — carries the same number as the message it
-    repeats, so the guard above makes it a no-op.
+    handshake, or from checkout noticing your iframe loaded — carries the same
+    number as the message it repeats, so within one page load the guard above
+    makes it a no-op. After your iframe reloads, `lastSequence` starts over and
+    the replay triggers one read, which is exactly what a fresh page needs.
   </Step>
 
   <Step title="Read the cart and render">
-    Read the cart from **your own server** with [Show a cart](/api-reference/carts/show-a-cart).
-    The cart token in the path is the credential — no bearer token is needed,
-    and none should ever ship inside an embed. Your page asks your server, and
-    your server asks Fluid:
+    Read the cart from **your own server**: your page asks your server, and
+    your server calls [Show a cart](/api-reference/carts/show-a-cart) with the
+    cart token from your URL. That page carries the request and response
+    contract; this guide only needs the token to reach it.
 
     ```javascript theme={null}
     let inFlight = null;
     let queued = false;
 
-    async function refreshFromCart() {
-      if (inFlight) { queued = true; return; }
+    // Resolves true when the cart rendered, false when it did not; never rejects.
+    function refreshFromCart() {
+      if (inFlight) { queued = true; return inFlight; }
       inFlight = (async () => {
-        // Your server calls GET /api/checkout/v2026-04/carts/{cart_token}.
         const response = await fetch(`/widget/cart?token=${encodeURIComponent(cartToken)}`);
-        if (response.status === 404) return; // not a cart token on this surface
+        if (response.status === 404) return false; // not a cart token on this surface
         if (!response.ok) throw new Error(`Cart read failed (${response.status})`);
         render(await response.json());
-      })().finally(() => {
-        inFlight = null;
-        if (queued) { queued = false; refreshFromCart(); }
-      });
+        return true;
+      })()
+        .catch((error) => {
+          console.warn("Cart read failed; keeping the last render", error);
+          return false; // the last successful render stays on screen
+        })
+        .finally(() => {
+          inFlight = null;
+          if (queued) { queued = false; refreshFromCart(); }
+        });
+      return inFlight;
     }
     ```
 
     Serialize your refreshes as above: if an event arrives while a read is in
     flight, run one more read after it finishes rather than starting a second
-    one. Rendering from the cart you fetched, never from the message, means a
-    spoofed or stale message can at worst cause an extra read.
+    one. Catch every failure and keep the last good render on screen, so a
+    read that fails never surfaces as an error in checkout. Rendering from the
+    cart you fetched, never from the message, means a spoofed or stale message
+    can at worst cause an extra read.
 
     <Info>
       Browsers cannot call the checkout surface directly from a third-party
@@ -143,19 +156,29 @@ Your iframe is sandboxed to `allow-same-origin allow-scripts`. `window.open`, li
     Only the checkout page sends cart events. The same embed can also render on
     the storefront cart, which has a live cart but sends no events, and on
     order confirmation, where the `token` query parameter is an **order** token
-    — not a cart token — so do not read the cart there at all. Keep a slow poll
-    — 30 seconds or more, paused while the tab is hidden — stop it the first
-    time a valid event arrives, and stop it if a read answers `404`, which means
-    the token is not a cart token on this surface:
+    — not a cart token — so do not read the cart there at all. Read once
+    immediately, then keep a slow poll — 30 seconds or more, paused while the
+    tab is hidden. Stop it only after an event-driven read has **rendered
+    successfully**: a valid event whose read then fails must leave the poll
+    running, or the embed goes stale with no way to recover. Stop it, too, when
+    a read answers `404`, which means the token is not a cart token on this
+    surface:
 
     ```javascript theme={null}
-    const fallback = setInterval(() => {
-      if (document.visibilityState === "hidden") return;
-      refreshFromCart();
-    }, 30_000);
+    let fallback = null;
 
-    // Inside your message listener, after validation:
-    // clearInterval(fallback);
+    function stopFallback() {
+      if (fallback) clearInterval(fallback);
+      fallback = null;
+    }
+
+    refreshFromCart().then((rendered) => {
+      if (rendered === false) return; // 404: nothing to poll for on this surface
+      fallback = setInterval(() => {
+        if (document.visibilityState === "hidden") return;
+        refreshFromCart();
+      }, 30_000);
+    });
     ```
 
     Treat this fallback as permanent, not as scaffolding to remove later. It is
