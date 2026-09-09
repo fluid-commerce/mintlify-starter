@@ -113,6 +113,117 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/Meta"
+    PayerDetailsSyncFailedResponse:
+      description: |
+        The payer details PayPal holds for the approved order could not be
+        applied to the cart, so the authorize was abandoned before it was sent.
+        Nothing is held and no authorization exists.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - order_id
+          properties:
+            order_id:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: payer_details_sync_failed
+    CartTotalChangedErrorResponse:
+      description: |
+        The cart no longer says the total the client sent as `expected_total`.
+        Nothing was charged. `meta.cart` is the current total, so the client
+        can show the shopper what changed before asking again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total as a decimal string in
+                    the currency's major unit, rounded to the currency's minor
+                    units -- at most three fraction digits, and none at all for
+                    a currency billed in whole units (JPY, TWD). Resend it as
+                    `expected_total`; the retry is compared at that same
+                    rounding. Null when the cart carries no total at all, which
+                    no retry can satisfy.
+                  example: "128.85"
+                currency_code:
+                  type: string
+                  description: ISO 4217 code of the currency this total is in.
+                    Resend it as `expected_currency`; a retry that names a
+                    different currency is refused before the totals are
+                    compared.
+                  example: USD
     BareErrorResponse:
       description: Legacy error body returned by certain payment-method creation
         error paths. Carries errors (array or object) and sometimes error_message,
@@ -1060,9 +1171,18 @@ paths:
       description: |
         Authorizes a previously created PayPal order (identified by `order_id` in
         the body) and returns its `authorization_id`. Cart-token authenticated.
+
+        Before authorizing, the server applies the payer details PayPal holds
+        for the approved order — the buyer's email and the shipping address they
+        chose in PayPal's own UI — and reprices. That ordering is deliberate:
+        those writes move the cart total, and authorizing first would leave
+        PayPal holding funds for a total the cart no longer agrees with.
+
         Returns `400` when the order id is invalid, `404` when the cart is not
-        found, `410` when the cart has already been processed or holds an authorized enrollment, and `422` for invalid
-        parameters or a zero-amount cart.
+        found, `409` when the cart's total no longer matches `expected_total`,
+        `410` when the cart has already been processed or holds an authorized enrollment, `422` for invalid
+        parameters or a zero-amount cart, and `502` when those payer details
+        could not be applied at all. Nothing is authorized on `409` or `502`.
       tags:
       - paypal
       operationId: payments_v2026_04_paypal_authorize_order
@@ -1090,11 +1210,39 @@ paths:
                 order_id:
                   type: string
                   description: PayPal order id returned from order creation.
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal
+                    string in the cart currency's major unit (`"141.74"`), taken
+                    from `amount_total` of the cart the client last rendered.
+                    Requires `expected_currency`.
+
+                    Checked after the payer details are applied and before the
+                    authorize request, which is the only point at which the
+                    total can be judged: the address PayPal supplied has to be
+                    priced first. When it no longer matches, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is
+                    authorized.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was
+                    shown, from `currency_code` of the same cart. Requires
+                    `expected_total`.
+                  example: USD
             examples:
               authorize:
                 summary: Authorize a created PayPal order
                 value:
                   order_id: 5O190127TN364715T
+              authorize_with_shown_total:
+                summary: Authorize, refusing a total the shopper never saw
+                value:
+                  order_id: 5O190127TN364715T
+                  expected_total: "141.74"
+                  expected_currency: USD
       responses:
         '200':
           description: Order authorized
@@ -1124,6 +1272,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: |
+            The cart no longer says the total the client sent as
+            `expected_total` (`meta.code` = `cart_total_changed`). Nothing was
+            authorized. `meta.cart` carries the current total; refetch the
+            cart, show the shopper the new total, and authorize again with it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '410':
           description: Cart already processed or holds an authorized enrollment
           content:
@@ -1136,6 +1294,18 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '502':
+          description: |
+            The payer details PayPal holds for the approved order could not be
+            applied to the cart (`meta.code` = `payer_details_sync_failed`), so
+            the authorize was abandoned before it was sent. Nothing is held and
+            no authorization exists. Unlike `409` there is nothing for the
+            shopper to agree to — the order is still approved, so a retry is
+            the right next step.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PayerDetailsSyncFailedResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/paypal/shipping":
     patch:
