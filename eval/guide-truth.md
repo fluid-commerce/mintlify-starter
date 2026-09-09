@@ -1497,6 +1497,52 @@ Durable authoring boundaries:
   from the public authoring guide. The page requires feature availability without
   presenting internal deployment configuration or an unsynced management contract.
 
+## Member storefront — theme-author contract
+
+The four pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-sites`, `member-page-templates`) describe the member storefront feature: the
+`member_price` filter, the `member_name` and `member` tags, the section marker and SDK
+resolution states, member sites and their rules, member page templates, and the member
+layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
+against the Rails theme engine and the two browser packages rather than against an
+OpenAPI document. A green mechanical check proves quote and coverage integrity, not
+runtime behavior.
+
+The public pages stay at theme-author altitude. Backend evidence is the member
+storefront Liquid filters and tags, the shell builder and detector, the section tag's
+wrapper marker, the member sites and pages models and managers, the site resolver, the
+navigation builder, the system screens catalogue, the member sites manifest and
+restorer, and the `Site::Members` controllers with their tests in `fluid`. Browser
+evidence is the `member-storefront-sdk` and `account-screens` packages in `fluid-mono`.
+Re-verify changed behavioral claims against both repositories.
+
+Durable authoring boundaries:
+
+- Storefront price and name hydration is documented as depending on the member storefront
+  SDK being configured for the environment. The Liquid contract, the section marker, and
+  the shell fallback are live; the script injection is configuration-dependent and the
+  pages never claim it is active. Do not broaden that into "hydration works everywhere".
+- Member pages are served on the account subdomain only. The storefront `/accounts` prefix
+  is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
+  `/members/...` storefront paths from older planning documents.
+- No root theme ships member templates or a member layout. The pages say so and describe
+  the not-found behavior that follows. Do not document shipped defaults until a root
+  theme carries them.
+- The three system screens (Messaging, Contacts, My Site) are documented as Fluid-rendered
+  and dependent on the account screens runtime being enabled for the company. The
+  provisioning mechanism and its administrative tooling are deliberately omitted.
+- The member value on member pages is documented as exactly `first_name`, `last_name`,
+  `full_name`, `email`, and `status`. Do not add fields without a matching change in the
+  member scope variables.
+- Sign-in is documented as Fluid's hosted sign-in with a return path, a 30-day signed
+  HTTP-only session, and per-request membership re-checks. Token formats, cookie names,
+  and the redemption endpoint stay out of the public pages.
+- Exact feature flags, internal class names, builder API endpoints, and the internal
+  OpenAPI document for member sites are deliberately omitted from the public pages.
+- Every page opens with a coming-soon warning and the navigation group carries a
+  "Coming soon" tag. Keep both until member storefront is generally available, then
+  remove them together, the way the section-slots pre-release wording was removed.
+
 ## Checkout cart events guide — adoption record (CURRENT-3936)
 
 `guides/checkout-cart-events.mdx` is the first guide whose subject is a browser
