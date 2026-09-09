@@ -1539,6 +1539,9 @@ Durable authoring boundaries:
   and the redemption endpoint stay out of the public pages.
 - Exact feature flags, internal class names, builder API endpoints, and the internal
   OpenAPI document for member sites are deliberately omitted from the public pages.
+- Every page opens with a coming-soon warning and the navigation group carries a
+  "Coming soon" tag. Keep both until member storefront is generally available, then
+  remove them together, the way the section-slots pre-release wording was removed.
 
 ## Checkout cart events guide — adoption record (CURRENT-3936)
 
