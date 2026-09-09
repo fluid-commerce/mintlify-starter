@@ -1,0 +1,263 @@
+---
+title: "Show member prices and greetings in cached sections"
+sidebarTitle: "Member-aware sections"
+description: "Use the member_price filter and the member_name and member tags to emit shells that the member storefront SDK fills in for a signed-in member, without breaking the storefront cache."
+---
+
+A member-aware section is an ordinary Liquid section that uses one of three member helpers. Fluid renders the guest view once and caches it. When a signed-in member views the page, the member storefront SDK swaps member values into small placeholder elements called **shells**. Nothing about the viewer enters the server render.
+
+Use member-aware sections for a member price on a product card, a greeting in a hero, or a member-only banner. Use [member sites](/themes/member-storefront/member-sites) instead for whole pages that only members can open.
+
+<Note>
+  Member storefront features require enablement for your company. When they are off, every member helper renders its guest value and nothing else, so you can add the helpers to a shared theme safely.
+</Note>
+
+## Understand the building blocks
+
+| Building block | Responsibility |
+| --- | --- |
+| Member helper | A Liquid filter or tag that emits a shell with the guest value as its fallback |
+| Shell | A custom element, or a marked element, that carries the guest fallback plus the attributes the SDK needs |
+| Section marker | An attribute on the section wrapper that tells the SDK the section contains shells |
+| Member storefront SDK | One deferred script that finds shells inside marked sections and resolves values for the signed-in member |
+| Token | The member's credential. The SDK reads it in the browser. It never appears in the rendered HTML |
+
+Your templates remain Liquid. There is no schema key to set, no JSON to migrate, and no per-section switch. Using a member helper is the opt-in.
+
+## Choose the helper
+
+| You want to show | Use | Guest sees |
+| --- | --- | --- |
+| The viewer's price for a product or variant | `{{ product \| member_price }}` or `{{ variant \| member_price }}` | The retail price, formatted like `money` |
+| The viewer's name | `{% member_name %}` | Nothing. Put guest text in the `{% else %}` branch of `{% member %}` |
+| Content that differs for members and guests | `{% member %}…{% else %}…{% endmember %}` | The `{% else %}` branch |
+
+## Show the member's price
+
+Pass a product or a variant to `member_price`:
+
+```liquid
+<p class="product-card__price">
+  {{ product | member_price }}
+</p>
+```
+
+With member storefront enabled, the filter renders a shell. The text inside it is the guest price for the storefront's active country, formatted exactly as the `money` filter formats it:
+
+```html
+<fluid-member-price
+  data-product-id="1842"
+  data-variant-id="5127"
+  data-country-iso="US"
+>$48.00</fluid-member-price>
+```
+
+Pass a variant when the card shows a specific variant. Pass a product when the card shows the product's selected variant. When a product has no selected variant, the shell's `data-variant-id` is empty and the SDK resolves the product's default variant. The filter reads the country from the value you pass, so the SDK can select one price from a multi-country response and never guess by position.
+
+### Supply your own guest price
+
+When your template already formats the price, pass that formatted string as the filter's argument. The guest then sees exactly what the template showed before you added the filter:
+
+```liquid
+{%- assign formatted_product_price = product.price | money -%}
+
+{{ product | member_price: formatted_product_price }}
+```
+
+This is how the Fluid root theme's product card uses the filter. The argument is also required for products read from a resource collection, because those entries are plain values rather than product objects. Without an argument, a plain value is returned unchanged.
+
+Three rules keep the fallback honest:
+
+- When the value is neither a product nor a variant nor a resource-collection product, the filter returns it unchanged.
+- When the value carries no country context, the filter returns the plain guest price with no shell.
+- When member storefront is disabled, the filter returns the plain guest price with no shell.
+
+The shell renders in the light DOM, so your existing price styles apply. Do not hand-write a `<fluid-member-price>` element. A hand-written shell has no guaranteed fallback and no country, so the SDK cannot resolve it safely.
+
+## Greet the member
+
+Combine `{% member %}` and `{% member_name %}`:
+
+```liquid
+<p class="hero__eyebrow">
+  {% member %}
+    Welcome back, {% member_name %}.
+  {% else %}
+    Shop with the Fluid community.
+  {% endmember %}
+</p>
+```
+
+With member storefront enabled, each branch renders in its own `<div>`. The member branch is hidden until the SDK confirms a member is viewing:
+
+```html
+<div data-fluid-member-show="member" hidden>
+  Welcome back, <fluid-member-name></fluid-member-name>.
+</div>
+<div data-fluid-member-show="guest">
+  Shop with the Fluid community.
+</div>
+```
+
+With member storefront disabled, only the `{% else %}` branch renders, with no wrapping element. `{% member_name %}` on its own renders nothing when disabled, which is why guest text belongs in the `{% else %}` branch rather than inside the name shell.
+
+The `{% else %}` branch is optional. A `{% member %}` block without one renders nothing for guests. Neither tag accepts arguments, and a block accepts only one `{% else %}`.
+
+The branches are block elements. Wrap them in the element you want to style rather than placing them inside inline text.
+
+## There is no member variable
+
+Storefront Liquid has no `member` object. `{% if member %}` is always false, so it renders nothing.
+
+This is deliberate. Storefront pages are cached once per path, country, and language, and the same HTML is served to every visitor. If the server knew who was looking, one member's page could be cached and served to everyone. The helpers exist so that you never need to branch on the viewer in Liquid.
+
+[Member page templates](/themes/member-storefront/member-page-templates) are the exception. They render on every request for the signed-in member and are never cached, so they read a `member` value directly and do not use these helpers.
+
+## How a section becomes member-aware
+
+Fluid marks a section as member-aware by reading its rendered output. When the output contains at least one shell, the section wrapper gains `data-fluid-member-storefront="true"`:
+
+```html
+<section
+  data-fluid-section="featured_products"
+  data-fluid-section-type="product_grid"
+  data-fluid-member-storefront="true"
+>
+  <!-- Cards with fluid-member-price shells render here. -->
+</section>
+```
+
+Because the marker is derived from output, a shell inside a component that the section renders with `{% render %}` counts. Making the product card component use `member_price` makes every section that renders the card member-aware, and no other section changes.
+
+The SDK scans only inside marked sections. Markup elsewhere on the page is never read, hidden, or rewritten.
+
+## What the SDK does in the browser
+
+The SDK is one deferred script with no dependencies. When it is configured for your environment, Fluid adds it to `<head>` for companies with member storefront enabled. You do not add it to your layout.
+
+<Note>
+  Hydration requires the member storefront SDK to be configured for your environment. Without it, every visitor sees the guest fallback. That is the designed behavior of a shell, so a theme that uses the helpers is correct before hydration is available and unchanged after.
+</Note>
+
+When the page loads without a member token, the SDK stops. It writes nothing to the DOM and sends no requests, so a guest sees exactly the server render.
+
+When a token is present, the SDK:
+
+1. Marks the document root with `data-fluid-member-token="present"` and sets every marked section to `data-fluid-member-state="masked"`.
+2. Hides every shell inside a marked section until that shell is settled, so a member never sees a retail price flash before their own.
+3. Reads the member's display name from the token and fills each `<fluid-member-name>`. It shows `member` branches and hides `guest` branches.
+4. Requests member pricing once per distinct product. For each price shell it selects the variant and country the shell names and writes the formatted price string it received. The SDK performs no arithmetic and no currency formatting of its own.
+5. Marks each shell `data-fluid-member-settled` as it writes a value or decides to keep the fallback. A section becomes `resolved` once every shell inside it is settled.
+
+A slow product request holds only the shells that depend on it. A section with only name shells resolves as soon as identity is known.
+
+### Resolution states
+
+| Section state | Meaning |
+| --- | --- |
+| `masked` | A token is present and at least one shell in the section is still unsettled |
+| `resolved` | Every shell is settled. Member values are in place, `member` branches are visible, `guest` branches are hidden |
+| `guest` | The token was expired or rejected. Everything the SDK wrote is reverted and the section shows the server render |
+
+The SDK never throws into the page. A network failure, an unexpected response, or a member who is not entitled to member pricing leaves the fallback in place and settles the shell. A rejected token clears the credential, restores every value the SDK wrote anywhere on the page, removes the root marker so nothing stays hidden, and sets every section to `guest`.
+
+Shells and sections inserted after page load are handled too. A shell added to an already-resolved section is hidden on arrival and resolved on its own. Shells inserted outside every marked section are ignored.
+
+## Style on resolution states
+
+The state attributes are stable hooks. Nothing in the SDK depends on how you style them.
+
+```css
+[data-fluid-member-storefront][data-fluid-member-state="masked"] .product-card__price {
+  min-width: 5ch;
+  min-height: 1.5em;
+}
+
+[data-fluid-member-storefront][data-fluid-member-state="resolved"] fluid-member-price {
+  color: var(--color-accent, #2464ec);
+  font-weight: 600;
+}
+```
+
+Reserve space for masked prices so a card does not shift when the value arrives. Do not unhide masked shells yourself, and do not set `hidden` on a `guest` branch: the SDK owns both.
+
+## Make the product card member-aware
+
+The Fluid root theme's product card renders its price through `member_price`, so every section that renders the card is member-aware for companies with the feature enabled. If you maintain a custom card, change the price line:
+
+```liquid
+{% comment %} Before {% endcomment %}
+<span class="product-card__price">{{ formatted_product_price }}</span>
+
+{% comment %} After {% endcomment %}
+<span class="product-card__price">{{ product | member_price: formatted_product_price }}</span>
+```
+
+The guest output is byte-identical to the version before the change when the feature is disabled. When it is enabled, the guest still sees the same formatted price, now wrapped in a shell.
+
+## Test your section
+
+Test three viewers before publishing:
+
+1. **Feature disabled.** Render the section and confirm the output matches the version without member helpers. There must be no shells and no section marker.
+2. **Guest, feature enabled.** Confirm the page looks identical to the disabled render. Inspect the HTML and confirm that shells carry the correct guest price and country, that `member` branches carry `hidden`, and that the section wrapper carries the marker.
+3. **Signed-in member, SDK configured.** Confirm that prices swap to the member's price without a visible retail flash, that `<fluid-member-name>` fills, and that the `member` branch replaces the `guest` branch.
+
+Also test a member whose type does not receive member pricing, such as a customer. They should see the retail fallback and their greeting, with no error in the console. On a multi-country storefront, switch countries and confirm each shell carries that country's ISO code and price.
+
+## Troubleshoot a member-aware section
+
+| Symptom | What to check |
+| --- | --- |
+| No shells render and the price is plain text | Confirm the feature is enabled for the company and that you are viewing the company's published theme, not a local file. Confirm the value has country context. |
+| A resource-collection product renders unchanged | Pass a formatted guest price as the filter's argument. Plain product values need one. |
+| The section has shells but no marker | Confirm the shell comes from a member helper and not from hand-written HTML. Only helper output marks a section. |
+| A guest sees the member branch | Confirm the member branch carries `hidden` in the server render. Check theme CSS or scripts that remove `hidden` attributes. |
+| Shells never resolve for a signed-in member | Confirm the SDK is configured for your environment. Until it is, the guest fallback is the expected result. |
+| A member sees the retail price and their name | The member's type does not receive member pricing. Customers buy at retail, so the fallback is the correct value. |
+| A member sees another country's price | Confirm the card passes the product or variant rendered for the active country. The SDK selects by the shell's `data-country-iso`. |
+| The price flashes from retail to member | Confirm you are not unhiding masked shells with your own CSS or JavaScript. |
+| `{% if member %}` renders nothing | Expected. There is no `member` variable on storefront pages. Use `{% member %}…{% else %}…{% endmember %}`. |
+| A price in a client-rendered element never resolves | The helpers work on Liquid output. A price drawn by your own JavaScript needs no shell and is not member-aware. |
+
+## Implementation checklist for coding agents
+
+Treat this page as the member-aware section contract. Read the target theme before editing it, and preserve its existing conventions and content.
+
+- Confirm member storefront is enabled for the target company. Do not infer it from the presence of this guide.
+- Use `member_price`, `{% member_name %}`, and `{% member %}…{% else %}…{% endmember %}` only. Do not hand-write shell elements or state attributes.
+- Pass a product or variant value to `member_price`. Pass the template's formatted guest price as the argument when the template already formats it.
+- Put guest text in the `{% else %}` branch of `{% member %}`. Never rely on `{% member_name %}` for guest output.
+- Do not add a `member` variable, a viewer check, or a schema key. The section marker is derived from output.
+- Do not add the SDK script to the layout. Fluid injects it when it is configured.
+- Style on `data-fluid-member-state` and `data-fluid-member-settled`. Do not override `hidden` on shells or branches.
+- Verify the disabled render is byte-identical to the pre-change render.
+- Verify the guest render with the feature enabled carries shells, the marker, and hidden member branches.
+- Where the SDK is configured, verify a signed-in member sees their price without a retail flash and a customer sees the retail fallback.
+- Report which files changed and which checks ran. Editing a local theme, publishing a theme, and enabling the feature are separate actions; confirm the target and authorization before each remote change.
+
+### Copyable task brief
+
+```text
+Make the product card in this Fluid theme member-aware using the Member-aware sections guide.
+
+First inspect the card component, the sections that render it, and the theme's price styles.
+Confirm that member storefront is enabled for the target company.
+
+Replace the card's formatted price with the member_price filter, passing the product or variant
+the card already renders and the card's existing formatted price as the argument. Add a greeting
+to the home hero using the member block with a member_name shell in the member branch and the
+existing copy in the else branch.
+
+Do not hand-write shell elements, state attributes, or a member variable.
+Do not add the SDK script to the layout.
+Reserve space for masked prices in the card CSS so the layout does not shift.
+
+Verify the disabled render is unchanged and the guest render carries shells and the section
+marker. Where the SDK is configured, verify a signed-in member sees their price without a
+retail flash.
+Do not publish or overwrite an existing theme without explicit authorization.
+Report completed checks and any environment-dependent checks still needed.
+```
+
+Affiliate details use a similar cached-page pattern. See [Affiliate hydration](/themes/affiliate-hydration). For the pages only members can open, see [Member sites](/themes/member-storefront/member-sites).

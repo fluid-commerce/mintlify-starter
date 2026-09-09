@@ -1,0 +1,276 @@
+---
+title: "Build member page templates and layouts"
+sidebarTitle: "Member page templates"
+description: "Create the member layout, the dashboard, the sign-in landing, and custom member pages, and read the member, member_routes, and settings.menu values they receive."
+---
+
+Member pages render on every request for the signed-in member. They are the one place in a theme where Liquid may read who is looking. This page covers the templates that make up a member area, the layout that frames them, and the values they receive.
+
+For who can open which page, see [Member sites](/themes/member-storefront/member-sites). For member values on cached storefront pages, see [Member-aware sections](/themes/member-storefront/member-aware-sections).
+
+<Note>
+  No root theme ships member page templates or a member layout. Until your theme has a `members_dashboard` template, the account subdomain root returns a not-found response for every member.
+</Note>
+
+## Understand the template types
+
+| Template type | Served at | Purpose |
+| --- | --- | --- |
+| `members_dashboard` | `/` | The member's landing page. One template type with a default and variants, like `home_page` |
+| `members_login` | `/login` | The sign-in landing a guest may open. The only member template rendered without a member |
+| `members_page` | `/pages/{slug}` | One template per member page you add to a site |
+| `layouts` template named `member` | — | The frame a site's pages render inside |
+
+A theme export lays them out beside the storefront templates:
+
+```text
+layouts/
+  theme.liquid
+  member.liquid
+members_dashboard/
+  default/
+    index.liquid
+members_login/
+  default/
+    index.liquid
+members_page/
+  rewards/
+    index.liquid
+members_sites.json
+```
+
+Member page templates are created with their pages in the theme editor. The dashboard and sign-in templates are theme content you add once per theme.
+
+## Create the member layout
+
+A site's pages render inside the layout the site names. A `layouts` template named `member` is what a new site chooses when the theme has one, so start there. The layout owns the signed-in chrome: the greeting, the site's navigation, and sign-out.
+
+Create `layouts/member.liquid`:
+
+```liquid
+<!DOCTYPE html>
+<html lang="{{ localization.language.iso_code | default: 'en' }}">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ page_title }} — {{ company.name }}</title>
+    {{ content_for_header }}
+    {{ 'member.css' | asset_url | stylesheet_tag }}
+  </head>
+  <body class="member-area">
+    <header class="member-header">
+      <a class="member-header__brand" href="{{ member_routes.root }}">
+        <img src="{{ company.logo_url }}" alt="{{ company.name }}" />
+      </a>
+
+      <p class="member-header__greeting">
+        Signed in as {{ member.full_name | default: member.email }}
+      </p>
+
+      <form method="post" action="{{ member_routes.sign_out }}">
+        <input type="hidden" name="_method" value="delete" />
+        <input type="hidden" name="authenticity_token" value="{{ member_routes.csrf_token }}" />
+        <button type="submit" class="member-header__sign-out">Sign out</button>
+      </form>
+    </header>
+
+    <div class="member-area__body">
+      <nav class="member-nav" aria-label="{{ settings.menu.title }}">
+        <ul>
+          {% for item in settings.menu.menu_items %}
+            <li>
+              <a
+                href="{{ item.url }}"
+                {% if item.url == request.path %}aria-current="page"{% endif %}
+              >{{ item.title }}</a>
+
+              {% if item.sub_menu_items.size > 0 %}
+                <ul>
+                  {% for child in item.sub_menu_items %}
+                    <li><a href="{{ child.url }}">{{ child.title }}</a></li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </nav>
+
+      <main class="member-main">
+        {{ content_for_layout }}
+      </main>
+    </div>
+  </body>
+</html>
+```
+
+Three parts of this layout are load-bearing:
+
+- `{{ content_for_header }}` carries the page's security token and the account screens runtime. Without it, sign-out and the system screens do not work.
+- The sign-out form posts to `member_routes.sign_out` with the `_method` override set to `delete` and the token from `member_routes.csrf_token`. A plain link cannot sign a member out.
+- The navigation reads `settings.menu`, which is the site's menu in the same shape as a `link_list` setting. A navigation component you wrote for the storefront works here unchanged.
+
+Do not load the storefront's cart or affiliate scripts in this layout unless the member area needs them. Do not use `member_price`, `{% member_name %}`, or `{% member %}` on member pages. Those helpers emit shells for the cached storefront. Here the render knows the member, so read `member` directly.
+
+## Build the dashboard
+
+Create `members_dashboard/default/index.liquid`. The dashboard is the site root, so it is the first page a member sees after signing in:
+
+```liquid
+<section class="member-dashboard">
+  <h1>Welcome back, {{ member.first_name | default: member.full_name }}</h1>
+
+  {% if member.status == "active" %}
+    <p>Your account is in good standing.</p>
+  {% endif %}
+
+  <div class="member-dashboard__links">
+    {% for item in settings.menu.menu_items %}
+      <a class="member-dashboard__card" href="{{ item.url }}">{{ item.title }}</a>
+    {% endfor %}
+  </div>
+</section>
+
+{% section 'member_announcements' %}
+
+{% schema %}
+{
+  "name": "Member dashboard",
+  "settings": []
+}
+{% endschema %}
+```
+
+The dashboard renders inside whatever layout the member's site names. Do not add a `{% layout %}` tag to it or to any other member template. The site decides the frame, and a tag in the template is ignored.
+
+## Build the sign-in landing
+
+Create `members_login/default/index.liquid`. A guest may open this page, so it receives no `member` value and no menu. It receives the sign-in URL to put behind its button:
+
+```liquid
+<section class="member-login">
+  <h1>Sign in to {{ company.name }}</h1>
+  <p>Access your orders, rewards, and messages.</p>
+
+  <a class="member-login__button" href="{{ member_routes.sign_in_url }}">Sign in</a>
+  <a class="member-login__back" href="{{ member_routes.root }}">Back</a>
+</section>
+```
+
+The sign-in URL sends the guest to Fluid's hosted sign-in for your company and returns them to the page they were trying to reach. Nothing redirects a guest through this landing automatically. A guest who opens any other member page goes straight to sign-in. Link to `/login` from the storefront when you want a branded landing in between.
+
+The landing is not indexed by search engines.
+
+## Compose custom pages
+
+Each page you add to a site gets a `members_page` template, created with the page and named after it. Open the page in the theme editor and drag sections onto it as you would on a storefront page. The template can also be edited in Code Mode.
+
+A custom page receives the same values as the dashboard: `member`, `member_routes`, and `settings.menu`. It renders inside its site's layout. Its slug and its site decide where it is served and who can open it, both of which are set on the page rather than in the template. See [Add pages to a site](/themes/member-storefront/member-sites#add-pages-to-a-site).
+
+## Read member page values
+
+Every member page except the sign-in landing receives these values on top of the theme's usual variables.
+
+### The member
+
+| Field | Value |
+| --- | --- |
+| `member.first_name` | The member's first name |
+| `member.last_name` | The member's last name |
+| `member.full_name` | First and last name joined, or whichever is present |
+| `member.email` | The member's email address |
+| `member.status` | The member's activity status in your company |
+
+`member` is a plain value, not an object with methods. Read the fields listed here and nothing else.
+
+### Member routes
+
+| Field | Value |
+| --- | --- |
+| `member_routes.root` | The path of the member area root. `/` on the account subdomain |
+| `member_routes.sign_out` | The path the sign-out form posts to, with the `delete` method override |
+| `member_routes.csrf_token` | The token the sign-out form must send as `authenticity_token` |
+
+The sign-in landing receives `member_routes.sign_in_url` and `member_routes.root` instead.
+
+### The site's menu
+
+`settings.menu` is the resolved menu of the member's site, deep-merged into the theme's settings so everything else under `settings` survives.
+
+| Field | Value |
+| --- | --- |
+| `settings.menu.title` | The menu's title, such as `Reps navigation` |
+| `settings.menu.handle` | The menu's slug, or empty for a derived menu |
+| `settings.menu.menu_items` | An ordered list of items. Each has `title`, `url`, and `sub_menu_items` |
+
+Item URLs are already resolved for the account subdomain. Render them as given. Nothing marks the current page, so compare `item.url` with `request.path` when you need an active state.
+
+## Follow the rendering rules
+
+- Member pages render on every request for the signed-in member. They are never cached and never served by the CDN.
+- Every member page is sent with headers that forbid caching and indexing. The sign-in landing forbids indexing only.
+- A member who matches no site, an unpublished page, and a page in another member's site all return a not-found response. A missing dashboard template returns a not-found response too.
+- The site chooses the layout. A template's own `{% layout %}` tag is ignored.
+- Variants of a member template are chosen by default or region, never by member. Branch on `member` inside one template instead of adding a variant per audience.
+- System screens render as `members_page` templates that Fluid supplies. Your layout frames them; you do not author their body.
+
+## Test your templates
+
+1. Sign in as a member and open the dashboard. Confirm the layout, greeting, and menu render, and that no storefront header appears.
+2. Follow every menu item. Confirm each opens inside the same layout.
+3. Open a custom page and confirm it renders its sections and `member` values.
+4. Submit the sign-out form. Confirm you land on the storefront signed out, and that opening a member page sends you to sign in.
+5. Open `/login` as a guest and confirm the sign-in button leads to Fluid's sign-in and back.
+6. Open a system screen and confirm it renders inside your layout.
+
+## Troubleshoot a member template
+
+| Symptom | What to check |
+| --- | --- |
+| The dashboard returns not found | Confirm the theme has a `members_dashboard` template, the member matches an active site, and member storefront is enabled. |
+| `{{ member.first_name }}` renders empty | Confirm you are on a member page, not the sign-in landing or a storefront page. Confirm the field name is one listed above. |
+| The page wears the storefront header | The site is framed in `theme`. Create `layouts/member.liquid` and pick it in the site's settings. A `{% layout %}` tag in the template does nothing. |
+| Sign-out does nothing or fails | Confirm the form posts with `_method` set to `delete` and sends `member_routes.csrf_token` as `authenticity_token`, and that the layout renders `{{ content_for_header }}`. |
+| The menu is empty | Confirm the site has a menu with items, or that the theme has published pages for the derived menu. Confirm you read `settings.menu.menu_items`. |
+| A system screen renders an empty area | Confirm `{{ content_for_header }}` is in the layout and that the account screens runtime is enabled for the company. |
+| `member_price` or `{% member %}` on a member page renders oddly | Do not use storefront member helpers here. Read `member` directly. |
+
+## Implementation checklist for coding agents
+
+Treat this page as the member template contract. Read the target theme before editing it, and preserve its existing conventions and content.
+
+- Confirm member storefront is enabled for the target company. Do not infer it from the presence of this guide.
+- Create `layouts/member.liquid` with `{{ content_for_header }}`, `{{ content_for_layout }}`, a navigation loop over `settings.menu.menu_items`, and a sign-out form with the `delete` method override and `member_routes.csrf_token`.
+- Create `members_dashboard/default/index.liquid` and `members_login/default/index.liquid`. Put the sign-in URL behind a link in the landing.
+- Read only `member.first_name`, `member.last_name`, `member.full_name`, `member.email`, and `member.status`.
+- Do not add `{% layout %}` tags to member templates. The site owns the frame.
+- Do not use `member_price`, `{% member_name %}`, or `{% member %}` on member pages.
+- Do not hand-write system screen markup. Fluid renders the screens.
+- Do not write member values into shared assets, cached pages, or storefront templates.
+- Verify the dashboard, a custom page, a system screen, sign-out, and the guest sign-in flow.
+- Report which files changed and which checks ran. Editing a theme, publishing it, and enabling the feature are separate actions; confirm the target and authorization before each remote change.
+
+### Copyable task brief
+
+```text
+Build the member area templates for this Fluid theme using the Member page templates guide.
+
+First inspect the theme's existing layout, styling tokens, and navigation component.
+Confirm that member storefront is enabled for the target company.
+
+Create layouts/member.liquid with the signed-in header, a navigation built from
+settings.menu.menu_items, a sign-out form using the delete method override and
+member_routes.csrf_token, content_for_header, and content_for_layout.
+Create the members_dashboard default with a greeting from member.first_name and a section slot,
+and the members_login default with a sign-in link to member_routes.sign_in_url.
+
+Do not add layout tags to member templates.
+Do not use member_price, member_name, or the member block on member pages.
+Reuse the theme's tokens and its existing navigation component where possible.
+
+Verify the dashboard, a custom page, a system screen, sign-out, and the guest sign-in redirect.
+Do not publish or overwrite an existing theme without explicit authorization.
+Report completed checks and any environment-dependent checks still needed.
+```
+
+For the values every storefront template receives, see [Theme variables](/themes/theme-variables). For layouts in general, see the [Developer guide](/themes/developer-guide#layout-file).
