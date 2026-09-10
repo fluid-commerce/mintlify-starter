@@ -1569,3 +1569,10 @@ None. The four claims the first draft got wrong (browser CORS on the checkout
 surface, the order token on confirmation, the staging host, the per-cart sequence)
 were each refuted against code during the adversarial pass and corrected before
 adoption.
+
+
+## Navigation menus: temporary implementation-backed reference
+
+`themes/navigation-menus.mdx` documents the unversioned admin menu API at the user's explicit request, including endpoint payloads and its actual flat `page` / `per_page` pagination. This is a scoped exception to the prose-contract and pagination conventions; it does not change other API surfaces. The checked-in synced specs do not currently expose `/api/menus`, so its registered claims are semantic and cannot yet be mechanically verified against OpenAPI. Do not hand-edit synced artifacts to fill the gap.
+
+Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
