@@ -34,6 +34,14 @@ tags:
   description: |
     Home > Field tab cards. Card 1 (field momentum header) is served
     here; cards 2-5 land in subsequent PRs.
+- name: analytics_subscription_billing
+  description: |
+    Subscription Billing surface — a month of renewals worked day by
+    day, plus that month's failure reporting. Same `reports.view` gate
+    and country scoping as the Home dashboard cards. The day drawer's
+    per-subscription table is not served here; it is a paginated list
+    on `GET /api/subscriptions`, which already accepts `next_bill_date`
+    and `last_failed_at` range filters.
 components:
   securitySchemes:
     bearer_auth:
@@ -59,6 +67,15 @@ components:
         application/json:
           schema:
             "$ref": "#/components/schemas/LegacyForbiddenResponse"
+    NotFound:
+      description: |
+        No renewal matches the `subscription_token` within the requesting
+        company. A token that belongs to another company answers here too
+        rather than `403`, so the caller cannot learn that it exists.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
     Unprocessable:
       description: An Analytics service returned a business-rule failure.
       content:
@@ -69,6 +86,17 @@ components:
       description: |
         The `country` query param is set to an ISO code the requesting
         company is not configured for.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    InvalidRequest:
+      description: |
+        A query parameter the endpoint cannot act on — a `country` the
+        requesting company is not configured for, a `month` that is not
+        `YYYY-MM`, or a `date` that is not `YYYY-MM-DD`. All are caller
+        errors rather than scoping failures, and all render the
+        structured error envelope.
       content:
         application/json:
           schema:
@@ -105,6 +133,75 @@ components:
       schema:
         type: string
         example: America/Denver
+    MonthQueryParam:
+      name: month
+      in: query
+      required: false
+      description: |
+        Calendar month to report on, as `YYYY-MM`. Defaults to the
+        current month. A value that is not this exact shape (or names
+        a month that does not exist, such as `2026-13`) returns `400`
+        rather than being coerced.
+      schema:
+        type: string
+        pattern: "^\\d{4}-\\d{2}$"
+        example: "2026-09"
+    DayDateQueryParam:
+      name: date
+      in: query
+      required: true
+      description: |
+        Calendar date to list, as `YYYY-MM-DD`. Required and not
+        defaulted: the drawer is always opened from a day the operator
+        picked, so a missing date would answer for a different day than
+        the one on screen. A value that is not this exact shape, or one
+        that names a date which does not exist, returns `400` rather
+        than being coerced.
+      schema:
+        type: string
+        pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+        example: "2026-09-17"
+    RenewalTokenQueryParam:
+      name: subscription_token
+      in: query
+      required: true
+      description: |
+        Token of the renewal to report on. A token belonging to another
+        company returns `404` rather than `403` — the caller should not
+        learn that it exists.
+      schema:
+        type: string
+        example: sub_9f3c2a
+    DayPageQueryParam:
+      name: page
+      in: query
+      required: false
+      description: |
+        1-based page number. Defaults to `1`. Values below `1` are read
+        as `1`.
+      schema:
+        type: integer
+        minimum: 1
+        example: 1
+    DayPerPageQueryParam:
+      name: per_page
+      in: query
+      required: false
+      description: |
+        Renewals per page. Defaults to `25` and is capped server-side at
+        `100` — a day drawer is a working list rather than an export,
+        and the band lookup costs one extra query per page whatever its
+        size.
+
+        A larger value is clamped to the cap rather than rejected, so
+        the cap is deliberately not declared as a schema `maximum`:
+        doing so would publish a constraint the endpoint does not
+        enforce. Read `per_page` off the response for the size actually
+        applied.
+      schema:
+        type: integer
+        minimum: 1
+        example: 25
   schemas:
     Meta:
       type: object
@@ -1614,9 +1711,918 @@ components:
       - failed_payments
       - failed_payments_value
       - currency
+    SubscriptionBillingDay:
+      type: object
+      description: |
+        One cell in the month grid. Scheduled and settled figures are
+        kept apart rather than flattened: `scheduled_amount` only means
+        something before a day's charges run, `succeeded_amount` only
+        after. A day that is part-way through carries both.
+      properties:
+        date:
+          type: string
+          format: date
+          example: "2026-09-20"
+        scheduled_count:
+          type: integer
+          minimum: 0
+          description: |
+            Renewals due on this date that automatic billing will still
+            claim.
+        scheduled_amount:
+          "$ref": "#/components/schemas/Money"
+        overdue_count:
+          type: integer
+          minimum: 0
+          description: |
+            Renewals due on this date but aged past
+            `Commerce::Subscription::OVERDUE_LOOKBACK`. Automatic
+            billing never claims these, so they are reported apart
+            from scheduled money rather than as revenue to come.
+        overdue_amount:
+          "$ref": "#/components/schemas/Money"
+        at_risk_count:
+          type: integer
+          minimum: 0
+          description: |
+            Scheduled renewals graded `elevated` or `severe`. The grade
+            is a deterministic read of present dunning state, not a
+            predicted likelihood — no per-renewal score is served.
+        at_risk_amount:
+          "$ref": "#/components/schemas/Money"
+        top_risk_driver:
+          type:
+          - string
+          - "null"
+          description: |
+            The most common risk factor behind the day's at-risk
+            renewals, or `null` when none are graded.
+          enum:
+          - disabled
+          - hard_decline
+          - stale_failure
+          - repeated_declines
+          - dunning_in_flight
+          - prior_failures
+          - null
+          example: prior_failures
+        in_flight_count:
+          type: integer
+          minimum: 0
+          description: |
+            Billing events staged or attempted but not yet resolved.
+            Counted rather than summed, and excluded from both the
+            scheduled and settled totals, so nothing is silently
+            dropped between the two halves of the day.
+        succeeded_count:
+          type: integer
+          minimum: 0
+        succeeded_amount:
+          "$ref": "#/components/schemas/Money"
+        hard_decline_count:
+          type: integer
+          minimum: 0
+          description: |
+            Failures whose event is not retriable under
+            `Commerce::BillingEvent.retriable_failure?` — the dunning
+            chain will not attempt these again.
+        hard_decline_amount:
+          "$ref": "#/components/schemas/Money"
+        soft_decline_count:
+          type: integer
+          minimum: 0
+          description: |
+            Retriable failures that nothing currently has in hand.
+        soft_decline_amount:
+          "$ref": "#/components/schemas/Money"
+        awaiting_retry_count:
+          type: integer
+          minimum: 0
+          description: |
+            Retriable failures whose subscription passes every gate
+            `Commerce::RetryFailedPaymentsJob` applies, so a retry is
+            scheduled.
+        awaiting_retry_amount:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - scheduled_count
+      - scheduled_amount
+      - overdue_count
+      - overdue_amount
+      - at_risk_count
+      - at_risk_amount
+      - top_risk_driver
+      - in_flight_count
+      - succeeded_count
+      - succeeded_amount
+      - hard_decline_count
+      - hard_decline_amount
+      - soft_decline_count
+      - soft_decline_amount
+      - awaiting_retry_count
+      - awaiting_retry_amount
+    SubscriptionBillingTotals:
+      type: object
+      description: |
+        Month-level sums. `renewal_*` rolls scheduled and overdue
+        together; the two questions differ, and a previous month is
+        always read after its own overdue floor has passed, so a
+        month-over-month comparison against `scheduled_*` alone would
+        show nothing there.
+      properties:
+        scheduled_count:
+          type: integer
+          minimum: 0
+        scheduled_amount:
+          "$ref": "#/components/schemas/Money"
+        overdue_count:
+          type: integer
+          minimum: 0
+        overdue_amount:
+          "$ref": "#/components/schemas/Money"
+        renewal_count:
+          type: integer
+          minimum: 0
+          description: Every renewal that fell due, collectable or not.
+        renewal_amount:
+          "$ref": "#/components/schemas/Money"
+        succeeded_count:
+          type: integer
+          minimum: 0
+        succeeded_amount:
+          "$ref": "#/components/schemas/Money"
+        failed_count:
+          type: integer
+          minimum: 0
+        failed_amount:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - scheduled_count
+      - scheduled_amount
+      - overdue_count
+      - overdue_amount
+      - renewal_count
+      - renewal_amount
+      - succeeded_count
+      - succeeded_amount
+      - failed_count
+      - failed_amount
+    SubscriptionBillingCalendarResponse:
+      type: object
+      properties:
+        month:
+          type: string
+          format: date
+          description: First of the month reported.
+          example: "2026-09-01"
+        time_zone:
+          type: string
+          description: |
+            IANA zone the scheduled half was bucketed in — the `tz`
+            that was sent, or `UTC` when it was missing or unknown.
+            Echoed so the grid can label which day boundaries it is
+            drawing. The settled half needs no such note: billing
+            events carry an already-local date.
+          example: America/Denver
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        days:
+          type: array
+          description: |
+            One entry per date in the month, ascending, always the full
+            month. A quiet month returns zero-filled days rather than
+            an empty array, so the grid can tell "nothing happened"
+            from "nothing loaded".
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingDay"
+        totals:
+          "$ref": "#/components/schemas/SubscriptionBillingTotals"
+        previous_totals:
+          "$ref": "#/components/schemas/SubscriptionBillingTotals"
+      required:
+      - month
+      - time_zone
+      - currency
+      - days
+      - totals
+      - previous_totals
+    SubscriptionBillingDeclineReason:
+      type: object
+      properties:
+        label:
+          type: string
+          description: |
+            Category from the same list the Home > Overview recovery
+            card buckets on, or `uncategorised` when nothing matched.
+          example: insufficient funds
+        count:
+          type: integer
+          minimum: 0
+        amount:
+          "$ref": "#/components/schemas/Money"
+        recoverable_count:
+          type: integer
+          minimum: 0
+          description: Those the retry chain would attempt again.
+        recoverable_amount:
+          "$ref": "#/components/schemas/Money"
+        share_of_failures:
+          "$ref": "#/components/schemas/Percentage"
+      required:
+      - label
+      - count
+      - amount
+      - recoverable_count
+      - recoverable_amount
+      - share_of_failures
+    SubscriptionBillingMarket:
+      type: object
+      properties:
+        country_iso:
+          type:
+          - string
+          - "null"
+          description: |
+            `null` only when the Country row has been removed —
+            `commerce_subscriptions.country_id` is NOT NULL.
+          example: US
+        country_name:
+          type:
+          - string
+          - "null"
+          example: United States
+        resolved_count:
+          type: integer
+          minimum: 0
+        amount:
+          "$ref": "#/components/schemas/Money"
+        failure_count:
+          type: integer
+          minimum: 0
+        failure_rate:
+          "$ref": "#/components/schemas/Percentage"
+        top_decline_reason:
+          type:
+          - string
+          - "null"
+          description: |
+            Withheld (`null`) below the market sample floor — naming a
+            dominant reason off a handful of charges says more than the
+            data supports.
+          example: insufficient funds
+      required:
+      - country_iso
+      - country_name
+      - resolved_count
+      - amount
+      - failure_count
+      - failure_rate
+      - top_decline_reason
+    SubscriptionBillingTimingBucket:
+      type: object
+      properties:
+        label:
+          type: string
+          example: 12:00-17:59
+        resolved_count:
+          type: integer
+          minimum: 0
+        success_rate:
+          oneOf:
+          - "$ref": "#/components/schemas/Percentage"
+          - type: "null"
+          description: |
+            `null` when `sufficient_sample` is false.
+        sufficient_sample:
+          type: boolean
+          description: |
+            False means too few charges landed in the bucket to report
+            a rate, so the frontend shows "not enough data" rather than
+            a figure derived from a handful.
+      required:
+      - label
+      - resolved_count
+      - success_rate
+      - sufficient_sample
+    SubscriptionBillingTrendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          example: "2026-09-20"
+        revenue:
+          "$ref": "#/components/schemas/Money"
+      required:
+      - date
+      - revenue
+    SubscriptionBillingBreakdownResponse:
+      type: object
+      properties:
+        month:
+          type: string
+          format: date
+          example: "2026-09-01"
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        resolved_count:
+          type: integer
+          minimum: 0
+          description: |
+            Charges that ran and reached an outcome. Staged and
+            attempted events are excluded — they have no outcome yet,
+            and counting them would deflate every rate here.
+        succeeded_count:
+          type: integer
+          minimum: 0
+        failure_count:
+          type: integer
+          minimum: 0
+        failure_rate:
+          "$ref": "#/components/schemas/Percentage"
+        recoverable_amount:
+          "$ref": "#/components/schemas/Money"
+        lost_amount:
+          "$ref": "#/components/schemas/Money"
+        daily_trend:
+          type: array
+          description: Cleared money per date, zero-filled across the month.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingTrendPoint"
+        decline_reasons:
+          type: array
+          description: Ordered by count descending.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingDeclineReason"
+        markets:
+          type: array
+          description: Ordered by money descending.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingMarket"
+        hour_bands:
+          type: array
+          description: |
+            Four six-hour windows partitioning the day, in UTC. These
+            describe when the billing pipeline ran a charge, which is a
+            property of the platform rather than of the reader — unlike
+            the calendar's scheduled half.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingTimingBucket"
+        month_parts:
+          type: array
+          description: Thirds of the month.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingTimingBucket"
+      required:
+      - month
+      - currency
+      - resolved_count
+      - succeeded_count
+      - failure_count
+      - failure_rate
+      - recoverable_amount
+      - lost_amount
+      - daily_trend
+      - decline_reasons
+      - markets
+      - hour_bands
+      - month_parts
+    SubscriptionBillingDayEntry:
+      type: object
+      description: |
+        One renewal on the day. A scheduled renewal carries its risk
+        band; one that has already run carries `outcome` instead. Both
+        carry the band, because a settled failure's factors are what
+        say whether a retry alone is enough.
+      properties:
+        subscription_id:
+          type: integer
+          description: Primary key of the subscription.
+        subscription_token:
+          type: string
+          description: Token the drawer links and acts on.
+        customer_name:
+          type:
+          - string
+          - 'null'
+          description: Customer display name, null when unresolved.
+        customer_email:
+          type:
+          - string
+          - 'null'
+          description: Customer email, null when unresolved.
+        variant_name:
+          type:
+          - string
+          - 'null'
+          description: Product variant name, null when the variant is discarded.
+        quantity:
+          type: integer
+          description: Units on the renewal.
+        amount:
+          type: string
+          description: |
+            Charge as `price * quantity`, converted into `currency`. A
+            decimal string, matching every other analytics amount — the
+            wire keeps precision the client rounds at display time.
+          example: '8.92'
+        currency:
+          type: string
+          description: ISO code every amount on the response is quoted in.
+          example: USD
+        status:
+          type: string
+          description: The subscription's status.
+          example: active
+        occurred_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: |
+            When the charge ran, for a settled renewal, or when it is due,
+            for a scheduled one. Both are real times rather than one
+            standing in for the other, which is what lets the drawer's
+            hour-of-day view mean something.
+        settled:
+          type: boolean
+          description: Whether a charge has already run on this date.
+        outcome:
+          type:
+          - string
+          - 'null'
+          enum:
+          - succeeded
+          - hard_decline
+          - soft_decline
+          - awaiting_retry
+          - in_flight
+          - null
+          description: |
+            What happened, for a settled renewal; null for one still
+            scheduled. `awaiting_retry` outranks the other two failure
+            buckets because it describes the subscription now, while
+            they describe the charge that ran.
+        decline_reason:
+          type:
+          - string
+          - 'null'
+          description: Gateway wording for a failed charge, else null.
+        risk_level:
+          type: string
+          enum:
+          - none
+          - elevated
+          - severe
+          description: |
+            Deterministic grade of present dunning state — not a
+            predicted likelihood, which nothing in the platform
+            produces. Graded by the same classifier the month grid
+            folds into its at-risk figures, so a row and the cell that
+            opened it cannot disagree.
+        risk_factors:
+          type: array
+          description: What produced the level, most significant first.
+          items:
+            type: string
+            enum:
+            - disabled
+            - hard_decline
+            - stale_failure
+            - repeated_declines
+            - dunning_in_flight
+            - prior_failures
+        awaiting_retry:
+          type: boolean
+          description: |
+            Whether the dunning chain has this renewal in hand. Mirrors
+            the gates the retry cron applies before dispatching.
+      required:
+      - subscription_id
+      - subscription_token
+      - customer_name
+      - customer_email
+      - variant_name
+      - quantity
+      - amount
+      - currency
+      - status
+      - occurred_at
+      - settled
+      - outcome
+      - decline_reason
+      - risk_level
+      - risk_factors
+      - awaiting_retry
+    SubscriptionBillingDayProduct:
+      type: object
+      description: One product's share of a day.
+      properties:
+        variant_id:
+          type: integer
+          description: Variant primary key.
+        name:
+          type:
+          - string
+          - 'null'
+          description: Variant display name, null when the variant is discarded.
+        count:
+          type: integer
+          description: Renewals on this variant.
+        amount:
+          type: string
+          description: Their money, in the response currency.
+          example: '476.0'
+      required:
+      - variant_id
+      - name
+      - count
+      - amount
+    SubscriptionBillingDaySummary:
+      type: object
+      description: |
+        The day as a whole, independent of which page was requested —
+        computed over the day's full scope, so paging never changes what
+        these figures describe.
+
+        Two figures the prototype's day panel showed are absent rather
+        than estimated. A count of scheduled smart retries has no source:
+        billing events carry no retry marker, and the only real fact is
+        whether a retry is scheduled right now, which is per renewal.
+        New against returning is split per *customer* and not per
+        renewal, so it does not sum to `renewal_count`.
+      properties:
+        renewal_count:
+          type: integer
+          description: Renewals on the day.
+        average_amount:
+          type: string
+          description: |
+            Mean charge, in the response currency. Converted once per
+            currency rather than per renewal, so a mixed-currency day does
+            not accumulate rounding. `"0.0"` for an empty day.
+          example: '238.0'
+        new_customer_count:
+          type: integer
+          description: |
+            Customers with no cleared charge before this day. A renewal
+            with no member counts here — there is no history to find.
+        returning_customer_count:
+          type: integer
+          description: |
+            Customers who had a charge clear before this day. Measured
+            before the day rather than before the renewal: a charge
+            earlier the same morning does not make someone a returning
+            customer by lunchtime.
+        top_products:
+          type: array
+          description: Biggest money first, capped at five.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingDayProduct"
+      required:
+      - renewal_count
+      - average_amount
+      - new_customer_count
+      - returning_customer_count
+      - top_products
+    SubscriptionBillingDayResponse:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: The date the roster covers.
+        time_zone:
+          type: string
+          description: |
+            Zone the scheduled half was bucketed in, echoed back so the
+            drawer can label itself. The settled half ignores it:
+            billing events carry an already-local date.
+          example: America/Denver
+        currency:
+          type: string
+          description: ISO code every amount on the response is quoted in.
+          example: USD
+        page:
+          type: integer
+          description: 1-based page number this payload represents.
+        per_page:
+          type: integer
+          description: Page size actually applied, after clamping.
+        total_count:
+          type: integer
+          description: Renewals on the day across every page.
+        summary:
+          "$ref": "#/components/schemas/SubscriptionBillingDaySummary"
+        entries:
+          type: array
+          items:
+            "$ref": "#/components/schemas/SubscriptionBillingDayEntry"
+      required:
+      - date
+      - time_zone
+      - currency
+      - page
+      - per_page
+      - total_count
+      - summary
+      - entries
+    SubscriptionBillingRenewalHistoryResponse:
+      type: object
+      description: |
+        One renewal's history, for the day drawer's expanded row.
+
+        Two figures the prototype's card showed are absent rather than
+        estimated. A count of scheduled smart retries has no source —
+        `commerce_billing_events` carries no retry marker, so after the
+        fact a retry is indistinguishable from a first attempt, and
+        `retry_scheduled_at` is the real fact instead. And no per-renewal
+        clearance likelihood is served; nothing in the platform produces
+        one, and the row's risk band says what is actually known.
+      properties:
+        subscription_id:
+          type: integer
+          description: Primary key of the subscription.
+        subscription_token:
+          type: string
+          description: Token, for the link out to the subscription.
+        currency:
+          type: string
+          description: ISO code every amount on the response is quoted in.
+          example: USD
+        renewal_amount:
+          type: string
+          description: What this renewal charges, as `price * quantity`.
+          example: '8.92'
+        product_name:
+          type:
+          - string
+          - 'null'
+          description: Variant display name, null when discarded.
+        quantity:
+          type: integer
+          description: Units on the renewal.
+        billing_frequency:
+          type:
+          - string
+          - 'null'
+          description: Human phrasing of the plan's interval.
+          example: 1 month
+        market_name:
+          type: string
+          description: |
+            Country the renewal bills in.
+            `commerce_subscriptions.country_id` is NOT NULL, so a renewal
+            always has exactly one market.
+          example: United Kingdom
+        market_iso:
+          type: string
+          description: ISO alpha-2 of the billing country.
+          example: GB
+        paid_to_date:
+          type: string
+          description: |
+            Money collected by this subscription's successful orders,
+            through the same `Commerce::Order.successful` gate the rest of
+            the app reads. Summed as `orders.amount_in_base` and converted
+            once, because orders carry no currency of their own.
+          example: '4.46'
+        order_count:
+          type: integer
+          description: Successful orders behind `paid_to_date`.
+        first_order_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Earliest successful order, or null when there are none.
+        last_order_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Most recent successful order, or null.
+        lifetime_value:
+          type: string
+          description: "`paid_to_date` plus this renewal."
+          example: '13.38'
+        failed_charge_count:
+          type: integer
+          description: Failed billing events on this subscription, all time.
+        recovered_count:
+          type: integer
+          description: |
+            Billed dates that held a failure and then cleared. Counted per
+            date rather than per event, so a day that retried three times
+            before clearing is one recovery rather than three. Named for
+            what it measures — a day that turned around — because billing
+            events cannot say what turned it around.
+        retry_scheduled_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the dunning chain will next attempt, or null.
+        active_subscription_count:
+          type: integer
+          description: |
+            Live subscriptions this customer holds, including this one.
+            Scoped to the member, which is the association a subscription
+            carries; a renewal with no member reports `1`.
+      required:
+      - subscription_id
+      - subscription_token
+      - currency
+      - renewal_amount
+      - product_name
+      - quantity
+      - billing_frequency
+      - market_name
+      - market_iso
+      - paid_to_date
+      - order_count
+      - first_order_at
+      - last_order_at
+      - lifetime_value
+      - failed_charge_count
+      - recovered_count
+      - retry_scheduled_at
+      - active_subscription_count
 security:
 - bearer_auth: []
 paths:
+  "/api/v202604/analytics/subscription_billing/calendar":
+    get:
+      operationId: getAnalyticsSubscriptionBillingCalendar
+      tags:
+      - analytics_subscription_billing
+      summary: Subscription Billing month grid (scheduled, at risk, settled)
+      description: |
+        Returns one row per date in the requested month — what is
+        scheduled to bill, how much of it is graded at risk, and what
+        already settled — plus the previous month's totals for the
+        month-over-month figure. Both months come from one service call
+        over a single widened range, so the comparison cannot be
+        assembled from two reads of different data.
+
+        Two halves, two sources. Days still to come read
+        `commerce_subscriptions.next_bill_date`, bucketed in the `tz`
+        the operator is reading in (echoed back as `time_zone`). Days
+        that have run read `commerce_billing_events`, whose
+        `local_billed_date` is already local.
+
+        Money is `price * quantity`, which is what a renewal charges.
+        Note that the Home > Overview subscription-engine and
+        payment-recovery cards still sum bare `price`, so they read low
+        against this endpoint for any fleet carrying `quantity > 1`
+        until that is corrected.
+
+        Renewals are graded at risk by a deterministic read of dunning
+        state — prior declines, hard declines, staleness, whether the
+        retry chain has them in hand. No per-renewal likelihood is
+        served; nothing in the platform produces one.
+      parameters:
+      - "$ref": "#/components/parameters/MonthQueryParam"
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      - "$ref": "#/components/parameters/TimeZoneQueryParam"
+      responses:
+        '200':
+          description: Month grid payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionBillingCalendarResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/subscription_billing/breakdown":
+    get:
+      operationId: getAnalyticsSubscriptionBillingBreakdown
+      tags:
+      - analytics_subscription_billing
+      summary: Subscription Billing month reporting (reasons, markets, timing)
+      description: |
+        Returns the requested month's failure reporting: decline
+        reasons, market splits, timing buckets, and the daily revenue
+        trend.
+
+        Reasons are bucketed through the same category list the Home >
+        Overview recovery card uses, and recoverability is
+        `Commerce::BillingEvent.retriable_failure?` — the predicate the
+        retry cron itself gates on — so nothing is reported as
+        recoverable that the chain would refuse to attempt.
+
+        Rates are withheld rather than estimated below a sample floor:
+        a timing bucket reports `sufficient_sample: false` and a null
+        rate, and a thin market reports a null `top_decline_reason`.
+
+        Cohort retention is deliberately absent. It has no source in
+        the platform today and is tracked as its own phase.
+      parameters:
+      - "$ref": "#/components/parameters/MonthQueryParam"
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: Month reporting payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionBillingBreakdownResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/subscription_billing/day":
+    get:
+      operationId: getAnalyticsSubscriptionBillingDay
+      tags:
+      - analytics_subscription_billing
+      summary: Subscription Billing one day's renewals, each with its risk band
+      description: |
+        Returns one page of a single day's renewals for the day drawer.
+
+        A day has two kinds of row and a subscription can be either: one
+        still scheduled to bill on the date, or one whose charge already
+        ran. Today has both. A renewal that qualifies as both — billed
+        early and already scheduled again — is reported as settled,
+        because an outcome that exists outranks a grade that predicts
+        one.
+
+        The scheduled half repeats the billing pipeline's own
+        eligibility gates, so a renewal automatic billing will never
+        claim is not listed as one the operator can expect to collect.
+        The settled half applies none of them: what ran, ran.
+
+        Every row carries the risk band
+        `Analytics::RenewalRiskBands` gave it — the same classifier
+        behind the month grid's at-risk figures. The band is served
+        rather than left to the caller precisely so a client cannot
+        keep a second copy of those rules and drift from the cell that
+        opened the drawer.
+      parameters:
+      - "$ref": "#/components/parameters/DayDateQueryParam"
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      - "$ref": "#/components/parameters/TimeZoneQueryParam"
+      - "$ref": "#/components/parameters/DayPageQueryParam"
+      - "$ref": "#/components/parameters/DayPerPageQueryParam"
+      responses:
+        '200':
+          description: One page of the day's renewals
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionBillingDayResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/subscription_billing/renewal_history":
+    get:
+      operationId: getAnalyticsSubscriptionBillingRenewalHistory
+      tags:
+      - analytics_subscription_billing
+      summary: Subscription Billing one renewal's payment history
+      description: |
+        Returns one renewal's history for the day drawer's expanded row:
+        what the customer has actually paid, how often a charge has
+        failed, and how often a failed day turned around.
+
+        This replaces a browser-side generator, which meant the card
+        explaining why a renewal was flagged was itself invented.
+      parameters:
+      - "$ref": "#/components/parameters/RenewalTokenQueryParam"
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      responses:
+        '200':
+          description: The renewal's history
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionBillingRenewalHistoryResponse"
+        '400':
+          "$ref": "#/components/responses/InvalidRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
   "/api/v202604/analytics/dashboard/countries":
     get:
       operationId: getAnalyticsDashboardCountries
