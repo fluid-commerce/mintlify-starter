@@ -182,9 +182,14 @@ components:
               const: payer_details_sync_failed
     CartTotalChangedErrorResponse:
       description: |
-        The cart no longer says the total the client sent as `expected_total`.
-        Nothing was charged. `meta.cart` is the current total, so the client
-        can show the shopper what changed before asking again.
+        The cart no longer says the total the shopper agreed to, so nothing
+        was charged. That total is the `expected_total` the client sent, or,
+        where the shopper approved the amount inside a wallet, the amount on
+        the approved order. So this is reachable even when the client sent no
+        `expected_total`, and the `expected_total` error key names the
+        comparison rather than the request field. `meta.cart` is the current
+        total, so the client can show the shopper what changed before asking
+        again.
       type: object
       additionalProperties: false
       required:
@@ -542,6 +547,34 @@ components:
         authorization_id:
           type: string
           description: PayPal authorization id for the authorized funds.
+        authorized_total:
+          type: object
+          additionalProperties: false
+          description: |
+            The amount PayPal now holds for this order. Present whenever the
+            authorize response carried a readable amount.
+
+            Clients re-pin the total they show the shopper to this before
+            completing checkout, so that pin is the authorization itself rather
+            than a later read of a cart anything could have repriced in
+            between. That matters most where the shopper agreed to a total the
+            client never rendered: an express wallet order repriced by a
+            server-side shipping callback is approved inside the wallet, and
+            the browser's own figure predates it.
+          required:
+          - amount_total
+          - currency_code
+          properties:
+            amount_total:
+              type: string
+              description: |
+                Decimal string in the currency's major unit, no sign or
+                exponent. The same shape `expected_total` takes on the request.
+              example: "141.74"
+            currency_code:
+              type: string
+              description: ISO 4217 code of the authorized amount.
+              example: USD
         meta:
           "$ref": "#/components/schemas/Meta"
     PaypalShippingChangeResponse:
@@ -1256,6 +1289,13 @@ paths:
                     priced first. When it no longer matches, the response is
                     `409` with `meta.code` = `cart_total_changed` and nothing is
                     authorized.
+
+                    A fallback rather than the primary source. The approved
+                    PayPal order carries its own amount, that is the total the
+                    shopper consented to, and where the two disagree PayPal's
+                    is the one the cart is held to. Omitting the pair therefore
+                    does not skip the check; it only gives up the fallback for
+                    an order whose amount cannot be read.
                   example: "141.74"
                 expected_currency:
                   type: string
@@ -1288,6 +1328,9 @@ paths:
                     success: true
                     order_id: 5O190127TN364715T
                     authorization_id: 3AY52541TU409455V
+                    authorized_total:
+                      amount_total: "141.74"
+                      currency_code: USD
                     meta:
                       request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
                       timestamp: '2026-04-01T12:00:00Z'
@@ -1305,10 +1348,12 @@ paths:
                 "$ref": "#/components/schemas/ErrorResponse"
         '409':
           description: |
-            The cart no longer says the total the client sent as
-            `expected_total` (`meta.code` = `cart_total_changed`). Nothing was
-            authorized. `meta.cart` carries the current total; refetch the
-            cart, show the shopper the new total, and authorize again with it.
+            The repriced cart no longer says the total the shopper consented
+            to (`meta.code` = `cart_total_changed`). Nothing was authorized.
+            Reachable whether or not the request carried `expected_total`,
+            because the approved order's own amount is checked when the pair is
+            absent. `meta.cart` carries the current total; refetch the cart,
+            show the shopper the new total, and authorize again with it.
           content:
             application/json:
               schema:
