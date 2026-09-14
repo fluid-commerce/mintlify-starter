@@ -1499,8 +1499,8 @@ Durable authoring boundaries:
 
 ## Member storefront — theme-author contract
 
-The four pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
-`member-sites`, `member-page-templates`) describe the member storefront feature: the
+The six pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-sites`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
 `member_price` filter, the `member_name` and `member` tags, the section marker and SDK
 resolution states, member sites and their rules, member page templates, and the member
 layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
@@ -1513,8 +1513,8 @@ storefront Liquid filters and tags, the shell builder and detector, the section 
 wrapper marker, the member sites and pages models and managers, the site resolver, the
 navigation builder, the system screens catalogue, the member sites manifest and
 restorer, and the `Site::Members` controllers with their tests in `fluid`. Browser
-evidence is the `member-storefront-sdk` and `account-screens` packages in `fluid-mono`.
-Re-verify changed behavioral claims against both repositories.
+evidence is the `member-storefront-sdk` and `account-screens` packages, now in the
+Fluid monorepo. Re-verify changed behavioral claims against their current owners.
 
 Durable authoring boundaries:
 
@@ -1531,9 +1531,25 @@ Durable authoring boundaries:
 - The three system screens (Messaging, Contacts, My Site) are documented as Fluid-rendered
   and dependent on the account screens runtime being enabled for the company. The
   provisioning mechanism and its administrative tooling are deliberately omitted.
-- The member value on member pages is documented as exactly `first_name`, `last_name`,
-  `full_name`, `email`, and `status`. Do not add fields without a matching change in the
-  member scope variables.
+- The profile reference follows `MemberProfileDrop`'s allowlist: names, email, status,
+  avatar, bio, language and member type display fields. Media, content pages, playlists
+  and entries follow `MemberContentDrop`, `MemberContentCollectionDrop`,
+  `MemberContentItemDrop`, `ContentReader` and `ContentPagination`. No private data is
+  supplied to cached storefront renders or synthetic builder previews.
+- These Liquid collections use bounded numeric navigation, not the REST API cursor
+  contract. Document their actual `member_*_page`/`member_*_limit` query names; do not
+  apply the REST pagination terminology rule to them. Limits and batch numbers are
+  1–100, default size 25; size means the current batch, not a global total.
+- Authentication changes depend on fluid#22590 deployment. The guide's warning and
+  rollout instructions are deliberate. Both hosts use GET `/auth/sign_in` and
+  `/auth/sign_out`; `/login` and the themed login controller are removed. Configured
+  auth origins remain unchanged. Public route values are viewer-independent.
+- GET logout intentionally accepts cross-site/prefetch logout. It clears the current
+  host cookie and revokes company-scoped member sockets, not the auth provider session
+  or another host's cookie. Do not describe automatic storefront/account session sharing.
+- Replaced obsolete themed-login and CSRF-form claims rather than preserving their old
+  quotes. New variable and authentication claims are semantic: the checker verifies
+  documentation integrity, while Rails integration tests verify the runtime contract.
 - Sign-in is documented as Fluid's hosted sign-in with a return path, a 30-day signed
   HTTP-only session, and per-request membership re-checks. Token formats, cookie names,
   and the redemption endpoint stay out of the public pages.
