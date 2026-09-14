@@ -13,13 +13,15 @@ info:
 
     **The cart token in the URL scopes cart access** — creating a cart, adding
     items, applying a discount, and completing a cart need no bearer token.
-    Among the cart operations, a Bearer token is required only for
+    Among the cart operations, a Bearer token is required for
     `carts/{cart_token}/sync`, `carts/{cart_token}/volume_rep`, and
-    `carts/{cart_token}/discount/manual`. Off the cart, a token is required for
-    everything under `customers/me` and `subscriptions`, and for the store and
-    directory lookups (`store/config`, `store/languages`, `reps`, `users`) and
-    `subscription_bundles`. `store/countries` accepts a token but does not
-    require one — it returns the same list either way.
+    `carts/{cart_token}/discount/manual`. It is also required conditionally when
+    `PATCH carts/{cart_token}` selects an enrollment target with
+    `member_type_id`; profile-only PATCH requests remain public. Off the cart, a
+    token is required for everything under `customers/me` and `subscriptions`,
+    and for the store and directory lookups (`store/config`, `store/languages`,
+    `reps`, `users`) and `subscription_bundles`. `store/countries` accepts a
+    token but does not require one — it returns the same list either way.
 
     **If you are using the `@fluid-app` FairShare SDK in a theme or storefront,
     you are not calling this surface** — the SDK calls the Fluid Public SDK API
@@ -11453,17 +11455,32 @@ paths:
       - carts
       operationId: checkout_v2026_04_update_cart
       description: |
-        Updates buyer-level attributes on the cart: `email`, `phone`, the
-        `email_marketing`/`sms_marketing` opt-ins, and `auto_apply_points`. Uses
-        PATCH semantics, so only the keys you send change. Access is scoped by the
-        `cart_token` in the path, and the endpoint itself does not require
-        authentication. In Fluid's recommended
+        Performs exactly one of two operations: update buyer-level profile
+        attributes (`email`, `phone`, the `email_marketing`/`sms_marketing`
+        opt-ins, and `auto_apply_points`), or select the enrollment cart's target
+        member type with `member_type_id`. A request combining the target with any
+        profile field is rejected with `422` and writes nothing.
+
+        Profile-only updates use PATCH semantics and remain public, scoped by the
+        `cart_token` in the path. Target-only updates require either a company API
+        token whose API-token role grants `members.manage`, or an admin-effective
+        membership credential whose assigned role grants `members.manage`. The
+        authenticated company must own the cart. Customer and native-member JWTs
+        cannot select the target.
+
+        Credential authentication and principal authorization (`401`/`403`) are
+        evaluated before mixed-payload validation. An unauthenticated request
+        combining `member_type_id` with a profile field therefore returns `401`,
+        not `422`.
+
+        In Fluid's recommended
         server-side integration you send a company bearer token (`Authorization:
         Bearer <company_token>`) on every cart request; it is optional at the
         endpoint but drives cart attribution and wallet resolution for companies
-        using isolated payment tokens (see the Headless Commerce guide). Returns
-        `422` on validation failure and `410` when the cart has already been
-        completed (locked to an order).
+        using isolated payment tokens (see the Headless Commerce guide). Target
+        mutation returns `409` while checkout holds a live lock lease or an
+        enrollment claim is in progress. Returns `422` on validation failure and
+        `410` when the cart has already been completed (locked to an order).
       parameters:
       - name: cart_token
         in: path
@@ -11476,6 +11493,24 @@ paths:
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
           description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '401':
+          description: A target-only update did not include a valid bearer credential
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The target credential, role, permission, or tenant is not authorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: Checkout holds the cart lock, or an enrollment claim is in progress
           content:
             application/json:
               schema:
@@ -11502,27 +11537,45 @@ paths:
                   email: dana.lee@example.com
                   phone: "+13105550142"
                   email_marketing: true
+              enrollment_target:
+                summary: Select an enrollment target with an authorized bearer credential
+                value:
+                  member_type_id: 22c58158-7f6c-4f33-a033-32e259941684
             schema:
-              type: object
-              additionalProperties: false
-              properties:
-                email:
-                  type: string
-                  description: Customer email
-                phone:
-                  type: string
-                  description: Customer phone
-                email_marketing:
-                  type: boolean
-                  description: Email marketing opt-in
-                sms_marketing:
-                  type: boolean
-                  description: SMS marketing opt-in
-                auto_apply_points:
-                  type: boolean
-                  description: Apply the customer's reward points automatically on
-                    subscription renewals created from this cart
-      security: []
+              oneOf:
+              - title: Profile update
+                type: object
+                additionalProperties: false
+                properties:
+                  email:
+                    type: string
+                    description: Customer email
+                  phone:
+                    type: string
+                    description: Customer phone
+                  email_marketing:
+                    type: boolean
+                    description: Email marketing opt-in
+                  sms_marketing:
+                    type: boolean
+                    description: SMS marketing opt-in
+                  auto_apply_points:
+                    type: boolean
+                    description: Apply the customer's reward points automatically on
+                      subscription renewals created from this cart
+              - title: Enrollment target update
+                type: object
+                required:
+                - member_type_id
+                additionalProperties: false
+                properties:
+                  member_type_id:
+                    type: string
+                    format: uuid
+                    description: An active, non-admin member type owned by the cart's company
+      security:
+      - bearer_auth: []
+      - {}
   "/api/checkout/v2026-04/carts/{cart_token}/address":
     post:
       summary: Set cart address
