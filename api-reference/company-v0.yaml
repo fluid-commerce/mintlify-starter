@@ -9012,6 +9012,88 @@ components:
             - integer
             - 'null'
           minItems: 1
+    BulkRetrySubscriptionsRequestBody:
+      description: The subscription tokens to retry.
+      type: object
+      additionalProperties: false
+      required:
+      - tokens
+      properties:
+        tokens:
+          description: |
+            Subscription tokens. Duplicates are collapsed before the batch runs,
+            and the deduplicated count is what the maximum is applied to.
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+          example:
+          - sb_primex_active_001
+          - sb_primex_past_due_002
+    BulkRetrySubscriptionsSkippedToken:
+      description: A subscription that was found but could not take a retry.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - reason
+      - error
+      properties:
+        token:
+          type: string
+          description: The subscription token.
+        reason:
+          type: string
+          description: Why the retry was passed over.
+          enum:
+          - not_past_due
+          - billing_date_not_arrived
+          - billing_cycle_limit
+          - recurring_payment_stopped
+        error:
+          type: string
+          description: The same reason, phrased for an operator to read.
+    BulkRetrySubscriptionsFailedToken:
+      description: A token no subscription of the caller's answers to.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - error
+      properties:
+        token:
+          type: string
+          description: The token as it was sent.
+        error:
+          type: string
+          description: Why the token could not be acted on.
+    BulkRetrySubscriptionsResponse:
+      description: One entry per token sent, across three lists.
+      type: object
+      required:
+      - queued_tokens
+      - skipped_tokens
+      - failed_tokens
+      - meta
+      properties:
+        queued_tokens:
+          description: Subscriptions a retry is now in hand for.
+          type: array
+          items:
+            type: string
+        skipped_tokens:
+          description: Subscriptions passed over, each carrying why.
+          type: array
+          items:
+            "$ref": "#/components/schemas/BulkRetrySubscriptionsSkippedToken"
+        failed_tokens:
+          description: Tokens that resolved to no subscription of the caller's.
+          type: array
+          items:
+            "$ref": "#/components/schemas/BulkRetrySubscriptionsFailedToken"
+        meta:
+          "$ref": "#/components/schemas/Meta"
     SendOrderInvoiceEmailResponse200ApplicationJsonSchema:
       type:
       - object
@@ -15367,6 +15449,12 @@ components:
                 minimum: 0
                 description: Number of successful billing cycles recorded for the subscription.
                 example: 3
+              never_billed:
+                type:
+                - boolean
+                - 'null'
+                description: Whether the subscription has never taken a successful payment, meaning its first charge failed and none has settled since. Such a subscription is a provisioning failure rather than a dunning case, and no retry cadence recovers it. Null when the surface did not resolve it, which is not the same as false.
+                example: false
               failure_reason:
                 type:
                 - string
@@ -30127,6 +30215,61 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/BulkCancelSubscriptionsRequestBodyApplicationJsonSchema"
+        required: true
+  "/api/subscriptions/bulk_retry":
+    post:
+      summary: Bulk retry subscriptions
+      description: |
+        Queue an immediate retry on each of a set of past-due subscriptions, for the
+        Subscription Billing day drawer's bulk retry.
+
+        Every token is answered. A token is queued when a retry is now in hand for it,
+        skipped when the subscription is known but cannot take one — with the reason —
+        or failed when no subscription of that token belongs to the caller. A skip is
+        not an error: a renewal that is not past due, is not due yet, or sits on a
+        payment method the processor told us to stop charging is reported as passed
+        over rather than as a fault, so an operator can see which of a day's renewals
+        will not be charged.
+
+        Retrying the same subscription twice in quick succession queues one charge.
+        The repeat is still reported as queued, because a retry is in hand for it.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_bulk_retry_subscriptions
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Every token answered as queued, skipped, or failed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BulkRetrySubscriptionsResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: The caller lacks the subscriptions update permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '422':
+          description: |
+            The batch was refused before any renewal was touched — no tokens, more
+            tokens than one batch carries, or billing paused for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BulkRetrySubscriptionsRequestBody"
         required: true
   "/api/subscriptions/send_invoice_email":
     post:
