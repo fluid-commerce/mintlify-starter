@@ -9021,8 +9021,10 @@ components:
       properties:
         tokens:
           description: |
-            Subscription tokens. Duplicates are collapsed before the batch runs,
-            and the deduplicated count is what the maximum is applied to.
+            Subscription tokens. The maximum counts the array as submitted, so
+            `maxItems` and the server's own refusal agree; duplicates are
+            collapsed after that bound is applied and each customer is answered
+            once.
           type: array
           minItems: 1
           maxItems: 500
@@ -9121,6 +9123,108 @@ components:
           type: string
           format: date
           example: '2026-09-14'
+    PaymentFailedEmailsRequestBody:
+      description: Who to tell, and which day's failure the mail is about.
+      type: object
+      additionalProperties: false
+      required:
+      - tokens
+      - renewal_date
+      properties:
+        tokens:
+          description: |
+            Subscription tokens. Duplicates are collapsed before the batch runs,
+            and the deduplicated count is what the maximum is applied to.
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+          example:
+          - sb_primex_active_001
+        renewal_date:
+          description: |
+            The renewal date being worked, as `YYYY-MM-DD`. A subscription with no
+            failed charge on this date is skipped, so the caller cannot tell a
+            customer about a failure they did not have.
+          type: string
+          format: date
+        resend:
+          description: |
+            Whether to tell customers who have already been told, either by the
+            dunning pipeline or by an earlier operator batch. Defaults to `false`,
+            so a caller that omits it cannot mail anyone twice.
+
+            When `true`, only the `already_noticed` and `already_emailed` skips are
+            waived. Every other skip still applies: a subscription with no failed
+            charge on the date, a customer with no address, and a company with the
+            mail switched off are passed over either way.
+          type: boolean
+          default: false
+          example: false
+    PaymentFailedEmailsSkippedToken:
+      description: A customer who must not be mailed.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - reason
+      - error
+      properties:
+        token:
+          type: string
+          description: The subscription token.
+        reason:
+          type: string
+          description: Why the mail was not sent.
+          enum:
+          - already_emailed
+          - already_noticed
+          - no_failure
+          - no_email_address
+          - emails_disabled
+          - delivery_failed
+        error:
+          type: string
+          description: The same reason, phrased for an operator to read.
+    PaymentFailedEmailsFailedToken:
+      description: A token that resolved to no subscription of the caller's.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - error
+      properties:
+        token:
+          type: string
+        error:
+          type: string
+    PaymentFailedEmailsResponse:
+      description: One entry per token sent, across three lists.
+      type: object
+      required:
+      - sent_tokens
+      - skipped_tokens
+      - failed_tokens
+      - meta
+      properties:
+        sent_tokens:
+          description: Customers whose mail was queued and recorded.
+          type: array
+          items:
+            type: string
+        skipped_tokens:
+          description: Customers passed over, each carrying why.
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentFailedEmailsSkippedToken"
+        failed_tokens:
+          description: Tokens that resolved to no subscription of the caller's.
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentFailedEmailsFailedToken"
+        meta:
+          "$ref": "#/components/schemas/Meta"
     PaymentUpdateEmailsSkippedToken:
       description: A customer who must not be mailed.
       type: object
@@ -30428,6 +30532,74 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/PaymentUpdateEmailsRequestBody"
+        required: true
+  "/api/subscriptions/payment_failed_emails":
+    post:
+      summary: Email customers whose charge failed
+      description: |
+        Tell a set of customers that the charge on their subscription failed, for
+        the Subscription Billing day drawer.
+
+        The dunning pipeline sends its own first-decline mail once per failure
+        streak and records that on the subscription rather than here. This endpoint
+        does not replace it: a customer the pipeline has already written to is
+        skipped as `already_noticed`, which is the only way an operator can see that
+        it got there first. What remains are the customers it deliberately left
+        alone.
+
+        Every token is answered. A token is sent when the mail was queued and
+        recorded, skipped when the customer must not be mailed — with the reason —
+        or failed when no subscription of that token belongs to the caller.
+
+        A subscription with no failed charge on `renewal_date` is skipped rather
+        than mailed, so a customer whose charge cleared cannot be told it failed.
+
+        Set `resend` to `true` to tell the customers who have already been told
+        anyway. It waives the `already_noticed` and `already_emailed` skips and
+        nothing else, and it defaults to `false`, so an operator reaches those
+        customers only by asking for them.
+
+        A send whose mail could not be queued is skipped as `delivery_failed` and
+        leaves no record behind, so the same customer can be tried again
+        immediately rather than waiting out the quiet period on a mail that never
+        went.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_payment_failed_emails
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Every token answered as sent, skipped, or failed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentFailedEmailsResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: The caller lacks the subscriptions update permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '422':
+          description: |
+            The batch was refused before anyone was mailed — no tokens, more tokens
+            than one batch carries, or a missing or malformed renewal_date.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/PaymentFailedEmailsRequestBody"
         required: true
   "/api/subscriptions/send_invoice_email":
     post:
