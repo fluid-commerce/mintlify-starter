@@ -1499,8 +1499,8 @@ Durable authoring boundaries:
 
 ## Member storefront — theme-author contract
 
-The six pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
-`member-sites`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
+The seven pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-sites`, `manifest`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
 `member_price` filter, the `member_name` and `member` tags, the section marker and SDK
 resolution states, member sites and their rules, member page templates, and the member
 layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
@@ -1592,3 +1592,28 @@ adoption.
 `themes/navigation-menus.mdx` documents the unversioned admin menu API at the user's explicit request, including endpoint payloads and its actual flat `page` / `per_page` pagination. This is a scoped exception to the prose-contract and pagination conventions; it does not change other API surfaces. The checked-in synced specs do not currently expose `/api/menus`, so its registered claims are semantic and cannot yet be mechanically verified against OpenAPI. Do not hand-edit synced artifacts to fill the gap.
 
 Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
+
+
+### Member manifest v2 authoring
+
+The `manifest` page adds the version 2 file contract and the CLI watcher workflow.
+Its claims are semantic theme-file claims, not endpoint schemas. Source evidence
+is `MemberConfigurationValidator`, `MemberConfigurationResolver`,
+`MemberConfigurationWriter`, `MemberConfigurationMenuContext`,
+`MemberConfigurationResource`, and `MemberConfigurationUpload` in Fluid, plus
+`packages/cli/theme-dev/src/theme/member-configuration.ts`, `dev-server/index.ts`,
+`dev-server/hot-reload.ts`, and Mist's `shared/project-kinds.ts`.
+
+Preserve these boundaries when updating the guide:
+
+- The filename is `members_sites.json`. Sites match by name and pages by slug;
+  document keys connect references inside a snapshot, not persistent identities.
+- Snapshot omission removes sites/pages. Removing the file is rejected; an empty
+  versioned document explicitly clears member configuration, not every menu or file.
+- Navigation travels as full menu trees. Country codes and member-type slugs must
+  resolve in the destination. Unrelated menu handle collisions allocate a new menu.
+- Site country rules can be empty; menu country lists require a destination country.
+- `theme dev` defaults to an isolated development theme. Its preview reloads on
+  acknowledged uploads. A separate admin builder does not receive that reload signal.
+- Verification of the watcher and renderer is source-based here. JSON examples and
+  MDX are checked separately; this guide does not claim a live Mist end-to-end run.
