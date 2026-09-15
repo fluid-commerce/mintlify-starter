@@ -88,7 +88,7 @@ All anchors that reference an operation carry `path` (templated, e.g.
 | `endpoint` | `path`, `method`, `absent?` | Operation exists in the spec (or must NOT exist when `absent: true`) |
 | `auth` | `path`, `method`, `auth: "none"\|"bearer"` | `none` → op has no security requirement (or empty); `bearer` → op requires a bearer/http scheme. Scope names (e.g. `storefront.update`) are **semantic** unless the spec models them |
 | `parameter` | `path`, `method`, `param`, `in: "query"\|"path"`, `enum?`, `enum_exact?: bool`, `required?`, `absent?`, `default?`, `maximum?` | Param with that name+location exists on the op (path-level params included). `enum` asserts values (subset unless `enum_exact`); `default`/`maximum` compare against the param schema; `absent: true` asserts the op does NOT accept it |
-| `request-field` | `path`, `method`, `field` (dot path from body root, e.g. `category.title`), `required?`, `required_exact?: [names]`, `type?`, `enum?`, `nullable?`, `absent?` | Field exists in the JSON request-body schema. `required_exact` (on a field pointing at an object) asserts the object's full `required` list. `absent: true` asserts the schema has no such field |
+| `request-field` | `path`, `method`, `field` (dot path from body root, e.g. `category.title`), `required?`, `required_exact?: [names]`, `type?`, `enum?`, `nullable?`, `absent?`, `one_of_title?` | Field exists in the JSON request-body schema (or explicitly selected top-level `oneOf` branch). `required_exact` (on a field pointing at an object) asserts the object's full `required` list. `absent: true` asserts the schema has no such field |
 | `response-field` | `path`, `method`, `status` (e.g. `"200"`), `field` (dot path; `[]` for array items, e.g. `categories[].slug`), `absent?` | Field exists (or not) in the JSON response schema for that status |
 | `status-code` | `path`, `method`, `status`, `absent?` | The response code is documented on the op. The *condition* under which it fires is a separate `behavior` claim |
 | `example` | `path`, `method`, `allow_unknown?: bool` | `payload` validates against the op's request-body schema: types, `required`, `enum`, `nullable`; properties not present in the schema **fail** (phantom-field trap) unless the schema allows additional properties or `allow_unknown: true` |
@@ -1499,8 +1499,8 @@ Durable authoring boundaries:
 
 ## Member storefront — theme-author contract
 
-The six pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
-`member-sites`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
+The seven pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-sites`, `manifest`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
 `member_price` filter, the `member_name` and `member` tags, the section marker and SDK
 resolution states, member sites and their rules, member page templates, and the member
 layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
@@ -1592,3 +1592,44 @@ adoption.
 `themes/navigation-menus.mdx` documents the unversioned admin menu API at the user's explicit request, including endpoint payloads and its actual flat `page` / `per_page` pagination. This is a scoped exception to the prose-contract and pagination conventions; it does not change other API surfaces. The checked-in synced specs do not currently expose `/api/menus`, so its registered claims are semantic and cannot yet be mechanically verified against OpenAPI. Do not hand-edit synced artifacts to fill the gap.
 
 Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
+
+
+### Member manifest v2 authoring
+
+The `manifest` page adds the version 2 file contract and the CLI watcher workflow.
+Its claims are semantic theme-file claims, not endpoint schemas. Source evidence
+is `MemberConfigurationValidator`, `MemberConfigurationResolver`,
+`MemberConfigurationWriter`, `MemberConfigurationMenuContext`,
+`MemberConfigurationResource`, and `MemberConfigurationUpload` in Fluid, plus
+`packages/cli/theme-dev/src/theme/member-configuration.ts`, `dev-server/index.ts`,
+`dev-server/hot-reload.ts`, and Mist's `shared/project-kinds.ts`.
+
+Preserve these boundaries when updating the guide:
+
+- The filename is `members_sites.json`. Sites match by name and pages by slug;
+  document keys connect references inside a snapshot, not persistent identities.
+- Snapshot omission removes sites/pages. Removing the file is rejected; an empty
+  versioned document explicitly clears member configuration, not every menu or file.
+- Navigation travels as full menu trees. Country codes and member-type slugs must
+  resolve in the destination. Unrelated menu handle collisions allocate a new menu.
+- Site country rules can be empty; menu country lists require a destination country.
+- `theme dev` defaults to an isolated development theme. Its preview reloads on
+  acknowledged uploads. A separate admin builder does not receive that reload signal.
+- Verification of the watcher and renderer is source-based here. JSON examples and
+  MDX are checked separately; this guide does not claim a live Mist end-to-end run.
+
+
+### Explicit request-field variants
+
+Request-field anchors may set `one_of_title` to select exactly one titled branch
+of the request body's top-level `oneOf`. The checker resolves references and
+`allOf` within that branch, then checks field existence, type, requiredness,
+nullability, and enums there. A missing or duplicate title fails, including for
+absence claims. Titles are case-sensitive; field claims without a selector keep
+their existing behavior. This does not add general union payload validation or
+remove the existing `oneOf` warnings on example claims.
+
+`headless-021` selects `Profile update` because cart updates now expose separate
+profile and enrollment-target request shapes. `email_marketing` remains a valid
+boolean in the profile branch. Do not remove the supported field from the guide,
+hand-edit the synced spec, or downgrade this claim to semantic to silence CI.
