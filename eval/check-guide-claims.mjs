@@ -518,6 +518,11 @@ function validateAnchorShape(claim, anchor, report) {
       report.fail(claim, `anchor.field must be a string`);
       ok = false;
     }
+    if (anchor.one_of_title !== undefined &&
+        (type !== "request-field" || typeof anchor.one_of_title !== "string" || !anchor.one_of_title.trim())) {
+      report.fail(claim, "anchor.one_of_title must be a non-empty title on a request-field claim");
+      ok = false;
+    }
     if ((type === "response-field" || type === "status-code") && typeof anchor.status !== "string") {
       report.fail(claim, `anchor.status must be a string (e.g. "200")`);
       ok = false;
@@ -662,7 +667,21 @@ function checkRequestField(spec, claim, report) {
     return;
   }
 
-  const res = navigatePath(spec, root, a.field);
+  // Select one explicit request variant instead of flattening mutually
+  // exclusive shapes and accidentally accepting fields from another branch.
+  let selected = root;
+  if (a.one_of_title !== undefined) {
+    const branches = mergeAllOf(spec, root)?.oneOf;
+    const matches = Array.isArray(branches)
+      ? branches.map((branch) => mergeAllOf(spec, branch)).filter((branch) => branch?.title === a.one_of_title)
+      : [];
+    if (matches.length !== 1) {
+      report.fail(claim, `request oneOf title '${a.one_of_title}' must match exactly one branch (found ${matches.length})`);
+      return;
+    }
+    selected = matches[0];
+  }
+  const res = navigatePath(spec, selected, a.field);
 
   if (a.absent === true) {
     if (res.found) report.fail(claim, `request field '${a.field}' exists but is asserted absent`);
@@ -1184,6 +1203,7 @@ const SELFTEST_SPEC = {
           nested: { type: "object", additionalProperties: false, required: ["a"], properties: { a: { type: "string" }, b: { type: "integer" } } },
         },
       },
+      NamedWidget: { title: "Named widget", allOf: [{ $ref: "#/components/schemas/Widget" }] },
       WidgetCreate: {
         type: "object",
         required: ["widget"],
@@ -1220,6 +1240,15 @@ const SELFTEST_SPEC = {
     "/api/v1/widgets/{id}": {
       parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
       get: { security: [{ bearer_auth: [] }], responses: { "200": { description: "ok" } } },
+      patch: {
+        requestBody: { content: { "application/json": { schema: { oneOf: [
+          { title: "Profile update", type: "object", required: ["email"], properties: { email: { type: "string" }, opt_in: { type: "boolean" } } },
+          { title: "Target update", type: "object", properties: { target_id: { type: "string" }, opt_in: { type: "string" } } },
+          { title: "Duplicate", type: "object" },
+          { title: "Duplicate", type: "object" },
+          { $ref: "#/components/schemas/NamedWidget" },
+        ] } } } },
+      },
     },
   },
 };
@@ -1286,6 +1315,19 @@ function runSelfTest() {
     [stClaim("P-request-type-nullable", "request-field", "mechanical", { path: "/api/v1/widgets", method: "post", field: "widget.note", type: "string", nullable: true }), false],
     [stClaim("F-request-wrong-type", "request-field", "mechanical", { path: "/api/v1/widgets", method: "post", field: "widget.count", type: "string" }), true],
     [stClaim("P-request-enum", "request-field", "mechanical", { path: "/api/v1/widgets", method: "post", field: "widget.status", enum: ["draft"] }), false],
+
+    [stClaim("P-request-oneof-profile", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Profile update", field: "opt_in", type: "boolean" }), false],
+    [stClaim("F-request-oneof-wrong-type", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Target update", field: "opt_in", type: "boolean" }), true],
+    [stClaim("F-request-oneof-other-field", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Profile update", field: "target_id" }), true],
+    [stClaim("P-request-oneof-absent", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Profile update", field: "target_id", absent: true }), false],
+    [stClaim("F-request-oneof-required", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Profile update", field: "opt_in", required: true }), true],
+    [stClaim("P-request-oneof-required", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Profile update", field: "email", required: true }), false],
+    [stClaim("F-request-oneof-missing", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Missing", field: "email", absent: true }), true],
+    [stClaim("F-request-oneof-duplicate", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Duplicate", field: "email" }), true],
+    [stClaim("P-request-oneof-ref", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "Named widget", field: "title", type: "string", required: true }), false],
+    [stClaim("F-request-oneof-invalid-title", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: 3, field: "email" }), true],
+    [stClaim("F-request-oneof-empty-title", "request-field", "mechanical", { path: "/api/v1/widgets/{id}", method: "patch", one_of_title: "", field: "email" }), true],
+    [stClaim("F-request-oneof-no-union", "request-field", "mechanical", { path: "/api/v1/widgets", method: "post", one_of_title: "Profile update", field: "widget.title" }), true],
 
     // ---- response-field ----
     [stClaim("F-response-field-missing", "response-field", "mechanical", { path: "/api/v1/widgets", method: "get", status: "200", field: "widgets[].bogus" }), true],

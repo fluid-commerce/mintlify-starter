@@ -88,7 +88,7 @@ All anchors that reference an operation carry `path` (templated, e.g.
 | `endpoint` | `path`, `method`, `absent?` | Operation exists in the spec (or must NOT exist when `absent: true`) |
 | `auth` | `path`, `method`, `auth: "none"\|"bearer"` | `none` → op has no security requirement (or empty); `bearer` → op requires a bearer/http scheme. Scope names (e.g. `storefront.update`) are **semantic** unless the spec models them |
 | `parameter` | `path`, `method`, `param`, `in: "query"\|"path"`, `enum?`, `enum_exact?: bool`, `required?`, `absent?`, `default?`, `maximum?` | Param with that name+location exists on the op (path-level params included). `enum` asserts values (subset unless `enum_exact`); `default`/`maximum` compare against the param schema; `absent: true` asserts the op does NOT accept it |
-| `request-field` | `path`, `method`, `field` (dot path from body root, e.g. `category.title`), `required?`, `required_exact?: [names]`, `type?`, `enum?`, `nullable?`, `absent?` | Field exists in the JSON request-body schema. `required_exact` (on a field pointing at an object) asserts the object's full `required` list. `absent: true` asserts the schema has no such field |
+| `request-field` | `path`, `method`, `field` (dot path from body root, e.g. `category.title`), `required?`, `required_exact?: [names]`, `type?`, `enum?`, `nullable?`, `absent?`, `one_of_title?` | Field exists in the JSON request-body schema (or explicitly selected top-level `oneOf` branch). `required_exact` (on a field pointing at an object) asserts the object's full `required` list. `absent: true` asserts the schema has no such field |
 | `response-field` | `path`, `method`, `status` (e.g. `"200"`), `field` (dot path; `[]` for array items, e.g. `categories[].slug`), `absent?` | Field exists (or not) in the JSON response schema for that status |
 | `status-code` | `path`, `method`, `status`, `absent?` | The response code is documented on the op. The *condition* under which it fires is a separate `behavior` claim |
 | `example` | `path`, `method`, `allow_unknown?: bool` | `payload` validates against the op's request-body schema: types, `required`, `enum`, `nullable`; properties not present in the schema **fail** (phantom-field trap) unless the schema allows additional properties or `allow_unknown: true` |
@@ -1617,3 +1617,19 @@ Preserve these boundaries when updating the guide:
   acknowledged uploads. A separate admin builder does not receive that reload signal.
 - Verification of the watcher and renderer is source-based here. JSON examples and
   MDX are checked separately; this guide does not claim a live Mist end-to-end run.
+
+
+### Explicit request-field variants
+
+Request-field anchors may set `one_of_title` to select exactly one titled branch
+of the request body's top-level `oneOf`. The checker resolves references and
+`allOf` within that branch, then checks field existence, type, requiredness,
+nullability, and enums there. A missing or duplicate title fails, including for
+absence claims. Titles are case-sensitive; field claims without a selector keep
+their existing behavior. This does not add general union payload validation or
+remove the existing `oneOf` warnings on example claims.
+
+`headless-021` selects `Profile update` because cart updates now expose separate
+profile and enrollment-target request shapes. `email_marketing` remains a valid
+boolean in the profile branch. Do not remove the supported field from the guide,
+hand-edit the synced spec, or downgrade this claim to semantic to silence CI.
