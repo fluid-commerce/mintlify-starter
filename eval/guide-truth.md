@@ -1633,3 +1633,29 @@ remove the existing `oneOf` warnings on example claims.
 profile and enrollment-target request shapes. `email_marketing` remains a valid
 boolean in the profile branch. Do not remove the supported field from the guide,
 hand-edit the synced spec, or downgrade this claim to semantic to silence CI.
+
+### System screen theme settings and CSS overrides
+
+`themes/member-storefront/system-screen-styling.mdx` documents the existing
+standard theme-setting attributes and explicitly marks CSS-over-attribute
+precedence as upcoming. Keep its release warning until the runtime is published;
+merging documentation or SDK source alone does not establish CDN availability.
+
+The setting IDs and fallback pairs were checked against
+`apps/rails/app/models/themes/member_storefront/system_screens.rb`. The override
+contract follows fluid PRs #22735 and #22736: `screen-theme.ts`, `theme.css`,
+`prepare-screen-styles.ts`, the Profile card-entry container, and Chromium tests
+under `packages/accounts/screens/e2e/`. PR #22737 prepares v0.4.0 but remains a
+draft pending builder/live verification. At authoring, the unversioned CDN
+loader still re-exports v0.3.8. These are semantic theme-runtime claims; the
+claims checker verifies quotes/coverage, not computed CSS or release readiness.
+
+Preserve the distinction between unavailable CSS variables (which allow the
+attribute fallback) and defined values of the wrong type (which invalidate the
+consuming declaration). Keep font loading owned by the layout and preview CSS
+inside the iframe. Do not promise that stale Liquid-generated source variables
+update without refreshing their rendered declarations. Public properties are
+theme-owned; `--fluid-account-default-*` properties are runtime-owned.
+
+Release the documentation only after verifying the override runtime and the
+saved/unsaved builder flows. This docs change performs no runtime publication.
