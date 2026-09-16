@@ -9096,6 +9096,120 @@ components:
             "$ref": "#/components/schemas/BulkRetrySubscriptionsFailedToken"
         meta:
           "$ref": "#/components/schemas/Meta"
+    ScheduledRetriesRequestBody:
+      description: The subscription tokens to book, and the time to book them for.
+      type: object
+      additionalProperties: false
+      required:
+      - tokens
+      - retry_at
+      properties:
+        tokens:
+          description: |
+            Subscription tokens. The maximum counts the array as submitted, so
+            `maxItems` and the server's own refusal agree; duplicates are
+            collapsed after that bound is applied and each subscription is
+            answered once.
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+          example:
+          - sb_primex_past_due_002
+        retry_at:
+          description: |
+            When to retry, as an RFC3339 timestamp carrying its offset. The
+            offset is the caller's to state rather than the server's to guess: a
+            bare local hour from a drawer open in one timezone is a different
+            instant on a server running in another.
+
+            The time is the operator's choice and nothing else. No model here
+            scores when a charge is likeliest to clear, so the platform neither
+            picks this hour nor adjusts it.
+
+            At least 5 minutes ahead — anything nearer is an immediate retry,
+            which has its own endpoint — and no more than 23 hours ahead, the
+            span the retry processor still recognises an operator's booking
+            over.
+          type: string
+          format: date-time
+          example: '2026-09-15T18:00:00Z'
+    ScheduledRetriesSkippedToken:
+      description: A subscription that was found but could not be booked.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - reason
+      - error
+      properties:
+        token:
+          type: string
+          description: The subscription token.
+        reason:
+          type: string
+          description: Why the booking was passed over.
+          enum:
+          - not_past_due
+          - billing_date_not_arrived
+          - billing_cycle_limit
+          - recurring_payment_stopped
+        error:
+          type: string
+          description: The same reason, phrased for an operator to read.
+    ScheduledRetriesFailedToken:
+      description: |
+        A token that ends with nothing booked: one no subscription of the
+        caller's answers to, or one whose booking the write refused.
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      - error
+      properties:
+        token:
+          type: string
+          description: The token as it was sent.
+        error:
+          type: string
+          description: Why nothing is booked for it.
+    ScheduledRetriesResponse:
+      description: One entry per token sent, across three lists.
+      type: object
+      required:
+      - retry_at
+      - scheduled_tokens
+      - skipped_tokens
+      - failed_tokens
+      - meta
+      properties:
+        retry_at:
+          description: |
+            The instant the batch was booked for, in UTC. Echoed so a client
+            states the booked hour from the server's answer rather than from the
+            value it happened to send.
+          type: string
+          format: date-time
+        scheduled_tokens:
+          description: Subscriptions a retry is now booked for.
+          type: array
+          items:
+            type: string
+        skipped_tokens:
+          description: Subscriptions passed over, each carrying why.
+          type: array
+          items:
+            "$ref": "#/components/schemas/ScheduledRetriesSkippedToken"
+        failed_tokens:
+          description: |
+            Tokens that resolved to no subscription of the caller's, and
+            subscriptions whose booking write was refused.
+          type: array
+          items:
+            "$ref": "#/components/schemas/ScheduledRetriesFailedToken"
+        meta:
+          "$ref": "#/components/schemas/Meta"
     PaymentUpdateEmailsRequestBody:
       description: Who to ask, and which renewal the ask is about.
       type: object
@@ -30591,6 +30705,83 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/BulkRetrySubscriptionsRequestBody"
+        required: true
+  "/api/subscriptions/scheduled_retries":
+    post:
+      summary: Schedule retries for a chosen time
+      description: |
+        Book a retry on each of a set of past-due subscriptions for a time the
+        operator chose, for the Subscription Billing day drawer.
+
+        The time is the operator's and only the operator's. Nothing in this
+        platform scores when a charge is most likely to clear, so this endpoint
+        neither picks the hour nor moves it: it writes the instant the caller
+        sent. What it buys an operator is control over when a day's failed
+        renewals are charged again — out of a payday window, off an hour that
+        already declined — not a prediction.
+
+        The retry processor drains bookings on its ordinary five-minute tick, so
+        nothing is charged when this returns. `retry_at` must be at least 5
+        minutes ahead, and within 23 hours: past that the processor stops
+        recognising the booking's provenance and would fall back to its
+        automatic rules, which is a retry the operator did not ask for.
+
+        Booking does not reset the subscription's decline count. An immediate
+        retry does, because it is one hands-on attempt on one renewal; a booking
+        is a batch gesture that can be repeated every morning, and resetting
+        there would hold a subscription in dunning forever instead of letting it
+        reach exhaustion.
+
+        Every token is answered. A token is scheduled when a retry is now booked
+        for it, skipped when the subscription is known but cannot take one —
+        with the reason — or failed when no subscription of that token belongs
+        to the caller. A skip is not an error: a renewal that is not past due,
+        will not be due by the chosen time, or sits on a payment method the
+        processor told us to stop charging is reported as passed over.
+
+        Booking the same subscriptions for the same instant twice books one
+        retry. Booking them for a different instant moves the existing booking,
+        which is how a mistyped hour is corrected.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_scheduled_retries
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Every token answered as scheduled, skipped, or failed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ScheduledRetriesResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: |
+            The caller lacks the subscriptions update permission, or is a customer.
+            Booking a renewal's retry is a back-office action, not a shopper one.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '422':
+          description: |
+            The batch was refused before any renewal was touched — no tokens, more
+            tokens than one batch carries, a `retry_at` that is malformed, too
+            soon, or too far out, or billing paused for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/ScheduledRetriesRequestBody"
         required: true
   "/api/subscriptions/payment_update_emails":
     post:
