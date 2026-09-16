@@ -1606,6 +1606,14 @@ is `MemberConfigurationValidator`, `MemberConfigurationResolver`,
 
 Preserve these boundaries when updating the guide:
 
+- The current v2 document requires `version`, `sites`, `menus`, and
+  `menu_references`. New exports omit `templates`; older v2 metadata arrays remain
+  accepted. This update follows Fluid PR #22898 and must ship with that behavior.
+- Member dependencies resolve from page paths, site layouts, and ordinary file
+  contents. Member-page JSON detection requires an object with a `sections` key.
+- Manifest-only edits retain unrelated template metadata and drafts. Fresh file
+  imports use normal defaults; do not promise lossless transfer of database-only
+  flags or translations without the old metadata array.
 - The filename is `members_sites.json`. Sites match by name and pages by slug;
   document keys connect references inside a snapshot, not persistent identities.
 - Snapshot omission removes sites/pages. Removing the file is rejected; an empty
