@@ -1678,3 +1678,24 @@ Keep the environment availability note until the upload UI ships. The flag
 controls the owner company's upload UI; it is not documented as a server-side
 authorization boundary. No extension upload HTTP payload is restated here.
 Examples are inline Liquid and TOML; no downloadable binary archive is published.
+
+### Builder usage and file-based authoring
+
+The builder places an extension section with a literal `section` tag whose
+`id` matches its entry in the page schema's `sections` map. Both locations
+retain the exact extension URI. Evidence: `AddSectionsWithPreview`,
+`LiquidTags::Section`, and `Themes::ExtensionUri`. The URI contains the theme
+extension ID, not a Droplet or installation ID. App blocks use the host's
+`@app` declaration and `render block` path.
+
+Global embeds use the active blocks map in `config/settings_data.json`.
+`PageBuilder` accepts either an inline `current` object or a named preset;
+`ApplicationThemes::UpdateAppEmbedsAction` writes that same structure. The
+placement target comes from the extension template, and saved settings override
+schema defaults. This is a theme-file contract, not a new upload or management
+API contract.
+
+Body embed output joins `content_for_layout`; it is not guaranteed to sit
+immediately before the closing body tag. Head output joins `content_for_header`.
+Custom layouts must preserve those outputs. Manual examples merge into existing
+files and preserve unrelated placements, settings, blocks, and presets.
