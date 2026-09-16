@@ -1659,3 +1659,22 @@ theme-owned; `--fluid-account-default-*` properties are runtime-owned.
 
 Release the documentation only after verifying the override runtime and the
 saved/unsaved builder flows. This docs change performs no runtime publication.
+
+## Droplet theme extensions and app embeds
+
+`themes/droplet-theme-extensions.mdx` documents extension files and the Admin
+authoring workflow. Its claims are semantic theme-runtime and UI claims, not
+HTTP endpoint contracts. The mechanical checker verifies quote integrity and
+coverage; it does not establish rendering behavior.
+
+Source evidence is Fluid PR #22921 for the feature-gated upload card and pending
+upload cancellation, and the existing `Themes::Import::ExtensionTemplates`,
+`AppExtension`, `ApplicationThemes::AppEmbedsAction`, and `PageBuilder` behavior
+for packaging, installation eligibility, defaults, and rendering. The App Embeds
+panel exposes toggles without a settings editor. Member-site rendering skips
+Droplet extension embeds.
+
+Keep the environment availability note until the upload UI ships. The flag
+controls the owner company's upload UI; it is not documented as a server-side
+authorization boundary. No extension upload HTTP payload is restated here.
+Examples are inline Liquid and TOML; no downloadable binary archive is published.
