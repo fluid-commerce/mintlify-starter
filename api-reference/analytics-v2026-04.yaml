@@ -202,6 +202,48 @@ components:
         type: integer
         minimum: 1
         example: 25
+    DaySearchQueryParam:
+      name: search
+      in: query
+      required: false
+      description: |
+        Free text narrowing the day. Matched against the customer's name
+        or email, the product title, the variant label the row itself
+        shows, the plan name, the subscription token, and the
+        subscription number as an exact match. Every whitespace-separated
+        term has to match one of them, so `jane essentials` means the
+        customer and the product rather than either alone.
+
+        The variant label is the one term the subscriptions index's own
+        search does not cover. It is included here because the day drawer
+        prints it on the row, and a label an operator can read off a row
+        has to be a label that finds it. A renewal whose product has been
+        discarded is still searchable, for the same reason it is still
+        listed.
+
+        Applied over the whole day rather than over the page that would
+        otherwise have been returned, so `total_count` counts what
+        matched and the pager walks the matches.
+      schema:
+        type: string
+        example: alvarez
+    DayStatusQueryParam:
+      name: status
+      in: query
+      required: false
+      description: |
+        Comma-separated statuses to list, drawn from `failed`,
+        `at_risk`, `retrying`, `scheduled` and `cleared`. Omitted means
+        every status.
+
+        Each row reports its own status on `day_status`, and the counts
+        behind the chips are on `summary.status_counts`. A value outside
+        the set returns `400` rather than being ignored: dropping it
+        would answer with the whole day while the caller believed it had
+        filtered.
+      schema:
+        type: string
+        example: failed,at_risk
   schemas:
     Meta:
       type: object
@@ -2220,6 +2262,26 @@ components:
             send endpoint skips on both — `already_emailed` and
             `already_noticed` — so the figure shown before sending is the
             figure the send will skip.
+        day_status:
+          type: string
+          enum:
+          - failed
+          - at_risk
+          - retrying
+          - scheduled
+          - cleared
+          description: |
+            The one word the day drawer files this renewal under, and
+            the vocabulary `status` filters on. Resolved from what
+            actually happened rather than from the risk model: a charge
+            that has run is reported on its outcome, and only renewals
+            still to come are graded on risk. An `in_flight` charge
+            reads as `scheduled`, having decided nothing yet.
+
+            Served rather than derived by the caller for the same reason
+            the band is: the filter is answered here, so a second copy
+            of these rules on the client would chip a row differently
+            from the request that fetched it.
       required:
       - subscription_id
       - subscription_token
@@ -2239,6 +2301,7 @@ components:
       - awaiting_retry
       - already_emailed
       - failure_already_emailed
+      - day_status
     SubscriptionBillingDayProduct:
       type: object
       description: One product's share of a day.
@@ -2266,9 +2329,9 @@ components:
     SubscriptionBillingDaySummary:
       type: object
       description: |
-        The day as a whole, independent of which page was requested —
-        computed over the day's full scope, so paging never changes what
-        these figures describe.
+        The day as a whole, independent of which page was requested and
+        of `search` and `status` — computed over the day's full scope, so
+        neither paging nor filtering changes what these figures describe.
 
         Two figures the prototype's day panel showed are absent rather
         than estimated. A count of scheduled smart retries has no source:
@@ -2304,12 +2367,47 @@ components:
           description: Biggest money first, capped at five.
           items:
             "$ref": "#/components/schemas/SubscriptionBillingDayProduct"
+        status_counts:
+          type: object
+          description: |
+            How much of the day sits under each `day_status`. Every
+            status is present even at zero, so a caller offering a chip
+            per status can tell which ones would find nothing without
+            guessing from whichever rows it happens to hold.
+
+            Counted over the whole day and deliberately not over the
+            filtered set, so the chips keep their figures while the
+            operator narrows with them.
+          properties:
+            failed:
+              type: integer
+              description: Charges that ran and did not clear, retry or not.
+            at_risk:
+              type: integer
+              description: Renewals still to run that the classifier graded.
+            retrying:
+              type: integer
+              description: Failures the dunning chain already has in hand.
+            scheduled:
+              type: integer
+              description: Renewals still to run and ungraded, plus charges in flight.
+            cleared:
+              type: integer
+              description: Charges that ran and succeeded.
+          required:
+          - failed
+          - at_risk
+          - retrying
+          - scheduled
+          - cleared
+          additionalProperties: false
       required:
       - renewal_count
       - average_amount
       - new_customer_count
       - returning_customer_count
       - top_products
+      - status_counts
     SubscriptionBillingDayResponse:
       type: object
       properties:
@@ -2336,7 +2434,10 @@ components:
           description: Page size actually applied, after clamping.
         total_count:
           type: integer
-          description: Renewals on the day across every page.
+          description: |
+            Renewals matching `search` and `status` across every page.
+            Equal to the day's own count when neither is given;
+            `summary.renewal_count` is always the day's, filtered or not.
         summary:
           "$ref": "#/components/schemas/SubscriptionBillingDaySummary"
         entries:
@@ -2593,10 +2694,20 @@ paths:
         rather than left to the caller precisely so a client cannot
         keep a second copy of those rules and drift from the cell that
         opened the drawer.
+
+        `search` and `status` are answered over the whole day, not over
+        the page. The drawer used to narrow the rows it had already
+        loaded, which on a day spanning pages is not a filter but a
+        coincidence — a "Failed" chip found the failures on page one and
+        said nothing at all about the other five. `total_count` counts
+        what matched; `summary` keeps describing the day itself, so the
+        figures above the list do not move as the operator narrows it.
       parameters:
       - "$ref": "#/components/parameters/DayDateQueryParam"
       - "$ref": "#/components/parameters/CountryQueryParam"
       - "$ref": "#/components/parameters/TimeZoneQueryParam"
+      - "$ref": "#/components/parameters/DaySearchQueryParam"
+      - "$ref": "#/components/parameters/DayStatusQueryParam"
       - "$ref": "#/components/parameters/DayPageQueryParam"
       - "$ref": "#/components/parameters/DayPerPageQueryParam"
       responses:
