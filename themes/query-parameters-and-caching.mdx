@@ -1,0 +1,152 @@
+---
+title: "Query parameters and caching"
+sidebarTitle: "Query parameters"
+description: "Know which query parameters keep a storefront page on the CDN, which give it its own cached copy, and which send every request to the origin."
+---
+
+Fluid serves storefront pages from a CDN. The query string decides which of three
+things happens to a request:
+
+- The page is served from the plain URL's cached copy.
+- The page gets a cached copy of its own, one per distinct value.
+- The page is rendered fresh for every request.
+
+If your theme adds parameters to storefront links, this decides what those links
+cost your visitors.
+
+## The three groups
+
+<CardGroup cols={3}>
+  <Card title="Ignored" icon="link-slash">
+    Fluid does not recognize the parameter. It is removed, and the visitor gets
+    the plain URL's cached page.
+  </Card>
+  <Card title="Cached separately" icon="layer-group">
+    The parameter changes the page in a known, limited way, so it earns a cached
+    copy of its own.
+  </Card>
+  <Card title="Not cached" icon="server">
+    The parameter can change the page in ways that cannot be cached safely. Every
+    request renders fresh.
+  </Card>
+</CardGroup>
+
+## Ignored parameters
+
+Any parameter Fluid does not recognize is ignored. Marketing tags are the common
+case:
+
+```text
+?utm_source=  ?utm_medium=  ?utm_campaign=  ?utm_term=  ?utm_content=
+?gclid=  ?fbclid=  ?msclkid=  ?ttclid=  ?mc_cid=  ?igshid=  ?_ga=
+```
+
+So is any parameter you invent for your own front-end code:
+
+```text
+https://store.example.com/home/shop?grid=compact
+```
+
+That URL is served from the same cached page as `/home/shop`.
+
+<Warning>
+An ignored parameter is removed **before the page renders**, so
+`request.query_parameters` and `params` do not contain it in Liquid. Your
+browser URL keeps it, so client-side JavaScript still reads it normally.
+
+If you need a parameter your Liquid reads, you cannot invent one. Use a
+parameter from the **Not cached** table below, and expect the page to render
+fresh every time.
+</Warning>
+
+Visitor tracking is unaffected. Attribution is reported from the browser with the
+URL the visitor actually has, so campaign tags still reach your analytics.
+
+## Parameters cached separately
+
+Each distinct value gets its own cached copy of the page.
+
+| Parameter | Where it applies | Notes |
+| --- | --- | --- |
+| `count` | Every page | Items per page. Whole number up to 200. |
+| `page` | Every page | Page number. Whole number up to 200. |
+| `per_page` | Every page | Items per page on category and collection pages. Whole number up to 200. |
+| `filterrific[with_category_id][]` | Shop | Up to four category ids. |
+| `filterrific[by_collection][]` | Shop | Up to four collection ids. |
+| `filterrific[with_option_value_ids][]` | Shop | Up to four option value ids. |
+| `filterrific[with_prices][]` | Shop | Up to four price ranges, each `"<min> <max>"`. |
+| `filterrific[sorted_by]` | Shop, join | One of the sort values your theme offers. |
+
+A filtered grid is cached per combination, so the first visitor to a facet waits
+for a render and everyone after them does not:
+
+```text
+https://store.example.com/home/shop?filterrific[with_category_id][]=42&page=2
+```
+
+<Note>
+The shop filter parameters are cached only on `/shop`, and `filterrific[sorted_by]`
+only on `/shop` and `/join`. On any other page they do not change the product
+grid, so Fluid does not cache them there — those requests render fresh instead.
+
+`count`, `page`, and `per_page` are cached everywhere, because a paginated
+section can appear on any template.
+</Note>
+
+A value outside the limits above is not cached. It still works; the page just
+renders fresh. Deep pagination past page 200 is the case you are most likely to
+meet.
+
+## Parameters that are not cached
+
+These reach the origin on every request, and nothing is written to the cache.
+
+| Group | Parameters |
+| --- | --- |
+| Preview and editing | `preview`, `preview_theme_id`, `theme_template_id`, `edit`, `draft`, `exit_preview`, `skip_redirect` |
+| Template and navbar selection | `version`, `navbar_version`, `library_navbar_version`, `navbar_template_id`, `library_navbar_template_id` |
+| Language, country, currency | `lang`, `locale`, `fluid_locale`, `country`, `country_id`, `country_code`, `currency`, `timezone`, `filterrific[by_language]` |
+| Attribution and identity | `credit`, `fluid_c`, `affiliate_id`, `contact_id`, `token`, `jwt`, `subscription_token`, `return_to`, `auth_code`, `auth_uuid` |
+| Search | `search_query`, `q`, `filterrific[search_query]` |
+| Theme switches | `subscribe`, `subscription_plan`, `library_id`, `library_index`, `screen` |
+| Resource selection | `id`, `ids`, `slug`, `product_id`, `variant_id`, `medium_id`, `collection_id`, `category_id` |
+| List controls | `sorted_by`, `limit`, `cursor`, `offset` |
+
+Any `filterrific` filter not in the cached table is also uncached.
+
+<Warning>
+Use these deliberately. A storefront link that carries one of them renders on
+every click, so a navigation menu or a product card that adds `?lang=` to every
+URL takes your whole catalog off the CDN.
+
+Set the visitor's language with the locale selector rather than a link
+parameter. See [Navbar locale selector](/themes/navbar-locale-selector).
+</Warning>
+
+## Check what a URL does
+
+Every storefront response carries a header naming the outcome:
+
+| Header | Value | Meaning |
+| --- | --- | --- |
+| `X-CDN-Cache` | `HIT` | Served from cache. |
+| `X-CDN-Cache` | `MISS` | Rendered fresh, and the result was cached for the next visitor. |
+| `X-CDN-Cache` | `SKIP` | Rendered fresh, and nothing was cached. |
+| `X-Query-Variant` | e.g. `count-50` | Present when the URL has its own cached copy, naming which one. |
+
+```bash
+curl -sI "https://store.example.com/home/shop?utm_source=newsletter" | grep -i x-cdn-cache
+```
+
+Request the same URL twice. A cacheable URL answers `MISS` and then `HIT`. A URL
+that answers `SKIP` both times is never cached.
+
+## Writing links that stay cached
+
+- Prefer a path over a parameter. `/home/categories/serums` is cached; a filter
+  parameter that reproduces it is cached separately.
+- Keep marketing tags. They cost nothing — they are ignored and the visitor gets
+  the cached page.
+- Put your own state in a parameter only when your front-end code reads it. Liquid
+  will not see it.
+- Keep language and country out of storefront links.
