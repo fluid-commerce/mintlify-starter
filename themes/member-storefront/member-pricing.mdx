@@ -1,0 +1,158 @@
+---
+title: "Member pricing"
+sidebarTitle: "Member pricing"
+description: "Every price your theme prints is member-aware by default. No filter, no tag, no theme change. Cached HTML keeps the public price and the browser swaps in the signed-in member's."
+---
+
+<Warning>
+  Member storefront is in a limited pilot. Confirm that member storefront is enabled for your company before relying on this behavior.
+</Warning>
+
+**Every product and variant price your theme prints is already member-aware.** There is no filter to add, no tag to wrap, and no theme change to make. If your template prints `{{ product.price }}`, a signed-in member sees their own price there.
+
+A storefront page is cached once and served to everyone, so it can never contain one member's price. Member pricing works around that: Fluid renders the public price into the cached HTML inside a small placeholder called a **shell**, and the SDK replaces the text once it has confirmed who is viewing.
+
+## What becomes member-aware
+
+Any visible product or variant price you print:
+
+```liquid
+<p class="product-card__price">{{ product.price }}</p>
+```
+
+With the feature enabled, that renders a shell wrapping the public price:
+
+```html
+<fluid-member-price
+  data-product-id="1842"
+  data-variant-id="5127"
+  data-country-iso="US"
+>$48.00</fluid-member-price>
+```
+
+The shell sits in the light DOM, so your existing price styles apply unchanged. With the feature disabled, the same template prints `$48.00` and nothing else.
+
+`price`, `price_in_currency`, and `formatted_price` are recognised on products and variants. A price needs a country to be resolvable, so a value with no country context prints plain.
+
+## Prices you print are hydrated. Prices you calculate with are not
+
+This is the rule that keeps the rest of your theme working.
+
+A price becomes a shell only where it is printed as **visible text**. Everywhere else it stays the ordinary number or string it has always been:
+
+```liquid
+{% if product.price > 50 %}Free shipping{% endif %}   {% comment %} a number {% endcomment %}
+<div data-price="{{ product.price }}">                {% comment %} plain text {% endcomment %}
+<script>const p = {{ product.price }};</script>       {% comment %} plain text {% endcomment %}
+{{ product.price | json }}                            {% comment %} plain text {% endcomment %}
+{% capture p %}{{ product.price }}{% endcapture %}    {% comment %} plain text {% endcomment %}
+```
+
+Comparisons, arithmetic, HTML attributes, `<script>` and `<style>` bodies, JSON, and captured strings all keep scalar values. Only visible page text gets a shell, so your conditionals and your data attributes behave exactly as before.
+
+## Filters still apply
+
+Filters on a printed price are carried with the shell and re-applied to the member's price on Fluid's side:
+
+```liquid
+{{ product.price | times: 0.9 | round: 2 | prepend: "$" }}
+```
+
+The guest sees the filtered public price. A member sees the same chain applied to their own price. Filters applied through an `assign` compose with filters on the final output:
+
+```liquid
+{% assign product_price = product.price | replace: '$', 'USD ' %}
+{{ product_price | append: ' each' }}
+```
+
+Arithmetic, rounding, `money`, `default`, escaping, and text operations such as `append`, `replace`, and `truncate` are supported. Filters that load resources or build HTML are not, and an expression using one simply prints its public value with no shell. The browser never calculates money; it only writes the text Fluid returns.
+
+## You no longer need the member_price filter
+
+Earlier releases required `{{ product | member_price }}` on every price you wanted hydrated. That is no longer necessary. Printing the price is enough.
+
+The filter still works, so themes that already use it keep working and need no edit:
+
+```liquid
+{{ product | member_price }}
+{{ product | member_price: formatted_product_price }}
+```
+
+Reach for it only when you are printing something the automatic rule does not recognise, such as a value that is not a product or variant. Passing your own formatted string as the argument makes that string the guest fallback.
+
+Do not apply both to one price. And never hand-write a `<fluid-member-price>` element: a hand-written shell has no guaranteed fallback and no country, so the SDK cannot resolve it safely.
+
+## What the browser does
+
+The SDK is one script that Fluid adds for companies with member storefront enabled. You do not add it to your layout.
+
+A guest costs nothing. The SDK looks for a small non-secret cookie that marks a signed-in session, and when it is absent it makes no requests at all — no session check, no price requests. Nothing about the page changes.
+
+For a signed-in member it confirms the session against Fluid, then asks for the prices the page needs and writes each one into its shell. Fluid resolves the price from the member's own pricing tier using the signed-in cookie. The tier is never chosen in the browser and never appears in the page.
+
+Two details worth knowing:
+
+- **The public price stays visible while requests run.** There is no blanked-out or masked state. A member sees the public price briefly and then their own.
+- **Identical prices share one request.** The same product printed twice on a page is resolved once. Different variants and different countries are always resolved separately.
+
+When the page regains focus, or comes back from the browser's back/forward cache, the SDK re-checks the session and resolves again, so a price never outlives the session that produced it.
+
+### When nothing changes
+
+The public price staying on screen is the designed outcome of every failure, not an error:
+
+| Situation | What the member sees |
+| --- | --- |
+| Signed out, or session expired | The public price |
+| Member's type buys at retail | The public price, because that is their price |
+| Network error or slow request | The public price |
+| Product has no member price configured | The public price |
+| Bundle product | Its existing range, unchanged |
+| SDK not yet configured for the environment | The public price |
+
+Nothing writes an error into the page, and nothing is ever left blank.
+
+## Style around resolution
+
+Each shell gains `data-fluid-member-settled` once it has either written a value or decided to keep the fallback. Section wrappers become `resolved` or `guest`.
+
+Reserve space so a card does not shift when a longer or shorter price arrives:
+
+```css
+fluid-member-price {
+  display: inline-block;
+  min-width: 5ch;
+}
+
+[data-fluid-member-state="resolved"] fluid-member-price {
+  color: var(--color-accent, #2464ec);
+  font-weight: 600;
+}
+```
+
+## Test member pricing
+
+1. **Feature disabled.** Render the page and confirm the output matches the version before any member work. No shells, no markers.
+2. **Guest, feature enabled.** Confirm the page looks identical. In the HTML, confirm shells carry the public price and the right `data-country-iso`, and that your data attributes and JSON still hold plain numbers.
+3. **Signed-in member.** Confirm prices swap to the member's own. Sign out and confirm they revert.
+
+Also check a member whose type buys at retail. They should see the public price with no error. On a multi-country storefront, switch countries and confirm each shell carries that country's code.
+
+## Troubleshoot
+
+| Symptom | What to check |
+| --- | --- |
+| Prices print plain, with no shell | Confirm the feature is enabled for the company and that you are viewing the published theme. Confirm the value has country context. |
+| A member still sees the public price | Confirm they are signed in on this storefront, and that their member type receives member pricing. Customers buy at retail. |
+| Nothing resolves and no requests are sent | The session marker cookie is set at sign-in. A session that predates the cookie rollout needs one fresh sign-in. |
+| A filtered price never becomes a shell | The chain probably contains an unsupported filter. Arithmetic, rounding, `money`, and text filters are supported; resource and HTML filters are not. |
+| A number changed somewhere it should not have | Prices are only replaced in visible text. If a calculation changed, check whether you are printing into an attribute or script rather than reading the value. |
+| A bundle shows a range instead of a member price | Expected. Bundles keep their existing range. |
+| A price drawn by your own JavaScript never changes | The automatic rule works on Liquid output. A value your script writes has no shell. |
+| `{% if member %}` renders nothing | Expected. There is no `member` variable on cached storefront pages. |
+
+## Related
+
+- [Member greetings](/themes/member-storefront/member-aware-sections) for greetings and member-only content with `{% member_name %}` and `{% member %}`.
+- [Sign in and sign out](/themes/member-storefront/authentication) for the session these prices depend on.
+- [Account menu](/themes/member-storefront/account-navigation) for a cached header that knows the member.
