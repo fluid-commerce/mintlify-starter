@@ -1707,3 +1707,32 @@ Body embed output joins `content_for_layout`; it is not guaranteed to sit
 immediately before the closing body tag. Head output joins `content_for_header`.
 Custom layouts must preserve those outputs. Manual examples merge into existing
 files and preserve unrelated placements, settings, blocks, and presets.
+
+## Product tags and shop filters
+
+`api/guides/manage-product-tags.mdx` and `themes/shop-tag-filters.mdx`
+document Fluid PRs #23310, #23314, and #23328, all merged on 2026-09-21.
+The tag list and deletion links are mechanically checked against company-v0.
+Product filtering behavior is cross-surface semantic evidence from the synced
+storefront spec and the merged implementation. Liquid fields, permission
+backfills, and assignment behavior are implementation-backed semantic claims;
+the claims checker verifies their quotes and coverage, not runtime behavior.
+
+Evidence: `Tag::Remover`, the `tags.delete` registry entry and
+`BackfillTagsDeletePermission` at `53ece67155`; `Product.with_tag_ids`,
+`Site::ShopsController`, and the product catalog browser at `a2176a98ee`;
+`Tag::ProductFilterBrowser` and `Themes::Templates::Variables::ShopPage` at
+`f290120119`. The role editor consumes the server-provided permission structure.
+
+Keep endpoint parameters, payloads, and response codes on generated reference
+pages. The HTML form example is a Liquid theme integration, not a duplicate
+REST contract. Do not add the unsynced legacy catalog surface or claim that
+existing custom themes acquire controls automatically. The local Fluid-theme
+markup changes made for testing are not part of the merged variable contract.
+CDN key construction and deployment sequencing remain internal operational
+details. No admin tag-deletion screen is documented.
+
+Preserve the custom Developer exclusion in the existing-role backfill; a role
+name alone does not establish a system-managed full-access role. Do not promise
+dynamic facet counts after tag/category selections: counts cover the full
+eligible catalog, and source does not restrict product assignments.
