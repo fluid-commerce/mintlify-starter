@@ -1,0 +1,210 @@
+---
+title: "Add droplet widgets to member pages"
+sidebarTitle: "Droplet widgets"
+description: "Ship member storefront widgets as droplet sections and app blocks, place them on storefront and member pages, and deploy them through the API without the admin."
+---
+
+<Warning>
+  Member storefront is in a limited pilot. Confirm that member storefront is enabled for your company before relying on this behavior.
+</Warning>
+
+Member storefront widgets are the sections and app blocks of a Droplet theme extension. A droplet ships them in its extension ZIP. A company installs the droplet, and each widget becomes a section anyone editing the theme can place, with its own settings, on the dashboard, a member page, or a storefront page.
+
+| Widget | File in the extension ZIP | Where it goes |
+| --- | --- | --- |
+| Section | `sections/<name>/index.liquid` with `target: "section"` or no target | Any page template, including `members_dashboard` and `members_page` templates |
+| App block | `blocks/<name>/index.liquid` | Inside a section whose schema accepts `@app` blocks |
+
+Head and body app embeds from the same extension are not widgets. They run storefront-wide, and member-site pages never include them. See [Droplet theme extensions](/themes/droplet-theme-extensions) for the extension package format, settings schemas, and app embeds.
+
+## What a widget knows about the member
+
+A widget renders as part of the page that places it, so it gets what that page gets.
+
+- **On member pages**, a widget section receives the page's `member` and `member_content` values. Read `{{ member.first_name }}` directly, as a member page template does. See [Member Liquid variables](/themes/member-storefront/member-variables).
+- **On storefront pages**, the render is cached and has no member. Use `{% member %}` and `{% member_name %}` for member-only content, and print prices as usual. The SDK fills these in the browser. See [Greet members and show member-only content](/themes/member-storefront/member-aware-sections) and [Member pricing](/themes/member-storefront/member-pricing).
+
+No widget receives the member's session or an API token. A droplet's own backend cannot yet verify which member is viewing a widget.
+
+## Build a widget that works on both
+
+This section greets the member by name on a member page. On a cached storefront page, it leaves the greeting to the SDK:
+
+```liquid
+<section class="rewards-widget">
+  {% if member %}
+    <h2>{{ section.settings.heading | escape }}, {{ member.first_name | escape }}</h2>
+  {% else %}
+    {% member %}
+      <h2>{{ section.settings.heading | escape }}, {% member_name %}</h2>
+    {% else %}
+      <h2>{{ section.settings.guest_heading | escape }}</h2>
+    {% endmember %}
+  {% endif %}
+  <a href="{{ section.settings.link_url | escape }}">{{ section.settings.link_label | escape }}</a>
+</section>
+
+{% schema %}
+{
+  "name": "Rewards balance",
+  "target": "section",
+  "settings": [
+    { "type": "text", "id": "heading", "label": "Member heading", "default": "Welcome back" },
+    { "type": "text", "id": "guest_heading", "label": "Guest heading", "default": "Join our rewards program" },
+    { "type": "url", "id": "link_url", "label": "Link" },
+    { "type": "text", "id": "link_label", "label": "Link label", "default": "See your rewards" }
+  ],
+  "presets": [{ "name": "Rewards balance" }]
+}
+{% endschema %}
+```
+
+Save it as `sections/rewards_balance/index.liquid` in the extension. The `presets` entry is what lists the section in the builder.
+
+Do not print the member's name or other private values outside `{% member %}` on a storefront page. The cache would serve that HTML to the next visitor.
+
+## Place a widget in the builder
+
+1. Install the droplet in the company whose theme you are editing, and confirm its extension is published.
+2. Open the page template in the theme editor. For a member page, open the `members_dashboard` template or the page's `members_page` template.
+3. Open the **Widgets** panel. The droplet's sections are listed under the droplet's name.
+4. Drag the section onto the page, select it, and edit its settings in the sidebar.
+5. Save and publish the template.
+
+To add an app block, select a section that accepts `@app` blocks, click **Add Block**, and choose the droplet's block.
+
+Each placement keeps its own settings. Removing a placement removes it from that page only. The droplet stays installed.
+
+## Place a widget in theme files
+
+A placement is a literal `section` tag with the widget's extension URI, plus a matching entry in the template's schema. It works the same way in a member page template as in a storefront template. This is `members_page/rewards/index.liquid`:
+
+```liquid
+{% section 'fluid://extensions/42/sections/rewards_balance', id: 'rewards_balance' %}
+
+{% schema %}
+{
+  "sections": {
+    "rewards_balance": {
+      "id": "rewards_balance",
+      "type": "fluid://extensions/42/sections/rewards_balance",
+      "settings": {
+        "heading": "Welcome back",
+        "link_url": "/rewards",
+        "link_label": "See your rewards"
+      }
+    }
+  }
+}
+{% endschema %}
+```
+
+Merge the tag and the entry into the existing template. Do not replace other placements or add a second `{% schema %}` block. The tag's `id` and the key under `sections` must match. See [Place a page section directly in Liquid](/themes/droplet-theme-extensions#place-a-page-section-directly-in-liquid) for the full rules and app block placement.
+
+Push the changed template with the [theme CLI](/themes/cli), then publish it. A local edit alone does not change the live site.
+
+## Deploy a widget without the admin
+
+An agent or a CI job can ship, install, and place a widget entirely through the API. Send `Authorization: Bearer <token>` and `Content-Type: application/json` to `https://api.fluid.app`.
+
+Two companies can be involved. The droplet's **owner company** uploads the extension. The **storefront company** installs the droplet and places its widgets. Use a company token for each, or one token when the owner is also the storefront.
+
+### 1. Package and host the ZIP
+
+Build the extension ZIP with `fluid.extension.toml` at its root. See [Package structure](/themes/droplet-theme-extensions#package-structure).
+
+Put the ZIP at a public HTTPS URL that Fluid can download, such as a release asset or a signed storage URL. Fluid rejects `http` URLs and private or internal network addresses. The ZIP limit is 50 MB.
+
+### 2. Upload it to the droplet
+
+Update the droplet with the ZIP's URL, using the owner company's token:
+
+```bash
+curl -X PUT https://api.fluid.app/api/droplets/3f6c2a0e-8b1d-4c57-9e2f-5a7d1c9b4e61 \
+  -H "Authorization: Bearer <owner_company_token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "droplet": { "extension_zip_url": "https://cdn.example.com/northwind-rewards-widget-1.2.0.zip" } }'
+```
+
+To create a new droplet with its extension in one request, send the same `extension_zip_url` in the create request. See [Creating Droplets](/guides/creating-droplets).
+
+The request queues the import and returns straight away. The Theme Extension upload card in the admin is behind a company feature flag. This request is not.
+
+### 3. Wait for the import to publish
+
+Fetch the droplet with the owner company's token:
+
+```bash
+curl https://api.fluid.app/api/droplets/3f6c2a0e-8b1d-4c57-9e2f-5a7d1c9b4e61 \
+  -H "Authorization: Bearer <owner_company_token>"
+```
+
+Read `droplet.app_extensions[0].status`. It moves from `draft` through `publishing` to `published`. On `error`, `error_message` says why the import failed. Poll every few seconds, and stop on `published` or `error`.
+
+### 4. Install the droplet in the storefront company
+
+```bash
+curl -X POST https://api.fluid.app/api/droplet_installations \
+  -H "Authorization: Bearer <storefront_company_token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "droplet_uuid": "3f6c2a0e-8b1d-4c57-9e2f-5a7d1c9b4e61" }'
+```
+
+A `409` means the droplet is already installed; continue to the next step. Installation is required even when the owner company uses its own droplet. Skip this step when you are only updating a widget that is already installed.
+
+### 5. Find the widget's extension URI
+
+List the theme's section templates with the storefront company's token. Replace `1842` with the id of the theme you are editing:
+
+```bash
+curl "https://api.fluid.app/api/application_theme_templates?application_theme_id=1842&themeable_type=sections" \
+  -H "Authorization: Bearer <storefront_company_token>"
+```
+
+Widgets are the entries with `"source": "droplet"`. Use their `extension_uri`, such as `fluid://extensions/42/sections/rewards_balance`. Request `themeable_type=blocks` for app blocks. Never build the URI from the droplet's id: the number in it is the theme extension's id.
+
+### 6. Place and publish
+
+Add the `section` tag and schema entry to the template, as in [Place a widget in theme files](#place-a-widget-in-theme-files). Push the template with the theme CLI and publish it. Open the page as a member and confirm the widget renders.
+
+### Update a widget
+
+Upload a new ZIP to the same droplet and wait for `published` again. Every installed company renders the new version, and existing placements keep their settings.
+
+An import replaces all of the extension's templates and assets, so the ZIP must contain every widget you want to keep. Keep section names and setting ids stable. A placement whose section no longer exists renders nothing.
+
+### Brief for AI agents
+
+```text
+Ship and place the supplied droplet widget in this Fluid theme.
+
+1. Zip the extension with fluid.extension.toml at the root and host it at a
+   public HTTPS URL.
+2. PUT /api/droplets/{uuid} with droplet.extension_zip_url, using the owner
+   company's token. Poll GET /api/droplets/{uuid} until
+   app_extensions[0].status is published. On error, report error_message
+   and stop.
+3. POST /api/droplet_installations with droplet_uuid, using the storefront
+   company's token. Treat 409 as already installed.
+4. GET /api/application_theme_templates?application_theme_id={theme_id}&themeable_type=sections
+   and take extension_uri from the entry with source "droplet". Never
+   invent an extension id.
+5. Read the target template before editing. Add a section tag and a
+   matching schema.sections entry with the same URI and a unique, stable
+   id. Preserve every existing placement.
+6. Push with the theme CLI, publish, and open the page as a member.
+   Report the droplet, extension status, template, placement id, and the
+   verification result.
+```
+
+## Troubleshoot a widget
+
+| Symptom | What to check |
+| --- | --- |
+| The upload request returns `422` | The ZIP URL must be HTTPS and publicly reachable. Check the payload nests the URL under `droplet`. |
+| The status stays `draft` or `publishing` | The import runs in the background. Keep polling. If it never moves, upload again. |
+| The status is `error` | Read `error_message`. A missing manifest means `fluid.extension.toml` is not at the ZIP root. |
+| No droplet entries in the template list | Confirm the extension is published and the droplet is installed in the company that owns the theme. |
+| The widget is missing from the **Widgets** panel | Give the section a `presets` entry and use `target: "section"` or no target. |
+| The widget renders empty on a member page | Confirm the placement's URI matches the current `extension_uri` and that the section still exists in the extension. |
+| The member's name shows on a cached storefront page | Move it inside `{% member %}` and use `{% member_name %}`. Read `member` only on member pages. |

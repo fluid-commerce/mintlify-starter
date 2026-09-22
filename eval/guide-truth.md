@@ -1708,6 +1708,40 @@ immediately before the closing body tag. Head output joins `content_for_header`.
 Custom layouts must preserve those outputs. Manual examples merge into existing
 files and preserve unrelated placements, settings, blocks, and presets.
 
+### Member storefront droplet widgets
+
+`themes/member-storefront/droplet-widgets.mdx` presents Droplet theme extension
+sections and app blocks as the member storefront's widgets. Head/body embeds
+are not widgets and stay storefront-only. The Widgets panel naming follows
+fluid PRs #23196 and #23208 (the rail's Apps / App Embeds panel became
+**Widgets** and lists droplet sections under the embed toggles); the in-canvas
+**Add Section → Apps** tab still exists in `AddSectionsWithPreview`.
+
+Member-page behavior is source-verified, not a live render: member pages render
+through the same themeable pipeline, `LiquidTags::Section` resolves extension
+URIs for any page type, and `base_environment_for` hands every section the
+page's `member` (a `MemberProfileDrop`) and `member_content`. `PageBuilder.fetch_global_embeds`
+returns before merging extension embeds for `members_*` templates. The wider
+Phase 006 design in fluid `features/member-storefront` (sealed screens, a
+member identity bridge for droplets) is Draft; the guide claims none of it.
+
+**Scoped exception — the upload API.** At the user's explicit request, the
+guide documents the agent flow without the admin: `PUT /api/droplets/{uuid}`
+with `droplet.extension_zip_url`, polling `app_extensions[].status`, `POST
+/api/droplet_installations`, and `GET /api/application_theme_templates` for
+`extension_uri`. This overrides "no extension upload HTTP payload is restated"
+above for this guide only, in the same way as the navigation menus exception.
+None of these unversioned endpoints is in a synced spec, so the claims are
+semantic. Evidence: `Api::Droplets::{Create,Update,Show}Action`,
+`Droplet::ExtensionImporter`, `UrlSecurity`, `AppExtension` (status enum),
+`AppExtensionBlueprint` (`error_message` on the owner view),
+`Api::DropletInstallations::CreateAction` (409 on an existing install), and
+`ApplicationThemeTemplates::IndexAction` with
+`ApplicationThemeTemplateBlueprinter` (`source`, `extension_uri`). The
+`DROPLET_THEME_EXTENSIONS` flag is read only by fluid-admin, so the API upload
+is not gated by it. Move endpoint contracts to generated reference pages once
+the droplet and theme-template surfaces are synced.
+
 ## Product tags and shop filters
 
 `api/guides/manage-product-tags.mdx` and `themes/shop-tag-filters.mdx`
