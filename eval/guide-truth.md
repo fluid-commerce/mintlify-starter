@@ -591,7 +591,7 @@ gates the listed content until it is synced:
 | **Mobile Widgets + users v2025-06** | `/api/company/mobile_widgets`, `/api/v2025-06/users/{token}` | mobile-widget-implementation |
 | **mobile-playlists** | (thin; SDK-doc pointer) | mobile-app/playlists |
 | **Web Builder component API** | undefined ("TBD" in source) | adding-components-for-web-builder |
-| **tokens-v2025-06** | `/api/v2025-06/{partner_tokens,tokens/public\|partner}` | authentication guide's token-mgmt claims (expected gap — house rules allow `/api/v2025-06/tokens/*`) |
+| **tokens-v2025-06** | `/api/v2025-06/{partner_tokens,tokens/public\|partner}` | authentication guide's token-mgmt **contract** claims (expected gap — house rules allow `/api/v2025-06/tokens/*`). Dashboard-flow guidance for public tokens is carved out — see the ENG-15 section |
 | **fluid_orchestration** | `/api/fluid_orchestration/*` | payment-processing guide (see 9.5b note) |
 | **legacy carts / catalog / admin** | `/api/carts` (carts-v0), `company/v1`, `catalog-v1`, `admin-v0`, `/v1/...` | build-shopping-cart, headless-commerce, targeted-marketing — all discarded (superseded by synced-spec rewrites); do not resync |
 
@@ -1770,3 +1770,58 @@ Preserve the custom Developer exclusion in the existing-role backfill; a role
 name alone does not establish a system-managed full-access role. Do not promise
 dynamic facet counts after tag/category selections: counts cover the full
 eligible catalog, and source does not restrict product assignments.
+
+## ENG-15 — public token management is documentable as dashboard guidance
+
+The `tokens-v2025-06` row of the unsynced-surface deferral map gates the
+authentication guide's token-management **contract** claims: request bodies,
+parameter schemas, and status codes for `/api/v2025-06/tokens/*` stay unwritten
+until that surface syncs. It does not gate describing what a public token *is*,
+how an admin creates one, and what the product refuses to create. Those are
+product behaviour, established by the admin application rather than by a spec,
+and they are now published in `api/authentication.mdx` under **Working with
+public tokens**.
+
+The carve-out became necessary because the content had nowhere else to live.
+`sdk/files-sdk.mdx` sends readers to `/api/authentication#public-token` "for
+token guidance", and that anchor previously said only that a reference was
+forthcoming. The material that answered the question lived in the retired
+`redoc/docs/guides/authentication-guide.md`, which stopped publishing and is
+slated for deletion with the rest of `redoc/` under ENG-1091.
+
+Fluid PR #22732 moved token management out of the developer landing page onto
+its own screen, dual-mounted at `/settings/tokens` and `/developer-hub/tokens`
+and labelled **API Tokens** in both sidebars. Both nav entries, the mirrored
+pages, and the legacy `#api-tokens` forward are the reason the published prose
+now says **Settings → API Tokens** rather than **Settings → Developer**, which
+still exists but no longer manages tokens. The quickstart's webhook step was
+corrected in the same pass: webhooks are their own settings entry, never nested
+under Developer.
+
+Evidence, all at `de2d9a97e8` in `fluid-commerce/fluid`: `PublicToken`
+(`VALID_SCOPES`, `PUBLIC_TOKEN_PREFIX`, `non_expiring_requires_domain_allowlist`,
+`origin_matches_pattern?`, `matches_value?`, `token_display`);
+`Api::V202506::PublicTokensController` and its forbidden-when-`public_token`
+filter; `TokenAuthentication#handle_public_token`, `#handle_company_token`, and
+`#handle_partner_token`; `PublicTokenBlueprinter`'s `api_public_tokens_create`
+view; and, in `apps/fluid-admin`, `PUBLIC_TOKEN_SCOPES` and `EXPIRY_OPTIONS` in
+`lib/tokens-client.ts`, `CreatePublicTokenModal`, `PublicTokensCard`,
+`SettingsNav`, and `nav-developer-hub`.
+
+Three published details correct the retired guide rather than copying it. The
+wildcard in a domain allowlist spans exactly one label, so `*.acme.com` does not
+reach `eu.shop.acme.com`; the guide implied an unbounded wildcard. An allowlist
+entry matches either a full origin or a bare host, not only the `https://` form
+the guide showed. And the token value is returned once, at creation, with the
+dashboard thereafter showing only the masked `pub-…` suffix — a fact the guide
+omitted entirely and the reason the page now tells readers to copy it before
+closing the dialog.
+
+Keep endpoint parameters, payloads, and response codes off this page. When
+`tokens-v2025-06` syncs, per-endpoint contracts belong on the generated
+reference and the `/api/v2025-06/tokens/*` pointer in the Public token note
+becomes a link to it; the dashboard guidance stays as written. Scope values and
+expiration choices are published because a reader selects them in the UI, not as
+a restatement of a request schema. Do not describe programmatic token management
+as the primary path while the dashboard is the only documented one, and do not
+reintroduce **Settings → Developer** as the token location.
