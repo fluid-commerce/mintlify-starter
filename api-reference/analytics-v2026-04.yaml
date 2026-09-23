@@ -1766,6 +1766,17 @@ components:
           type: string
           format: date
           example: "2026-09-20"
+        renewal_count:
+          type: integer
+          minimum: 0
+          description: |
+            Renewal cycles this date touched, counted once each. The
+            figure to render as "N renewals": deliberately not the sum
+            of the buckets below, because a renewal's bill date advances
+            only when a charge clears, so one that failed is reported
+            both as money still due and as the attempt that failed.
+        renewal_amount:
+          "$ref": "#/components/schemas/Money"
         scheduled_count:
           type: integer
           minimum: 0
@@ -1792,6 +1803,23 @@ components:
             is a deterministic read of present dunning state, not a
             predicted likelihood — no per-renewal score is served.
         at_risk_amount:
+          "$ref": "#/components/schemas/Money"
+        at_risk_unsettled_count:
+          type: integer
+          minimum: 0
+          description: |
+            Of `at_risk_count`, the renewals that have not run on this
+            date. Disjoint from the settled counts, so a caller may add
+            the two — `at_risk_count` may not be added to them, because
+            a renewal that declined today keeps its bill date and is
+            reported in both.
+
+            Keyed on the renewal's cycle date, while `at_risk_count` is
+            keyed on the date the grid draws it. Where the operator's
+            zone and the subscription's disagree, the grade sits on one
+            cell and this split on its neighbour — attribution, not a
+            second count.
+        at_risk_unsettled_amount:
           "$ref": "#/components/schemas/Money"
         top_risk_driver:
           type:
@@ -1826,35 +1854,82 @@ components:
           type: integer
           minimum: 0
           description: |
-            Failures whose event is not retriable under
+            Failed charge attempts whose event is not retriable under
             `Commerce::BillingEvent.retriable_failure?` — the dunning
-            chain will not attempt these again.
+            chain will not attempt these again. Counts attempts: a
+            renewal retried three times on this date is three. For the
+            renewals behind them, see `hard_decline_renewal_count`.
         hard_decline_amount:
           "$ref": "#/components/schemas/Money"
         soft_decline_count:
           type: integer
           minimum: 0
           description: |
-            Retriable failures that nothing currently has in hand.
+            Retriable failed attempts that nothing currently has in hand.
+            Counts attempts, like `hard_decline_count`.
         soft_decline_amount:
           "$ref": "#/components/schemas/Money"
         awaiting_retry_count:
           type: integer
           minimum: 0
           description: |
-            Retriable failures whose subscription passes every gate
-            `Commerce::RetryFailedPaymentsJob` applies, so a retry is
-            scheduled.
+            Retriable failed attempts whose subscription passes every
+            gate `Commerce::RetryFailedPaymentsJob` applies, so a retry
+            is scheduled. Counts attempts, like `hard_decline_count`.
         awaiting_retry_amount:
           "$ref": "#/components/schemas/Money"
+        hard_decline_renewal_count:
+          type: integer
+          minimum: 0
+          description: |
+            Renewal cycles that failed on this date and have not
+            cleared, counted once each however many attempts they took —
+            the population the day's actions reach, where
+            `hard_decline_count` is the charges that ran.
+
+            Each cycle is filed the way the day endpoint files its row,
+            by its newest attempt: `awaiting_retry` when the
+            subscription has a retry in hand, whatever that attempt
+            said and whether or not the merchant has collection paused;
+            otherwise by the attempt's retriability. This figure is the
+            hard declines with no retry in hand.
+
+            The three `*_renewal_count` figures are disjoint and add up
+            to the day's failed renewals. A cycle that later cleared is
+            in none of them. Their split can differ from the attempt
+            counts', which file a non-retriable attempt as a hard
+            decline first and treat nothing as awaiting retry while
+            collection is paused. A cycle whose newest event is a charge
+            still in progress is in none of them, as the day endpoint
+            reports that row in flight.
+          example: 1
+        soft_decline_renewal_count:
+          type: integer
+          minimum: 0
+          description: |
+            As `hard_decline_renewal_count`, for renewals whose newest
+            attempt is a retriable failure and whose subscription has
+            no retry in hand.
+          example: 0
+        awaiting_retry_renewal_count:
+          type: integer
+          minimum: 0
+          description: |
+            As `hard_decline_renewal_count`, for renewals whose
+            subscription has a retry in hand.
+          example: 3
       required:
       - date
+      - renewal_count
+      - renewal_amount
       - scheduled_count
       - scheduled_amount
       - overdue_count
       - overdue_amount
       - at_risk_count
       - at_risk_amount
+      - at_risk_unsettled_count
+      - at_risk_unsettled_amount
       - top_risk_driver
       - in_flight_count
       - succeeded_count
@@ -1865,6 +1940,9 @@ components:
       - soft_decline_amount
       - awaiting_retry_count
       - awaiting_retry_amount
+      - hard_decline_renewal_count
+      - soft_decline_renewal_count
+      - awaiting_retry_renewal_count
     SubscriptionBillingTotals:
       type: object
       description: |
@@ -1904,9 +1982,18 @@ components:
             a renewal's bill date advances only when a charge clears, so
             one that failed is reported both as money still due and as
             the attempt that failed, and adding the buckets counts it
-            twice. Count only — an in-flight attempt carries no amount
-            until it resolves, so no amount counterpart could honestly
-            claim to be the whole month.
+            twice.
+
+            Not the sum of the day cells either. A cell is keyed on the
+            date the grid draws a renewal on, in the operator's
+            timezone, while this counts the renewal's own cycle date, in
+            the subscription's. Near a month boundary the two disagree:
+            a renewal drawn on 1 September can belong to August's cycle,
+            so it appears in a September cell and in August's
+            `all_renewal_count`. Read this figure for the month rather
+            than adding the cells up.
+        all_renewal_amount:
+          "$ref": "#/components/schemas/Money"
         succeeded_count:
           type: integer
           minimum: 0
@@ -1925,6 +2012,7 @@ components:
       - renewal_count
       - renewal_amount
       - all_renewal_count
+      - all_renewal_amount
       - succeeded_count
       - succeeded_amount
       - failed_count
@@ -1980,12 +2068,29 @@ components:
         count:
           type: integer
           minimum: 0
+          description: |
+            Failed ATTEMPTS in this category — how much work it made.
+            Not the population `amount` is summed over; see
+            `cycle_count`.
+        cycle_count:
+          type: integer
+          minimum: 0
+          description: |
+            Renewal CYCLES behind those attempts, counted once each
+            however often the chain retried them. This is the population
+            `amount` is summed over, and the figure the list is ordered
+            by.
         amount:
           "$ref": "#/components/schemas/Money"
         recoverable_count:
           type: integer
           minimum: 0
-          description: Those the retry chain would attempt again.
+          description: |
+            Failed ATTEMPTS the retry chain would make again — the same
+            population as `count`. Deliberately not the count behind
+            `recoverable_amount`, which is CYCLES, counted once however
+            often each was retried. The two are different populations,
+            so dividing one by the other answers neither question.
         recoverable_amount:
           "$ref": "#/components/schemas/Money"
         share_of_failures:
@@ -1993,6 +2098,7 @@ components:
       required:
       - label
       - count
+      - cycle_count
       - amount
       - recoverable_count
       - recoverable_amount
@@ -2113,7 +2219,12 @@ components:
             "$ref": "#/components/schemas/SubscriptionBillingTrendPoint"
         decline_reasons:
           type: array
-          description: Ordered by count descending.
+          description: |
+            Ordered by the renewals behind each reason, descending, with
+            failed attempts breaking a tie — so the first row is the
+            reason costing the most renewals rather than the one whose
+            retry chain ran longest. `share_of_failures` is a share of
+            attempts, so it does not decrease monotonically down the list.
           items:
             "$ref": "#/components/schemas/SubscriptionBillingDeclineReason"
         markets:
