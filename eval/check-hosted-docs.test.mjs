@@ -863,12 +863,12 @@ describe("isSanctionedLegacyHit", () => {
 
   it("sanctions per_page on the exact Public SDK Drop Zones page", () => {
     const page =
-      "api-reference/public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public";
+      "api-reference/public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public";
     assert.equal(isSanctionedLegacyHit("per_page", page), true);
     assert.equal(
       isSanctionedLegacyHit(
         "per_page",
-        "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
+        "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
       ),
       true,
     );

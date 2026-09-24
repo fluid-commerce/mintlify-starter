@@ -1364,7 +1364,7 @@ references remain authoritative for the two public Drop Zones readers.
   `/api-reference/store/list-drop-zones`.
 - `public-v2025-06` owns the FairShare SDK reader:
   `public_v2025_06_index_public_drop_zones`, published at
-  `/api-reference/public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+  `/api-reference/public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`.
   It is SDK-internal. New direct REST integrations use Checkout.
 - Both public operations call `Api::Public::DropZones::IndexAction`. That action
   scopes to active records whose configured page is `checkout` or
@@ -1420,7 +1420,7 @@ The Public SDK operation `public_v2025_06_index_public_drop_zones` is a verified
 offset-pagination exception. `Api::Public::DropZones::IndexAction` validates integer
 `page` / `per_page`, applies `.page(...).per(...)`, and returns
 `pagination_meta`. `eval/check-hosted-docs.mjs` therefore permits `per_page` only on
-`public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+`public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`.
 No tag-wide or Public-SDK-wide exception is allowed. In particular, the existing
 root-themes negative test remains unchanged.
 
