@@ -4,7 +4,7 @@ This directory holds the checks for Fluid's hosted Mintlify docs. It started as 
 CURRENT-2424 Categories/Collections pilot and now covers the published API, SDK, and
 theme surfaces.
 
-Three independent things live here:
+Four independent things live here:
 
 - **The guide truth gate** (Linear CURRENT-2587): `guide-claims.json` (claims registry
   for the task guides) and `check-guide-claims.mjs` (deterministic checker that runs in
@@ -16,6 +16,11 @@ Three independent things live here:
 - **The advertised-link checker** (`check-advertised-docs-links.mjs`): an offline CI
   check that every production-emitted URL registered in `advertised-docs-links.json`
   maps to an authored page included in `docs.json` navigation.
+- **The broken-links check** (`check-broken-links.mjs`): runs the pinned mint CLI's
+  `broken-links` check with redirects, anchors and snippets, and fails CI on any broken
+  internal link or redirect destination. Links into generated TypeDoc pages are exempt
+  only for symbols present in `sdk-artifacts/typedoc/`. `--external` also checks
+  external links; CI runs that mode as a separate, non-gating report.
 
 One-off run records (adversarial verification, omission sweeps, hosted-check runs) live
 on the phase's Linear issue, not in the repo. Durable decisions go in `guide-truth.md`.
@@ -299,7 +304,10 @@ typically once per migration phase, and record the run on the phase's Linear iss
 
 CI (`.github/workflows/validate.yml`) runs only deterministic, offline checks that need
 no credentials and no deploy: `mint validate`, `check-guide-claims.mjs` and its self-test,
-`check-advertised-docs-links.mjs`, and this directory's unit tests (`*.test.mjs`).
+`check-advertised-docs-links.mjs`, `check-broken-links.mjs`, and this directory's unit tests
+(`*.test.mjs`). The one exception is the last step, `check-broken-links.mjs --external`, which
+needs the network and so is non-gating: it reports broken external links but never fails the
+build.
 **Nothing in CI requires an API key** — and now nothing in this directory does either.
 
 ## Production-advertised docs URLs

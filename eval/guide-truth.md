@@ -183,6 +183,13 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`node eval/check-guide-claims.mjs`). A PR that edits a guide without updating the
   registry (or vice versa) fails here — this is the hard gate for human-authored
   changes.
+  It then runs `node eval/check-broken-links.mjs`, the pinned mint CLI's
+  `broken-links` check with redirects, anchors and snippets. It fails on any broken
+  internal link or redirect destination. Links into generated TypeDoc pages are
+  exempt, because production serves them but the CLI does not build them, and only
+  for symbols present in `sdk-artifacts/typedoc/`. A last, non-gating step reports
+  broken external links (`--external`); it needs the network, and the CLI counts a
+  timeout as broken too.
 - **`sync-generated-api-references.yml`** — hourly, **manifest-driven** and
   **flow-and-flag** for OpenAPI changes. `.github/synced-api-references.json` is the
   control surface for OpenAPI and TypeDoc references (each entry is pulled from its
@@ -204,9 +211,12 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
     the existing open — a single labeled issue (`guide-spec-conflict`) carrying the
     failing `[FAIL]` lines. The spec is **not** rolled back.
 
-  While a conflict is open, `main`'s CI is **deliberately red**: the same
-  `validate.yml` run (above) fails on the synced commit because a published guide now
-  contradicts the published reference. That red build, plus the issue, is the signal.
+  The sync pushes with `GITHUB_TOKEN`, and GitHub does not start workflows for those
+  pushes, so `validate.yml` does **not** run on a synced commit. A conflict therefore
+  shows up as the issue above and as a red `validate.yml` on the next human PR or
+  merge. A generated-page rename that breaks a hand-written link (the drop-zones
+  summary rename of 2026-08-03 did) surfaces the same way, from the broken-links step,
+  and opens no issue.
 
 ### Future: replacing the cron with Mintlify-native sync
 
@@ -1005,7 +1015,7 @@ is CURRENT-2719.
 ## Phase 9.6e — URL continuity for the legacy Redocly namespace (CURRENT-2719)
 
 Mintlify serves `docs.fluid.app` directly, so a `docs.json` `redirects` array covers the whole legacy
-namespace with no DNS, edge, or proxy change. The shipped map is **165 entries**, using only
+namespace with no DNS, edge, or proxy change. The shipped map is **172 entries**, using only
 `source`/`destination`/`permanent`. Only settled outcomes are recorded here; the map is the diff and
 the run record is on the issue.
 
@@ -1182,7 +1192,7 @@ cannot be routed separately from its unanchored twin, and all `themes-cli` traff
 ### A redirect to a page that does not document the content is a regression, not continuity
 
 Deferred and discarded content is verifiably absent from published pages by design, so pointing a
-reader at a plausible neighbour would assert coverage that does not exist. **19 legacy URLs are
+reader at a plausible neighbour would assert coverage that does not exist. **17 legacy URLs are
 recorded accepted 404s** rather than nearest-conceptual redirects:
 
 - `sdk/fairshare/components/getAuthenticatedUser`, `sdk/fairshare/settings/lookupAffiliate` —
@@ -1192,13 +1202,40 @@ recorded accepted 404s** rather than nearest-conceptual redirects:
 - `guides/mobile-app/native-widgets`, `guides/mobile-app/playlists`, `sdk/mobile-sdk` — stubs and
   placeholders.
 - `guides/data-dashboard`, `guides/inventory-management`, `guides/targeted-marketing`,
-  `legal/terms`, `legal/responsible-use`, `changelog` — fictional, disproven, or out of scope.
+  `changelog` — fictional, disproven, or out of scope.
 
-No blanket catch-all wildcard is added, and the map contains **no wildcards at all**. A catch-all
-would hide which URLs are actually being hit; one analytics cycle of real 404 data is the cheaper way
-to decide the long tail. A consequence worth recording: because there are no wildcards, the
-undocumented precedence between a specific entry and an overlapping wildcard is moot here, so a
-passing build says nothing about that precedence.
+`legal/terms` and `legal/responsible-use` left this list in ENG-15 (2026-09, decided on ENG-1091):
+both redirect to the published Terms and Conditions page, `https://fluid.app/terms-conditions`.
+There is no separate Responsible Use page, so the Terms are its home. Note that `fluid.app`
+answers 200 with its homepage for any unknown path, so a 200 there proves nothing; the destination
+was checked by page title.
+
+The same triage (ENG-1091) kept three older guides redirected rather than 404:
+
+- `guides/custom-catch-ups-guide` goes to the generated `company-v0` "List custom catch-ups"
+  page, which documents the route the guide described.
+- `guides/mobile-widget-implementation` keeps `/api/overview`.
+- `guides/payment-processing`, and its Mintlify-era twin `/guides/payment-processing`, go to
+  `/concepts/checkout`, the page that describes Fluid's payment layer. That is a decision, not a
+  claim of coverage: payment routing itself has no published page yet. Repoint both when the Help
+  Center's Payment Routing article ships.
+
+No blanket catch-all wildcard is added. A catch-all would hide which URLs are actually being hit;
+one analytics cycle of real 404 data is the cheaper way to decide the long tail.
+
+ENG-15 (2026-09) added three **family** wildcards, each scoped to one legacy API-reference
+generation: `/docs/apis/company.api/:slug*`, `/docs/apis/swagger/:slug*` and `/docs/apis/rep/:slug*`
+all go to `/api/overview`. The old crawl found 196 URLs in these families (130, 54 and 12); all but
+the bare `/docs/apis/swagger`, which already had an exact entry, returned 404. Like the 30
+`/docs/openapi` routes above, they reach `/api/overview` **by policy**, as the API landing page, not
+as a claim of coverage: many legacy operations in these families, including the whole `rep`
+surface, are not in the published references. When the API Reference is regrouped by admin
+category (ENG-1164), a wildcard can point at a category page that covers its family.
+
+Precedence is no longer moot: a specific entry wins over an overlapping wildcard. That was verified
+in `mint dev` against the existing exact `/docs/apis/swagger/…` entries, which keep their own
+destinations; confirm it in production after the first deploy. Use the `:slug*` form, since a bare
+`:param` did not fire in `mint dev`.
 
 ### Consumers outside this repo cannot be fixed by redirects
 
@@ -1364,7 +1401,7 @@ references remain authoritative for the two public Drop Zones readers.
   `/api-reference/store/list-drop-zones`.
 - `public-v2025-06` owns the FairShare SDK reader:
   `public_v2025_06_index_public_drop_zones`, published at
-  `/api-reference/public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+  `/api-reference/public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`.
   It is SDK-internal. New direct REST integrations use Checkout.
 - Both public operations call `Api::Public::DropZones::IndexAction`. That action
   scopes to active records whose configured page is `checkout` or
@@ -1420,7 +1457,7 @@ The Public SDK operation `public_v2025_06_index_public_drop_zones` is a verified
 offset-pagination exception. `Api::Public::DropZones::IndexAction` validates integer
 `page` / `per_page`, applies `.page(...).per(...)`, and returns
 `pagination_meta`. `eval/check-hosted-docs.mjs` therefore permits `per_page` only on
-`public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public`.
+`public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`.
 No tag-wide or Public-SDK-wide exception is allowed. In particular, the existing
 root-themes negative test remains unchanged.
 

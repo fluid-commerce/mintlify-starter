@@ -137,7 +137,7 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "store/list-drop-zones",
   "subscriptions/list-subscriptions",
   "customer-orders/list-customer-orders",
-  "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
+  "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
 ]);
 
 // The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
@@ -214,7 +214,7 @@ const PUBLIC_SDK_V2025_06_PAGES = new Set([
   "playlist/get-playlist-by-slug",
   "playlist/get-playlist-by-slug-deprecated",
   "product/get-product-by-slug-in-a-foreign-local-includes-the-correct-variants",
-  "public-drop-zones/an-array-of-available-checkout-and-order-confirmation-drop-zones-public",
+  "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
   "public/auth-auth",
   "public/countries-countries",
   "public/db-port-db-port",
