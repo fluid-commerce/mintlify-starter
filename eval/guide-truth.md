@@ -183,6 +183,13 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`node eval/check-guide-claims.mjs`). A PR that edits a guide without updating the
   registry (or vice versa) fails here — this is the hard gate for human-authored
   changes.
+  It then runs `node eval/check-broken-links.mjs`, the pinned mint CLI's
+  `broken-links` check with redirects, anchors and snippets. It fails on any broken
+  internal link or redirect destination. Links into generated TypeDoc pages are
+  exempt, because production serves them but the CLI does not build them, and only
+  for symbols present in `sdk-artifacts/typedoc/`. A last, non-gating step reports
+  broken external links (`--external`); it needs the network, and the CLI counts a
+  timeout as broken too.
 - **`sync-generated-api-references.yml`** — hourly, **manifest-driven** and
   **flow-and-flag** for OpenAPI changes. `.github/synced-api-references.json` is the
   control surface for OpenAPI and TypeDoc references (each entry is pulled from its
@@ -204,9 +211,12 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
     the existing open — a single labeled issue (`guide-spec-conflict`) carrying the
     failing `[FAIL]` lines. The spec is **not** rolled back.
 
-  While a conflict is open, `main`'s CI is **deliberately red**: the same
-  `validate.yml` run (above) fails on the synced commit because a published guide now
-  contradicts the published reference. That red build, plus the issue, is the signal.
+  The sync pushes with `GITHUB_TOKEN`, and GitHub does not start workflows for those
+  pushes, so `validate.yml` does **not** run on a synced commit. A conflict therefore
+  shows up as the issue above and as a red `validate.yml` on the next human PR or
+  merge. A generated-page rename that breaks a hand-written link (the drop-zones
+  summary rename of 2026-08-03 did) surfaces the same way, from the broken-links step,
+  and opens no issue.
 
 ### Future: replacing the cron with Mintlify-native sync
 
