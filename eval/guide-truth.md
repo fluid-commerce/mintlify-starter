@@ -1800,22 +1800,18 @@ under Developer.
 
 Evidence, all at `de2d9a97e8` in `fluid-commerce/fluid`: `PublicToken`
 (`VALID_SCOPES`, `PUBLIC_TOKEN_PREFIX`, `non_expiring_requires_domain_allowlist`,
-`origin_matches_pattern?`, `matches_value?`, `token_display`);
-`Api::V202506::PublicTokensController` and its forbidden-when-`public_token`
-filter; `TokenAuthentication#handle_public_token`, `#handle_company_token`, and
-`#handle_partner_token`; `PublicTokenBlueprinter`'s `api_public_tokens_create`
-view; and, in `apps/fluid-admin`, `PUBLIC_TOKEN_SCOPES` and `EXPIRY_OPTIONS` in
-`lib/tokens-client.ts`, `CreatePublicTokenModal`, `PublicTokensCard`,
-`SettingsNav`, and `nav-developer-hub`.
+`token_display`); `Api::V202506::PublicTokensController` and its
+forbidden-when-`public_token` filter; `TokenAuthentication#handle_public_token`,
+`#handle_company_token`, and `#handle_partner_token`; `PublicTokenBlueprinter`'s
+`api_public_tokens_create` view; and, in `apps/fluid-admin`,
+`PUBLIC_TOKEN_SCOPES` and `EXPIRY_OPTIONS` in `lib/tokens-client.ts`,
+`CreatePublicTokenModal`, `PublicTokensCard`, `SettingsNav`, and
+`nav-developer-hub`.
 
-Three published details correct the retired guide rather than copying it. The
-wildcard in a domain allowlist spans exactly one label, so `*.acme.com` does not
-reach `eu.shop.acme.com`; the guide implied an unbounded wildcard. An allowlist
-entry matches either a full origin or a bare host, not only the `https://` form
-the guide showed. And the token value is returned once, at creation, with the
-dashboard thereafter showing only the masked `pub-…` suffix — a fact the guide
-omitted entirely and the reason the page now tells readers to copy it before
-closing the dialog.
+One published detail corrects the retired guide rather than copying it: the token
+value is returned once, at creation, with the dashboard thereafter showing only
+the masked `pub-…` suffix — a fact the guide omitted entirely and the reason the
+page now tells readers to copy it before closing the dialog.
 
 Keep endpoint parameters, payloads, and response codes off this page. When
 `tokens-v2025-06` syncs, per-endpoint contracts belong on the generated
