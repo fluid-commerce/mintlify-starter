@@ -1015,7 +1015,7 @@ is CURRENT-2719.
 ## Phase 9.6e — URL continuity for the legacy Redocly namespace (CURRENT-2719)
 
 Mintlify serves `docs.fluid.app` directly, so a `docs.json` `redirects` array covers the whole legacy
-namespace with no DNS, edge, or proxy change. The shipped map is **165 entries**, using only
+namespace with no DNS, edge, or proxy change. The shipped map is **172 entries**, using only
 `source`/`destination`/`permanent`. Only settled outcomes are recorded here; the map is the diff and
 the run record is on the issue.
 
@@ -1192,7 +1192,7 @@ cannot be routed separately from its unanchored twin, and all `themes-cli` traff
 ### A redirect to a page that does not document the content is a regression, not continuity
 
 Deferred and discarded content is verifiably absent from published pages by design, so pointing a
-reader at a plausible neighbour would assert coverage that does not exist. **19 legacy URLs are
+reader at a plausible neighbour would assert coverage that does not exist. **17 legacy URLs are
 recorded accepted 404s** rather than nearest-conceptual redirects:
 
 - `sdk/fairshare/components/getAuthenticatedUser`, `sdk/fairshare/settings/lookupAffiliate` —
@@ -1202,13 +1202,40 @@ recorded accepted 404s** rather than nearest-conceptual redirects:
 - `guides/mobile-app/native-widgets`, `guides/mobile-app/playlists`, `sdk/mobile-sdk` — stubs and
   placeholders.
 - `guides/data-dashboard`, `guides/inventory-management`, `guides/targeted-marketing`,
-  `legal/terms`, `legal/responsible-use`, `changelog` — fictional, disproven, or out of scope.
+  `changelog` — fictional, disproven, or out of scope.
 
-No blanket catch-all wildcard is added, and the map contains **no wildcards at all**. A catch-all
-would hide which URLs are actually being hit; one analytics cycle of real 404 data is the cheaper way
-to decide the long tail. A consequence worth recording: because there are no wildcards, the
-undocumented precedence between a specific entry and an overlapping wildcard is moot here, so a
-passing build says nothing about that precedence.
+`legal/terms` and `legal/responsible-use` left this list in ENG-15 (2026-09, decided on ENG-1091):
+both redirect to the published Terms and Conditions page, `https://fluid.app/terms-conditions`.
+There is no separate Responsible Use page, so the Terms are its home. Note that `fluid.app`
+answers 200 with its homepage for any unknown path, so a 200 there proves nothing; the destination
+was checked by page title.
+
+The same triage (ENG-1091) kept three older guides redirected rather than 404:
+
+- `guides/custom-catch-ups-guide` goes to the generated `company-v0` "List custom catch-ups"
+  page, which documents the route the guide described.
+- `guides/mobile-widget-implementation` keeps `/api/overview`.
+- `guides/payment-processing`, and its Mintlify-era twin `/guides/payment-processing`, go to
+  `/concepts/checkout`, the page that describes Fluid's payment layer. That is a decision, not a
+  claim of coverage: payment routing itself has no published page yet. Repoint both when the Help
+  Center's Payment Routing article ships.
+
+No blanket catch-all wildcard is added. A catch-all would hide which URLs are actually being hit;
+one analytics cycle of real 404 data is the cheaper way to decide the long tail.
+
+ENG-15 (2026-09) added three **family** wildcards, each scoped to one legacy API-reference
+generation: `/docs/apis/company.api/:slug*`, `/docs/apis/swagger/:slug*` and `/docs/apis/rep/:slug*`
+all go to `/api/overview`. The old crawl found 196 URLs in these families (130, 54 and 12); all but
+the bare `/docs/apis/swagger`, which already had an exact entry, returned 404. Like the 30
+`/docs/openapi` routes above, they reach `/api/overview` **by policy**, as the API landing page, not
+as a claim of coverage: many legacy operations in these families, including the whole `rep`
+surface, are not in the published references. When the API Reference is regrouped by admin
+category (ENG-1164), a wildcard can point at a category page that covers its family.
+
+Precedence is no longer moot: a specific entry wins over an overlapping wildcard. That was verified
+in `mint dev` against the existing exact `/docs/apis/swagger/…` entries, which keep their own
+destinations; confirm it in production after the first deploy. Use the `:slug*` form, since a bare
+`:param` did not fire in `mint dev`.
 
 ### Consumers outside this repo cannot be fixed by redirects
 
