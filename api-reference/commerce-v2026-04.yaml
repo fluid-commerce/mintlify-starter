@@ -130,6 +130,39 @@ components:
             description: Explains that a request with the same `Idempotency-Key`
               is still being processed; retry once it completes.
             example: A request with this Idempotency-Key is already being processed
+    OrderEditUnprocessableError:
+      description: |
+        One of the two 422 bodies:
+        - the wrapped `ErrorResponse` for a validation or business error
+        - a bare `{ status, message }` object when the `Idempotency-Key`
+          was already used with a different request, or ends with the
+          reserved suffix `:lock`; `status` is the literal string "error",
+          not an HTTP status code
+      oneOf:
+      - "$ref": "#/components/schemas/ErrorResponse"
+      - type: object
+        required:
+        - status
+        - message
+        properties:
+          status:
+            type: string
+            enum:
+            - error
+            description: Literal string `"error"`, a status label, not an HTTP
+              status code. Marks the refused-`Idempotency-Key` body (reused
+              for a different request, or ending with `:lock`).
+          message:
+            type: string
+            description: Explains that the `Idempotency-Key` was already used
+              with a different request, and that a retry must resend the
+              original request unchanged; or that the key ends with the
+              reserved suffix `:lock` and holds no cached response, and that
+              a retry of an earlier request must confirm its outcome before
+              it is sent again under a different key.
+            example: This Idempotency-Key was already used with a different
+              request. If you are retrying, resend the original request
+              unchanged. Use a new Idempotency-Key only for a new request.
     ErrorResponse:
       type: object
       required:
@@ -888,6 +921,13 @@ components:
         application/json:
           schema:
             "$ref": "#/components/schemas/ErrorResponse"
+    OrderEditUnprocessableEntity:
+      description: Business error (e.g. variant not found, editor failure, cross-company
+        discount), or an `Idempotency-Key` already used with a different request.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/OrderEditUnprocessableError"
     SearchUnavailable:
       description: |
         The search index could not answer the request. Returned by the
@@ -1162,12 +1202,21 @@ paths:
         required: false
         description: |
           Optional client-generated key (UUID recommended) that the server
-          uses to deduplicate retries. The first request with a given key
-          executes normally; subsequent requests with the same key return
-          the cached response with `X-Idempotent-Replayed: true` for 24
-          hours. A concurrent retry while the first is still in flight
-          returns HTTP 409. The cache is scoped to the authenticated
-          company.
+          uses to deduplicate retries, for up to 24 hours. The key is bound
+          to the exact request that first used it: the method, path and
+          query string, `Content-Type` and body bytes, and the editor the
+          edit is attributed to. A retry must resend that request unchanged,
+          byte for byte, and then replays the first response with
+          `X-Idempotent-Replayed: true`. Any other request under the key
+          answers 422 and does not run; use a new key only for a new
+          request. A client that cannot reproduce the original request
+          should read the order to confirm the outcome rather than retry
+          under a new key. A concurrent retry while the first is still in
+          flight returns 409. The cache is scoped to the authenticated
+          company. A key must not end with `:lock`, which is reserved; such
+          a key answers 422 and the edit does not run. A response already
+          cached under such a key, from before the suffix was reserved,
+          still replays on a retry of its request.
         schema:
           type: string
           maxLength: 255
@@ -1242,7 +1291,7 @@ paths:
         '409':
           "$ref": "#/components/responses/Conflict"
         '422':
-          "$ref": "#/components/responses/UnprocessableEntity"
+          "$ref": "#/components/responses/OrderEditUnprocessableEntity"
   "/api/v202604/orders/{order_id}/edits/preview":
     post:
       operationId: commerce_v2026_04_preview_order_edit

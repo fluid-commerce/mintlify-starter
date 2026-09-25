@@ -1110,23 +1110,33 @@ components:
       required: false
       description: |
         Optional client-generated key (UUID recommended) used to deduplicate
-        retries. The first request with a given key executes normally; a retry
-        with the same key replays that first response with
-        `X-Idempotent-Replayed: true` for up to 24 hours. A concurrent retry
-        while the first request is still in flight returns 409.
+        retries, for up to 24 hours.
 
-        The response cache is keyed on the authenticated merchant and this key
-        ONLY — not on the operation, path, or request body. Use a fresh, unique
-        key per logical request: reusing one key across different operations
-        (for example a purchase and then a capture) replays the first
-        operation's cached status and body instead of performing the second.
+        The key is bound to the exact request that first used it: the
+        method, path and query string, `Content-Type`, body bytes, and
+        whether a live or sandbox key sent it. Keep the serialized request
+        and resend it unchanged, byte for byte, to retry; the retry replays
+        the first response with `X-Idempotent-Replayed: true`. Any other
+        request under the key answers 422 and does not run, so a key
+        cannot be reused across operations, resources or amounts. Use a
+        new key only for a new request. A client that cannot reproduce the
+        original request must confirm the outcome by reading the
+        transaction, not retry under a new key, which could move the money
+        a second time.
 
-        Idempotency applies to API-key-authenticated requests only. On
-        JWT-authenticated requests the header is accepted but ignored — no
-        deduplication, no `409`, no replay. The cache stores whatever the
-        first execution returned, including error responses such as `404` or
-        `422`. Keys longer than 255 characters are rejected with an unhandled
-        `500`.
+        Every authenticated caller is guarded: API keys, JWTs, and company,
+        partner, public and droplet tokens. A retry must use the same kind
+        of credential as the request it retries, because an API key and any
+        other credential never share a key.
+
+        A concurrent retry while the first request is still in flight
+        returns 409. The cache stores whatever the first execution
+        returned, including error responses such as `404` or `422`. Keys
+        longer than 255 characters are rejected with an unhandled `500`.
+        A key must not end with `:lock`, which is reserved; such a key
+        answers 422 and the request does not run. A response already
+        cached under such a key, from before the suffix was reserved,
+        still replays on a retry of its request.
       schema:
         type: string
         maxLength: 255
@@ -1184,6 +1194,15 @@ components:
         422, with a `message` that says the outcome is not yet known and must
         not be retried under a new Idempotency-Key. A retry under the same key
         answers 409 until the outcome is resolved.
+
+        A request whose `Idempotency-Key` was already used with a different
+        request also answers 422 and does not run; its `message` says to
+        resend the original request unchanged when retrying, and to use a
+        new key only for a new request. A request whose `Idempotency-Key`
+        ends with the reserved suffix `:lock` also answers 422 and does not
+        run, unless a response is already cached under that key, which
+        replays; its `message` says to confirm the outcome of an earlier
+        request before sending it again under a different key.
       content:
         application/json:
           schema:
