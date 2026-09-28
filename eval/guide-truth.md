@@ -1858,3 +1858,95 @@ expiration choices are published because a reader selects them in the UI, not as
 a restatement of a request schema. Do not describe programmatic token management
 as the primary path while the dashboard is the only documented one, and do not
 reintroduce **Settings → Developer** as the token location.
+
+## Member storefront signed Droplet queries
+
+`themes/member-storefront/droplet-data.mdx` describes a gated, account-host
+connection and SDK 0.11.0. Keep its documentation PR in draft until the endpoint
+and compatible SDK release are available; no company is enabled by publishing
+the guide. This is an internal, unsynced member-session API, so its guide claims
+are semantic and verified against the implementation, Skooma integration tests,
+helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
+these claims at the unrelated public storefront API schema. The guide documents
+the section helper and receiving backend contract, without reproducing an
+endpoint reference. The existing widget guide's obsolete blanket statement that
+a backend cannot verify a viewing member is replaced with the gated flow.
+
+Read-only operations, tenant-scoped member mapping, timestamp replay limitations,
+preview refusal and same-document script access remain explicit boundaries.
+Production pilot-company selection and enabling its flag are separate decisions.
+
+Signed Droplet query lifecycle: the standalone helper shares one removal observer,
+timer and in-flight session-context check across sections in a document. Server
+context checks run at most once per 15 seconds; the local cookie hint remains
+on a one-second timer. A rapid
+account switch is detected even if the presence cookie stays set. Failed checks
+or the five-second verification deadline clear matching private state. Checks
+are periodic and browser timers can be throttled, so do not promise immediate
+cross-tab notification. Evidence: SDK `droplet/session-monitor.ts` and the
+account-switch unit/browser regressions in fluid-commerce/fluid#24049.
+
+Connection prerequisites and sequence: the guide distinguishes the Droplet's
+registered `widget_data_url`, embedded UI URL and lifecycle webhook URLs. The
+query receiver uses the Droplet-level `webhook_secret`, returned by the create
+view only; ordinary owner/update views omit it. Evidence: Droplet create/update
+actions and serializer, the member query resolver and shared data client in
+fluid-commerce/fluid. The operation dispatcher is application-owned example
+code, not a Fluid SDK API. Its mapping and permission checks remain backend
+responsibilities. The sequence diagram includes authorization refusals, signed
+forwarding, post-response session revalidation and ongoing result cleanup.
+
+Liquid query attributes: `droplet_data_attributes` is a separate Rails release
+dependency after the signed-query stack. It emits only an escaped canonical
+extension URI and a marker, with no member context, SDK loading, or backend call.
+Evidence: `LiquidTags::DropletDataAttributes`, the Liquid render registers,
+section block normalization, both block render paths, and
+`droplet_data_attributes_test.rb` in fluid-commerce/fluid. Snippets explicitly
+inherit their caller's URI because isolated Liquid subcontexts do not otherwise
+preserve register overrides. Theme-owned child blocks clear it. Keep this
+follow-up docs PR in draft until the helper is deployed; manual `data-extension`
+remains compatible with the preceding SDK/API release.
+
+
+Member-page global client: `window.Fluid.droplets.createQueryClient` is installed
+by PageBuilder only for member page/dashboard templates with both exact boolean
+pilot flags. The inline bootstrap precedes layout/section scripts, supports bare
+pages, preserves other Fluid helpers, and imports the pinned SDK on first use.
+Concurrent calls share the module promise but create separate SDK clients; load
+failures reject and detached roots are refused. No session or authorization logic
+is duplicated in the bootstrap. Evidence: `Themes::HeadScripts` plus its executable
+Node VM tests, PageBuilder rendering tests, and the live member-page integration
+regression. The global loader requires its own Rails deployment after SDK 0.11.0
+is published; keep this guide draft until both are available. Direct module imports
+remain supported on older deployments. Local Fluid development may point
+`MEMBER_DROPLET_SDK_URL` at a built standalone SDK bundle; it is deployment config,
+not an extension setting or browser-provided destination.
+
+
+### Mist and AI-agent authoring workflow
+
+The signed-data guide's AI section joins registration, backend verification,
+extension authoring, installation, placement and live verification. It is an
+authoring recipe, not a new Mist tool or a guarantee of deployed availability.
+The example operation names and response fields are application-owned. Reuse
+the backend verifier and lifecycle-aware section example rather than introducing
+a parallel authentication or SDK-loading implementation. Link the existing widget
+and extension AI briefs to this section so an agent following either path sees
+the private-data requirements.
+
+Scoped reference-pending registration example: the user explicitly requested a
+workflow Mist can use to create Droplets and sections. The minimal creation
+payload is therefore included alongside the previously authorized unsynced
+upload recipe, pending a generated Droplet-management reference. Evidence:
+Api::Droplets::CreateAction requires a nested droplet hash with name/embed_url
+and accepts widget_data_url; DropletBlueprint's create view returns uuid and
+webhook_secret. Ordinary views do not return that secret. The recipe does not
+claim creation activates or installs a Droplet, and does not reproduce the old
+general creation guide's illustrative top-level payload or credential exchange.
+
+Semantic checks also use Themes::Import::ExtensionTemplates for package layout,
+LiquidTags::DropletDataAttributes for root metadata, and SDK query-client.ts for
+query, destroy and onInvalidate behavior. Theme sections are not sandboxed widget
+packages. The global bootstrap imports only the SDK; the extension still owns
+its script and presentation. No environment flag, deployment, installation or
+live backend is changed by this documentation update.
