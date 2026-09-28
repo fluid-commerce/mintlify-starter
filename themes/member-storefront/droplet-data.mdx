@@ -12,6 +12,23 @@ An installed Droplet section can query its backend on a signed-in member's **acc
 
 This connection covers member storefront sections and app blocks. It does not enable private queries on public storefront pages, Portal, or mobile apps. It does not give the section a member bearer token, the Droplet webhook secret, or backend credentials.
 
+## What you need before connecting
+
+| Component | Required setup |
+| --- | --- |
+| Droplet | Register a Droplet that is permitted to run, with an active installation in the member's company. |
+| Theme extension | Publish the Droplet's theme extension with an active section or app block. |
+| Data endpoint | Set the Droplet's `widget_data_url` to a public HTTPS endpoint that accepts signed JSON POST requests. |
+| Signing secret | Store the same Droplet's `webhook_secret` in your backend's secret storage. |
+| Member storefront | Enable both `MEMBER_STOREFRONT` and `MEMBER_STOREFRONT_DROPLET_DATA` for the test company after the API and SDK release are available. |
+| Member access | Use a real signed-in member who can access the member site on its live account host. |
+| Private data | Maintain a mapping from the signed Fluid company/member identity to the tenant and member in your own data source. |
+| Section script | Load SDK 0.11.0 or later, supply the installed template's `extension_uri`, and implement `onInvalidate` to clear private content. |
+
+The theme extension supplies the markup and JavaScript; your backend supplies the private data. Keep credentials for Exigo or any other data source on your backend. The browser renders only the result authorized for the current member.
+
+See [package and publish an extension](/themes/droplet-theme-extensions) and [place it on a member page](/themes/member-storefront/droplet-widgets) for the section setup.
+
 ## How the data reaches the section
 
 1. The section calls `client.query("commissions.summary", {})`.
@@ -21,11 +38,67 @@ This connection covers member storefront sections and app blocks. It does not en
 5. Your backend verifies the signature and timestamp, checks the member's permissions, and returns a JSON object.
 6. The helper checks that the login has not changed. Your section renders the object or an empty/error state.
 
+```mermaid
+sequenceDiagram
+    actor Member
+    participant Section as Liquid section JavaScript
+    participant Helper as Droplet query helper
+    participant Fluid
+    participant Backend as Your Droplet backend
+    participant Data as Your private data source
+
+    Member->>Section: Open a member page
+    Section->>Helper: query(operation, params)
+    Helper->>Fluid: Read cookie session and CSRF information
+    Fluid-->>Helper: CSRF token and login context
+    Helper->>Fluid: Submit extension URI, operation and params with CSRF
+    Fluid->>Fluid: Check member, site, flags and installed extension
+    alt Fluid authorizes the query
+        Fluid->>Backend: POST to widget_data_url with signed identity and input
+        Backend->>Backend: Verify raw-body HMAC and timestamp freshness
+        Backend->>Backend: Map tenant/member and authorize the operation
+        alt Backend authorizes the request
+            Backend->>Data: Read this tenant and member's records
+            Data-->>Backend: Private records
+            Backend-->>Fluid: Operation result as a JSON object
+            Fluid-->>Helper: Uncached data and login context
+            Helper->>Fluid: Recheck current login context
+            Fluid-->>Helper: Current session
+            Helper-->>Section: Return data only if the login is unchanged
+            Section-->>Member: Render escaped data or an empty state
+        else Verification or permission fails
+            Backend-->>Fluid: Reject the request
+            Fluid-->>Helper: Safe error
+            Helper-->>Section: Render an error state
+        end
+    else Fluid refuses the query
+        Fluid-->>Helper: Refusal without a backend request
+        Helper-->>Section: Render an error state
+    end
+    loop While a section holds private results
+        Helper->>Fluid: Periodically recheck login context
+        Fluid-->>Helper: Current context or verification failure
+        Helper-->>Section: Clear results if the context changed or verification failed
+    end
+```
+
 The section chooses an **operation name**, not a backend URL or route. You can add `commissions.history` alongside `commissions.summary` in your backend and section code without adding a Fluid route.
 
 ## Prepare the backend
 
 Configure your Droplet's `widget_data_url` with one publicly reachable HTTPS endpoint. Keep its existing webhook secret on your backend. Fluid refuses private-network destinations and redirects.
+
+### Register the destination and save the secret
+
+Use the Droplet-management API in your integration to configure `widget_data_url`, for example `https://commissions.northwind.example/member-data`. Droplet creation and updates accept this field. Changing the endpoint in your section's settings does not register a backend destination.
+
+Fluid returns `webhook_secret` when you create the Droplet; save it securely at that point. Ordinary Droplet read and update responses do not return this secret. Confirm that your backend has the original secret before testing an existing Droplet.
+
+The data request uses this Droplet-level secret for signature verification. Installation access tokens have a separate purpose when your backend calls Fluid APIs. Keep both credentials on the server.
+
+`embed_url` is the Droplet's embedded application UI address. Install and uninstall webhook URLs receive lifecycle events. The member-data request goes to `widget_data_url`.
+
+Deploy a handler at the exact registered URL and preserve its raw request body until signature verification finishes. For local development, register your HTTPS tunnel's endpoint and keep the secret in the local backend environment.
 
 The signed JSON has this shape:
 
@@ -73,6 +146,50 @@ Read the original body as a buffer. Parsing and re-serializing JSON can change w
 Reject unknown operations, validate parameters for each operation, and authorize the signed member against your own tenant records before looking up commissions. Return only the data that member may see. Return a JSON object; Fluid refuses non-object, oversized, failed, or invalid backend responses.
 
 Use this connection for **read-only operations**. Timestamp freshness limits replay but does not make requests single-use. Do not use the sample verifier as replay protection for payments or other mutations.
+
+### Dispatch operations to your own APIs
+
+Use one registered endpoint as the entry point to your backend's read operations. The section and backend agree on operation names such as `commissions.summary` and `commissions.history`. Your backend can call different internal APIs for each operation; Fluid continues to use the same registered URL.
+
+The example below runs **after** signature/freshness verification and JSON parsing. `backend` represents your application code: implement `resolveMember`, `summary`, and `history` using your own tenant mappings, permission checks, and data-source credentials.
+
+```javascript
+async function dispatchVerifiedQuery(query, backend) {
+  const { company, member, operation, params } = query;
+  if (!Number.isSafeInteger(company?.id) || typeof member?.public_id !== "string") {
+    throw new Error("Invalid signed identity");
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params) ||
+      Object.keys(params).some((key) => key !== "period")) {
+    throw new Error("Invalid parameters");
+  }
+  const period = params.period;
+  if (period !== undefined &&
+      (typeof period !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(period))) {
+    throw new Error("Invalid period");
+  }
+  if (!["commissions.summary", "commissions.history"].includes(operation)) {
+    throw new Error("Unknown operation");
+  }
+  const identity = await backend.resolveMember({
+    companyId: company.id,
+    memberPublicId: member.public_id,
+  });
+  if (!identity || identity.canReadCommissions !== true) {
+    throw new Error("Member cannot read commissions");
+  }
+  if (operation === "commissions.summary") {
+    return backend.summary(identity, period);
+  }
+  return { entries: await backend.history(identity, period) };
+}
+```
+
+Implement `resolveMember` as a lookup scoped to both supplied identifiers, and enforce the member's data permissions in your backend. For an Exigo-backed integration, use that mapping to select the correct Exigo tenant and member before calling Exigo with server-held credentials. Map handler exceptions to a rejected HTTP response without exposing credentials or private error details.
+
+For example, `summary` can return `{ "total": "125.00", "currency": "USD" }`; that is the object the section receives from `client.query`. Return the operation result directly from your endpoint rather than adding your own `data` envelope around it.
+
+To add another read operation, implement and authorize it in your backend, then call its name from the section and render its response. This does not require a new Fluid route or a new member token in the browser.
 
 ## Render the result in a section
 

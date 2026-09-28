@@ -1885,3 +1885,13 @@ or the five-second verification deadline clear matching private state. Checks
 are periodic and browser timers can be throttled, so do not promise immediate
 cross-tab notification. Evidence: SDK `droplet/session-monitor.ts` and the
 account-switch unit/browser regressions in fluid-commerce/fluid#24049.
+
+Connection prerequisites and sequence: the guide distinguishes the Droplet's
+registered `widget_data_url`, embedded UI URL and lifecycle webhook URLs. The
+query receiver uses the Droplet-level `webhook_secret`, returned by the create
+view only; ordinary owner/update views omit it. Evidence: Droplet create/update
+actions and serializer, the member query resolver and shared data client in
+fluid-commerce/fluid. The operation dispatcher is application-owned example
+code, not a Fluid SDK API. Its mapping and permission checks remain backend
+responsibilities. The sequence diagram includes authorization refusals, signed
+forwarding, post-response session revalidation and ongoing result cleanup.
