@@ -1875,3 +1875,11 @@ a backend cannot verify a viewing member is replaced with the gated flow.
 Read-only operations, tenant-scoped member mapping, timestamp replay limitations,
 preview refusal and same-document script access remain explicit boundaries.
 Production pilot-company selection and enabling its flag are separate decisions.
+
+Signed Droplet query lifecycle: the standalone helper shares one removal observer,
+timer and in-flight session-context check across sections in a document. A rapid
+account switch is detected even if the presence cookie stays set. Failed checks
+or the five-second verification deadline clear matching private state. Checks
+are periodic and browser timers can be throttled, so do not promise immediate
+cross-tab notification. Evidence: SDK `droplet/session-monitor.ts` and the
+account-switch unit/browser regressions in fluid-commerce/fluid#24049.
