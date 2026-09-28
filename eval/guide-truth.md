@@ -1921,3 +1921,32 @@ is published; keep this guide draft until both are available. Direct module impo
 remain supported on older deployments. Local Fluid development may point
 `MEMBER_DROPLET_SDK_URL` at a built standalone SDK bundle; it is deployment config,
 not an extension setting or browser-provided destination.
+
+
+### Mist and AI-agent authoring workflow
+
+The signed-data guide's AI section joins registration, backend verification,
+extension authoring, installation, placement and live verification. It is an
+authoring recipe, not a new Mist tool or a guarantee of deployed availability.
+The example operation names and response fields are application-owned. Reuse
+the backend verifier and lifecycle-aware section example rather than introducing
+a parallel authentication or SDK-loading implementation. Link the existing widget
+and extension AI briefs to this section so an agent following either path sees
+the private-data requirements.
+
+Scoped reference-pending registration example: the user explicitly requested a
+workflow Mist can use to create Droplets and sections. The minimal creation
+payload is therefore included alongside the previously authorized unsynced
+upload recipe, pending a generated Droplet-management reference. Evidence:
+Api::Droplets::CreateAction requires a nested droplet hash with name/embed_url
+and accepts widget_data_url; DropletBlueprint's create view returns uuid and
+webhook_secret. Ordinary views do not return that secret. The recipe does not
+claim creation activates or installs a Droplet, and does not reproduce the old
+general creation guide's illustrative top-level payload or credential exchange.
+
+Semantic checks also use Themes::Import::ExtensionTemplates for package layout,
+LiquidTags::DropletDataAttributes for root metadata, and SDK query-client.ts for
+query, destroy and onInvalidate behavior. Theme sections are not sandboxed widget
+packages. The global bootstrap imports only the SDK; the extension still owns
+its script and presentation. No environment flag, deployment, installation or
+live backend is changed by this documentation update.
