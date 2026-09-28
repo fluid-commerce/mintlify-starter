@@ -5,7 +5,7 @@ description: "Query member-specific backend data from an installed Droplet secti
 ---
 
 <Warning>
-This connection requires the member-storefront pilot, the `MEMBER_STOREFRONT_DROPLET_DATA` company flag, the member-query API deployment, and Member Storefront SDK **0.11.0** or later. Confirm availability with Fluid before enabling it. The helper URL below works only after that SDK release is published.
+This connection requires the member-storefront pilot, the `MEMBER_STOREFRONT_DROPLET_DATA` company flag, the member-query API deployment, and Member Storefront SDK **0.11.0** or later. Confirm availability with Fluid before enabling it. The global client below also requires the member-page loader deployment and the published SDK release.
 </Warning>
 
 An installed Droplet section can query its backend on a signed-in member's **account-host page**. Fluid authenticates the member, checks the installed extension, and signs the backend request. The section receives the returned JSON and renders it in the browser.
@@ -23,7 +23,7 @@ This connection covers member storefront sections and app blocks. It does not en
 | Member storefront | Enable both `MEMBER_STOREFRONT` and `MEMBER_STOREFRONT_DROPLET_DATA` for the test company after the API and SDK release are available. |
 | Member access | Use a real signed-in member who can access the member site on its live account host. |
 | Private data | Maintain a mapping from the signed Fluid company/member identity to the tenant and member in your own data source. |
-| Section script | Load SDK 0.11.0 or later, supply the installed template's `extension_uri`, and implement `onInvalidate` to clear private content. |
+| Section script | Use `window.Fluid.droplets.createQueryClient`, supply the installed template's `extension_uri`, and implement `onInvalidate` to clear private content. |
 
 The theme extension supplies the markup and JavaScript; your backend supplies the private data. Keep credentials for Exigo or any other data source on your backend. The browser renders only the result authorized for the current member.
 
@@ -208,24 +208,31 @@ The tag emits `data-droplet-data` and an escaped `data-extension` containing the
 
 The tag outputs public metadata only. It does not fetch member data, embed credentials, load JavaScript, or authorize requests. The JavaScript client and backend checks below still apply. Use the tag after the Liquid helper is deployed; on an older deployment, supply the installed template's actual `extension_uri` in `data-extension` manually.
 
+Fluid exposes `window.Fluid.droplets.createQueryClient` before theme scripts run on member pages when both company flags are enabled. You do not need an SDK import, CDN URL, version string, or extra script tag. Await client creation: the first call loads the SDK, and concurrent sections share that module load while receiving separate clients. A failed SDK load rejects client creation; show an error and let the member reload the page. If the section is removed while loading, client creation is refused.
+
+The global loader also works on member pages without a layout. It preserves other `window.Fluid` helpers and is not installed on public storefront pages or when either flag is disabled. Loading the SDK does not grant access to member data; the existing session, CSRF, installation and backend checks still apply.
+
 Load this JavaScript once from your extension's script asset. Each placement gets its own client:
 
 ```javascript
-import { createDropletQueryClient } from
-  "https://assets.fluid.app/member-storefront-sdk/v0.11.0/droplet-data.js";
-
-for (const root of document.querySelectorAll("[data-commission-example]")) {
+async function mountCommissions(root) {
   const status = root.querySelector('[role="status"]');
   const output = root.querySelector("[data-output]");
   let revision = 0;
-  const client = createDropletQueryClient(root, {
-    extension: root.dataset.extension,
-    onInvalidate() {
-      revision += 1;
-      output.textContent = "";
-      status.textContent = "Refresh to load member data.";
-    }
-  });
+  let client;
+  try {
+    client = await window.Fluid.droplets.createQueryClient(root, {
+      extension: root.dataset.extension,
+      onInvalidate() {
+        revision += 1;
+        output.textContent = "";
+        status.textContent = "Refresh to load member data.";
+      }
+    });
+  } catch {
+    if (root.isConnected) status.textContent = "Unable to start. Reload the page to try again.";
+    return;
+  }
   async function load() {
     const pending = client.query("commissions.summary", {});
     const currentRevision = revision;
@@ -243,6 +250,10 @@ for (const root of document.querySelectorAll("[data-commission-example]")) {
   }
   root.querySelector("button").addEventListener("click", () => void load());
   void load();
+}
+
+for (const root of document.querySelectorAll("[data-commission-example]")) {
+  void mountCommissions(root);
 }
 ```
 

@@ -1906,3 +1906,18 @@ inherit their caller's URI because isolated Liquid subcontexts do not otherwise
 preserve register overrides. Theme-owned child blocks clear it. Keep this
 follow-up docs PR in draft until the helper is deployed; manual `data-extension`
 remains compatible with the preceding SDK/API release.
+
+
+Member-page global client: `window.Fluid.droplets.createQueryClient` is installed
+by PageBuilder only for member page/dashboard templates with both exact boolean
+pilot flags. The inline bootstrap precedes layout/section scripts, supports bare
+pages, preserves other Fluid helpers, and imports the pinned SDK on first use.
+Concurrent calls share the module promise but create separate SDK clients; load
+failures reject and detached roots are refused. No session or authorization logic
+is duplicated in the bootstrap. Evidence: `Themes::HeadScripts` plus its executable
+Node VM tests, PageBuilder rendering tests, and the live member-page integration
+regression. The global loader requires its own Rails deployment after SDK 0.11.0
+is published; keep this guide draft until both are available. Direct module imports
+remain supported on older deployments. Local Fluid development may point
+`MEMBER_DROPLET_SDK_URL` at a built standalone SDK bundle; it is deployment config,
+not an extension setting or browser-provided destination.
