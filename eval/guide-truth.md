@@ -1895,3 +1895,14 @@ fluid-commerce/fluid. The operation dispatcher is application-owned example
 code, not a Fluid SDK API. Its mapping and permission checks remain backend
 responsibilities. The sequence diagram includes authorization refusals, signed
 forwarding, post-response session revalidation and ongoing result cleanup.
+
+Liquid query attributes: `droplet_data_attributes` is a separate Rails release
+dependency after the signed-query stack. It emits only an escaped canonical
+extension URI and a marker, with no member context, SDK loading, or backend call.
+Evidence: `LiquidTags::DropletDataAttributes`, the Liquid render registers,
+section block normalization, both block render paths, and
+`droplet_data_attributes_test.rb` in fluid-commerce/fluid. Snippets explicitly
+inherit their caller's URI because isolated Liquid subcontexts do not otherwise
+preserve register overrides. Theme-owned child blocks clear it. Keep this
+follow-up docs PR in draft until the helper is deployed; manual `data-extension`
+remains compatible with the preceding SDK/API release.
