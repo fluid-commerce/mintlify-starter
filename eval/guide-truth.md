@@ -1858,3 +1858,20 @@ expiration choices are published because a reader selects them in the UI, not as
 a restatement of a request schema. Do not describe programmatic token management
 as the primary path while the dashboard is the only documented one, and do not
 reintroduce **Settings → Developer** as the token location.
+
+## Member storefront signed Droplet queries
+
+`themes/member-storefront/droplet-data.mdx` describes a gated, account-host
+connection and SDK 0.11.0. Keep its documentation PR in draft until the endpoint
+and compatible SDK release are available; no company is enabled by publishing
+the guide. This is an internal, unsynced member-session API, so its guide claims
+are semantic and verified against the implementation, Skooma integration tests,
+helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
+these claims at the unrelated public storefront API schema. The guide documents
+the section helper and receiving backend contract, without reproducing an
+endpoint reference. The existing widget guide's obsolete blanket statement that
+a backend cannot verify a viewing member is replaced with the gated flow.
+
+Read-only operations, tenant-scoped member mapping, timestamp replay limitations,
+preview refusal and same-document script access remain explicit boundaries.
+Production pilot-company selection and enabling its flag are separate decisions.
