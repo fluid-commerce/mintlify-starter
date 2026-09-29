@@ -25,6 +25,24 @@ read `eval/guide-truth.md` → **CI wiring** and **Resolving a conflict**.
 - Use the Mintlify MCP server, `https://mcp.mintlify.com`, to edit content and settings via MCP
 - Use the Mintlify docs MCP server, `https://www.mintlify.com/docs/mcp`, to query information about using Mintlify via MCP
 
+## Where pages go
+
+The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its file path, so a restructure changes `docs.json` and never moves files. Every new page ships with its `docs.json` entry.
+
+- **Help Center** (`help/**`): help for merchants, admins and reps. The guide-claims gate doesn't cover these pages, so check each one against the current admin UI (the fluid-admin code) before you publish it.
+  - The URL mirrors the admin route: `admin.fluid.app/settings/taxes` → `help/admin/settings/taxes.mdx`. A screen without a stable route gets a short noun slug in its admin area, for example the page editor at `help/admin/page-editor`.
+  - `sidebarTitle` is the screen's label in the admin, and groups follow the admin sidebar's order. Settings pages sit under **Company**, **Commerce**, **Payments** and **System**, in the Settings sidebar's order.
+  - A section's hub page sits next to its folder (`help/admin.mdx`) and is listed first in its group. Never add an `index.mdx`.
+  - Don't restate API contracts such as payloads, schemas or status codes. Link to the developer page instead.
+  - Contact details come from `snippets/contact-support.mdx`: `import ContactSupport from "/snippets/contact-support.mdx"`, then `<ContactSupport />`. Never hard-code a support address.
+  - Images go under `images/help/<area>/`. Never publish a screenshot that shows real customer data.
+  - `introduction.mdx` is the site's landing page. It routes readers to each tab and sits first in the Help Center tab.
+- **Developer Platform**: quickstart, concepts, guides, SDKs, and Portal & Widgets. Put a new page in the matching existing folder.
+- **Themes** (`themes/**`): storefront theme development, including the member storefront.
+- **API Reference** (`api/**` and the generated `api-reference/**`): see the guide truth gate above.
+
+**Pinned URLs.** fluid-admin's in-app help buttons link to Help Center pages; the monorepo keeps those links in `apps/fluid-admin/lib/help-links.ts`. Every one of those URLs is pinned in `eval/advertised-docs-links.json`, and CI fails if a pinned page moves or leaves the navigation. To move a pinned page, change the pin, add a redirect, and update fluid-admin's link together.
+
 ## Terminology
 
 - The version label in prose and page titles is `v2026-04`; the URL path segment is the non-hyphenated `/api/v202604/...`. Never mix the two forms.
