@@ -41,7 +41,9 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
 - **Themes** (`themes/**`): storefront theme development, including the member storefront.
 - **API Reference** (`api/**` and the generated `api-reference/**`): see the guide truth gate above.
 
-**Pinned URLs.** fluid-admin's in-app help buttons link to Help Center pages; the monorepo keeps those links in `apps/fluid-admin/lib/help-links.ts`. Every one of those URLs is pinned in `eval/advertised-docs-links.json`, and CI fails if a pinned page moves or leaves the navigation. To move a pinned page, change the pin, add a redirect, and update fluid-admin's link together.
+**Pinned URLs.** Help Center pages that fluid-admin's in-app help buttons open are pinned in `eval/advertised-docs-links.json`. Each pin's `consumer` names the admin screen that links to it. CI fails if a pinned page moves or leaves the navigation. To move a pinned page, change the pin, add a redirect, and update the admin's link in the fluid monorepo at the same time.
+
+**Agent skill file.** `skill.md` at the repo root replaces the file Mintlify would otherwise generate at `/skill.md` for AI tools. Keep it short, and list only commands and methods that appear in these docs. When you rename or remove one, update `skill.md` in the same PR.
 
 ## Terminology
 
