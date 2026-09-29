@@ -1909,8 +1909,8 @@ remains compatible with the preceding SDK/API release.
 
 
 Member-page global client: `window.Fluid.droplets.createQueryClient` is installed
-by PageBuilder only for member page/dashboard templates with both exact boolean
-pilot flags. The inline bootstrap precedes layout/section scripts, supports bare
+by PageBuilder only for member page/dashboard templates with the exact boolean
+MEMBER_STOREFRONT flag. The inline bootstrap precedes layout/section scripts, supports bare
 pages, preserves other Fluid helpers, and imports the pinned SDK on first use.
 Concurrent calls share the module promise but create separate SDK clients; load
 failures reject and detached roots are refused. No session or authorization logic
@@ -1950,3 +1950,12 @@ query, destroy and onInvalidate behavior. Theme sections are not sandboxed widge
 packages. The global bootstrap imports only the SDK; the extension still owns
 its script and presentation. No environment flag, deployment, installation or
 live backend is changed by this documentation update.
+
+
+Member-storefront gate alignment: the signed-query endpoint inherits the existing
+MEMBER_STOREFRONT check from Site::Members::Api::BaseController, and the global
+loader uses that same gate through Themes::MemberStorefront.enabled?. There is
+no additional Droplet data flag. Account-host, live-session, site access, CSRF,
+installation, extension publication and backend verification checks still apply.
+Disabling MEMBER_STOREFRONT disables the member storefront and this connection
+together. Publish this wording with the matching gate-alignment Rails deployment.
