@@ -12,6 +12,8 @@ An installed Droplet section can query its backend on a signed-in member's **acc
 
 This connection covers member storefront sections and app blocks. It does not enable private queries on public storefront pages, Portal, or mobile apps. It does not give the section a member bearer token, the Droplet webhook secret, or backend credentials.
 
+This connection reuses the existing Droplet backend signing scheme and webhook secret. The member-storefront flow adds member-session and extension-access checks before forwarding the authenticated member and company context. Your backend still verifies the request and authorizes access to that member's data.
+
 ## What you need before connecting
 
 | Component | Required setup |
@@ -19,7 +21,7 @@ This connection covers member storefront sections and app blocks. It does not en
 | Droplet | Register a Droplet that is permitted to run, with an active installation in the member's company. |
 | Theme extension | Publish the Droplet's theme extension with an active section or app block. |
 | Data endpoint | Set the Droplet's `widget_data_url` to a public HTTPS endpoint that accepts signed JSON POST requests. |
-| Signing secret | Store the same Droplet's `webhook_secret` in your backend's secret storage. |
+| Signing secret | Use the same Droplet's `webhook_secret`. Mist hosting provisions it automatically when you attach the Droplet; external hosting needs manual configuration. |
 | Member storefront | Enable `MEMBER_STOREFRONT` for the test company after the API and SDK release are available. |
 | Member access | Use a real signed-in member who can access the member site on its live account host. |
 | Private data | Maintain a mapping from the signed Fluid company/member identity to the tenant and member in your own data source. |
@@ -92,13 +94,25 @@ Configure your Droplet's `widget_data_url` with one publicly reachable HTTPS end
 
 Use the Droplet-management API in your integration to configure `widget_data_url`, for example `https://commissions.northwind.example/member-data`. Droplet creation and updates accept this field. Changing the endpoint in your section's settings does not register a backend destination.
 
-Fluid returns `webhook_secret` when you create the Droplet; save it securely at that point. Ordinary Droplet read and update responses do not return this secret. Confirm that your backend has the original secret before testing an existing Droplet.
+Fluid returns `webhook_secret` when you create the Droplet. For external hosting, save it securely at that point. Ordinary Droplet read and update responses do not return this secret. Confirm that your backend has the original secret before testing an existing Droplet.
 
 The data request uses this Droplet-level secret for signature verification. Installation access tokens have a separate purpose when your backend calls Fluid APIs. Keep both credentials on the server.
 
 `embed_url` is the Droplet's embedded application UI address. Install and uninstall webhook URLs receive lifecycle events. The member-data request goes to `widget_data_url`.
 
 Deploy a handler at the exact registered URL and preserve its raw request body until signature verification finishes. For local development, register your HTTPS tunnel's endpoint and keep the secret in the local backend environment.
+
+**Mist-hosted backend.** Attach the Droplet to your provisioned Mist app using Mist's Droplet connection workflow. The attachment syncs the Droplet's `webhook_secret` into both `FLUID_DROPLET_SECRET` and `FLUID_WEBHOOK_AUTH_TOKEN`, alongside `FLUID_DROPLET_UUID`.
+
+Use `process.env.FLUID_DROPLET_SECRET` as the secret argument to the [raw-body verifier](#verify-the-raw-body). Both secret variables contain the same Droplet-level signing key already used for lifecycle webhooks; member-data requests need no new secret.
+
+Attaching the Droplet queues a redeployment when the hosting project has a linked GitHub repository. If no repository is linked, the variables are synced but a redeployment is not queued. Wait for a successful deployment with the synced variables before testing the receiver.
+
+Mist's `list_mist_env_vars` tool lets an agent check which hosted environment keys exist without returning their plaintext values. These keys are Fluid-managed: do not generate a replacement or try to overwrite them with `set_mist_env_var`.
+
+**Externally hosted backend.** Store the create-time webhook secret in your hosting provider's server-side secret storage and make it available to your verifier. Fluid's Mist attachment flow does not provision an independently hosted backend.
+
+**Local development.** Supply the same Droplet secret separately in your local backend environment, using an authorized secret source. `fluid mist env pull` skips Mist-managed variables, including `FLUID_DROPLET_SECRET`; it does not download this secret for you. If you cannot obtain the existing secret securely, report the missing local setup instead of generating a different signing key.
 
 The signed JSON has this shape:
 
@@ -124,28 +138,33 @@ The signed JSON has this shape:
 
 Verify `X-Fluid-Signature` using the Droplet webhook secret and HMAC-SHA256 over the exact bytes of `X-Fluid-Timestamp + "." + raw_body`. Do this before JSON parsing or any data lookup. Compare signatures in constant time and reject timestamps outside your accepted freshness window.
 
-This Node example accepts a five-minute window:
+Use `verifySignature` from the existing `@fluid-app/droplet-sdk` package on your Node backend. It checks the signature in constant time and uses a five-minute freshness window by default. Inside your request handler, pass the raw bytes and the existing Droplet secret:
 
 ```javascript
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { verifySignature } from "@fluid-app/droplet-sdk";
 
-function verify(rawBody, headers, secret, now = Date.now()) {
-  const timestamp = headers["x-fluid-timestamp"];
-  const signature = headers["x-fluid-signature"];
-  if (!secret || typeof timestamp !== "string" || !/^\d{10}$/.test(timestamp)) return false;
-  if (typeof signature !== "string" || !/^[a-f0-9]{64}$/.test(signature)) return false;
-  if (Math.abs(Math.floor(now / 1000) - Number(timestamp)) > 300) return false;
-  const expected = createHmac("sha256", secret)
-    .update(timestamp).update(".").update(rawBody).digest();
-  return timingSafeEqual(expected, Buffer.from(signature, "hex"));
+const rawBody = Buffer.from(await request.arrayBuffer());
+const verification = verifySignature({
+  rawBody,
+  timestamp: request.headers.get("x-fluid-timestamp"),
+  signature: request.headers.get("x-fluid-signature"),
+  secret: process.env.FLUID_DROPLET_SECRET ?? "",
+});
+if (!verification.valid) {
+  return new Response("Invalid signature", { status: 401 });
 }
+
+const query = JSON.parse(rawBody.toString("utf8"));
+// Validate the query, resolve the signed tenant/member, and authorize the operation.
 ```
+
+Use the low-level `verifySignature` export for this data receiver. The SDK's `withFluidWebhook` wrapper handles webhook events and their secret selection; the member-data request keeps its operation/company/member payload and uses the Droplet-level secret.
 
 Read the original body as a buffer. Parsing and re-serializing JSON can change whitespace or key order and invalidate the signature. After verification, check that `X-Fluid-Shop` matches the signed `company.fluid_shop`; the header alone is not identity proof.
 
 Reject unknown operations, validate parameters for each operation, and authorize the signed member against your own tenant records before looking up commissions. Return only the data that member may see. Return a JSON object; Fluid refuses non-object, oversized, failed, or invalid backend responses.
 
-Use this connection for **read-only operations**. Timestamp freshness limits replay but does not make requests single-use. Do not use the sample verifier as replay protection for payments or other mutations.
+Use this connection for **read-only operations**. Timestamp freshness limits replay but does not make requests single-use. Signature verification is not replay protection for payments or other mutations.
 
 ### Dispatch operations to your own APIs
 
@@ -307,15 +326,17 @@ Use this workflow when creating a Droplet and its member-page sections. Read the
 
 Before writing files, obtain the target environment, Droplet owner company, member-site company, theme and member page, and the existing Droplet UUID if you are extending one. Obtain authorized management tooling for each company; the owner and member-site company may differ.
 
-Also obtain the deployed backend URL, a secret-storage reference for its Droplet webhook secret, the tenant/member mapping, and the read operations the section should display. Ask for missing identities, permissions or data contracts instead of inventing them. Keep secrets in the authorized backend environment; do not include their values in generated files, chat output or completion reports.
+Also obtain the deployed backend URL, the hosting type (Mist or external), the tenant/member mapping, and the read operations the section should display. Ask for missing identities, permissions or data contracts instead of inventing them. Keep secrets in the authorized backend environment; do not include their values in generated files, chat output or completion reports.
 
 Confirm the member-storefront flag and the API, SDK, Liquid helper and global-loader deployments listed at the top of this guide. A merged PR, a successful ZIP import or a rendered member name does not establish that this connection is available in the target environment.
+
+For a Mist-hosted backend, use the managed secret after attaching the correct Droplet and deploying the app. Verify the hosted key names without reading or printing their values. For external hosting, obtain a secret-storage reference; for local testing, confirm the secret is configured separately.
 
 ### Build the backend and section together
 
 1. **Agree on the operation contract.** Write down each operation's name, allowed parameters, authorized data scope and result object before building the UI. For example, `commissions.summary` accepts an optional `period` and returns `{ "total": "125.00", "currency": "USD" }`. These are application-defined fields, not a built-in Fluid commissions API. Implement both the backend handler and the section's field validation against the same contract.
 2. **Implement the receiving backend.** Use the [raw-body verifier](#verify-the-raw-body) before parsing JSON or accessing data. Dispatch only known read operations, resolve the signed company and member together, and check their permissions. Keep data-source credentials on the backend. Return the result object directly, without adding another `data` envelope.
-3. **Create or reuse the Droplet.** Register the receiver as `widget_data_url`, and retain the create-time `webhook_secret` in secret storage. Use the registration recipe below for a new Droplet. For an existing Droplet, update only the requested fields and verify that its secret is already available to the backend. The embedded admin UI and lifecycle webhook URLs serve different purposes from the data receiver.
+3. **Create or reuse the Droplet.** Register the receiver as `widget_data_url`, and follow the [secret setup for your hosting](#register-the-destination-and-save-the-secret). Use the registration recipe below for a new Droplet. For an existing Droplet, update only the requested fields and verify that its secret is already available to the backend. The embedded admin UI and lifecycle webhook URLs serve different purposes from the data receiver.
 4. **Author a theme extension section.** Package `fluid.extension.toml` with `type = "theme"` and a name, plus `sections/commission_summary/index.liquid`. Give the section `target: "section"`, settings and a `presets` entry. Use a section or app block for member pages; head/body app embeds are not injected there. Follow the [extension package guide](/themes/droplet-theme-extensions#package-structure).
 5. **Connect each rendered placement.** Put `{% droplet_data_attributes %}` on its root, then await `window.Fluid.droplets.createQueryClient(root, { extension: root.dataset.extension, onInvalidate })`. Use the [complete section script](#render-the-result-in-a-section) as the starting point. Mount each root once, give each placement its own client, and query operation names rather than backend URLs. The global loads the SDK; you still supply and load your section's JavaScript.
 6. **Render and clear private content.** Handle initialization, loading, empty and error states; validate the returned fields and render them with escaped output. Clear every private value in `onInvalidate`, and prevent an older asynchronous result from repopulating cleared content. Call `client.destroy()` when your application tears down the placement. Use sample data in previews; never show sample commissions as a successful live query.
@@ -335,7 +356,7 @@ The Droplet-management API is reference-pending. Confirm its availability in you
 }
 ```
 
-Replace these example addresses with your deployed URLs. Capture `droplet.uuid` and securely store `droplet.webhook_secret` from the create response. Creation alone does not establish an active installation or a published extension; verify that the Droplet is permitted to run and available to the target company before installing it. Use the [widget deployment recipe](/themes/member-storefront/droplet-widgets#deploy-a-widget-without-the-admin) to upload the ZIP and resolve the installed template's URI.
+Replace these example addresses with your deployed URLs. Capture `droplet.uuid`. For Mist hosting, attach this Droplet to the Mist app to provision its secret. For external hosting, securely store `droplet.webhook_secret` from the create response. Creation alone does not establish an active installation or a published extension; verify that the Droplet is permitted to run and available to the target company before installing it. Use the [widget deployment recipe](/themes/member-storefront/droplet-widgets#deploy-a-widget-without-the-admin) to upload the ZIP and resolve the installed template's URI.
 
 ### Avoid these substitutions
 

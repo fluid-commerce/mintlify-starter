@@ -1959,3 +1959,38 @@ no additional Droplet data flag. Account-host, live-session, site access, CSRF,
 installation, extension publication and backend verification checks still apply.
 Disabling MEMBER_STOREFRONT disables the member storefront and this connection
 together. Publish this wording with the matching gate-alignment Rails deployment.
+
+
+### Existing Mist secret provisioning
+
+The signed-data guide distinguishes hosted Mist attachment, external hosting and
+local development. This is existing infrastructure, not a new secret mechanism.
+Evidence in fluid-commerce/fluid: `Mist::DropletEnvBackfiller#sync` maps the
+Droplet's webhook_secret to FLUID_DROPLET_SECRET and FLUID_WEBHOOK_AUTH_TOKEN,
+and its uuid to FLUID_DROPLET_UUID. The integration-points controller syncs before
+persisting the attachment and then calls enqueue_redeploy; the latter queues
+only with github_repo_id present. Do not promise a redeploy without that condition.
+The shared `Droplet::DataClient` signs with that same webhook_secret.
+
+Mist desktop's list_mist_env_vars exposes keys/targets/managed status rather than
+plaintext values; set_mist_env_var rejects managed keys. The CLI's
+`packages/cli/mist/src/commands/env/pull.ts` explicitly skips managed variables
+and encrypted values, preserving locally maintained entries. Therefore hosted
+provisioning must not be described as automatic local secret delivery. Independent
+hosting still requires secure provisioning of the creation response's secret.
+The verifier example remains hosting-neutral; Mist authors pass the managed
+FLUID_DROPLET_SECRET value and do not generate a second signing key. No live
+secret values were read or changed to verify these claims.
+
+
+Signature verification reuses the existing public verifySignature export from
+@fluid-app/droplet-sdk. Evidence: packages/platform/droplet-sdk/src/signatures.ts
+and src/index.ts, plus the published 0.2.4 package. The verifier accepts byte
+buffers, checks HMAC-SHA256 over timestamp-dot-body with constant-time comparison,
+rejects a missing secret, and defaults to a 300-second absolute freshness window.
+Use the low-level verifier rather than withFluidWebhook, whose event routing and
+per-company/bootstrap secret selection are inappropriate for member-data queries.
+The example rejects invalid signatures before parsing or accessing member data.
+It intentionally leaves operation validation and member authorization to the
+application, as described immediately below. No signature format, request
+envelope or SDK API is added by this documentation change.
