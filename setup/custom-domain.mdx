@@ -1,0 +1,112 @@
+---
+title: "Set up a custom domain"
+sidebarTitle: "Custom domain"
+description: "Connect a domain you own to your Fluid storefront: add it, create its DNS records, and check it until it is live."
+setup:
+  id: custom-domain
+  cli: "@fluid-app/fluid-cli-domains"
+  steps:
+    - id: add
+      title: "Add the domain"
+      run: "fluid domains add <hostname> --yes"
+      changes: true
+    - id: dns
+      title: "Create the DNS records"
+      run: "fluid domains status <hostname>"
+    - id: check
+      title: "Check until it is connected"
+      run: "fluid domains status <hostname>"
+      repeat: true
+      done_when: "phase is connected"
+---
+
+A custom domain serves your storefront and checkout at a hostname you own, such as `shop.maplewellness.com`. You add the domain to your company, create two DNS records at your DNS provider, and check the domain until Fluid reports it connected.
+
+## Before you start
+
+- Your token needs the **Domains** update permission to add, check, or remove a domain. Listing domains needs only the view permission.
+- You need access to the DNS settings for the domain at your registrar or DNS provider.
+- Install and sign in to the CLI:
+
+```bash
+npm install -g @fluid-app/fluid-cli @fluid-app/fluid-cli-domains
+fluid login
+```
+
+Every `fluid domains` command prints JSON. Failures print a JSON `error` on stderr and exit with a non-zero code.
+
+## Steps
+
+<Steps>
+  <Step title="Add the domain">
+    ```bash
+    fluid domains add shop.maplewellness.com --yes
+    ```
+
+    This changes your company's live configuration, so the CLI asks for confirmation unless you pass `--yes`. Adding the domain also runs its first status check, so the output already includes the first DNS record to create.
+  </Step>
+  <Step title="Create the DNS records">
+    The output's `dnsInstructions` lists each record to create, with its `type`, `host`, and `value`. Create them exactly as shown at your DNS provider. There are two:
+
+    1. **Ownership record** — a CNAME at `_acme-challenge` under your hostname. It proves you control the domain so Fluid can issue its SSL certificate.
+    2. **Routing record** — points the hostname at Fluid. A subdomain such as `shop.maplewellness.com` uses a CNAME to `host.fluid.app.`. A root domain such as `maplewellness.com` uses an A record at `@` pointing to `34.49.150.251`.
+
+    If a record already exists on the same host, replace it rather than adding the new one beside it.
+  </Step>
+  <Step title="Check until it is connected">
+    ```bash
+    fluid domains status shop.maplewellness.com
+    ```
+
+    Each run checks the domain once and prints what to do next in `message`. It does not wait for DNS to propagate, which can take from a few minutes to a few hours. Run it again after a pause, backing off from minutes to longer intervals. The domain is live when `phase` is `connected`.
+  </Step>
+</Steps>
+
+## What the status means
+
+{/* truth-gate: ignore: verify_ownership */}
+{/* truth-gate: ignore: point_dns */}
+{/* truth-gate: ignore: provisioning_ssl */}
+
+The CLI groups the domain's status into a `phase`:
+
+| `phase` | What it means | What to do |
+| --- | --- | --- |
+| `verify_ownership` | Fluid is waiting for the ownership record. | Create the CNAME from `dnsInstructions`, then check again. If `dnsInstructions` is empty, Fluid hasn't generated the record yet; check again shortly. |
+| `point_dns` | Ownership is verified. | Create the routing record, then check again. |
+| `provisioning_ssl` | Ownership is verified and the certificate is being issued or is ready. | If `dnsInstructions` still lists a routing record, public DNS doesn't point at Fluid yet; create it. Otherwise wait and check again. |
+| `connected` | The domain serves your storefront over HTTPS. | Nothing. |
+| `failed` | A setup step failed. | Read `failureMessage`, fix DNS if it names a record, then check again to retry. |
+
+`actualDnsRecords` shows what public DNS serves for the hostname right now. Use it to diagnose a mismatch; never create those records.
+
+## Troubleshooting
+
+- **`dnsMatch` stays `false` after you created the record.** DNS is usually still propagating, or a resolver is serving a cached answer. Wait and check again before changing anything.
+- **Cloudflare manages your DNS.** Set the records' proxy status to **DNS only**. A proxied record prevents Fluid from issuing the certificate.
+- **The check returns `422`.** The check could not finish. Try again shortly.
+- **The check returns `403`.** Your token lacks the Domains update permission.
+
+## Remove a domain
+
+```bash
+fluid domains remove shop.maplewellness.com --yes
+```
+
+A live domain stops serving your storefront immediately.
+
+## Use the API directly
+
+The CLI wraps four company operations, all authenticated with a Bearer token:
+
+1. [Create domain](/api-reference/company-v0/domains/create-domain) — `POST /api/domains`.
+2. [Check and advance a domain's setup](/api-reference/company-v0/domains/check-and-advance-a-domains-setup) — `PATCH /api/domains/{id}/reconcile`. Call it after each DNS change.
+3. [Lists domains](/api-reference/company-v0/domains/lists-domains) — `GET /api/domains`, to find a domain's `id` from its hostname.
+4. [Deletes a domain](/api-reference/company-v0/domains/deletes-a-domain) — `DELETE /api/domains/{id}`.
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/domains/1842/reconcile" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+While the domain is unverified, the check's response carries `meta.diagnostics`: `expected` is the routing record the domain needs, `actual` is what public DNS serves, and `dns_match` says whether they agree. The domain's `verification_status` is the raw status the CLI's `phase` is derived from. A status of `verified` means the domain is connected; a status ending in `_failed` needs attention. The check returns `404` when no domain with that ID belongs to your company.
