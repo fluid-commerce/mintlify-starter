@@ -88,6 +88,17 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
 - Bold for UI elements: Click **Settings**
 - Code formatting for file names, commands, paths, and code references
 
+## Guided setup pages
+
+Pages under `setup/` walk one configuration task end to end, and people, scripts, and agents all follow them. Start every new one from `templates/setup-guide.mdx` (ignored by Mintlify, never published) and add it to the **Guided setup** group in `docs.json` and to the cards on `setup/overview.mdx`.
+
+- Keep the template's section order: **Before you start**, **Steps**, **What the status means**, **Troubleshooting**, **Use the API directly**.
+- The frontmatter `setup` block must list the same steps, in the same order and with the same titles, as the `<Steps>` component. Each step names the CLI command it runs (`run`); mark steps that change live configuration with `changes: true`, and give a repeated step a `done_when`.
+- Steps run published Fluid CLI plugin commands, which print JSON. Document a command only once its plugin version is published.
+- A step that changes live configuration must say so and show `--yes`. Checks run once; never tell the reader to poll in a tight loop.
+- **Use the API directly** links each operation to its generated reference page. It must not restate parameters or response schemas.
+- A setup page asserts API facts, so it is registered in `eval/guide-claims.json` like any task guide, with a `guideSpecs` entry for its spec.
+
 ## Content boundaries
 
 - The OpenAPI files under `api-reference/` and TypeDoc files under `sdk-artifacts/` are generated, synced artifacts — `.github/synced-api-references.json` is the control surface listing which references sync hourly from their source-of-truth mirrors. Never hand-edit them.
