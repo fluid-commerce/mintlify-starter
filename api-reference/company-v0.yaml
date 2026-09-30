@@ -13188,6 +13188,137 @@ components:
           type: string
           format: date-time
           description: ISO 8601 timestamp when the response was built.
+    DomainReconcileResponse:
+      description: A domain after a reconcile check.
+      type: object
+      required:
+      - domain
+      - meta
+      properties:
+        domain:
+          "$ref": "#/components/schemas/DomainStatus"
+        meta:
+          type: object
+          required:
+          - check_result
+          properties:
+            check_result:
+              type: object
+              description: |
+                Outcome of each setup check. `computed_status` is the status the checks point
+                to. `inconclusive` is true when a check could not finish, in which case nothing
+                was recorded. A failed check carries `error: "check_failed"`.
+              properties:
+                computed_status:
+                  type: string
+                inconclusive:
+                  type: boolean
+              additionalProperties:
+                "$ref": "#/components/schemas/JsonValue"
+            diagnostics:
+              "$ref": "#/components/schemas/DomainDnsDiagnostics"
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+    DomainStatus:
+      description: A custom storefront domain and where it is in setup.
+      type: object
+      required:
+      - id
+      - hostname
+      - verification_status
+      - connected
+      properties:
+        id:
+          type: integer
+        hostname:
+          type: string
+          example: shop.maplewellness.com
+        apex_domain:
+          type: string
+          example: maplewellness.com
+        verification_status:
+          type: string
+          description: |
+            Setup status. `verified` means DNS and the certificate are both in place. `pending_dns`
+            means only the customer's DNS record is missing. Statuses ending in `_failed` (and
+            `failed`) need attention; reconcile again after fixing DNS.
+          enum:
+          - unknown
+          - pending_cname
+          - pending_shared
+          - auth_created
+          - cname_added
+          - cname_verified
+          - pending_dns
+          - verified
+          - auth_failed
+          - cname_failed
+          - cert_failed
+          - map_failed
+          - dns_failed
+          - failed
+        connected:
+          type: boolean
+          description: True once the domain is fully verified and serving.
+        cert_created:
+          type: boolean
+        dns_fluid_verified:
+          type: string
+          enum:
+          - 'yes'
+          - 'no'
+          - pending
+        dns_config:
+          type: object
+          description: Records the customer adds at their DNS provider for this domain.
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+      additionalProperties:
+        "$ref": "#/components/schemas/JsonValue"
+    DomainDnsDiagnostics:
+      description: The DNS record a domain needs compared with what public DNS serves now.
+      type: object
+      properties:
+        hostname:
+          type: string
+        apex_domain:
+          type: string
+        is_apex:
+          type: boolean
+        expected:
+          "$ref": "#/components/schemas/DomainDnsRecord"
+        actual:
+          type: array
+          description: Records public DNS serves now. Diagnostic only; these are not records to add.
+          items:
+            "$ref": "#/components/schemas/DomainDnsRecord"
+        dns_match:
+          type: boolean
+          description: Whether an actual record matches the expected one.
+        nameservers:
+          type: array
+          items:
+            type: string
+        error:
+          type: string
+          description: Present when the DNS lookup itself failed.
+      additionalProperties: false
+    DomainDnsRecord:
+      type: object
+      required:
+      - type
+      - value
+      properties:
+        type:
+          type: string
+          enum:
+          - A
+          - AAAA
+          - CNAME
+        value:
+          type: string
+          example: host.fluid.app.
+      additionalProperties: false
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return one or more of these fields depending on the controller path.
       type: object
@@ -17630,7 +17761,9 @@ components:
         companies:
           type: array
           items:
-            "$ref": "#/components/schemas/CompanyActivityCompany"
+            oneOf:
+            - "$ref": "#/components/schemas/CompanyActivityCompany"
+            - "$ref": "#/components/schemas/CompanyActivityCompanySummary"
         company:
           "$ref": "#/components/schemas/CompanyActivityCompany"
         company_unread_activities_count:
@@ -22736,6 +22869,17 @@ components:
       - system_defined
       - archived_at
       additionalProperties: false
+    CompanyActivityCompanySummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+      required:
+      - id
+      - name
+      additionalProperties: false
     CompanyActivityCompany:
       type: object
       properties:
@@ -26800,6 +26944,16 @@ paths:
       description: Marks every unread activity in the calling user's feed as read and resets the user's activity notification count to 0. Returns the calling user's profile. Requires a Bearer token tied to a user (company admin, rep, or customer); tokens without a user get 401. Admin users need the `dashboard` view permission.
       tags:
       - activities
+      parameters:
+      - name: companies
+        in: query
+        required: false
+        description: Pass `summary` to return each entry of `companies` with only
+          its `id` and `name`, for clients that only show a company picker.
+        schema:
+          type: string
+          enum:
+          - summary
       responses:
         '200':
           description: Success
@@ -27169,6 +27323,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '422':
+          description: The `companies` parameter is not `summary`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security:
       - bearer_auth: []
   "/api/activities/{id}":
@@ -40773,6 +40933,88 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+  "/api/domains/{id}/reconcile":
+    patch:
+      summary: Check and advance a domain's setup
+      description: |
+        Runs one bounded check of a custom domain's DNS and certificate setup, records the
+        result, and starts the next setup step when one is due. Call it after the customer
+        changes DNS, or when a domain looks stuck. It checks once and does not wait for DNS
+        propagation, so call it again later if the domain is not yet verified.
+
+        While the domain is unverified, `meta.diagnostics` compares the record the customer
+        must add (`expected`) with what public DNS currently serves (`actual`).
+      tags:
+      - domains
+      operationId: company_v0_reconcile_domain
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Documents an existing route in the legacy unversioned company v0 spec, which has no top-level tags; the path cannot take a dated version.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Domain ID
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: The domain after the check, with the check outcome in `meta`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/DomainReconcileResponse"
+              example:
+                domain:
+                  id: 5821
+                  hostname: shop.maplewellness.com
+                  apex_domain: maplewellness.com
+                  verification_status: pending_dns
+                  connected: false
+                  cert_created: true
+                  dns_fluid_verified: pending
+                meta:
+                  check_result:
+                    computed_status: pending_dns
+                    inconclusive: false
+                  diagnostics:
+                    hostname: shop.maplewellness.com
+                    apex_domain: maplewellness.com
+                    is_apex: false
+                    expected:
+                      type: CNAME
+                      value: host.fluid.app
+                    actual:
+                    - type: A
+                      value: 203.0.113.10
+                    dns_match: false
+                    nameservers:
+                    - ns1.maplewellness-dns.com
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Forbidden — the caller does not hold domains.update
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '404':
+          description: No domain with this ID belongs to the company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: The check could not finish; try again shortly
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/domains/{id}/verify_domain":
     patch:
       summary: Verify domain
@@ -55739,6 +55981,15 @@ paths:
         required: true
         schema:
           type: string
+      - name: companies
+        in: query
+        required: false
+        description: Pass `summary` to return each entry of `companies` with only
+          its `id` and `name`, for clients that only show a company picker.
+        schema:
+          type: string
+          enum:
+          - summary
       requestBody:
         content:
           application/json:
@@ -55895,6 +56146,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '422':
+          description: Invalid parameters, including a `companies` value other than
+            `summary`, a locked name change, or a failed profile update.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security:
       - bearer_auth: []
   "/api/users/{user_id}/links":
