@@ -1,0 +1,590 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Reporting Databases API
+  description: |
+    Manage your company's Fluid reporting database: an isolated, read-only
+    copy of your Fluid data that the reporting pipeline refreshes on a
+    schedule, so you can query it from Mist or your own SQL tools without
+    touching the live store.
+
+    Each sync extracts your company's data, rebuilds the reporting tables,
+    and swaps them into your reporting database. You control whether syncs
+    run and how often, and you can ask for a sync right away. Turning sync
+    off pauses refreshes and keeps the existing database intact.
+
+    The settings endpoints back the **Reporting Databases** page in the Fluid
+    admin. They require a Bearer token for a company admin user with the
+    `reporting_databases.manage` permission. Admins hold that permission by
+    default; no other default role does.
+
+    The spec also records the completion callback the reporting pipeline
+    posts after each refresh. That callback is service-to-service and is
+    not part of the integrator API.
+  version: v2026-04
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+tags:
+- name: reporting-database-settings
+  description: |
+    Read and change your company's reporting database settings: the sync
+    switch, the hours between scheduled refreshes, and how fresh the data
+    is. You can also request a sync without waiting for the next scheduled
+    one. Every operation requires the `reporting_databases.manage`
+    permission.
+  x-fluid-section: Settings
+- name: reporting-sync-completions
+  description: |
+    The callback the reporting pipeline posts after it swaps a refresh into
+    a company's reporting database. Service-to-service: authenticated by a
+    shared secret header, never by a user token, and not intended for
+    integrators.
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: >-
+        A Bearer token for a company admin user. A company API token with
+        no user behind it is refused with 401.
+    reporting_secret:
+      type: apiKey
+      in: header
+      name: X-Reporting-Secret
+      description: >-
+        The shared secret issued to the reporting pipeline, compared in
+        constant time. When the server has no secret configured, every
+        request is refused.
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Request metadata included in every settings response.
+      additionalProperties: false
+      required: [request_id, timestamp]
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+          description: The request id from the request's log line, when one was assigned.
+          example: 5c3a1c1e-2f2d-4a2f-9f6b-1e5d1c0b9a77
+        timestamp:
+          type: string
+          format: date-time
+          description: When the response was rendered.
+          example: '2026-09-07T20:00:00Z'
+    FluidSettings:
+      type: object
+      description: >-
+        The company's Fluid reporting database contract and the state the
+        pipeline last reported for it.
+      additionalProperties: false
+      required:
+      - enabled
+      - sync_interval_hours
+      - last_synced_at
+      - last_sync_warnings_count
+      - last_sync_artifact_generation
+      properties:
+        enabled:
+          type: boolean
+          description: Whether scheduled and requested syncs run for the company. Defaults to false. Turning it off pauses syncs and keeps the existing database.
+          example: true
+        sync_interval_hours:
+          type: integer
+          minimum: 1
+          description: Hours between scheduled refreshes. Any positive integer, with no upper bound; defaults to 6.
+          example: 6
+        last_synced_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the pipeline last swapped a refresh into the company's reporting database. Null until the first sync completes.
+          example: '2026-09-07T07:06:00Z'
+        last_sync_warnings_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          description: >-
+            How many warning-level data-quality checks fired during the last
+            completed refresh. Null until a refresh that reports it has
+            completed.
+          example: 2
+        last_sync_artifact_generation:
+          type:
+          - string
+          - 'null'
+          pattern: '^[0-9]+$'
+          description: >-
+            The build identifier of the pipeline release that produced the
+            tables in the last completed refresh. It tells you which version
+            of the pipeline built the rows, which `last_synced_at` cannot.
+            Null until a refresh that reports it has completed.
+          example: '1788582025686682'
+    ConnectorSettings:
+      type: object
+      description: One reporting-capable Connect database and its "View data in Mist" valve state.
+      additionalProperties: false
+      required: [name, slug, view_data_in_mist]
+      properties:
+        name:
+          type: string
+          description: The connector droplet's display name.
+          example: Exigo
+        slug:
+          type: string
+          description: The connector's slug, the key its own toggle endpoint takes.
+          example: exigo
+        view_data_in_mist:
+          type: boolean
+          description: Whether the valve is open. A backend that cannot answer reports false rather than failing the page.
+          example: true
+    SettingsPageResponse:
+      type: object
+      description: The whole settings page in one read.
+      additionalProperties: false
+      required: [fluid, connectors, status, meta]
+      properties:
+        fluid:
+          $ref: '#/components/schemas/FluidSettings'
+        connectors:
+          type: array
+          description: Every reporting-capable connector installed for the company.
+          items:
+            $ref: '#/components/schemas/ConnectorSettings'
+        status:
+          type: integer
+          description: The HTTP status code echoed in the envelope.
+          example: 200
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    FluidSettingsResponse:
+      type: object
+      description: The Fluid half of the page, after a change.
+      additionalProperties: false
+      required: [fluid, status, meta]
+      properties:
+        fluid:
+          $ref: '#/components/schemas/FluidSettings'
+        status:
+          type: integer
+          description: The HTTP status code echoed in the envelope.
+          example: 200
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    UpdateSettingsRequest:
+      type: object
+      description: >-
+        Either or both fields. Only the keys sent are applied, so toggling
+        `enabled` never resets the interval.
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+          description: Turn the sync on or off. Must be a real boolean; "yes" and 1 are rejected.
+          example: true
+        sync_interval_hours:
+          type: integer
+          minimum: 1
+          description: Hours between scheduled refreshes. Must be a positive integer; there is no upper bound.
+          example: 12
+    SyncRequestedResponse:
+      type: object
+      description: The stamped Sync Now request.
+      additionalProperties: false
+      required: [sync_requested_at, sync_pending, status, meta]
+      properties:
+        sync_requested_at:
+          type: string
+          format: date-time
+          description: When the request was recorded. The scheduler starts the sync on its next check.
+          example: '2026-09-07T20:00:00Z'
+        sync_pending:
+          type: boolean
+          description: True while the request is newer than the last completed sync. It turns false once that sync completes.
+          example: true
+        status:
+          type: integer
+          description: The HTTP status code echoed in the envelope.
+          example: 200
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    LegacyErrorResponse:
+      type: object
+      description: A refused request, with the reason and any field errors.
+      additionalProperties: false
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          description: Why the request was refused.
+          additionalProperties: false
+          required: [message, details]
+          properties:
+            message:
+              type: string
+              description: What was wrong with the request.
+              example: Enable reporting database sync before requesting a manual sync
+            details:
+              type: object
+              description: Validation errors keyed by field, when a save was refused; empty otherwise.
+              additionalProperties: true
+        status:
+          type: integer
+          description: The HTTP status code echoed in the envelope.
+          example: 422
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    UnauthorizedResponse:
+      type: object
+      description: No usable credentials, or a company API token with no user behind it.
+      additionalProperties: false
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Why authentication failed.
+          example: Invalid credentials
+    ForbiddenResponse:
+      description: >-
+        The caller is authenticated but may not use this page: either the
+        user is not a company admin, or the admin's role lacks the
+        `reporting_databases.manage` permission.
+      oneOf:
+      - type: object
+        description: An admin whose role lacks the `reporting_databases.manage` permission.
+        additionalProperties: false
+        required: [error]
+        properties:
+          error:
+            type: string
+            description: Why authorization failed.
+            example: Not authorized
+      - type: object
+        description: A user who is not a company admin.
+        additionalProperties: false
+        required: [message]
+        properties:
+          message:
+            type: string
+            description: Why authorization failed.
+            example: Not authorized
+    SyncCompletionRequest:
+      type: object
+      description: One finished refresh, as the reporting pipeline reports it.
+      additionalProperties: false
+      required: [company_id, synced_at]
+      properties:
+        company_id:
+          type: integer
+          description: The company whose reporting database was refreshed.
+          example: 980243071
+        synced_at:
+          type: string
+          format: date-time
+          description: When the refresh completed, ISO 8601.
+          example: '2026-09-07T07:06:00Z'
+        neon_project_id:
+          type: string
+          description: The hosting project of the company's reporting database. The pipeline reports it on the first completion, which makes the database available in Mist.
+          example: rapid-haze-56874031
+        warnings_count:
+          type: integer
+          minimum: 0
+          description: >-
+            How many warning-level data-quality checks fired during the
+            refresh. Omit to keep the stored count; send 0 to reset it after
+            a clean refresh.
+          example: 2
+        artifact_generation:
+          type: string
+          pattern: '^[0-9]+$'
+          description: >-
+            The build identifier of the pipeline release the refresh ran on.
+            Omit to keep the stored value.
+          example: '1788582025686682'
+    SyncCompletionResponse:
+      type: object
+      description: The completion was recorded.
+      additionalProperties: false
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          const: true
+          description: Always true on this status.
+          example: true
+    SyncCompletionRejectedResponse:
+      type: object
+      description: The completion was refused and nothing was stored.
+      additionalProperties: false
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          const: false
+          description: Always false on this status.
+          example: false
+        message:
+          type: string
+          description: Which field could not be stored, and why.
+          example: artifact_generation must be a numeric object generation
+    SyncCompletionUnauthorizedResponse:
+      type: object
+      description: The shared secret was missing, wrong, or unset on the server.
+      additionalProperties: false
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          const: false
+          description: Always false on this status.
+          example: false
+paths:
+  "/api/v202604/reporting_databases/settings":
+    get:
+      operationId: reporting_databases_v202604_settings_index
+      summary: Get reporting database settings
+      description: >-
+        Returns the whole Reporting Databases page in one read. `fluid` holds
+        your company's reporting database settings: whether sync is on, the
+        hours between scheduled refreshes, and when the last refresh
+        completed. `connectors` lists each installed connector database that
+        supports reporting, with whether its data can be viewed in Mist. A
+        connector whose backend cannot answer is reported as off rather than
+        failing the request. A company that has never changed its settings
+        gets the defaults: sync off, every 6 hours. Requires a company admin
+        user with the `reporting_databases.manage` permission.
+      tags:
+      - reporting-database-settings
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The settings page for the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsPageResponse'
+              examples:
+                dunder_mifflin_with_exigo:
+                  summary: Dunder Mifflin Paper Company with sync on and Exigo connected
+                  value:
+                    fluid:
+                      enabled: true
+                      sync_interval_hours: 6
+                      last_synced_at: '2026-09-07T07:06:00Z'
+                      last_sync_warnings_count: 2
+                      last_sync_artifact_generation: '1788582025686682'
+                    connectors:
+                    - name: Exigo
+                      slug: exigo
+                      view_data_in_mist: true
+                    status: 200
+                    meta:
+                      request_id: 5c3a1c1e-2f2d-4a2f-9f6b-1e5d1c0b9a77
+                      timestamp: '2026-09-07T20:00:00Z'
+        '401':
+          description: Not authenticated, or a company API token with no user behind it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The user is not a company admin, or lacks the `reporting_databases.manage` permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenResponse'
+    patch:
+      operationId: reporting_databases_v202604_settings_update
+      summary: Update reporting database sync settings
+      description: >-
+        Turns sync on or off, changes the hours between scheduled refreshes,
+        or both. Only the fields you send change, so turning sync on never
+        resets the interval. Turning sync off pauses refreshes and keeps the
+        existing reporting database. Connector settings are not changed
+        here. Requires a company admin user with the
+        `reporting_databases.manage` permission.
+      tags:
+      - reporting-database-settings
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSettingsRequest'
+            examples:
+              enable_every_twelve_hours:
+                summary: Michael Scott turns on sync for Dunder Mifflin every 12 hours
+                value:
+                  enabled: true
+                  sync_interval_hours: 12
+      responses:
+        '200':
+          description: The reporting database settings after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FluidSettingsResponse'
+              examples:
+                enabled_every_twelve_hours:
+                  summary: Dunder Mifflin syncing every 12 hours
+                  value:
+                    fluid:
+                      enabled: true
+                      sync_interval_hours: 12
+                      last_synced_at: '2026-09-07T07:06:00Z'
+                      last_sync_warnings_count: 0
+                      last_sync_artifact_generation: '1788582025686682'
+                    status: 200
+                    meta:
+                      request_id: 9d0e4b7a-3c61-4f0e-8a52-6b1f2e7c4d90
+                      timestamp: '2026-09-07T20:05:00Z'
+        '401':
+          description: Not authenticated, or a company API token with no user behind it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The user is not a company admin, or lacks the `reporting_databases.manage` permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenResponse'
+        '422':
+          description: "`enabled` was not a boolean, `sync_interval_hours` was not a positive integer, or the settings could not be saved"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyErrorResponse'
+  "/api/v202604/reporting_databases/sync":
+    post:
+      operationId: reporting_databases_v202604_syncs_create
+      summary: Request a reporting database sync
+      description: >-
+        Asks for a sync without waiting for the next scheduled refresh. The
+        request is recorded and the scheduler starts the sync on its next
+        check, regardless of the configured interval, so the sync starts
+        shortly after this call rather than during it. Asking again while a
+        request is pending records a new request time. Sync must be turned
+        on first; otherwise the request is refused with 409. Requires a
+        company admin user with the `reporting_databases.manage` permission.
+      tags:
+      - reporting-database-settings
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The sync request was recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRequestedResponse'
+              examples:
+                dunder_mifflin_sync_pending:
+                  summary: Michael Scott requests a sync for Dunder Mifflin
+                  value:
+                    sync_requested_at: '2026-09-07T20:00:00Z'
+                    sync_pending: true
+                    status: 200
+                    meta:
+                      request_id: 2f7b8c1d-6e4a-4b3f-9c05-7d8e1a2b3c4f
+                      timestamp: '2026-09-07T20:00:00Z'
+        '401':
+          description: Not authenticated, or a company API token with no user behind it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The user is not a company admin, or lacks the `reporting_databases.manage` permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenResponse'
+        '409':
+          description: Sync is turned off for the company. Turn it on with the settings endpoint first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyErrorResponse'
+  "/webhooks/reporting/v1/sync_completions":
+    post:
+      operationId: reporting_webhooks_v1_sync_completions_create
+      summary: Record a finished reporting database refresh
+      description: >-
+        Service-to-service callback, not an integrator API. The reporting
+        pipeline posts it after a refresh has been swapped into a company's
+        reporting database. It records `last_synced_at`, which settles any
+        pending sync request, and stores the optional hosting project,
+        warnings count, and build identifier the pipeline reports. A
+        malformed optional field is refused rather than dropped, so nothing
+        the pipeline meant to record is lost silently. Authenticated by the
+        `X-Reporting-Secret` shared secret header.
+      tags:
+      - reporting-sync-completions
+      x-fluid-lint-exempt: "service-to-service callback from the reporting pipeline, not an integrator API: no x-fluid-audience value fits a shared-secret caller, and the unversioned webhook path predates the dated-version and kebab-case rules. The docs site excludes it from the sidebar."
+      security:
+      - reporting_secret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncCompletionRequest'
+            examples:
+              first_completion:
+                summary: First completed refresh for a company
+                value:
+                  company_id: 980243071
+                  synced_at: '2026-09-07T07:06:00Z'
+                  neon_project_id: rapid-haze-56874031
+                  warnings_count: 2
+                  artifact_generation: '1788582025686682'
+      responses:
+        '200':
+          description: The completion was recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncCompletionResponse'
+              examples:
+                recorded:
+                  summary: Completion recorded
+                  value:
+                    success: true
+        '401':
+          description: The shared secret was missing or wrong, or no secret is configured on the server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncCompletionUnauthorizedResponse'
+        '404':
+          description: No company with that id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncCompletionRejectedResponse'
+        '422':
+          description: "`synced_at` was not an ISO 8601 timestamp, an optional field was malformed, or the completion could not be saved"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncCompletionRejectedResponse'

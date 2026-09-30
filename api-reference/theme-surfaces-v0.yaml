@@ -1,0 +1,1902 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Theme Surfaces API
+  version: v0
+  description: >-
+    The admin seam over a theme's release lifecycle. A release freezes the
+    theme's currently-resolved bindings into an immutable artifact; activating
+    one is what the storefront and the member account zone then serve, and
+    rolling back moves that pointer rather than re-rendering anything.
+
+
+    Every operation resolves the theme from the authenticated company. No
+    operation accepts a theme id, so a release cannot be published onto, or
+    activated for, another merchant's theme by supplying one.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+security:
+- bearer_auth: []
+tags:
+- name: theme-surfaces
+  description: Routable slots and the templates bound into them
+- name: theme-audiences
+  description: Who sees which structure
+- name: theme-releases
+  description: Publish, activate and roll back a theme's releases
+- name: members-sites
+  description: >-
+    The storefront Members scope's sites: an access rule and the page set it
+    governs, as a builder edits them
+- name: members-pages
+  description: The pages inside a member site, as a builder edits them
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: Bearer token authentication
+  schemas:
+    Release:
+      type: object
+      additionalProperties: false
+      required: [id, revision, published_at, active, surface_count]
+      properties:
+        id:
+          type: integer
+        revision:
+          type: string
+          description: >-
+            A monotonic counter paired with a digest of the manifest, e.g.
+            `r3-9f2a1c4b`. The counter orders a bucket listing for a human; the
+            digest tells two releases with identical content apart from one
+            republished by mistake.
+          examples: [r3-9f2a1c4b]
+        published_at:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: Whether this is the release the theme currently serves.
+        surface_count:
+          type: integer
+          description: How many surfaces the frozen manifest covers.
+    ReleaseEnvelope:
+      type: object
+      additionalProperties: false
+      required: [release]
+      properties:
+        release:
+          $ref: '#/components/schemas/Release'
+    ReleaseList:
+      type: object
+      additionalProperties: false
+      required: [releases]
+      properties:
+        releases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Release'
+    AuthError:
+      type: object
+      description: >-
+        The shared API authentication and authorization refusal, which carries a
+        message and no machine-readable code. Described as the framework
+        actually answers rather than as this API would have chosen, because
+        neither status is produced by this controller.
+      additionalProperties: true
+      required: [message]
+      properties:
+        message:
+          type: string
+    Binding:
+      type: object
+      additionalProperties: false
+      required: [id, audience_id, channel, template_id]
+      properties:
+        id:
+          type: integer
+        audience_id:
+          type: [integer, "null"]
+          description: Null is the surface's default binding, which every audience inherits.
+        channel:
+          type: [string, "null"]
+          description: Null is every channel. Otherwise "browser" or "mobile".
+        template_id:
+          type: integer
+    Surface:
+      type: object
+      additionalProperties: false
+      required: [id, key, route, persona, bindings]
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+          examples: [account.home]
+        route:
+          type: string
+          examples: ["/"]
+        persona:
+          type: string
+          enum: [customer, rep, admin]
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Binding'
+    SurfaceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [surface]
+      properties:
+        surface:
+          $ref: '#/components/schemas/Surface'
+    SurfaceList:
+      type: object
+      additionalProperties: false
+      required: [surfaces, account_zone_enabled]
+      properties:
+        surfaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/Surface'
+        account_zone_enabled:
+          type: boolean
+          description: >-
+            Whether this company is admitted to the member account zone. The
+            surface endpoints work either way; a console reads this to decide
+            whether to offer itself, because it holds a bearer token and has no
+            other way to ask.
+    MembersSiteRule:
+      type: object
+      description: >-
+        What a site constrains. An empty array means **unconstrained**, not
+        "matches nothing", so a rule with both axes empty matches everybody and
+        clearing an axis widens the site rather than narrowing it. A client that
+        sends `[]` to mean "nobody" will publish a site that matches everyone.
+      additionalProperties: false
+      required: [country_ids, member_type_ids]
+      properties:
+        country_ids:
+          type: array
+          description: >-
+            Country ids, empty meaning any country. Numbers, because countries
+            are bigint-keyed; member type ids are strings because theirs are
+            uuids.
+          items:
+            type: integer
+          examples: [[1]]
+        member_type_ids:
+          type: array
+          description: Member type ids, empty meaning any member type.
+          items:
+            type: string
+          examples: [['0191d3f0-0000-7000-8000-000000000000']]
+    MembersPage:
+      type: object
+      description: >-
+        One page inside a member site. Enough to draw a row in the builder's
+        folder and open it. The slug is unique within its site, not globally, so
+        two sites may both hold `rewards` and the member decides which they get.
+      additionalProperties: false
+      required: [id, title, slug, published, path, template_id, updated_at]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+          description: What the merchant calls the page.
+          examples: [Rewards]
+        slug:
+          type: string
+          description: The path segment, unique within this site. Use / for the home page; system routes are reserved.
+          examples: [rewards]
+        published:
+          type: boolean
+          description: >-
+            Whether members see it. A draft is absent from navigation and 404s
+            when requested, rather than rendering an unfinished page.
+        path:
+          type: string
+          description: The storefront path this page serves at.
+          examples: ['/accounts/rewards']
+        template_id:
+          type: [integer, "null"]
+          description: >-
+            The template the visual builder opens. Created and bound with the
+            page, because the builder addresses a page by its template — one
+            with no template is a row a merchant cannot click. Nullable only
+            for pages that predate that, or whose template was deleted outside
+            the builder.
+        updated_at:
+          type: string
+          format: date-time
+    MembersPageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [members_page]
+      properties:
+        members_page:
+          $ref: '#/components/schemas/MembersPage'
+    MembersSite:
+      type: object
+      description: >-
+        An access rule and the page set it governs, scoped to one theme. The
+        rule is a permission, not a presentation choice: a member who does not
+        match a site cannot reach its pages, and requesting one returns 404.
+        That is what separates a site from an audience.
+      additionalProperties: false
+      required:
+        [id, name, active, default, position, layout_name, menu_slug, menu_id,
+         unconstrained, rule, pages]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: What the merchant calls the site, unique within the theme.
+          examples: [Reps]
+        active:
+          type: boolean
+          description: An inactive site resolves for nobody, without deleting its pages.
+        default:
+          type: boolean
+          description: >-
+            Whether this site is the fallback, considered only after every
+            explicit site has failed to match. Not the same as sorting last: a
+            fallback matches everybody, so ordering one above an explicit site
+            would otherwise swallow it.
+        layout_name:
+          type: [string, "null"]
+          description: >-
+            The `layouts` template a site's pages are framed in, by name — a
+            theme travels as a zip and an id means nothing in the company
+            importing it, which is why `{% layout %}` has always named one.
+            `"none"` means deliberately no layout. Null only for a site that
+            predates the field; a site created through this API carries the
+            theme's default explicitly.
+          examples: [theme]
+        menu_slug:
+          type: [string, "null"]
+          description: >-
+            The menu this site is navigated by, by slug — a theme travels as a
+            zip and an id means nothing in the company importing it. Null for a
+            site created before menus or one whose menu was deleted, in which
+            case the storefront derives navigation from the site's pages, so
+            null means "derived" rather than "no navigation". Read-only: a site
+            is given its menu when it is created.
+          examples: [reps-navigation]
+        menu_id:
+          type: [integer, "null"]
+          description: >-
+            The same menu by id, so a client can open it without resolving the
+            slug first. Null whenever `menu_slug` is, and also when the slug
+            names a menu that no longer exists.
+          examples: [42]
+        position:
+          type: integer
+          description: >-
+            Ascending, and contiguous from 1 across the theme's sites. Within
+            the explicit group, and within the default group, the first site
+            whose rule matches wins. Sending a `position` to the update endpoint
+            moves the site and renumbers the rest, so this value is never
+            duplicated.
+        unconstrained:
+          type: boolean
+          description: >-
+            Whether the rule constrains nobody and so matches everyone. Derived
+            by the server because the empty-axis rule is the most misread thing
+            in this model, and two clients computing it is two chances to invert
+            it.
+        rule:
+          $ref: '#/components/schemas/MembersSiteRule'
+        pages:
+          type: array
+          description: >-
+            The pages this site governs, nested rather than sent as a flat list
+            keyed by site id. A page's audience *is* its site, so a page outside
+            one has no meaning.
+          items:
+            $ref: '#/components/schemas/MembersPage'
+    MembersSiteEnvelope:
+      type: object
+      additionalProperties: false
+      required: [members_site]
+      properties:
+        members_site:
+          $ref: '#/components/schemas/MembersSite'
+    SystemScreen:
+      type: object
+      description: >-
+        One screen Fluid ships for member sites. Not a page a merchant
+        composes: its body is a single custom element from the member SDK, so
+        there are no sections, nothing to edit, and no template to open. Every
+        site has every screen and always has, which is why there is no id — a
+        screen has no record, and the key is its identity. A client draws these
+        in a site's page list as required and locked, and offers them in a
+        navigation picker, but must never draw one as an editable page.
+      additionalProperties: false
+      required: [key, label, path]
+      properties:
+        key:
+          type: string
+          description: The screen's identity, stable across companies and releases.
+          examples: [messaging]
+        label:
+          type: string
+          description: What a merchant sees in the page list and the link picker.
+          examples: [Messaging]
+        path:
+          type: string
+          description: >-
+            The storefront path the screen serves at. Fixed by Fluid, so a
+            merchant cannot move it, and the whole of a menu item pointing at
+            one: with no record to reference, a URL is the only link there is.
+          examples: ['/accounts/messaging']
+    MembersSiteList:
+      type: object
+      additionalProperties: false
+      required: [members_sites, system_screens]
+      properties:
+        members_sites:
+          type: array
+          items:
+            $ref: '#/components/schemas/MembersSite'
+        system_screens:
+          type: array
+          description: >-
+            The screens Fluid ships, sent once rather than nested in each site.
+            Every site has every screen, so nesting would repeat the catalogue
+            and imply a per-site variation that does not exist. Absent from the
+            create and update responses for the same reason: a site just created
+            has the same screens as every other.
+          items:
+            $ref: '#/components/schemas/SystemScreen'
+    WidgetInstallation:
+      type: object
+      description: >-
+        A company's adoption of a published widget package version. `granted` is
+        the merchant's decision and is stored apart from the manifest's own
+        declaration, so narrowing a grant never edits an artifact: the effective
+        set is the intersection, computed per request, which is why a revocation
+        takes effect on the next call rather than at the next publish.
+      additionalProperties: false
+      required: [id, state, package_key, owner_kind, version, widget_package_version_id, granted, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        state:
+          type: string
+          description: >-
+            A disabled installation is not deleted, so the grant survives a pause
+            and does not have to be re-entered on resume.
+          enum: [active, disabled]
+        package_key:
+          type: string
+          examples: ["company.account-essentials"]
+        owner_kind:
+          type: string
+          enum: [company, droplet]
+        version:
+          type: string
+          examples: ["1.0.0"]
+        widget_package_version_id:
+          type: integer
+        granted:
+          type: array
+          description: The capabilities the merchant granted, as fused name@version strings.
+          items:
+            type: string
+          examples: [["orders@1", "rewards@1"]]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    WidgetInstallationList:
+      type: object
+      additionalProperties: false
+      required: [widget_installations]
+      properties:
+        widget_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/WidgetInstallation'
+    WidgetInstallationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [widget_installation, grant_epoch]
+      properties:
+        widget_installation:
+          $ref: '#/components/schemas/WidgetInstallation'
+        grant_epoch:
+          type: integer
+          description: >-
+            The company's grant epoch after this write. Descriptors are cached by
+            (version, company, epoch), so a bumped epoch is what retires every
+            cached descriptor at once.
+    WidgetInstallationCreateRequest:
+      type: object
+      description: >-
+        Separate from the update body because the version is required here and
+        meaningless there. One shared schema advertised the version as optional,
+        so a generated client could omit a field the endpoint actually needs.
+      additionalProperties: false
+      required: [widget_package_version_id, granted_capabilities]
+      properties:
+        widget_package_version_id:
+          type: integer
+          description: The published version to adopt.
+        granted_capabilities:
+          type: array
+          description: >-
+            A full replacement rather than an addition. Create is also the
+            upgrade path, so a default would let a re-install silently drop every
+            grant the merchant had already given. An empty array is a valid
+            request meaning the package is granted nothing.
+          items:
+            type: string
+    WidgetInstallationUpdateRequest:
+      type: object
+      description: Changes the grant without moving the version.
+      additionalProperties: false
+      required: [granted_capabilities]
+      properties:
+        granted_capabilities:
+          type: array
+          description: >-
+            A full replacement rather than an addition, so an omitted or
+            malformed list is refused rather than read as an empty one.
+          items:
+            type: string
+    Audience:
+      type: object
+      description: >-
+        An empty axis means unconstrained, not "matches nothing". A client that
+        renders an empty axis as a filter inverts the rule the whole targeting
+        model turns on.
+      additionalProperties: false
+      required: [id, key, persona, priority, default, country_ids, language_ids, rank_ids, member_type_ids]
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+        persona:
+          type: string
+          enum: [customer, rep, admin]
+        priority:
+          type: integer
+          description: Higher wins. Two audiences that tie and overlap refuse to publish.
+        default:
+          type: boolean
+        country_ids:
+          type: array
+          items:
+            type: string
+        language_ids:
+          type: array
+          items:
+            type: string
+        rank_ids:
+          type: array
+          items:
+            type: string
+        member_type_ids:
+          type: array
+          items:
+            type: string
+    AudienceInput:
+      type: object
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        persona:
+          type: string
+          enum: [customer, rep, admin]
+        priority:
+          type: integer
+        default:
+          type: boolean
+        country_ids:
+          type: array
+          items:
+            type: [string, integer]
+        language_ids:
+          type: array
+          items:
+            type: [string, integer]
+        rank_ids:
+          type: array
+          items:
+            type: [string, integer]
+        member_type_ids:
+          type: array
+          items:
+            type: [string, integer]
+    AudienceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [audience]
+      properties:
+        audience:
+          $ref: '#/components/schemas/Audience'
+    AudienceList:
+      type: object
+      additionalProperties: false
+      required: [audiences]
+      properties:
+        audiences:
+          type: array
+          items:
+            $ref: '#/components/schemas/Audience'
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    Unauthorized:
+      description: No or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthError'
+    Forbidden:
+      description: Authenticated, but not permitted to manage themes
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthError'
+    NotFound:
+      description: The company has no active theme, or no such release
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unprocessable:
+      description: The request was understood and refused
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+paths:
+  "/api/company/widget_installations":
+    get:
+      tags: [widget-installations]
+      operationId: theme_surfaces_v0_list_widget_installations
+      summary: The widget packages this company has adopted
+      description: >-
+        What the company has adopted and on what grants. A disabled installation
+        is listed too: it is paused rather than gone, and the merchant has to be
+        able to see it to resume it.
+      responses:
+        '200':
+          description: The company's installations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetInstallationList'
+              example:
+                widget_installations:
+                - id: 2318
+                  state: active
+                  package_key: company.account-essentials
+                  owner_kind: company
+                  version: 1.2.0
+                  widget_package_version_id: 9147
+                  granted:
+                  - orders@1
+                  - rewards@1
+                  created_at: '2026-09-03T15:12:44Z'
+                  updated_at: '2026-09-21T10:05:19Z'
+                - id: 2331
+                  state: disabled
+                  package_key: pied-piper.compression-stats
+                  owner_kind: droplet
+                  version: 0.4.1
+                  widget_package_version_id: 9188
+                  granted:
+                  - orders@1
+                  created_at: '2026-09-10T18:30:02Z'
+                  updated_at: '2026-09-24T11:47:36Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [widget-installations]
+      operationId: theme_surfaces_v0_install_widget_package
+      summary: Adopt a published widget package version
+      description: >-
+        Adopting a second version of a package the company already holds is a
+        version change on the same row rather than a second install, because two
+        live installs of one package would make the effective grant ambiguous.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WidgetInstallationCreateRequest'
+            example:
+              widget_package_version_id: 9147
+              granted_capabilities:
+              - orders@1
+              - rewards@1
+      responses:
+        '200':
+          description: >-
+            The company already held this package, so the same row moved to the
+            requested version rather than a second installation being created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetInstallationEnvelope'
+              example:
+                widget_installation:
+                  id: 2318
+                  state: active
+                  package_key: company.account-essentials
+                  owner_kind: company
+                  version: 1.3.0
+                  widget_package_version_id: 9203
+                  granted:
+                  - orders@1
+                  - rewards@1
+                  created_at: '2026-09-03T15:12:44Z'
+                  updated_at: '2026-09-28T09:20:31Z'
+                grant_epoch: 15
+        '201':
+          description: The installation and the company's new grant epoch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetInstallationEnvelope'
+              example:
+                widget_installation:
+                  id: 2318
+                  state: active
+                  package_key: company.account-essentials
+                  owner_kind: company
+                  version: 1.2.0
+                  widget_package_version_id: 9147
+                  granted:
+                  - orders@1
+                  - rewards@1
+                  created_at: '2026-09-03T15:12:44Z'
+                  updated_at: '2026-09-21T10:05:19Z'
+                grant_epoch: 14
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/widget_installations/{id}":
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The installation, which is always read within the authenticated company.
+        schema:
+          type: integer
+    patch:
+      tags: [widget-installations]
+      operationId: theme_surfaces_v0_modify_widget_installation
+      summary: Narrow or widen what an installation may read
+      description: >-
+        Changes the grant without moving the version. The list is a full
+        replacement rather than an addition, so omitting it is refused instead
+        of read as an empty one. Narrowing bumps the grant epoch exactly as
+        widening does, because that is what retires cached descriptors.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WidgetInstallationUpdateRequest'
+            example:
+              granted_capabilities:
+              - orders@1
+      responses:
+        '200':
+          description: The installation and the company's new grant epoch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetInstallationEnvelope'
+              example:
+                widget_installation:
+                  id: 2318
+                  state: active
+                  package_key: company.account-essentials
+                  owner_kind: company
+                  version: 1.2.0
+                  widget_package_version_id: 9147
+                  granted:
+                  - orders@1
+                  created_at: '2026-09-03T15:12:44Z'
+                  updated_at: '2026-09-29T08:14:03Z'
+                grant_epoch: 16
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [widget-installations]
+      operationId: theme_surfaces_v0_revoke_widget_installation
+      summary: Stop an installation serving
+      description: >-
+        Disables rather than deletes. The merchant's grant survives the pause and
+        does not have to be re-entered on resume.
+      responses:
+        '200':
+          description: The disabled installation and the company's new grant epoch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetInstallationEnvelope'
+              example:
+                widget_installation:
+                  id: 2318
+                  state: disabled
+                  package_key: company.account-essentials
+                  owner_kind: company
+                  version: 1.2.0
+                  widget_package_version_id: 9147
+                  granted:
+                  - orders@1
+                  - rewards@1
+                  created_at: '2026-09-03T15:12:44Z'
+                  updated_at: '2026-09-30T12:02:57Z'
+                grant_epoch: 17
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/members_sites":
+    parameters:
+    - name: application_theme_id
+      in: query
+      required: false
+      description: Company-owned theme being edited, including draft themes. Omit for the active theme. Unknown or foreign themes return 404 without falling back.
+      schema:
+        type: integer
+        minimum: 1
+    get:
+      tags: [members-sites]
+      operationId: theme_surfaces_v0_list_members_sites
+      summary: The theme's member sites, each with its pages
+      description: >-
+        Returned in the order a resolver considers them, so the builder's panel
+        and the storefront agree about precedence without the client sorting.
+        Pages come nested, so drawing a folder takes one request.
+      responses:
+        '200':
+          description: The theme's member sites, in resolution order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembersSiteList'
+              example:
+                members_sites:
+                - id: 6021
+                  name: Reps
+                  active: true
+                  default: false
+                  position: 1
+                  layout_name: theme
+                  menu_slug: reps-navigation
+                  menu_id: 4417
+                  unconstrained: false
+                  rule:
+                    country_ids:
+                    - 214
+                    member_type_ids:
+                    - 0191d3f0-7c2a-7b4e-9d61-3f8a2c5e1b07
+                  pages:
+                  - id: 81530
+                    title: Rewards
+                    slug: rewards
+                    published: true
+                    path: /accounts/rewards
+                    template_id: 55102
+                    updated_at: '2026-09-18T14:03:27Z'
+                - id: 6018
+                  name: Everyone
+                  active: true
+                  default: true
+                  position: 2
+                  layout_name: member
+                  menu_slug: everyone-navigation
+                  menu_id: 4409
+                  unconstrained: true
+                  rule:
+                    country_ids: []
+                    member_type_ids: []
+                  pages:
+                  - id: 81502
+                    title: Welcome
+                    slug: /
+                    published: true
+                    path: /accounts
+                    template_id: 55090
+                    updated_at: '2026-09-02T09:41:12Z'
+                system_screens:
+                - key: messaging
+                  label: Messaging
+                  path: /accounts/messaging
+                - key: contacts
+                  label: Contacts
+                  path: /accounts/contacts
+                - key: my-site
+                  label: My Site
+                  path: /accounts/my-site
+                - key: profile
+                  label: Profile
+                  path: /accounts/profile
+                - key: orders
+                  label: Orders
+                  path: /accounts/orders
+                - key: subscriptions
+                  label: Subscriptions
+                  path: /accounts/subscriptions
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [members-sites]
+      operationId: theme_surfaces_v0_create_members_site
+      summary: Add a member site to the theme
+      description: >-
+        Appended rather than inserted, so adding a site never changes which
+        site an existing member already resolves to. A merchant reorders
+        deliberately, by sending `position`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [members_site]
+              properties:
+                members_site:
+                  type: object
+                  additionalProperties: false
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+                      description: What the merchant calls the site, unique within the theme.
+                      examples: [Reps]
+                    active:
+                      type: boolean
+                      description: Defaults to true. An inactive site resolves for nobody.
+                    default:
+                      type: boolean
+                      description: >-
+                        Defaults to false. A default site is the fallback, tried
+                        only after every explicit site fails to match.
+                    layout_name:
+                      type: string
+                      description: >-
+                        A `layouts` template in this theme, or "none" for no
+                        layout. Defaults to the theme's own `theme` layout.
+                        `member` and `theme` name the fallback chain itself and
+                        are accepted whether or not the theme has either
+                        template yet; any other name must be a `layouts`
+                        template of this theme, or the request is refused with
+                        422 rather than saved as a selection the storefront
+                        would not honour.
+                      examples: [theme]
+                    country_ids:
+                      type: array
+                      description: Empty or absent means any country.
+                      items:
+                        type: integer
+                      examples: [[1]]
+                    member_type_ids:
+                      type: array
+                      description: Empty or absent means any member type.
+                      items:
+                        type: string
+                      examples: [['0191d3f0-0000-7000-8000-000000000000']]
+            example:
+              members_site:
+                name: Reps
+                active: true
+                default: false
+                layout_name: theme
+                country_ids:
+                - 214
+                member_type_ids:
+                - 0191d3f0-7c2a-7b4e-9d61-3f8a2c5e1b07
+      responses:
+        '201':
+          description: The new site
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembersSiteEnvelope'
+              example:
+                members_site:
+                  id: 6021
+                  name: Reps
+                  active: true
+                  default: false
+                  position: 2
+                  layout_name: theme
+                  menu_slug: reps-navigation
+                  menu_id: 4417
+                  unconstrained: false
+                  rule:
+                    country_ids:
+                    - 214
+                    member_type_ids:
+                    - 0191d3f0-7c2a-7b4e-9d61-3f8a2c5e1b07
+                  pages: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/members_sites/{id}":
+    parameters:
+    - name: application_theme_id
+      in: query
+      required: false
+      description: Company-owned theme being edited, including draft themes. Omit for the active theme. Unknown or foreign themes return 404 without falling back.
+      schema:
+        type: integer
+        minimum: 1
+    - name: id
+      in: path
+      required: true
+      description: The site's id, which must belong to this company's selected theme.
+      schema:
+        type: integer
+    patch:
+      tags: [members-sites]
+      operationId: theme_surfaces_v0_update_members_site
+      summary: Change a member site's name, order, activity or rule
+      description: >-
+        Only the fields sent are changed. That matters more here than usual: an
+        axis sent as `[]` widens the site to everybody, so "absent" and
+        "cleared" cannot be allowed to mean the same thing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [members_site]
+              properties:
+                members_site:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    name:
+                      type: string
+                      examples: [Leaders]
+                    active:
+                      type: boolean
+                    default:
+                      type: boolean
+                    layout_name:
+                      type: string
+                      description: >-
+                        A `layouts` template in this theme, or "none" for no
+                        layout. `member` and `theme` name the fallback chain
+                        itself and are always accepted; any other name must be
+                        a `layouts` template of this theme, or the request is
+                        refused with 422.
+                      examples: [member]
+                    position:
+                      type: integer
+                      minimum: 0
+                      description: >-
+                        Where to move the site among its siblings, as a
+                        zero-based slot: `0` is first, and anything past the end
+                        lands last. The whole list is renumbered to a contiguous
+                        run afterwards, so two sites can never share a position
+                        and precedence never falls back to record order.
+                      examples: [0]
+                    country_ids:
+                      type: array
+                      description: Sending `[]` widens the site to any country.
+                      items:
+                        type: integer
+                      examples: [[1]]
+                    member_type_ids:
+                      type: array
+                      description: Sending `[]` widens the site to any member type.
+                      items:
+                        type: string
+                      examples: [['0191d3f0-0000-7000-8000-000000000000']]
+            example:
+              members_site:
+                name: Leaders
+                position: 0
+      responses:
+        '200':
+          description: The changed site
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembersSiteEnvelope'
+              example:
+                members_site:
+                  id: 6021
+                  name: Leaders
+                  active: true
+                  default: false
+                  position: 1
+                  layout_name: theme
+                  menu_slug: reps-navigation
+                  menu_id: 4417
+                  unconstrained: false
+                  rule:
+                    country_ids:
+                    - 214
+                    member_type_ids:
+                    - 0191d3f0-7c2a-7b4e-9d61-3f8a2c5e1b07
+                  pages:
+                  - id: 81530
+                    title: Rewards
+                    slug: rewards
+                    published: true
+                    path: /accounts/rewards
+                    template_id: 55102
+                    updated_at: '2026-09-18T14:03:27Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [members-sites]
+      operationId: theme_surfaces_v0_delete_members_site
+      summary: Remove a member site and the pages it governs
+      description: >-
+        The pages go with it: a page whose site is gone is a page nobody can be
+        resolved to. Refuses the theme's last site rather than leaving a theme
+        that resolves nobody, so emptying a members area is deactivation rather
+        than deletion.
+      responses:
+        '204':
+          description: Removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/members_sites/{members_site_id}/pages":
+    parameters:
+    - name: application_theme_id
+      in: query
+      required: false
+      description: Company-owned theme being edited, including draft themes. Omit for the active theme. Unknown or foreign themes return 404 without falling back.
+      schema:
+        type: integer
+        minimum: 1
+    - name: members_site_id
+      in: path
+      required: true
+      description: The site that will govern the page, which must belong to this company's selected theme.
+      schema:
+        type: integer
+    post:
+      tags: [members-pages]
+      operationId: theme_surfaces_v0_create_members_page
+      summary: Add a page to a member site
+      description: >-
+        Nested under the site because a page cannot exist without one: the site
+        is what decides who may see the page. Created active unless explicitly
+        disabled, and with a `members_page` template already bound, since the
+        builder opens a page by its template.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [members_page]
+              properties:
+                members_page:
+                  type: object
+                  additionalProperties: false
+                  required: [title]
+                  properties:
+                    title:
+                      type: string
+                      description: What the merchant calls the page.
+                      examples: [Rewards]
+                    slug:
+                      type: string
+                      maxLength: 64
+                      description: >-
+                        The path segment, unique within this site. Use / for the home page; system routes are reserved. Derived from
+                        the title when absent, which is what the builder sends
+                        unless a merchant edits the route by hand. The derived
+                        slug is bounded by the same limit, so a very long title
+                        is refused rather than producing a route the unique
+                        index cannot hold.
+                      examples: [rewards]
+                    published:
+                      type: boolean
+                      default: true
+                      description: >-
+                        Active by default within this theme and site. Explicit
+                        false keeps the page out of navigation and returns 404
+                        when requested. Does not activate or publish the theme.
+            example:
+              members_page:
+                title: Rewards
+                slug: rewards
+                published: true
+      responses:
+        '201':
+          description: The new page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembersPageEnvelope'
+              example:
+                members_page:
+                  id: 81530
+                  title: Rewards
+                  slug: rewards
+                  published: true
+                  path: /accounts/rewards
+                  template_id: 55102
+                  updated_at: '2026-09-18T14:03:27Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/members_pages/{id}":
+    parameters:
+    - name: application_theme_id
+      in: query
+      required: false
+      description: Company-owned theme being edited, including draft themes. Omit for the active theme. Unknown or foreign themes return 404 without falling back.
+      schema:
+        type: integer
+        minimum: 1
+    - name: id
+      in: path
+      required: true
+      description: The page's id, which must sit in one of this company's active theme's sites.
+      schema:
+        type: integer
+    patch:
+      tags: [members-pages]
+      operationId: theme_surfaces_v0_update_members_page
+      summary: Change a member page's title, route, publication or site
+      description: >-
+        Only the fields sent are changed, so publishing a page does not rewrite
+        the route a merchant chose. Sending `members_site_id` moves the page to
+        another site, which moves who may see it — the target must belong to the
+        same theme.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [members_page]
+              properties:
+                members_page:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    title:
+                      type: string
+                      examples: [Rewards]
+                    slug:
+                      type: string
+                      maxLength: 64
+                      description: >-
+                        Use / for the home page; system routes are reserved. Normalised the way a create normalises it, and bounded
+                        by the same limit, so a long value is refused rather
+                        than reaching the unique index.
+                      examples: [rewards]
+                    published:
+                      type: boolean
+                    members_site_id:
+                      type: integer
+                      description: >-
+                        Move the page to this site. Changes who may see it, so
+                        the site must belong to the same theme.
+                      examples: [42]
+            example:
+              members_page:
+                title: Rewards & Perks
+                published: false
+      responses:
+        '200':
+          description: The changed page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembersPageEnvelope'
+              example:
+                members_page:
+                  id: 81530
+                  title: Rewards & Perks
+                  slug: rewards
+                  published: false
+                  path: /accounts/rewards
+                  template_id: 55102
+                  updated_at: '2026-09-25T17:12:48Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [members-pages]
+      operationId: theme_surfaces_v0_delete_members_page
+      summary: Remove a member page
+      description: >-
+        Takes the page's template with it: it was created for this page and
+        nothing else routes to it. No last-page rule, unlike a site — a site
+        with no pages is one a merchant is still filling in, whereas a theme
+        with no sites serves nobody.
+      responses:
+        '204':
+          description: Removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/theme_surfaces":
+    get:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_list_surfaces
+      summary: The theme's surfaces, each with its bindings
+      description: >-
+        Bindings ride along because a builder needs them together: a surface with
+        no visible binding set is a row a merchant cannot act on.
+      responses:
+        '200':
+          description: The theme's surfaces
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurfaceList'
+              example:
+                surfaces:
+                - id: 7312
+                  key: account.home
+                  route: /
+                  persona: rep
+                  bindings:
+                  - id: 90211
+                    audience_id: null
+                    channel: null
+                    template_id: 55018
+                  - id: 90212
+                    audience_id: 3104
+                    channel: mobile
+                    template_id: 55027
+                - id: 7318
+                  key: account.orders
+                  route: /orders
+                  persona: rep
+                  bindings: []
+                account_zone_enabled: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_create_surface
+      summary: Add a routable surface
+      description: >-
+        The key is unique within the theme. A surface renders nothing until a
+        template is bound to it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [surface]
+              properties:
+                surface:
+                  type: object
+                  additionalProperties: false
+                  required: [key, route, persona]
+                  properties:
+                    key:
+                      type: string
+                    route:
+                      type: string
+                    persona:
+                      type: string
+                      enum: [customer, rep, admin]
+            example:
+              surface:
+                key: account.orders
+                route: /orders
+                persona: rep
+      responses:
+        '201':
+          description: The new surface
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurfaceEnvelope'
+              example:
+                surface:
+                  id: 7318
+                  key: account.orders
+                  route: /orders
+                  persona: rep
+                  bindings: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/theme_surfaces/{id}":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The surface's id, which must belong to this company's active theme.
+      schema:
+        type: integer
+    patch:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_update_surface
+      summary: Change a surface's route or persona
+      description: >-
+        Bindings are untouched. Changing the persona changes which audiences can
+        be bound over it, because an audience binds within one persona.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [surface]
+              properties:
+                surface:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    key:
+                      type: string
+                    route:
+                      type: string
+                    persona:
+                      type: string
+                      enum: [customer, rep, admin]
+            example:
+              surface:
+                route: /my-orders
+      responses:
+        '200':
+          description: The updated surface
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurfaceEnvelope'
+              example:
+                surface:
+                  id: 7318
+                  key: account.orders
+                  route: /my-orders
+                  persona: rep
+                  bindings: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_delete_surface
+      summary: Remove a surface and its bindings
+      description: >-
+        The bindings go with it. Templates do not: a template can be bound to more
+        than one surface, so removing this one only removes the join.
+      responses:
+        '204':
+          description: Removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/theme_surfaces/{id}/bind":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The surface being bound, which must belong to this company's active theme.
+      schema:
+        type: integer
+    put:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_bind_surface
+      summary: Point a surface at a template for an audience and channel
+      description: >-
+        An upsert. A surface holds at most one binding per (audience, channel),
+        so re-binding a slot changes that row rather than racing a second one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [binding]
+              properties:
+                binding:
+                  type: object
+                  additionalProperties: false
+                  required: [template_id]
+                  properties:
+                    audience_id:
+                      type: [integer, "null"]
+                    channel:
+                      type: [string, "null"]
+                    template_id:
+                      type: integer
+            example:
+              binding:
+                audience_id: 3104
+                channel: mobile
+                template_id: 55027
+      responses:
+        '200':
+          description: The surface, with the binding applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurfaceEnvelope'
+              example:
+                surface:
+                  id: 7312
+                  key: account.home
+                  route: /
+                  persona: rep
+                  bindings:
+                  - id: 90211
+                    audience_id: null
+                    channel: null
+                    template_id: 55018
+                  - id: 90212
+                    audience_id: 3104
+                    channel: mobile
+                    template_id: 55027
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [theme-surfaces]
+      operationId: theme_surfaces_v0_unbind_surface
+      summary: Remove one of a surface's bindings
+      description: >-
+        Omitting audience_id and channel clears the default binding, the one every
+        audience inherits. Removing it leaves the surface rendering nothing for
+        any audience without a binding of its own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [binding]
+              properties:
+                binding:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    audience_id:
+                      type: [integer, "null"]
+                    channel:
+                      type: [string, "null"]
+            example:
+              binding:
+                audience_id: 3104
+                channel: mobile
+      responses:
+        '200':
+          description: The surface, with the binding gone
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurfaceEnvelope'
+              example:
+                surface:
+                  id: 7312
+                  key: account.home
+                  route: /
+                  persona: rep
+                  bindings:
+                  - id: 90211
+                    audience_id: null
+                    channel: null
+                    template_id: 55018
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/theme_audiences":
+    get:
+      tags: [theme-audiences]
+      operationId: theme_surfaces_v0_list_audiences
+      summary: The theme's audiences
+      description: >-
+        Ordered by persona, then priority descending, which is the order they
+        resolve in.
+      responses:
+        '200':
+          description: The theme's audiences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudienceList'
+              example:
+                audiences:
+                - id: 3104
+                  key: us-leaders
+                  persona: rep
+                  priority: 20
+                  default: false
+                  country_ids:
+                  - '214'
+                  language_ids: []
+                  rank_ids:
+                  - '7'
+                  member_type_ids: []
+                - id: 3101
+                  key: all-reps
+                  persona: rep
+                  priority: 0
+                  default: true
+                  country_ids: []
+                  language_ids: []
+                  rank_ids: []
+                  member_type_ids: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [theme-audiences]
+      operationId: theme_surfaces_v0_create_audience
+      summary: Add an audience
+      description: >-
+        Every axis omitted means unconstrained, so an audience with no axes at all
+        matches everyone in its persona rather than nobody.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [audience]
+              properties:
+                audience:
+                  $ref: '#/components/schemas/AudienceInput'
+            example:
+              audience:
+                key: us-leaders
+                persona: rep
+                priority: 20
+                default: false
+                country_ids:
+                - 214
+                rank_ids:
+                - 7
+      responses:
+        '201':
+          description: The new audience
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudienceEnvelope'
+              example:
+                audience:
+                  id: 3104
+                  key: us-leaders
+                  persona: rep
+                  priority: 20
+                  default: false
+                  country_ids:
+                  - '214'
+                  language_ids: []
+                  rank_ids:
+                  - '7'
+                  member_type_ids: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/theme_audiences/{id}":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The audience's id, which must belong to this company's active theme.
+      schema:
+        type: integer
+    patch:
+      tags: [theme-audiences]
+      operationId: theme_surfaces_v0_update_audience
+      summary: Change an audience's targeting
+      description: >-
+        An axis sent as an empty array is cleared, which widens the audience.
+        Omitting an axis leaves it as it was.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [audience]
+              properties:
+                audience:
+                  $ref: '#/components/schemas/AudienceInput'
+            example:
+              audience:
+                priority: 30
+                rank_ids: []
+      responses:
+        '200':
+          description: The updated audience
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudienceEnvelope'
+              example:
+                audience:
+                  id: 3104
+                  key: us-leaders
+                  persona: rep
+                  priority: 30
+                  default: false
+                  country_ids:
+                  - '214'
+                  language_ids: []
+                  rank_ids: []
+                  member_type_ids: []
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      tags: [theme-audiences]
+      operationId: theme_surfaces_v0_delete_audience
+      summary: Remove an audience and the bindings that named it
+      description: >-
+        Surfaces bound only through this audience fall back to their default
+        binding rather than stopping.
+      responses:
+        '204':
+          description: Removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/theme_releases":
+    get:
+      tags: [theme-releases]
+      operationId: theme_surfaces_v0_list_releases
+      summary: List the theme's releases, newest first
+      description: >-
+        The manifest is deliberately absent: it is the whole resolved binding set
+        and grows with the theme.
+      responses:
+        '200':
+          description: The theme's releases
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseList'
+              example:
+                releases:
+                - id: 48219
+                  revision: r3-9f2a1c4b
+                  published_at: '2026-09-22T16:22:05Z'
+                  active: false
+                  surface_count: 12
+                - id: 48214
+                  revision: r2-4be07d13
+                  published_at: '2026-09-15T13:08:51Z'
+                  active: true
+                  surface_count: 12
+                - id: 48213
+                  revision: r1-c81f5a92
+                  published_at: '2026-09-08T10:44:17Z'
+                  active: false
+                  surface_count: 11
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [theme-releases]
+      operationId: theme_surfaces_v0_publish_release
+      summary: Freeze the theme's current bindings as a new release
+      description: >-
+        Refuses when two equal-priority audiences overlap. A release published
+        from an ambiguous theme would resolve differently depending on row
+        order, which is the one thing a frozen artifact must not do.
+      responses:
+        '201':
+          description: The new release
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseEnvelope'
+              example:
+                release:
+                  id: 48227
+                  revision: r4-7d3e0b6a
+                  published_at: '2026-09-29T15:31:40Z'
+                  active: false
+                  surface_count: 13
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  "/api/company/theme_releases/{id}/activate":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The release to serve, which must belong to this company's active theme.
+      schema:
+        type: integer
+    post:
+      tags: [theme-releases]
+      operationId: theme_surfaces_v0_activate_release
+      summary: Serve a release
+      description: >-
+        A pointer move, not a re-render, which is what makes it as cheap to undo
+        as to do.
+      responses:
+        '200':
+          description: The now-active release
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseEnvelope'
+              example:
+                release:
+                  id: 48227
+                  revision: r4-7d3e0b6a
+                  published_at: '2026-09-29T15:31:40Z'
+                  active: true
+                  surface_count: 13
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  "/api/company/theme_releases/rollback":
+    post:
+      tags: [theme-releases]
+      operationId: theme_surfaces_v0_rollback_release
+      summary: Serve the release before the active one
+      description: >-
+        Refuses when nothing is active, because publishing does not activate and
+        a theme can hold releases with none being served.
+      responses:
+        '200':
+          description: The restored release
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseEnvelope'
+              example:
+                release:
+                  id: 48219
+                  revision: r3-9f2a1c4b
+                  published_at: '2026-09-22T16:22:05Z'
+                  active: true
+                  surface_count: 12
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'

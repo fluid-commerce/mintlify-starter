@@ -1,0 +1,3047 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Themes API
+  description: |-
+    **The versioned themes surface.**
+
+    Themes v0 (`/api/application_themes`) remains in place and unchanged — the
+    theme editor and the Fluid CLI consume it and depend on its shape,
+    including the heavy fields this version omits. That immovability is why
+    this version exists: here the DEFAULT response is the lean one.
+
+    Concretely, measured against production:
+
+    - `GET /api/application_themes` returns the deprecated theme-level
+      stylesheet columns on every row. For a three-theme company that is a
+      185KB response of which `global_stylesheet` alone is 182KB.
+    - `GET /api/application_themes/active` renders every template with its
+      Liquid `content`. On a 245-template theme that is 5.5MB, 96.5% of it
+      template bodies, when callers typically need only `id`,
+      `themeable_type` and `default` to resolve a single template.
+
+    The path segment here is `themes`, not `application_themes`.
+  version: v2026-04
+  contact:
+    email: support@fluid.app
+servers:
+- url: https://api.fluid.app
+security:
+- bearer_auth: []
+tags:
+- name: themes
+  description: Theme listing and the active theme.
+- name: preview comments
+  description: |-
+    Comments pinned to an element on a theme's preview, and their replies.
+
+    A comment is addressed by the client-generated `client_id` rather than a
+    row id: that is the identity every client already holds, so a retry after
+    a dropped response is the same request rather than a new one. Creating a
+    comment or a reply twice under one id is a success that changes nothing.
+
+    There is one route per operation rather than a single write of the whole
+    comment set. `status` is a last-writer-wins register keyed on
+    `status_at_ms`, so a write carrying an older stamp than the stored one is
+    accepted and discarded — it answers 200 with the status unchanged, because
+    the request did what the contract says.
+paths:
+  "/api/v202604/themes":
+    get:
+      summary: List the company's themes
+      description: |-
+        Themes reduced to what a picker needs — `name`, `version`, `status`,
+        `cover_image`. Same filtering, sorting and pagination as themes v0.
+      tags: [themes]
+      operationId: listThemes
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        description: Page of results to return. Defaults to 1.
+        schema: {type: integer}
+      - name: per_page
+        in: query
+        required: false
+        description: Results per page. Defaults to 10.
+        schema: {type: integer}
+      - name: search_query
+        in: query
+        required: false
+        description: Free-text filter on the theme name.
+        schema: {type: string}
+      - name: sorted_by
+        in: query
+        required: false
+        description: 'Sort key and direction, e.g. `created_at_desc`. Defaults to `created_at_desc`.'
+        schema: {type: string}
+      - name: status
+        in: query
+        required: false
+        description: Restrict to themes with this status.
+        schema: {type: string}
+      - name: root_themes
+        in: query
+        required: false
+        description: Return the shared root (marketplace) themes instead of the company's own.
+        schema: {type: boolean}
+      - name: include_development
+        in: query
+        required: false
+        description: Include development themes, which are omitted by default.
+        schema: {type: boolean}
+      - name: include_default_home_template
+        in: query
+        required: false
+        description: |-
+          Resolve each theme's default home-page template id into
+          `default_home_template_id`. Off by default — it costs an extra query
+          per page and only the theme editor needs it.
+        schema: {type: boolean}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  themes:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/ThemeSummary"
+                  meta:
+                    "$ref": "#/components/schemas/PaginationMeta"
+                required: [themes, meta]
+              example:
+                themes:
+                - id: 48213
+                  name: Scranton Storefront
+                  version: '7'
+                  status: active
+                  source: fluid
+                  company_id: 1405
+                  cover_image: https://cdn.fluid.app/dunder-mifflin/themes/48213/cover.png
+                  outdated: false
+                  updated_at: '2026-09-14T15:02:11Z'
+                - id: 48240
+                  name: Holiday Paper Drive
+                  version: '2'
+                  status: draft
+                  source: fluid
+                  company_id: 1405
+                  cover_image: https://cdn.fluid.app/dunder-mifflin/themes/48240/cover.png
+                  outdated: true
+                  updated_at: '2026-09-10T11:47:03Z'
+                meta:
+                  current_page: 1
+                  total_pages: 1
+                  total_count: 2
+                  per_page: 10
+        '401':
+          description: Unauthorized
+  "/api/v202604/themes/{id}":
+    get:
+      summary: Get one theme
+      description: |-
+        A single theme in full — stylesheets, versions, images, GitSync repos.
+
+        Templates are NOT embedded; they are a sub-resource at
+        `/api/v202604/themes/{id}/templates`. Embedding them is what makes the
+        v0 responses 5.5MB on a 245-template theme.
+      tags: [themes]
+      operationId: getTheme
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The theme's id.
+        schema: {type: integer}
+      - name: version
+        in: query
+        required: false
+        description: Resolve a historical snapshot of the theme.
+        schema: {type: integer}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  theme:
+                    "$ref": "#/components/schemas/ThemeDetail"
+                required: [theme]
+              example:
+                theme:
+                  id: 48213
+                  name: Scranton Storefront
+                  version: '7'
+                  status: active
+                  source: fluid
+                  description: Dunder Mifflin's main storefront theme for shop.dundermifflin.com.
+                  variables: '{"color_primary":"#1f3b73","font_heading":"Montserrat"}'
+                  company_id: 1405
+                  cover_image: https://cdn.fluid.app/dunder-mifflin/themes/48213/cover.png
+                  custom_stylesheet: '.hero__title { letter-spacing: -0.01em; }'
+                  global_stylesheet: ':root { --color-primary: #1f3b73; }'
+                  versions:
+                  - version: 7
+                    created_at: '2026-09-14T15:02:11Z'
+                    published: true
+                    current: true
+                    author_id: 52001
+                    author_name: Michael Scott
+                  - version: 6
+                    created_at: '2026-09-09T16:20:48Z'
+                    published: false
+                    current: false
+                    author_id: 52018
+                    author_name: Pam Beesly
+                  images:
+                  - id: 66120
+                    url: https://cdn.fluid.app/dunder-mifflin/themes/48213/cover.png
+                    position: 1
+                  git_sync_repos:
+                  - id: 3108
+                    role: primary
+                    status: connected
+                    repo_full_name: fluid-themes/dunder-mifflin-scranton-storefront
+                    default_branch: main
+                    last_push_at: '2026-09-14T15:02:40Z'
+                    last_pull_at: '2026-09-14T14:58:02Z'
+                    status_updated_at: '2026-09-14T15:02:40Z'
+                    last_error: null
+                  created_at: '2026-03-02T18:11:26Z'
+                  updated_at: '2026-09-14T15:02:11Z'
+        '401': {description: Unauthorized}
+        '404': {description: No such theme for this company}
+  "/api/v202604/themes/{theme_id}/templates":
+    get:
+      summary: List a theme's templates
+      description: |-
+        Template metadata — no Liquid `content`. Fetch a body one at a time
+        from `/api/v202604/themes/{theme_id}/templates/{id}`.
+      tags: [themes]
+      operationId: listThemeTemplates
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: The theme's id.
+        schema: {type: integer}
+      - name: themeable_type
+        in: query
+        required: false
+        description: |-
+          Restrict to one or more themeable types, comma-separated for several.
+          Unknown values match nothing.
+        schema: {type: string}
+        example: page
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/ThemeTemplateSummary"
+                required: [templates]
+              example:
+                templates:
+                - id: 902120
+                  name: About Dunder Mifflin
+                  themeable_type: page
+                  status: active
+                  default: false
+                  global: false
+                  source: theme
+                  application_theme_id: 48213
+                  company_id: 1405
+                  app_extension_id: null
+                  extension_uri: null
+                  droplet_name: null
+                  country_ids: []
+                  hide_navbar: false
+                  use_active_application_theme: false
+                  stylesheet: null
+                  stylesheet_tag_injected: true
+                  stylesheet_column_hidden: true
+                  created_at: '2026-03-02T18:11:26Z'
+                  updated_at: '2026-09-08T10:05:19Z'
+                - id: 902121
+                  name: Paper Sales Contact
+                  themeable_type: page
+                  status: active
+                  default: false
+                  global: false
+                  source: theme
+                  application_theme_id: 48213
+                  company_id: 1405
+                  app_extension_id: null
+                  extension_uri: null
+                  droplet_name: null
+                  country_ids: []
+                  hide_navbar: false
+                  use_active_application_theme: false
+                  stylesheet: null
+                  stylesheet_tag_injected: true
+                  stylesheet_column_hidden: true
+                  created_at: '2026-03-02T18:11:26Z'
+                  updated_at: '2026-09-08T10:05:19Z'
+        '401': {description: Unauthorized}
+        '404': {description: No such theme for this company}
+  "/api/v202604/themes/{theme_id}/templates/{id}":
+    get:
+      summary: Get one template, with its Liquid body
+      description: |-
+        The only endpoint on this surface that serves template `content`, and
+        it serves exactly one. Together with the templates list this reaches
+        the same data as the v0 bulk response without any request being forced
+        to 5.5MB.
+
+        Scoped through the theme, so a template belonging to another company's
+        theme 404s.
+      tags: [themes]
+      operationId: getThemeTemplate
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: The theme the template belongs to.
+        schema: {type: integer}
+      - name: id
+        in: path
+        required: true
+        description: The template's id.
+        schema: {type: integer}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  template:
+                    "$ref": "#/components/schemas/ThemeTemplate"
+                required: [template]
+              example:
+                template:
+                  id: 902114
+                  name: Home
+                  themeable_type: home_page
+                  status: active
+                  default: true
+                  global: false
+                  source: theme
+                  application_theme_id: 48213
+                  company_id: 1405
+                  app_extension_id: null
+                  extension_uri: null
+                  droplet_name: null
+                  country_ids: []
+                  hide_navbar: false
+                  use_active_application_theme: false
+                  stylesheet: null
+                  stylesheet_tag_injected: true
+                  stylesheet_column_hidden: true
+                  created_at: '2026-03-02T18:11:26Z'
+                  updated_at: '2026-09-14T15:02:11Z'
+                  content: '{% section ''hero-banner'' %}
+
+                    {% section ''featured-products'' %}
+
+                    {% section ''testimonials'' %}'
+                  variables:
+                    hero_heading: Limitless Paper in a Paperless World
+                  translations:
+                    en:
+                      hero_cta: Shop copy paper
+        '401': {description: Unauthorized}
+        '404': {description: No such template on this theme}
+  "/api/v202604/themes/active":
+    get:
+      summary: Get the active theme
+      description: |-
+        The active theme itself. Templates are not embedded — see
+        `/api/v202604/themes/active/templates`.
+      tags: [themes]
+      operationId: getActiveTheme
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  theme:
+                    "$ref": "#/components/schemas/ThemeSummary"
+                required: [theme]
+              example:
+                theme:
+                  id: 48213
+                  name: Scranton Storefront
+                  version: '7'
+                  status: active
+                  source: fluid
+                  company_id: 1405
+                  cover_image: https://cdn.fluid.app/dunder-mifflin/themes/48213/cover.png
+                  outdated: false
+                  updated_at: '2026-09-14T15:02:11Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: The company has no active theme
+  "/api/v202604/themes/active/templates":
+    get:
+      summary: List the active theme's templates
+      description: |-
+        Template metadata — no Liquid `content`.
+
+        An active theme carries roughly 245 templates, of which ~183 are the
+        shared `sections` library and ~19 are `locales`. Use `themeable_type`
+        to fetch only what you need.
+      tags: [themes]
+      operationId: listActiveThemeTemplates
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: themeable_type
+        in: query
+        required: false
+        description: |-
+          Restrict to one or more themeable types, comma-separated for several
+          (`home_page,post_page`). Unknown values match nothing.
+        schema:
+          type: string
+        example: home_page
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/ThemeTemplateSummary"
+                required: [templates]
+              example:
+                templates:
+                - id: 902114
+                  name: Home
+                  themeable_type: home_page
+                  status: active
+                  default: true
+                  global: false
+                  source: theme
+                  application_theme_id: 48213
+                  company_id: 1405
+                  app_extension_id: null
+                  extension_uri: null
+                  droplet_name: null
+                  country_ids: []
+                  hide_navbar: false
+                  use_active_application_theme: false
+                  stylesheet: null
+                  stylesheet_tag_injected: true
+                  stylesheet_column_hidden: true
+                  created_at: '2026-03-02T18:11:26Z'
+                  updated_at: '2026-09-14T15:02:11Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: The company has no active theme
+  "/api/v202604/themes/{theme_id}/preview_comments":
+    get:
+      summary: List a theme's preview comments
+      description: |-
+        Live comments with their replies nested, ordered by creation time and
+        then by `client_id`. Deleted comments are absent from `preview_comments`
+        and present in `deleted_client_ids`, which is what lets a client tell a
+        deletion apart from a comment it has simply not seen.
+      tags: [preview comments]
+      operationId: listThemePreviewComments
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme whose comments to list.
+        schema: {type: integer}
+      responses:
+        '200':
+          description: The theme's live comments, plus the ids of deleted ones.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preview_comments:
+                    type: array
+                    description: Live comments, replies nested.
+                    items:
+                      "$ref": "#/components/schemas/PreviewComment"
+                  deleted_client_ids:
+                    type: array
+                    description: Client ids of comments that have been deleted.
+                    items: {type: string}
+                  status:
+                    type: integer
+                    description: HTTP status, repeated in the body.
+                  meta:
+                    "$ref": "#/components/schemas/PreviewCommentResponseMeta"
+                required: [preview_comments, deleted_client_ids, status, meta]
+              example:
+                preview_comments:
+                - id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                - id: 31902
+                  run_id: null
+                  lock_version: 1
+                  client_id: c-8e4b17d0
+                  n: 5
+                  body: Swap this image for the new 20lb Copy Paper case shot from the product page.
+                  status: open
+                  status_at_ms: 1789463922000
+                  page_url: /products/20lb-copy-paper
+                  author_name: Pam Beesly
+                  created_at_ms: 1789463922000
+                  template_id: 902131
+                  section:
+                    id: product-gallery-1
+                    type: product-gallery
+                  block: null
+                  target:
+                    tag: img
+                    selector: section[data-section-id="product-gallery-1"] img.gallery__main
+                    text: null
+                    html: <img class="gallery__main" alt="Dunder Mifflin 20lb Copy Paper">
+                  pin:
+                    x: 31.5
+                    y: 44.0
+                    ox: 0.5
+                    oy: 0.38
+                  mentions: []
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: a0V
+                  board_position_at_ms: 1789464000000
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: high
+                  priority_at_ms: 1789463922000
+                  replies: []
+                deleted_client_ids:
+                - c-1a7d52f3
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:30:12Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No theme with that id belongs to the caller's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+    post:
+      summary: Pin a comment on a theme's preview
+      description: |-
+        Creates a comment. Authorship comes from the authenticated principal, so
+        there is no author field to send.
+
+        Idempotent on `client_id`: repeating a request returns the stored comment
+        rather than creating a second one. `template_id` is required and must
+        belong to this theme — the rendered page carries the identity, so a
+        client that cannot supply it has not resolved what it is commenting on.
+      tags: [preview comments]
+      operationId: createThemePreviewComment
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme to pin the comment on.
+        schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preview_comment:
+                  "$ref": "#/components/schemas/PreviewCommentCreate"
+              required: [preview_comment]
+            example:
+              preview_comment:
+                client_id: c-3f9a2e71
+                body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                template_id: 902114
+                number: 4
+                page_path: /
+                pin:
+                  x: 48.2
+                  y: 22.7
+                  ox: 0.41
+                  oy: 0.63
+                section:
+                  id: hero-banner-1
+                  type: hero-banner
+                anchor:
+                  tag: h1
+                  selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                  text: Limitless Paper in a Paperless World
+                  html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                mentions:
+                - id: '52018'
+                  name: Pam Beesly
+      responses:
+        '201':
+          description: The stored comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 0
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies: []
+                status: 201
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-14T15:02:11Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No theme with that id belongs to the caller's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: |-
+            The request did not describe a storable comment — a missing or
+            invalid field, a template that belongs to another theme, or a
+            `client_id` belonging to a deleted comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}":
+    patch:
+      summary: Move a preview comment's status
+      description: |-
+        Applies the status only when expected_version equals the current comment lock_version.
+        A stale version returns 409 with the current comment in error.details.preview_comment.
+        Status timestamps are recorded by the server and do not order writes.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`, and the work is changed through the
+        work item instead. Draining is how a company reaches that state: a
+        thread a client is still executing is never linked to work. A thread
+        that belongs to no work behaves exactly as it always has.
+      tags: [preview comments]
+      operationId: updateThemePreviewComment
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preview_comment:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      description: The status to move to.
+                      enum: [open, skipped, needs_info]
+                    expected_version:
+                      type: integer
+                      minimum: 0
+                      description: The lock_version from the comment being changed.
+                  required: [status, expected_version]
+              required: [preview_comment]
+            example:
+              preview_comment:
+                status: needs_info
+                expected_version: 3
+      responses:
+        '200':
+          description: The comment, moved or left as it was.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 4
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: needs_info
+                  status_at_ms: 1789464365000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: The comment changed since the client read it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: An unknown status, a missing or invalid version, or a deleted comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+    delete:
+      summary: Delete a preview comment
+      description: |-
+        Tombstones the comment. Its `client_id` then appears in
+        `deleted_client_ids` on the list response and cannot be reused, which
+        is what stops a stale write resurrecting it. Deleting an
+        already-deleted comment succeeds and changes nothing.
+      tags: [preview comments]
+      operationId: deleteThemePreviewComment
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+      responses:
+        '200':
+          description: The deleted comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/replies":
+    post:
+      summary: Reply to a preview comment
+      description: |-
+        Appends a reply. Authorship comes from the authenticated principal.
+        Idempotent on the reply's `client_id`: repeating a request appends
+        nothing and succeeds.
+
+        Set `author_kind` to `agent` to record the agent's answer instead of a
+        person's. A reply bound to the active run moves it from `handed` to
+        `review`, and leaves every other status where a person put it: the agent
+        can answer a thread but never close it, and never reopens one somebody
+        decided. Reopening or skipping a thread revokes its run; later replies
+        carrying that identity receive 409. While the run remains authorized,
+        repeating its answer stores nothing and succeeds, so the same body
+        cannot arrive twice under two ids.
+
+        Replying is discussion and is never refused for belonging to work.
+        When the thread belongs to a work item, though, the run that owns the
+        thread is the work item's and not the comment's: an answer carrying
+        any other identity receives 409, and an answer that does land leaves
+        the thread where it is, because a linked thread's status belongs to
+        the work item.
+      tags: [preview comments]
+      operationId: createThemePreviewCommentReply
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment being replied to.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reply:
+                  type: object
+                  properties:
+                    client_id:
+                      type: string
+                      description: Client-generated id for this reply.
+                    body:
+                      type: string
+                      description: The reply text.
+                    mentions:
+                      type: array
+                      description: People or projects mentioned in the reply.
+                      items: {"$ref": "#/components/schemas/PreviewCommentMention"}
+                    run_id:
+                      type: string
+                      maxLength: 255
+                      description: The runtime run identity. A mismatched run receives 409; an unbound reply never changes status.
+                    author_kind:
+                      type: string
+                      enum: [user, agent]
+                      default: user
+                      description: >-
+                        Who the reply is recorded as. A matching active agent run moves
+                        the comment to review; other replies leave status alone.
+                    shot:
+                      type: object
+                      description: >-
+                        Dimensions of the after screenshot. Absent when the
+                        capture produced nothing, which is not an error.
+                      properties:
+                        width: {type: integer}
+                        height: {type: integer}
+                        asset_id:
+                          type: integer
+                          description: The uploaded image.
+                      required: [width, height, asset_id]
+                    proof:
+                      type: object
+                      description: >-
+                        Evidence around the screenshot. Every part is optional;
+                        a reply explaining why there is no picture beats a
+                        refused write.
+                      properties:
+                        route: {type: string}
+                        files:
+                          type: array
+                          items: {type: string}
+                        before:
+                          type: object
+                          description: >-
+                            The image this work was compared against, by asset
+                            id — so replacing the comment's baseline later does
+                            not change what this reply appears to have compared.
+                          properties:
+                            asset_id: {type: integer}
+                          required: [asset_id]
+                        checks:
+                          type: array
+                          items:
+                            "$ref": "#/components/schemas/PreviewCommentProofCheck"
+                  required: [client_id, body]
+              required: [reply]
+            example:
+              reply:
+                client_id: r-5c20e9b4
+                body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                mentions: []
+      responses:
+        '201':
+          description: The comment, with the reply appended.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 201
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-14T15:04:37Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: The answer belongs to a different run than the comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: A missing field, or a reply on a deleted comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/priority":
+    put:
+      summary: Set how urgent a preview comment is
+      description: |-
+        Marks a comment urgent, high, medium or low. Most comments never carry
+        one.
+
+        Its own operation because it is its own register. `priority_at_ms` is
+        compared only against the stored priority's stamp, which is what makes
+        a priority and a status set in the same moment from two machines both
+        land: neither write is measured against the other's clock. A write
+        carrying an older stamp is discarded and answered 200 with the comment
+        unchanged, exactly as a losing status write is. An equal stamp is taken
+        by the incoming write, matching the desktop.
+
+        `priority` may be null, and a null is not an error: it says nobody has
+        judged the comment, which is where every comment starts. The stamp
+        still travels with it, because a cleared priority carrying no stamp
+        would lose to a later write holding an older one and quietly restore a
+        judgement somebody removed.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`, and the work is changed through the
+        work item instead. Draining is how a company reaches that state: a
+        thread a client is still executing is never linked to work. A thread
+        that belongs to no work behaves exactly as it always has.
+      tags: [preview comments]
+      operationId: modifyThemePreviewCommentPriority
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                priority_change:
+                  type: object
+                  properties:
+                    priority_at_ms:
+                      type: integer
+                      description: |-
+                        When the judgement was made, in milliseconds since the
+                        epoch. The key this register compares on.
+                    priority:
+                      type: string
+                      nullable: true
+                      enum: [urgent, high, medium, low]
+                      description: >-
+                        How urgent. Null says nobody has judged it.
+                  required: [priority_at_ms, priority]
+              required: [priority_change]
+            example:
+              priority_change:
+                priority_at_ms: 1789463922000
+                priority: high
+      responses:
+        '200':
+          description: The comment, with the priority stored or left as it was.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: high
+                  priority_at_ms: 1789463922000
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: The comment belongs to a work item, which is where its priority is set.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: A missing or out-of-range stamp, or an unknown priority.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/position":
+    put:
+      summary: Place a preview comment's card on the Tasks board
+      description: |-
+        Stores where the comment's card sits on the Tasks board: a canonical
+        fractional index the client computed between the card's new
+        neighbours, so moving one card rewrites only that card, or null to take
+        it out of the order. Positions follow the fractional-indexing format
+        (the first character gives the integer part's length and the fraction
+        never ends in 0), which always leaves room between two keys; a key that
+        is not canonical is refused. They order the whole board, in the same
+        order work items keep, and equal positions are ordered by id.
+
+        Its own operation because it is its own register, resolved exactly as
+        priority is. `board_position_at_ms` is compared only against the
+        stored position's stamp, and placing a card never changes the
+        comment's `lock_version`, so placing a card and moving its status in
+        the same moment both land. A write carrying an older stamp is discarded
+        and answered 200 with the comment unchanged; an equal stamp is taken by
+        the incoming write. A null still carries its stamp, so a cleared
+        position is not restored by a later write holding an older one.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`; the work item holds the card's
+        position instead.
+      tags: [preview comments]
+      operationId: modifyThemePreviewCommentBoardPosition
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+        example: 42
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+        example: c-7f3a
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                position_change:
+                  type: object
+                  properties:
+                    board_position_at_ms:
+                      type: integer
+                      minimum: 1
+                      maximum: 253402300799999
+                      description: |-
+                        When the card was placed, in milliseconds since the
+                        epoch, up to the end of year 9999. The key this
+                        register compares on. A stamp ahead of the server's
+                        clock is stored as the server's time, so a client
+                        clock running fast cannot hold the card still.
+                    board_position:
+                      type: [string, 'null']
+                      pattern: '^[0-9A-Za-z]+$'
+                      maxLength: 255
+                      description: >-
+                        The canonical fractional index to store, or null to take
+                        the card out of the order.
+                  required: [board_position_at_ms, board_position]
+              required: [position_change]
+            example:
+              position_change:
+                board_position_at_ms: 1789000000000
+                board_position: a0V
+      responses:
+        '200':
+          description: The comment, with the position stored or left as it was.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: a0V
+                  board_position_at_ms: 1789000000000
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: The comment belongs to a work item, which is where its card's position is set.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: A missing or out-of-range stamp, or a position that is not a canonical fractional index of at most 255 characters.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/assignee":
+    put:
+      summary: Set who owns a preview comment
+      description: |-
+        Hands a comment to a company admin or to Mist, and records who handed
+        it over.
+
+        Its own operation because it is its own register, for the same reason
+        the proof baseline is. `assigned_at_ms` is compared only against the
+        stored assignment's stamp, so a screen open since before a
+        reassignment loses the assignment and nothing else — it cannot drag
+        status backwards on the way down. A write carrying an older stamp is
+        discarded and answered 200 with the comment unchanged, exactly as a
+        losing status write is. An equal stamp is taken by the incoming write,
+        matching the desktop so both sides resolve a same-millisecond write
+        the same way.
+
+        Reaching `review` returns the comment to its assigner: the work goes
+        back to whoever asked for it rather than staying with whoever finished
+        it. That happens on the status write, not here.
+
+        `assignee` may be null, and a null is not an error: it leaves the
+        comment owned by nobody. The stamp still travels with it, because a
+        cleared assignment carrying no stamp would lose to a later write
+        holding an older one and quietly restore an owner somebody removed.
+
+        Only a company admin can be named. Mist is named by `kind: agent` and
+        carries no `user_id`, because the agent is a worker in the queue with
+        no user row of its own.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`, and the work is changed through the
+        work item instead. Draining is how a company reaches that state: a
+        thread a client is still executing is never linked to work. A thread
+        that belongs to no work behaves exactly as it always has.
+      tags: [preview comments]
+      operationId: modifyThemePreviewCommentAssignee
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignment:
+                  type: object
+                  properties:
+                    assigned_at_ms:
+                      type: integer
+                      description: |-
+                        When the handover was made, in milliseconds since the
+                        epoch. The key this register compares on.
+                    assignee:
+                      type: object
+                      nullable: true
+                      description: >-
+                        Who takes the work. Null leaves the comment owned by
+                        nobody.
+                      properties:
+                        kind:
+                          type: string
+                          enum: [user, agent]
+                          description: >-
+                            `user` for a person, `agent` for Mist.
+                        user_id:
+                          type: integer
+                          description: >-
+                            The person taking it. Required when kind is
+                            `user`, and refused when kind is `agent`. Must be
+                            an admin of this company.
+                      required: [kind]
+                  required: [assigned_at_ms, assignee]
+              required: [assignment]
+            example:
+              assignment:
+                assigned_at_ms: 1789463922000
+                assignee:
+                  kind: user
+                  user_id: 52018
+      responses:
+        '200':
+          description: The comment, with the assignment stored or left as it was.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline: null
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee:
+                    id: '52018'
+                    name: Pam Beesly
+                    kind: user
+                  assigner:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigned_at_ms: 1789463922000
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme, comment, or named user for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: The comment belongs to a work item, which is where its owner is set.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: >-
+            A missing or out-of-range stamp, a malformed assignee, or a person
+            who is not an admin of this company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/run":
+    parameters:
+    - name: theme_id
+      in: path
+      required: true
+      description: Id of the theme that owns the comment.
+      schema: {type: integer}
+    - name: client_id
+      in: path
+      required: true
+      description: Client-generated id of the root comment.
+      schema: {type: string}
+    post:
+      summary: Claim a comment for one Mist run
+      description: |-
+        Claims an open comment with its observed version. A retry succeeds only
+        while that run is still handed and both run_id and expected_version
+        match the original claim request. Completed runs and requests using a
+        different version receive 409 with the current comment.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`, and the work is changed through the
+        work item instead. Draining is how a company reaches that state: a
+        thread a client is still executing is never linked to work. A thread
+        that belongs to no work behaves exactly as it always has.
+        A thread whose work item was deleted is the one exception here: it
+        gets the rest of its workflow back, but it still names that work, and
+        a run cannot be claimed on a linked thread, so the claim keeps
+        returning 409.
+      tags: [preview comments]
+      operationId: createThemePreviewCommentRun
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run]
+              properties:
+                run:
+                  type: object
+                  required: [run_id, expected_version]
+                  properties:
+                    run_id:
+                      type: string
+                      minLength: 1
+                      maxLength: 255
+                      description: Unique identity allocated by the runtime before dispatch.
+                    expected_version:
+                      type: integer
+                      minimum: 0
+                      description: The lock_version observed before this action.
+            example:
+              run:
+                run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                expected_version: 3
+      responses:
+        '200':
+          description: The accepted comment state.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                  lock_version: 4
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: handed
+                  status_at_ms: 1789464365000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline:
+                    url: https://cdn.fluid.app/dunder-mifflin/assets/77104/preview-before.png
+                    width: 1440
+                    height: 900
+                    captured_at_ms: 1789464360000
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee:
+                    id: mist
+                    name: Mist
+                    kind: agent
+                  assigner:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigned_at_ms: 1789464365000
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Authentication is required.
+        '403':
+          description: A company admin with theme update permission is required.
+        '404':
+          description: The theme or comment is unavailable, or the theme id does not match the route.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PreviewCommentError"
+                - type: object
+                  required: [error]
+                  additionalProperties: false
+                  properties:
+                    error: {type: string, enum: [Not found]}
+        '409':
+          description: The version or run changed; error.details.preview_comment contains the current comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: The payload or requested transition is invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+    delete:
+      summary: Cancel the observed Mist run
+      description: |-
+        Reopens only the active run and version the caller observed. A
+        different or completed run is preserved.
+
+        A thread that belongs to a work item is not writable workflow here.
+        This returns 409 with the current comment in
+        `error.details.preview_comment`, and the work is changed through the
+        work item instead. Draining is how a company reaches that state: a
+        thread a client is still executing is never linked to work. A thread
+        that belongs to no work behaves exactly as it always has.
+      tags: [preview comments]
+      operationId: cancelThemePreviewCommentRun
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run]
+              properties:
+                run:
+                  type: object
+                  required: [run_id, expected_version]
+                  properties:
+                    run_id:
+                      type: [string, 'null']
+                      minLength: 1
+                      maxLength: 255
+                      description: Observed run identity; null permits recovery of legacy unbound work.
+                    expected_version:
+                      type: integer
+                      minimum: 0
+                      description: The lock_version observed before this action.
+            example:
+              run:
+                run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                expected_version: 4
+      responses:
+        '200':
+          description: The accepted comment state.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 5
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789467150000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline:
+                    url: https://cdn.fluid.app/dunder-mifflin/assets/77104/preview-before.png
+                    width: 1440
+                    height: 900
+                    captured_at_ms: 1789464360000
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigner:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigned_at_ms: 1789467150000
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T10:12:30Z'
+        '401':
+          description: Authentication is required.
+        '403':
+          description: A company admin with theme update permission is required.
+        '404':
+          description: The theme or comment is unavailable, or the theme id does not match the route.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PreviewCommentError"
+                - type: object
+                  required: [error]
+                  additionalProperties: false
+                  properties:
+                    error: {type: string, enum: [Not found]}
+        '409':
+          description: The version or run changed; error.details.preview_comment contains the current comment.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: The payload or requested transition is invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/backstop-reply":
+    post:
+      summary: Record an unanswered turn without overriding a newer decision
+      description: |-
+        Append an unanswered-turn reply only while the observed run and record
+        version still own an active comment. The checks and reply share a row
+        lock. A newer decision or answer returns 409 with the current comment.
+        Reply identity prevents duplicate writes during retries.
+
+        The reply's `client_id` is validated before the run and version are
+        compared, so a malformed id is 422 whether or not they still match.
+
+        When the thread belongs to a work item, the run and the active state
+        are read off the work item rather than the comment; the version stays
+        the comment's own and is never translated between the two registers.
+      tags: [preview comments]
+      operationId: createThemePreviewCommentBackstopReply
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme that owns the comment.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the root comment.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reply, run_id, expected_version]
+              properties:
+                reply:
+                  type: object
+                  required: [client_id, body]
+                  properties:
+                    client_id:
+                      type: string
+                      minLength: 1
+                      maxLength: 255
+                      pattern: "^[A-Za-z0-9_-]+$"
+                      description: >-
+                        Stable reply id for this turn's retryable backstop.
+                        Letters, digits, underscore and hyphen only — the same
+                        charset every comment and reply id is stored under.
+                        Checked before the run and version, so a malformed id
+                        is 422 whether or not they still match.
+                    body:
+                      type: string
+                      minLength: 1
+                      maxLength: 10000
+                      description: Explanation that the turn did not post an answer.
+                run_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: The runtime identity of the active unanswered run.
+                expected_version:
+                  type: integer
+                  minimum: 0
+                  description: The observed lock_version, checked atomically with the run identity.
+            example:
+              reply:
+                client_id: backstop-run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                body: This turn ended without posting an answer. The run stopped before it could change the hero section;
+                  send it again to retry.
+              run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+              expected_version: 4
+      responses:
+        '200':
+          description: The current comment with the backstop recorded.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                  lock_version: 5
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: review
+                  status_at_ms: 1789467150000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline:
+                    url: https://cdn.fluid.app/dunder-mifflin/assets/77104/preview-before.png
+                    width: 1440
+                    height: 900
+                    captured_at_ms: 1789464360000
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigner:
+                    id: '52001'
+                    name: Michael Scott
+                    kind: user
+                  assigned_at_ms: 1789467150000
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                  - client_id: backstop-run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                    run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                    body: This turn ended without posting an answer. The run stopped before it could change the hero section;
+                      send it again to retry.
+                    author_name: Mist
+                    created_at_ms: 1789467150000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T10:12:30Z'
+        '401':
+          description: Authentication is required.
+        '403':
+          description: The caller is not an admin with permission to update themes.
+        '404':
+          description: The theme or comment is unavailable to this company, or the theme id is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PreviewCommentError"
+                - type: object
+                  description: A malformed theme id does not match the route and returns the routing error.
+                  required: [error]
+                  additionalProperties: false
+                  properties:
+                    error:
+                      type: string
+                      enum: [Not found]
+        '409':
+          description: The comment version, run identity, or active state changed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: The reply or run expectation is invalid, or the comment was deleted during the request.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/proof_baseline":
+    put:
+      summary: Record a preview comment's proof baseline
+      description: |-
+        Stores the page as it looked before the work started, so an after shot
+        on a reply has something to be compared against.
+
+        Its own operation because it is its own register. `captured_at_ms` is
+        compared only against the stored baseline's stamp, never against the
+        status stamp, so a write rejected for carrying an older status does not
+        also drag the baseline backwards. A write carrying an older stamp is
+        discarded and answered 200 with the comment unchanged, exactly as a
+        losing status write is.
+
+        `shot` is optional, and a request without one is not an error: it
+        records that a capture was attempted and produced nothing, which is
+        what stops a reader taking the previous attempt's baseline for this
+        one's.
+      tags: [preview comments]
+      operationId: recordThemePreviewCommentProofBaseline
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Id of the theme the comment belongs to.
+        schema: {type: integer}
+      - name: client_id
+        in: path
+        required: true
+        description: Client-generated id of the comment.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                proof_baseline:
+                  type: object
+                  properties:
+                    captured_at_ms:
+                      type: integer
+                      description: |-
+                        When the capture was taken, in milliseconds since the
+                        epoch. The key this register compares on.
+                    shot:
+                      type: object
+                      description: >-
+                        The image's dimensions. Absent when the capture
+                        produced nothing.
+                      properties:
+                        width: {type: integer}
+                        height: {type: integer}
+                        asset_id:
+                          type: integer
+                          description: >-
+                            The uploaded image. Without it the dimensions are
+                            stored and no picture is ever served, because the
+                            image is read from the asset attached to the
+                            comment. An id naming another company's asset
+                            attaches nothing and the url reads null.
+                      required: [width, height, asset_id]
+                  required: [captured_at_ms]
+              required: [proof_baseline]
+            example:
+              proof_baseline:
+                captured_at_ms: 1789464360000
+                shot:
+                  width: 1440
+                  height: 900
+                  asset_id: 77104
+      responses:
+        '200':
+          description: The comment, with the baseline recorded or left as it was.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentEnvelope"
+              example:
+                preview_comment:
+                  id: 31877
+                  run_id: null
+                  lock_version: 3
+                  client_id: c-3f9a2e71
+                  n: 4
+                  body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
+                  status: open
+                  status_at_ms: 1789398131000
+                  page_url: /
+                  author_name: Michael Scott
+                  created_at_ms: 1789398131000
+                  template_id: 902114
+                  section:
+                    id: hero-banner-1
+                    type: hero-banner
+                  block: null
+                  target:
+                    tag: h1
+                    selector: section[data-section-id="hero-banner-1"] h1.hero__title
+                    text: Limitless Paper in a Paperless World
+                    html: <h1 class="hero__title">Limitless Paper in a Paperless World</h1>
+                  pin:
+                    x: 48.2
+                    y: 22.7
+                    ox: 0.41
+                    oy: 0.63
+                  mentions:
+                  - id: '52018'
+                    name: Pam Beesly
+                  mentioned_project: null
+                  proof_baseline:
+                    url: https://cdn.fluid.app/dunder-mifflin/assets/77104/preview-before.png
+                    width: 1440
+                    height: 900
+                    captured_at_ms: 1789464360000
+                  work_item: null
+                  board_position: null
+                  board_position_at_ms: null
+                  assignee: null
+                  assigner: null
+                  assigned_at_ms: null
+                  priority: null
+                  priority_at_ms: null
+                  replies:
+                  - client_id: r-5c20e9b4
+                    run_id: null
+                    body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
+                    author_name: Pam Beesly
+                    created_at_ms: 1789398277000
+                    mentions: []
+                    shot: null
+                    proof: null
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No such theme or comment for this caller.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+        '422':
+          description: A missing or out-of-range stamp, or a malformed shot.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/member-preview":
+    post:
+      summary: Render a draft member page or system screen
+      description: |-
+        Authoring preview for company administrators with theme view permission.
+        Select a site belonging to the theme and exactly one page or system screen.
+        Unpublished pages and draft themes are supported. Content comes from the
+        selected theme's stored templates, sections, settings and site navigation.
+        No role means unrestricted authoring; member_type_id selects a synthetic
+        audience and applies site access rules. Private member collections are
+        not loaded. This endpoint neither authenticates a member nor publishes
+        content. Responses must not be cached. The CLI keeps its bearer token on
+        its local server and serves the returned HTML without the builder base tag.
+        Body/resource overrides are ignored; system-screen bodies remain sealed.
+      tags: [themes]
+      operationId: renderMemberPreview
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Company-owned theme to preview, including a draft theme.
+        schema: {type: integer, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [members_site_id]
+              oneOf:
+              - required: [members_page_id]
+                not: {required: [system_screen_key]}
+              - required: [system_screen_key]
+                not: {required: [members_page_id]}
+              properties:
+                members_site_id:
+                  type: integer
+                  minimum: 1
+                  description: Site belonging to the selected theme.
+                members_page_id:
+                  type: integer
+                  minimum: 1
+                  description: Page belonging to the selected site, with a template in this theme.
+                system_screen_key:
+                  type: string
+                  minLength: 1
+                  description: Registered system screen key, such as messaging.
+                country_id:
+                  type: integer
+                  minimum: 1
+                  description: Active company country; defaults to the company's default country.
+                language_id:
+                  type: integer
+                  minimum: 1
+                  description: Active company language; defaults to the company's default language.
+                member_type_id:
+                  type: string
+                  minLength: 1
+                  description: Company member type for sample audience matching; omit for unrestricted authoring.
+            example:
+              members_site_id: 7310
+              members_page_id: 18422
+              member_type_id: brand-partner
+      responses:
+        "200":
+          description: Sample preview, including an access-denied view when the chosen role cannot access this site.
+          headers:
+            Cache-Control:
+              description: Prevent storage of authoring previews.
+              schema: {type: string, const: "private, no-store"}
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MemberPreviewResponse"
+              example:
+                preview:
+                  mode: sample
+                  contract_version: 1
+                  theme_id: 48213
+                  members_site_id: 7310
+                  members_page_id: 18422
+                  system_screen_key: null
+                  html_content: <main class="members-page"><h1>Welcome back to the Dunder Mifflin rep portal</h1></main>
+                  page_stylesheet: '.members-page { max-width: 72rem; margin: 0 auto; }'
+                  template_stylesheet: null
+                  preview_audience:
+                    kind: sample_member
+                    member_type_id: brand-partner
+                    matched_site_id: 7310
+                    selected_site_accessible: true
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:26:05Z'
+        "401":
+          description: Missing or invalid CLI/admin credential.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: {type: string}
+        "403":
+          description: Credential lacks company administration or theme view permission.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: {type: string}
+        "404":
+          description: Feature disabled, foreign or stale selection, unknown screen, or unavailable audience/locale.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MemberPreviewError"
+        "422":
+          description: Invalid selection; supply exactly one page or screen.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MemberPreviewError"
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+  schemas:
+    MemberPreviewError:
+      type: object
+      description: Preview selection or rendering failure.
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [message, details]
+          properties:
+            message: {type: string}
+            details: {type: object}
+        status: {type: integer}
+        meta: {type: object}
+    MemberPreviewResponse:
+      type: object
+      description: Synthetic authoring render; no real member session or private collections.
+      required: [preview, status, meta]
+      properties:
+        status: {type: integer, const: 200}
+        meta: {type: object}
+        preview:
+          type: object
+          required: [mode, contract_version, theme_id, members_site_id, members_page_id, system_screen_key, html_content, page_stylesheet, template_stylesheet, preview_audience]
+          properties:
+            mode: {type: string, const: sample}
+            contract_version: {type: integer, const: 1}
+            theme_id: {type: integer}
+            members_site_id: {type: integer}
+            members_page_id: {type: [integer, "null"]}
+            system_screen_key: {type: [string, "null"]}
+            html_content: {type: string}
+            page_stylesheet: {type: [string, "null"]}
+            template_stylesheet: {type: [string, "null"]}
+            preview_audience:
+              type: object
+              required: [kind, member_type_id, matched_site_id, selected_site_accessible]
+              properties:
+                kind: {type: string, enum: [guest, sample_member]}
+                member_type_id: {type: [string, "null"]}
+                matched_site_id: {type: [integer, "null"]}
+                selected_site_accessible: {type: [boolean, "null"]}
+    PreviewCommentResponseMeta:
+      type: object
+      description: Envelope metadata returned on every preview-comment response.
+      properties:
+        request_uuid:
+          type: [string, "null"]
+          description: Correlation id for this request, when one was assigned.
+        timestamp:
+          type: string
+          format: date-time
+          description: When the response was built.
+      required: [request_uuid, timestamp]
+    PreviewCommentError:
+      type: object
+      description: The error envelope returned by the preview-comment routes.
+      properties:
+        error:
+          type: object
+          description: What went wrong.
+          properties:
+            message:
+              type: string
+              description: Human-readable description of the failure.
+            details:
+              type: object
+              description: |-
+                Machine-readable detail. Carries `type` — the failure's symbol,
+                such as `not_found` or `validation_failed` — when the failure
+                came from the domain rather than from parameter validation.
+          required: [message, details]
+        status:
+          type: integer
+          description: HTTP status, repeated in the body.
+        meta:
+          "$ref": "#/components/schemas/PreviewCommentResponseMeta"
+      required: [error, status, meta]
+    PreviewCommentEnvelope:
+      type: object
+      description: A single comment, wrapped in the standard response envelope.
+      properties:
+        preview_comment:
+          "$ref": "#/components/schemas/PreviewComment"
+        status:
+          type: integer
+          description: HTTP status, repeated in the body.
+        meta:
+          "$ref": "#/components/schemas/PreviewCommentResponseMeta"
+      required: [preview_comment, status, meta]
+    PreviewCommentPin:
+      type: object
+      description: |-
+        Where the pin sits. `x` and `y` are percentages of the viewport; `ox`
+        and `oy` are the click's offset within the anchored element, from 0 to
+        1, so two pins on one image stay apart. The offsets are null on
+        comments made before they were recorded.
+      properties:
+        x: {type: number, description: Horizontal position, as a percentage of the viewport.}
+        y: {type: number, description: Vertical position, as a percentage of the viewport.}
+        ox: {type: [number, "null"], description: Horizontal offset within the element, 0 to 1.}
+        oy: {type: [number, "null"], description: Vertical offset within the element, 0 to 1.}
+      required: [x, y, ox, oy]
+    PreviewCommentTarget:
+      type: object
+      description: |-
+        The element the comment was pinned to. Null when the click landed on
+        nothing resolvable, which clients already tolerate.
+      properties:
+        tag: {type: [string, "null"], description: Tag name of the element.}
+        selector: {type: [string, "null"], description: CSS selector that located the element.}
+        text: {type: [string, "null"], description: Text quoted from the element at pin time.}
+        html: {type: [string, "null"], description: Truncated outer HTML of the element.}
+      required: [tag, selector, text, html]
+    PreviewCommentThemeRef:
+      type: object
+      description: |-
+        Theme identity of the pinned element. `type` names the file — a section
+        renders from `sections/<type>/index.liquid` — and `id` names which
+        instance of it is on the page. More durable than the selector, which
+        dies when markup changes.
+      properties:
+        id: {type: [string, "null"], description: Identity of this instance in the template schema.}
+        type: {type: [string, "null"], description: Type name, which is the file.}
+      required: [id, type]
+    PreviewCommentShot:
+      type: object
+      description: |-
+        Proof screenshot attached to a reply. `url` is null when the image was
+        recorded but is not retrievable, so a client must treat a present
+        object with a null url as "no image to show" rather than an error.
+      properties:
+        url: {type: [string, "null"], description: Where to fetch the image.}
+        width: {type: [integer, "null"], description: Intrinsic width in pixels.}
+        height: {type: [integer, "null"], description: Intrinsic height in pixels.}
+      required: [url, width, height]
+    PreviewCommentProofBaseline:
+      type: object
+      description: |-
+        The page before the work started, carried by the comment. Its
+        `captured_at_ms` is its own register: it is compared only against a
+        stored baseline's stamp, never against the status stamp.
+
+        A present object with a null url means the capture was recorded but is
+        not retrievable — which is not the same as no baseline, and must not be
+        rendered as a broken image.
+      properties:
+        url: {type: [string, "null"], description: Where to fetch the image.}
+        width: {type: [integer, "null"], description: Intrinsic width in pixels.}
+        height: {type: [integer, "null"], description: Intrinsic height in pixels.}
+        captured_at_ms:
+          type: integer
+          description: When the capture was taken, in milliseconds.
+      required: [url, width, height, captured_at_ms]
+    PreviewCommentProofCheck:
+      type: object
+      description: One mechanical result a reviewer reads alongside the images.
+      properties:
+        label: {type: string, description: What was checked.}
+        status:
+          type: string
+          enum: [pass, warn, fail]
+          description: How it came out.
+        detail:
+          type: string
+          description: Why, when it did not pass.
+      required: [label, status]
+    PreviewCommentProof:
+      type: object
+      description: |-
+        What a reviewer reads instead of taking "I fixed it" on trust: the
+        route the change was measured on, the image it was compared against,
+        what changed on disk, and the mechanical results.
+
+        Every part is optional. A capture that did not happen is an ordinary
+        outcome, and a reply explaining why there is no picture is worth more
+        than a refused write.
+      properties:
+        route:
+          type: [string, "null"]
+          description: The page this was measured on.
+        before:
+          type: ["object", "null"]
+          description: >-
+            The image the work was compared against — the comment's baseline as
+            it stood when this reply was written, so replacing the baseline
+            later does not change what this reply appears to have compared.
+          properties:
+            url: {type: [string, "null"], description: Where to fetch the image.}
+          required: [url]
+        files:
+          type: array
+          description: Paths that changed on disk.
+          items: {type: string}
+        checks:
+          type: array
+          description: Mechanical results, each pass, warn or fail.
+          items: {"$ref": "#/components/schemas/PreviewCommentProofCheck"}
+      required: [route, before, files, checks]
+    PreviewCommentMention:
+      type: object
+      description: |-
+        One mention on a comment or reply. A person, or a project distinguished
+        by a `project:` prefix on its id — `project:theme-873`. The prefix
+        rather than a separate field, because the desktop stores both in one
+        list and tells them apart the same way.
+      properties:
+        id:
+          type: string
+          description: The mentioned person's id, or `project:` plus the project's own id.
+        name:
+          type: string
+          description: The name as it was written in the body.
+        kind:
+          type: string
+          description: Present on a project mention — theme, portal, mist, or mysite.
+        role:
+          type: string
+          description: Present on a person, when the roster reported one.
+      required: [id, name]
+      additionalProperties: false
+    PreviewCommentMentionedProject:
+      type: object
+      description: |-
+        The project a comment is about, taken from the first project mentioned.
+        Stored as its own columns so "which comments are about this project" is
+        an indexed query rather than a scan of every comment's mentions.
+      properties:
+        kind:
+          type: string
+          description: theme, portal, mist, or mysite.
+        ref:
+          type: string
+          description: The project's id within that kind.
+      required: [kind, ref]
+      additionalProperties: false
+    PreviewCommentReply:
+      type: object
+      description: One reply on a comment, from a person or from the agent.
+      properties:
+        run_id:
+          type: [string, 'null']
+          description: The associated Mist run, or null for unbound comments and replies.
+        client_id:
+          type: string
+          description: Client-generated id, unique within the comment.
+        body:
+          type: string
+          description: The reply text.
+        author_name:
+          type: [string, "null"]
+          description: |-
+            Who replied. The literal `Mist` for the agent's own replies, which
+            is what a client compares against to tell whether a thread has been
+            answered.
+        created_at_ms:
+          type: integer
+          description: When the reply was created, in milliseconds since the epoch.
+        mentions:
+          type: array
+          description: People or projects mentioned in the reply.
+          items: {"$ref": "#/components/schemas/PreviewCommentMention"}
+        shot:
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentShot"
+          - type: "null"
+          description: Proof screenshot, when the reply carries one.
+        proof:
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentProof"
+          - type: "null"
+          description: The evidence around the screenshot, when the reply carries it.
+      required: [run_id, client_id, body, author_name, created_at_ms, mentions, shot, proof]
+    PreviewCommentPerson:
+      type: object
+      description: |-
+        One person on a work item. Mist is a person here, with a fixed id and
+        no user row of its own.
+      properties:
+        id:
+          type: string
+          description: The user id as a string, or `mist` for the agent.
+        name:
+          type: [string, "null"]
+          description: The name the server attributed, falling back to the email address.
+        kind:
+          type: string
+          enum: [user, agent]
+          description: Whether this is a person or the agent.
+      required: [id, name, kind]
+    PreviewCommentWorkItem:
+      type: object
+      description: |-
+        The work a discussion belongs to. A routing and display hint and never
+        the authority: it says which surface owns this thread's workflow, so a
+        client sends the work rather than the comment, and the work's own read
+        is what its card is drawn from. Read-only on this API — every write
+        here is refused with 409 while the thread belongs to work.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The work item's id, as the task API addresses it.
+        status:
+          type: string
+          enum: [open, kept, needs_info, handed, review, skipped]
+          description: Where the work stands. The comment's own `status` is not this and may be stale.
+        priority:
+          type: [string, "null"]
+          enum: [urgent, high, medium, low, null]
+          description: How urgent the work is, or null when nobody has judged it.
+        run_id:
+          type: [string, "null"]
+          description: The run that owns the work now, or null when none does.
+        lock_version:
+          type: integer
+          minimum: 0
+          description: The work's own version register, which is not the comment's and is never compared against it.
+        assignee:
+          description: Who owns the work now, or null for nobody.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentPerson"
+          - type: "null"
+      required: [id, status, priority, run_id, lock_version, assignee]
+    PreviewComment:
+      type: object
+      description: A comment pinned to an element on a theme's preview.
+      properties:
+        run_id:
+          type: [string, 'null']
+          description: The associated Mist run, or null for unbound comments and replies.
+        lock_version:
+          type: integer
+          minimum: 0
+          description: Server record version used to order accepted status snapshots and guard changes.
+        id:
+          type: integer
+          description: |-
+            The discussion's row id. Served alongside `client_id` rather than
+            in place of it: every route here still addresses a comment by
+            `client_id`. This is the identity a company-scoped endpoint that is
+            given no theme has to name a discussion by, because `client_id` is
+            unique only within its theme — the task API's `source_thread_id`
+            is this value.
+        client_id:
+          type: string
+          description: Client-generated id, unique within the theme.
+        n:
+          type: integer
+          description: |-
+            Display number shown on the pin. Assigned by the client, so it is a
+            label rather than an identifier — address a comment by `client_id`.
+        body:
+          type: string
+          description: The comment text.
+        status:
+          type: string
+          description: |-
+            Where the comment stands. `kept` is a legacy spelling that still
+            counts as open. `handed` means it has been sent for work and is
+            still running; `review` means the work finished and is waiting on a
+            person. Only a person sets `skipped`, and only a person moves a
+            comment past `review` — the agent stops there.
+
+            When two writes carry the same stamp the order is
+            `skipped` > `review` > `handed` > the incoming value, so a resolve
+            is never lost to a same-millisecond write and finished work is never
+            dragged back to in-progress.
+          enum: [open, kept, skipped, handed, review, needs_info]
+        status_at_ms:
+          type: [integer, "null"]
+          description: |-
+            When the status was last intentionally set, in milliseconds. The key
+            the last-writer-wins register compares on. Null on comments
+            predating the register.
+        page_url:
+          type: string
+          description: Normalized path of the page the comment was pinned on.
+        author_name:
+          type: [string, "null"]
+          description: Who pinned the comment, attributed by the server.
+        created_at_ms:
+          type: integer
+          description: When the comment was created, in milliseconds since the epoch.
+        template_id:
+          type: integer
+          description: |-
+            The theme template the comment was pinned against. For a pin on
+            shared chrome this is the navbar or footer template rather than the
+            page's, because that is the one needing the edit.
+        section:
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentThemeRef"
+          - type: "null"
+          description: The section the pin sits in, when the render carried it.
+        block:
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentThemeRef"
+          - type: "null"
+          description: |-
+            The block the pin sits in. Null unless the page was rendered by the
+            theme editor, which is the only render that emits block identity.
+        target:
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentTarget"
+          - type: "null"
+          description: The anchored element.
+        pin:
+          "$ref": "#/components/schemas/PreviewCommentPin"
+        mentions:
+          type: array
+          description: People or projects mentioned in the comment.
+          items: {"$ref": "#/components/schemas/PreviewCommentMention"}
+        mentioned_project:
+          description: |-
+            The project this comment is about, or null when it is about a page.
+            Taken from the first project mentioned.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentMentionedProject"
+          - type: "null"
+        proof_baseline:
+          description: |-
+            The page before the work started, or null when no capture has been
+            recorded. Carries its own stamp, resolved independently of status.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentProofBaseline"
+          - type: "null"
+        work_item:
+          description: |-
+            The work this discussion belongs to, or null while it is only a
+            discussion. Null too once that work is deleted, which gives the
+            thread back to the legacy workflow path.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentWorkItem"
+          - type: "null"
+        board_position:
+          type: [string, 'null']
+          pattern: '^[0-9A-Za-z]+$'
+          maxLength: 255
+          description: |-
+            Where the comment's card sits on the Tasks board, as a canonical
+            fractional index in base-62 digits that sorts as a plain string, in
+            the same order work items keep. One order for the whole board;
+            equal positions are ordered by id. Null until someone places the
+            card. Not read for a comment that belongs to a work item, which is
+            drawn as that work.
+          example: a0V
+        board_position_at_ms:
+          type: [integer, 'null']
+          description: When the card was last placed, in milliseconds since the epoch. The key the position register compares on.
+          example: 1789000000000
+        assignee:
+          description: Who owns the work now, or null for nobody. Mist appears with `kind` `agent`.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentPerson"
+          - type: "null"
+        assigner:
+          description: Who handed the comment over, or null until somebody has. Kept after the handover.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentPerson"
+          - type: "null"
+        assigned_at_ms:
+          type: [integer, 'null']
+          description: When the assignment was last set, in milliseconds since the epoch. The key the assignment register compares on.
+        priority:
+          type: [string, 'null']
+          enum: [urgent, high, medium, low, null]
+          description: How urgent the comment is, or null when nobody has judged it.
+        priority_at_ms:
+          type: [integer, 'null']
+          description: When the priority was last set, in milliseconds since the epoch. The key the priority register compares on.
+        replies:
+          type: array
+          description: Replies, ordered by creation time then client id.
+          items:
+            "$ref": "#/components/schemas/PreviewCommentReply"
+      required: [id, run_id, client_id, n, body, status, status_at_ms, lock_version, page_url, author_name, created_at_ms,
+                 template_id, section, block, target, pin, mentions, mentioned_project,
+                 proof_baseline, work_item, replies]
+    PreviewCommentCreate:
+      type: object
+      description: |-
+        A comment to pin. No author field: authorship comes from the
+        authenticated principal, and a field that is always ignored is one a
+        client eventually trusts.
+      properties:
+        client_id:
+          type: string
+          description: Client-generated id, unique within the theme.
+        body:
+          type: string
+          description: The comment text.
+        template_id:
+          type: integer
+          description: The theme template being commented on. Must belong to this theme.
+        number:
+          type: integer
+          description: Display number for the pin.
+        page_path:
+          type: string
+          description: Normalized path of the page.
+        pin:
+          type: object
+          description: Where the pin sits.
+          properties:
+            x: {type: number, description: Horizontal position, as a percentage of the viewport.}
+            y: {type: number, description: Vertical position, as a percentage of the viewport.}
+            ox: {type: [number, "null"], description: Horizontal offset within the element, 0 to 1.}
+            oy: {type: [number, "null"], description: Vertical offset within the element, 0 to 1.}
+          required: [x, y]
+        section:
+          type: object
+          description: Theme identity of the section, read from the rendered page.
+          properties:
+            id: {type: [string, "null"], description: Instance id of the section.}
+            type: {type: [string, "null"], description: Section type, which is the file.}
+        block:
+          type: object
+          description: Theme identity of the block, when the render carried it.
+          properties:
+            id: {type: [string, "null"], description: Instance id of the block.}
+            type: {type: [string, "null"], description: Block type, which is the file.}
+        anchor:
+          type: object
+          description: The element the pin was made against.
+          properties:
+            tag: {type: [string, "null"], description: Tag name of the element.}
+            selector: {type: [string, "null"], description: CSS selector that located it.}
+            text: {type: [string, "null"], description: Text quoted from the element.}
+            html: {type: [string, "null"], description: Truncated outer HTML.}
+        mentions:
+          type: array
+          description: People or projects mentioned in the comment.
+          items: {"$ref": "#/components/schemas/PreviewCommentMention"}
+      required: [client_id, body, template_id, number, page_path, pin]
+    ThemeSummary:
+      type: object
+      description: A theme as a picker row — no stylesheet blobs.
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        version: {type: [string, 'null']}
+        status: {type: [string, 'null']}
+        source: {type: [string, 'null']}
+        company_id: {type: [integer, 'null']}
+        cover_image: {type: [string, 'null'], description: URL of the theme's cover image.}
+        outdated: {type: [boolean, 'null'], description: True when a newer version of the source theme exists.}
+        default_home_template_id: {type: [integer, 'null'], description: Only present when include_default_home_template=true.}
+        updated_at: {type: [string, 'null'], format: date-time}
+      required: [id, name]
+    ThemeTemplateSummary:
+      type: object
+      description: |-
+        A template's metadata. Deliberately excludes `content` (the Liquid
+        body), `variables` and `translations` — all unbounded blobs.
+      properties:
+        id: {type: integer}
+        name: {type: [string, 'null']}
+        themeable_type: {type: [string, 'null']}
+        status: {type: [string, 'null']}
+        default: {type: [boolean, 'null']}
+        global: {type: [boolean, 'null']}
+        source: {type: [string, 'null']}
+        application_theme_id: {type: [integer, 'null']}
+        company_id: {type: [integer, 'null']}
+        app_extension_id: {type: [integer, 'null']}
+        extension_uri: {type: [string, 'null']}
+        droplet_name: {type: [string, 'null']}
+        country_ids: {type: [array, 'null'], items: {type: integer}}
+        hide_navbar: {type: [boolean, 'null']}
+        use_active_application_theme: {type: [boolean, 'null']}
+        stylesheet: {type: [string, 'null']}
+        stylesheet_tag_injected: {type: [boolean, 'null']}
+        stylesheet_column_hidden: {type: [boolean, 'null']}
+        created_at: {type: [string, 'null'], format: date-time}
+        updated_at: {type: [string, 'null'], format: date-time}
+      required: [id]
+    ThemeDetail:
+      type: object
+      description: |-
+        A single theme in full. Superset of ThemeSummary — adds the deprecated
+        stylesheet columns, versions, images and GitSync repos. Does NOT embed
+        templates.
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        version: {type: [string, 'null']}
+        status: {type: [string, 'null']}
+        source: {type: [string, 'null']}
+        description: {type: [string, 'null']}
+        variables: {type: [string, 'null'], description: Serialized theme variables.}
+        company_id: {type: [integer, 'null']}
+        cover_image: {type: [string, 'null'], description: URL of the theme's cover image.}
+        custom_stylesheet: {type: [string, 'null']}
+        global_stylesheet: {type: [string, 'null']}
+        versions: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
+        images: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
+        git_sync_repos: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
+        created_at: {type: [string, 'null'], format: date-time}
+        updated_at: {type: [string, 'null'], format: date-time}
+      required: [id, name]
+    ThemeTemplate:
+      type: object
+      description: A template including its Liquid `content`.
+      properties:
+        id: {type: integer}
+        name: {type: [string, 'null']}
+        content: {type: [string, 'null']}
+        themeable_type: {type: [string, 'null']}
+        status: {type: [string, 'null']}
+        default: {type: [boolean, 'null']}
+        variables: {type: [object, 'null'], additionalProperties: true, description: Template-level Liquid variables.}
+        translations: {type: [object, 'null'], additionalProperties: true}
+        application_theme_id: {type: [integer, 'null']}
+        company_id: {type: [integer, 'null']}
+        app_extension_id: {type: [integer, 'null']}
+        extension_uri: {type: [string, 'null']}
+        droplet_name: {type: [string, 'null']}
+        source: {type: [string, 'null']}
+        global: {type: [boolean, 'null']}
+        country_ids: {type: [array, 'null'], items: {type: integer}}
+        hide_navbar: {type: [boolean, 'null']}
+        use_active_application_theme: {type: [boolean, 'null']}
+        stylesheet: {type: [string, 'null']}
+        stylesheet_tag_injected: {type: [boolean, 'null']}
+        stylesheet_column_hidden: {type: [boolean, 'null']}
+        created_at: {type: [string, 'null'], format: date-time}
+        updated_at: {type: [string, 'null'], format: date-time}
+      required: [id]
+    PaginationMeta:
+      type: object
+      properties:
+        current_page: {type: integer}
+        total_pages: {type: integer}
+        total_count: {type: integer}
+        per_page: {type: integer}

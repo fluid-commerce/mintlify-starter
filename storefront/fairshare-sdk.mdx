@@ -1,0 +1,153 @@
+---
+title: "FairShare SDK and the storefront"
+sidebarTitle: "FairShare SDK and the storefront"
+description: "How the FairShare SDK works on a Fluid storefront: how it loads, how storefront URLs carry rep credit, how attribution reaches the cart, and how add to cart, media, and playlists map to storefront resources."
+---
+
+Every Fluid storefront runs the [FairShare SDK](/sdk/overview) in the browser. The storefront API serves the content; the SDK handles what happens around it — who gets credit for a visit, the cart, and media playback. This guide covers where the two meet and what to watch for when you build a theme or integration.
+
+## How the SDK gets onto the storefront
+
+Fluid loads the SDK through a **global embed**. When a company is created, Fluid adds an active storefront embed that places this script in the page head:
+
+```html
+<script
+  defer
+  type="module"
+  id="fluid-cdn-script"
+  data-fluid-shop="acme"
+  data-fluid-api-base-url="https://api.fluid.app"
+  src="https://assets.fluid.app/scripts/fluid-sdk/latest/web-widgets/index.js"
+></script>
+```
+
+`data-fluid-shop` is the store's Fluid subdomain. Root themes don't include the script — the embed does. Manage it under global embeds in Fluid Admin. See [Global embeds](/api/guides/global-embeds).
+
+- **Don't load it a second time.** Adding the script to your theme as well as the embed means two copies run. The second copy's settings are ignored, and declarative add-to-cart buttons can add items twice.
+- **Deactivating the embed turns the SDK off** — the cart widget, attribution, and media widgets stop working.
+- **Configure it on the embed.** To set a script attribute such as `data-fluid-country`, edit the embed's script tag rather than adding another. See [Installation](/sdk/installation) for every attribute.
+
+<Note>
+  Member storefront pages load a separate member script. This guide covers the storefront SDK only.
+</Note>
+
+## Storefront URLs and the credit path
+
+Storefront pages carry rep credit in the first path segment, the **credit segment**:
+
+- `home` — no rep. For example, `/home/products/beet-blend`.
+- A rep's username — credit goes to that rep. For example, `/jordan-lee/products/beet-blend`.
+
+Each storefront resource has a page at a credited path:
+
+| Resource | Storefront page |
+| --- | --- |
+| Products | `/<credit>/products/<slug>` |
+| Categories | `/<credit>/categories/<slug>` |
+| Collections | `/<credit>/collections/<slug>` |
+| Posts | `/<credit>/posts/<slug>`, or `/home/blog/<slug>` for the unattributed URL |
+| Pages | `/<credit>/pages/<slug>` |
+| Media | `/<credit>/media/<slug>` |
+| Playlists | `/<credit>/libraries/<slug>` |
+| Enrollment packs | `/<credit>/enrollments/<slug>` |
+
+Things to know about credit paths:
+
+- **An unknown username doesn't fail.** The page renders without credit, as if it were `home`.
+- **`/cart` never takes a credit segment.**
+- **Personal sites use `/my/<username>`.**
+- **Every credited page declares the `home` URL as canonical.** Its `<link rel="canonical">` is the resource's `canonical_url` from the storefront API, so search engines index one URL however many reps share it. See [Slugs and URLs](/storefront/slugs-and-urls).
+- **The page HTML is the same for every credit.** Storefront pages are cached once and shared across reps, so a template can't print the current rep's name into the HTML. Use [affiliate hydration](/themes/affiliate-hydration) placeholders instead — the SDK fills them in the browser.
+
+See [Supported paths](/themes/supported-paths) for every route.
+
+## How attribution works on the storefront
+
+The SDK works out attribution from the page URL. When a page loads, and again on every client-side navigation, the SDK sends the URL to Fluid, which looks for a rep in this order:
+
+1. A `username`, `share_guid`, or `referral` query parameter.
+2. A rep subdomain.
+3. The credit segment of the path.
+
+`window.FairShareSDK.getAttribution()` returns the result for the current page. On a `/home/...` page with no override, it returns `null`.
+
+### How attribution reaches an order
+
+Attribution is attached to the **cart**, and the order inherits it:
+
+- **The cart takes the attribution of the page it was created on.** The SDK creates a cart on the first add to cart. A cart created on a `/home/...` page has no rep.
+- **Adding more items doesn't change it.** A shopper who starts a cart on `/home/...` and then visits `/jordan-lee/...` keeps an uncredited cart.
+- **Link to credited URLs.** If a rep should get credit, the shopper has to arrive on — and start their cart from — a credited page. Build rep links with the rep's username, not `home`.
+
+<Warning>
+  A `/home/...` page can still *display* the last rep the shopper visited, because hydration remembers them for the browser session. Attribution for that page is still `null`. Don't use a displayed rep name as proof that an order will be credited.
+</Warning>
+
+### Overriding attribution
+
+The script-tag attributes `data-share-guid`, `data-fluid-rep-id`, `data-email`, `data-username`, and `data-external-id` override URL-based attribution. See [Installation](/sdk/installation#attribution-override).
+
+- **The first attribute present wins.** The SDK doesn't check that the rep exists before using it.
+- **An override is remembered in the browser.** Removing the attribute from the script tag doesn't clear an override that browser already stored. When you test URL-based attribution, clear the site's data first.
+
+On a Fluid storefront, you rarely need an override: the credit path already carries the rep.
+
+### Domains
+
+Browser storage doesn't cross domains. A store's custom domain, its `fluid.app` subdomain, and `checkout.fluid.app` each keep their own. The cart reaches checkout through its cart token in the checkout URL, not through shared storage. Send shoppers to one storefront domain so their cart and attribution stay together.
+
+## Add storefront products to the cart
+
+The SDK's cart uses **variant ids**, never product ids or slugs. Take them from the storefront API's product lookup:
+
+```bash
+curl "https://acme.fluid.app/api/v202604/products/beet-blend"
+```
+
+Use `product.variants[].id` for the variant the shopper picked. Then add it with a declarative button:
+
+```html
+<button data-fluid-add-to-cart="48213" data-fluid-quantity="2">
+  Add to cart
+</button>
+```
+
+or with JavaScript. See [Cart API](/sdk/cart-api).
+
+- **The cart opens after an add by default.** Set `data-fluid-open-cart-after-add="false"` to keep it closed.
+- **Subscriptions use the plan's own id.** For `subscribeCartItem()` and `data-fluid-subscription-plan-id`, use `subscription_plans[].subscription_plan.id` from the product lookup. The outer `subscription_plans[].id` doesn't work.
+- **Match the cart's country to the prices you show.** The storefront API prices products for the `country` you pass. The SDK doesn't read that parameter: it uses `data-fluid-country`, then the shopper's saved country, then `US`. If your theme shows prices for another country, set `data-fluid-country` to match.
+- **One cart, two APIs.** The SDK's cart runs on the Public SDK API. Its cart token also works with the Checkout API. See [Choosing a cart surface](/api/choosing-a-cart-surface).
+
+## Media and playlists
+
+The media widget plays storefront media and playlists:
+
+```html
+<fluid-media-widget media-id="spring-routine-walkthrough"></fluid-media-widget>
+<fluid-media-widget playlist-id="spring-launch-demos"></fluid-media-widget>
+```
+
+`media-id` and `playlist-id` take the same `slug` or `id` the storefront API returns for media and playlists. See [Components](/sdk/components#media-widget).
+
+- **The widget shows more than the public list.** It plays any medium or playlist you name, including drafts, scheduled items, restricted media, and rep uploads. Only deleted items are refused. Check a resource's `status`, `active`, and visibility yourself before you embed it.
+- **Calls to action follow the rep.** A media call to action is personalized for the attributed rep.
+- **Video views are credited.** Video playback analytics are sent with the page's attribution, so the rep gets credit for engagement. Image, PDF, and website media send no view analytics.
+- **Events.** The widget fires load, start, pause, resume, complete, and call-to-action click events. There is no progress event. See [Media](/sdk/media).
+
+## Checklist
+
+- Keep exactly one SDK script on the storefront: the global embed.
+- Build rep-facing links on credited paths, with affiliate hydration for the username.
+- Use the storefront API's `canonical_url` for canonical and share metadata.
+- Take variant ids and subscription plan ids from the storefront product lookup.
+- Set `data-fluid-country` when your theme prices products for a country other than the shopper's default.
+- Check a medium's or playlist's state before embedding it — the widget doesn't.
+- Test attribution in a real browser with cleared site data. Headless browsers and page-speed tools don't run the SDK.
+
+## Related guides
+
+- [FairShare SDK overview](/sdk/overview)
+- [Supported paths](/themes/supported-paths)
+- [Affiliate hydration](/themes/affiliate-hydration)
+- [Server-side attribution migration](/migration/server-side-attribution)

@@ -1,0 +1,147 @@
+---
+title: "Agent signup: create a Fluid company with the API"
+sidebarTitle: "Agent signup"
+description: "How an AI agent or script signs a merchant up for Fluid with one API call, and what has to happen before it can make authenticated requests."
+---
+
+An AI agent or script can sign a merchant up for Fluid without the signup form. `POST /api/company` creates a company and its first admin user in one request, and it takes no credentials — the merchant has no token yet.
+
+This is the supported programmatic path. Use it instead of automating the signup form or booking a demo.
+
+<Note>
+  The request, response, and error schemas are on the generated reference page: [Create a company](/api-reference/company-v0/public-companies/create-a-company). This guide covers the flow around that call.
+</Note>
+
+## Before you start
+
+If you are an agent acting for a person, check these with them first:
+
+- **Get their consent.** The request sends their name and email address to Fluid and creates a real company. Ask before you send it.
+- **Use a mailbox they control.** Fluid emails the sign-in link to the address you send. Someone with access to that mailbox has to open it.
+- **Don't accept agreements for them.** This endpoint accepts none. Later steps that need agreement are the merchant's to complete.
+
+You can do everything up to the sign-in email, and everything after the merchant creates an API token. The sign-in itself needs the person.
+
+### Finding this flow
+
+Fluid publishes machine-readable pointers to this endpoint:
+
+| Document | URL |
+| --- | --- |
+| Agent resource directory | `https://fluid.app/.well-known/ard.json` — includes a **Create a Fluid company** entry |
+| API catalog (RFC 9727) | `https://fluid.app/.well-known/api-catalog` |
+| Docs index for LLMs | `https://docs.fluid.app/llms.txt` |
+
+Request these on `fluid.app` or `docs.fluid.app`. The API host, `api.fluid.app`, does not serve them.
+
+## Sign a merchant up
+
+<Steps>
+  <Step title="Choose a subdomain">
+    The subdomain becomes the store's address: `<subdomain>.fluid.app`. Subdomains are unique across Fluid.
+
+    Send a value that is already clean: lowercase letters, digits, and hyphens, no leading or trailing hyphen, and at most 63 characters. Fluid normalizes the value you send rather than rejecting it, and a value that only becomes a duplicate after normalization fails in a way that doesn't name the subdomain. Sending the clean form avoids both problems.
+  </Step>
+
+  <Step title="Create the company">
+    Send the admin user and the company in one request to `https://api.fluid.app/api/company`, with no `Authorization` header:
+
+    ```bash
+    curl -X POST https://api.fluid.app/api/company \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user": {
+          "first_name": "Maya",
+          "last_name": "Okafor",
+          "email": "maya@harborlinewellness.com"
+        },
+        "company": {
+          "name": "Harborline Wellness",
+          "subdomain": "harborline",
+          "onboarding_info": {
+            "usage_type": "business",
+            "website_setup": "unsure"
+          }
+        }
+      }'
+    ```
+
+    `user.first_name`, `user.last_name`, `user.email`, `company.name`, and `company.subdomain` are required. `company.color` (a 3- or 6-digit hex brand colour) and `company.onboarding_info` are optional.
+
+    Send only the fields documented on the reference page. The signup form sends extra fields for its own browser checks; an API caller should not.
+
+    `onboarding_info` stores the merchant's onboarding answers. The admin signup form sends `usage_type` (`business` or `employee`) and `website_setup` (`fluid-theme`, `import`, `current-site`, or `unsure`). A new business with nothing to import sends `website_setup: "unsure"`. If you have no answers, leave `onboarding_info` out — an empty object is rejected.
+  </Step>
+
+  <Step title="Keep the company details from the response">
+    A successful request returns `200`:
+
+    ```json
+    {
+      "company": {
+        "id": 318204,
+        "name": "Harborline Wellness",
+        "subdomain": "harborline",
+        "fluid_shop": "harborline.fluid.app"
+      },
+      "user_company": {
+        "id": 902771,
+        "email": "maya@harborlinewellness.com"
+      },
+      "meta": {
+        "request_id": "3b1f6c0e-8d2a-4f57-9c1e-5a7d2e9b4c10",
+        "timestamp": "2026-09-29T16:04:12Z"
+      }
+    }
+    ```
+
+    Store `company.id` and `company.fluid_shop`. Read `company.subdomain` from the response rather than reusing what you sent — it is the value that went live.
+  </Step>
+
+  <Step title="The merchant signs in">
+    Fluid emails a sign-in link to `user.email`. Fluid accounts have no password.
+
+    Which email arrives depends on whether the address already belongs to a Fluid user. A new address gets a signup confirmation. An address already in use for another company can also get an admin invitation for the new company. Either link signs the merchant in. The response is the same `200` in every case, so don't promise the merchant a specific email.
+
+    If no email arrives, the merchant can sign in at `https://admin.fluid.app` with the same address.
+  </Step>
+
+  <Step title="The merchant creates an API token">
+    Once signed in, the merchant opens **Settings → API Tokens** at `https://admin.fluid.app/settings/tokens` and creates a token. See [Authentication](/api/authentication) for token types and scopes.
+  </Step>
+
+  <Step title="Make authenticated calls">
+    Send the token as a Bearer token to `https://api.fluid.app`:
+
+    ```bash
+    curl https://api.fluid.app/api/v202604/company/products \
+      -H "Authorization: Bearer <token>"
+    ```
+
+    Every authenticated call acts on the company the token belongs to.
+  </Step>
+</Steps>
+
+## Handle errors
+
+| Status | What it means | What to do |
+| --- | --- | --- |
+| `422` | The request was rejected. The body is `{ "error_message": ..., "errors": { ... }, "meta": { ... } }`. | See below. |
+| `403` | The request was refused. | Don't retry. Contact Fluid support. |
+| `429` | Too many signup requests. The body carries `retry_after`, in seconds. | Wait `retry_after` seconds before trying again. |
+
+A `422` takes one of these forms:
+
+- **`errors` names the field** (for example `errors.user.email` or `errors.company.subdomain`). A required field is missing or malformed, or the subdomain is already taken. Fix that field and retry. A taken subdomain is the most common failure: pick another.
+- **`errors.company.base`**. Setup failed for another reason, such as an invalid colour or a subdomain that collides after normalization. The message text is not stable, so don't parse it.
+- **`errors.base`**. The request was rejected by a check that applies to browser signups. Remove any fields that are not documented on the reference page.
+
+<Warning>
+  A `422` can arrive **after** the company was created, when a late setup step fails. Before retrying with a new subdomain, retry once with the same one. If that returns `errors.company.subdomain` with `is taken`, the first request created the company. Don't create another.
+</Warning>
+
+## Next steps
+
+- [Authentication](/api/authentication) — token types, scopes, and how to pass a token.
+- [API overview](/api/overview) — base URLs, the response envelope, and pagination.
+- [Create a company](/api-reference/company-v0/public-companies/create-a-company) — the generated request and response reference.
