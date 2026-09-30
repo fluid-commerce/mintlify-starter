@@ -1,0 +1,864 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — Commerce
+  description: |
+    The member API for the signed-in member's order history. Every operation
+    acts as the signed-in member: the bearer credential alone identifies the
+    member and their company, and no path, query or body parameter names a
+    member. Filters only narrow the member's own orders; none of them can
+    widen the scope to another member or company.
+
+    A member only ever reads their own orders: the orders they placed, and
+    the orders whose commissionable volume is credited to them. A
+    credited-only order leaves out the buyer's name, contact details and
+    addresses.
+
+    This API takes the same member credentials as the People API (see the
+    `MemberBearer` security scheme). Company admins, partners and company
+    integrations read orders through the company APIs with a company API
+    token, partner token or admin credential instead; those credentials are
+    refused here.
+
+    Money is serialized as decimal strings in the order's currency. Item
+    counts and individual shipment statuses are not exposed yet.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+- MemberBearer: []
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: orders
+  description: The signed-in member’s own purchases and volume-credited orders.
+  x-fluid-section: Members
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header. The
+        credential alone identifies the member and their company.
+
+        Accepted: a member token (the member's own long-lived token, or a
+        short-lived member auth token), a member session JWT, and a portal
+        JWT whose login is linked to a membership in that company. Member
+        session JWTs and portal JWTs also travel in email links and checkout
+        URLs, so they can only read: a write made with one returns 403. Only
+        a member token can write.
+
+        Refused with 401: a missing credential; company API tokens, partner
+        tokens, public (`pub-`) tokens and droplet installation tokens;
+        impersonation JWTs; an admin's token and an admin's or root admin's
+        portal JWT; any credential for a member whose user is also an admin
+        of that company, their own member session JWT and member token
+        included; a portal JWT with no membership linked to it; a token held
+        by more than one member; a session JWT issued before the member's
+        tokens were revoked; and any credential for a member who is removed,
+        inactive or locked, is blocked from shopping, whose user is deleted,
+        or whose company is inactive.
+  headers:
+    ETag:
+      description: >-
+        Fingerprint of this member's representation. Send it back in If-None-Match to skip the body while it is
+        unchanged.
+      schema:
+        type: string
+    CacheControl:
+      description: Standard HTTP Cache-Control directive. Always private for this surface.
+      schema:
+        type: string
+        example: max-age=60, private
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+      - request_uuid
+      - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              additionalProperties: true
+          required:
+          - message
+          - details
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - error
+      - meta
+    PaginationMeta:
+      type: object
+      description: Keyset pagination state for a list.
+      additionalProperties: false
+      properties:
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send as `page[cursor]` for the next page; null on the last page.
+      required:
+      - next_cursor
+    Order:
+      type: object
+      description: Order summary. Item counts are not exposed until a maintained counter exists.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order identifier.
+          format: uuid
+        number:
+          type:
+          - string
+          - 'null'
+          description: Human-readable order number, or null for an unnumbered historical order.
+        relationship:
+          type: string
+          description: >-
+            Own purchases are placed; other orders credited to this member are credited. Placed wins when both apply,
+            including with the credited filter.
+          enum:
+          - placed
+          - credited
+        status:
+          type: string
+          description: Current order lifecycle state.
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+        financial_status:
+          type: string
+          description: Current payment state.
+          enum:
+          - pending
+          - authorized
+          - partially_paid
+          - paid
+          - refund_pending
+          - partially_refunded
+          - refunded
+          - voided
+          - marked_free
+          - marked_paid
+        fulfillment_status:
+          type: string
+          description: Overall order fulfillment state.
+          enum:
+          - unfulfilled
+          - in_progress
+          - on_hold
+          - partially_fulfilled
+          - scheduled
+          - fulfilled
+        placed_at:
+          type: string
+          description: Sale time, falling back to creation time for historical orders.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for all amounts in this order.
+          example: USD
+        total:
+          type: string
+          description: Order total in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        customer:
+          type: object
+          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          additionalProperties: false
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+              description: Native member identifier; null for orders linked only through legacy customer metadata.
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+              description: Purchaser name recorded on the order.
+          required:
+          - id
+          - name
+        volume:
+          type: object
+          description: Commissionable and qualifying volume, omitted when the company hides customer-facing volume.
+          additionalProperties: false
+          properties:
+            cv:
+              type:
+              - string
+              - 'null'
+              description: Commissionable volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            qv:
+              type:
+              - string
+              - 'null'
+              description: Qualifying volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - cv
+          - qv
+      required:
+      - id
+      - number
+      - relationship
+      - status
+      - financial_status
+      - fulfillment_status
+      - placed_at
+      - currency
+      - total
+    Address:
+      type: object
+      description: Normalized order address, with the historical JSON snapshot as fallback.
+      additionalProperties: false
+      properties:
+        name:
+          type:
+          - string
+          - 'null'
+          description: Recorded name.
+        address1:
+          type:
+          - string
+          - 'null'
+          description: Recorded address1.
+        address2:
+          type:
+          - string
+          - 'null'
+          description: Recorded address2.
+        city:
+          type:
+          - string
+          - 'null'
+          description: Recorded city.
+        state:
+          type:
+          - string
+          - 'null'
+          description: Recorded state.
+        postal_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded postal code.
+        country_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded country code.
+        phone:
+          type:
+          - string
+          - 'null'
+          description: Recorded phone.
+      required:
+      - name
+      - address1
+      - address2
+      - city
+      - state
+      - postal_code
+      - country_code
+      - phone
+    LineItem:
+      type: object
+      description: One order line with its external identifier and stored amounts.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order line identifier.
+          format: uuid
+        title:
+          type:
+          - string
+          - 'null'
+          description: Recorded product title, falling back to the current product title.
+        variant_title:
+          type:
+          - string
+          - 'null'
+          description: Customer-facing variant title.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: Variant stock keeping unit.
+        quantity:
+          type: integer
+          description: Ordered quantity.
+        unit_price:
+          type: string
+          description: Stored unit price in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        total:
+          type: string
+          description: Unit price multiplied by quantity in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        image_url:
+          type:
+          - string
+          - 'null'
+          description: Variant image URL, falling back to the product image.
+      required:
+      - id
+      - title
+      - variant_title
+      - sku
+      - quantity
+      - unit_price
+      - total
+      - image_url
+    Shipment:
+      type: object
+      description: Recorded tracking information; individual shipment status is not stored and is omitted.
+      additionalProperties: false
+      properties:
+        carrier:
+          type:
+          - string
+          - 'null'
+          description: Recorded shipping carrier.
+        tracking_number:
+          type:
+          - string
+          - 'null'
+          description: Carrier tracking number.
+        tracking_url:
+          type:
+          - string
+          - 'null'
+          description: Stored tracking URL, or a URL derived by the carrier integration.
+      required:
+      - carrier
+      - tracking_number
+      - tracking_url
+    OrderDetail:
+      type: object
+      description: >-
+        Accessible order detail. Credited-only orders omit buyer contact fields until a visibility policy is available.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order identifier.
+          format: uuid
+        number:
+          type:
+          - string
+          - 'null'
+          description: Human-readable order number, or null for an unnumbered historical order.
+        relationship:
+          type: string
+          description: >-
+            Own purchases are placed; other orders credited to this member are credited. Placed wins when both apply,
+            including with the credited filter.
+          enum:
+          - placed
+          - credited
+        status:
+          type: string
+          description: Current order lifecycle state.
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+        financial_status:
+          type: string
+          description: Current payment state.
+          enum:
+          - pending
+          - authorized
+          - partially_paid
+          - paid
+          - refund_pending
+          - partially_refunded
+          - refunded
+          - voided
+          - marked_free
+          - marked_paid
+        fulfillment_status:
+          type: string
+          description: Overall order fulfillment state.
+          enum:
+          - unfulfilled
+          - in_progress
+          - on_hold
+          - partially_fulfilled
+          - scheduled
+          - fulfilled
+        placed_at:
+          type: string
+          description: Sale time, falling back to creation time for historical orders.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for all amounts in this order.
+          example: USD
+        total:
+          type: string
+          description: Order total in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        customer:
+          type: object
+          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          additionalProperties: false
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+              description: Native member identifier; null for orders linked only through legacy customer metadata.
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+              description: Purchaser name recorded on the order.
+          required:
+          - id
+          - name
+        volume:
+          type: object
+          description: Commissionable and qualifying volume, omitted when the company hides customer-facing volume.
+          additionalProperties: false
+          properties:
+            cv:
+              type:
+              - string
+              - 'null'
+              description: Commissionable volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            qv:
+              type:
+              - string
+              - 'null'
+              description: Qualifying volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - cv
+          - qv
+        line_items:
+          type: array
+          description: Order lines, loaded only on the detail endpoint.
+          items:
+            "$ref": "#/components/schemas/LineItem"
+        email:
+          type:
+          - string
+          - 'null'
+          description: Recorded purchaser email; present only for an own purchase.
+        phone:
+          type:
+          - string
+          - 'null'
+          description: Recorded purchaser phone; present only for an own purchase.
+        shipping_address:
+          description: Shipping address or null; omitted for credited-only orders.
+          oneOf:
+          - "$ref": "#/components/schemas/Address"
+          - type: 'null'
+        billing_address:
+          description: Billing address or null; omitted for credited-only orders.
+          oneOf:
+          - "$ref": "#/components/schemas/Address"
+          - type: 'null'
+        shipments:
+          type: array
+          description: Recorded shipment tracking information.
+          items:
+            "$ref": "#/components/schemas/Shipment"
+        totals:
+          type: object
+          description: Order amounts in the enclosing order currency.
+          additionalProperties: false
+          properties:
+            subtotal:
+              type: string
+              description: Order subtotal in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            shipping:
+              type: string
+              description: Order shipping in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            tax:
+              type: string
+              description: Order tax in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            discount:
+              type: string
+              description: Order discount in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            total:
+              type: string
+              description: Order total in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - subtotal
+          - shipping
+          - tax
+          - discount
+          - total
+      required:
+      - id
+      - number
+      - relationship
+      - status
+      - financial_status
+      - fulfillment_status
+      - placed_at
+      - currency
+      - total
+      - line_items
+      - shipments
+      - totals
+    OrderEnvelope:
+      type: object
+      description: One accessible order.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          "$ref": "#/components/schemas/OrderDetail"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    OrdersEnvelope:
+      type: object
+      description: A page of orders.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          type: array
+          description: Matching orders on this page.
+          items:
+            "$ref": "#/components/schemas/Order"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+paths:
+  "/api/member/v2026-10/orders":
+    get:
+      operationId: member_orders_index
+      x-fluid-audience: member
+      tags:
+      - orders
+      summary: List the signed-in member's orders
+      description: >-
+        Returns own purchases and volume-credited orders, newest effective sale time first, with internal ID as
+        the stable tie breaker. Orders merely bought on someone else’s behalf are excluded unless independently
+        owned or credited. Filters apply before pagination. Only page[cursor] and page[limit] pagination is supported;
+        undeclared query parameters are refused. Responses are private and must be revalidated.
+      parameters:
+      - name: filter[relationship]
+        in: query
+        description: Select own purchases or volume-credited orders. Omit for their deduplicated union.
+        schema:
+          type: string
+          enum:
+          - placed
+          - credited
+      - name: filter[status]
+        in: query
+        description: Match the order lifecycle state.
+        schema:
+          type: string
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+      - name: filter[placed_since]
+        in: query
+        description: Include orders placed at or after this timestamp.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[placed_until]
+        in: query
+        description: Include orders placed at or before this timestamp; must not precede placed_since.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[contact_id]
+        in: query
+        description: Match a contact UUID within the current company; never widens the member scope.
+        schema:
+          type: string
+          format: uuid
+      - name: page[cursor]
+        in: query
+        description: >-
+          Encrypted next-page cursor, valid for three days. Changing filters or member ownership restarts at the first
+          page.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum number of orders returned.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A deduplicated page of accessible orders.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrdersEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 0192f5a1-3b4c-7d5e-8f6a-7b8c9d0e1f23
+                  number: DM-104821
+                  relationship: placed
+                  status: completed
+                  financial_status: paid
+                  fulfillment_status: fulfilled
+                  placed_at: '2026-09-18T14:22:05.000000Z'
+                  currency: USD
+                  total: '89.97'
+                  customer:
+                    id: 0192f3a8-5c1e-7d42-9b6a-3e8f1c2d4a57
+                    name: Dwight Schrute
+                  volume:
+                    cv: '74.97'
+                    qv: '74.97'
+                - id: 0192f5a0-2a3b-7c4d-9e5f-6a7b8c9d0e12
+                  number: DM-104790
+                  relationship: credited
+                  status: processing
+                  financial_status: paid
+                  fulfillment_status: unfulfilled
+                  placed_at: '2026-09-15T10:05:41.000000Z'
+                  currency: USD
+                  total: '45.98'
+                  volume:
+                    cv: '39.98'
+                    qv: '39.98'
+                meta:
+                  request_uuid: 0192f4cb-9fa0-7b12-83d4-e5f6a7b8c9d0
+                  timestamp: '2026-09-30T15:14:30Z'
+                  pagination:
+                    next_cursor: null
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered or expired cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter or invalid filter/page value.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/orders/{id}":
+    get:
+      operationId: member_orders_show
+      x-fluid-audience: member
+      tags:
+      - orders
+      summary: Show one accessible order
+      description: >-
+        Returns an own purchase or volume-credited order within the credential’s company. Credited-only orders omit
+        email, phone and billing/shipping addresses. Authentication runs before conditional cache handling. Responses
+        are private with a 30-second freshness lifetime.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: External order UUID.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The accessible order and its detail.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderEnvelope"
+              example:
+                status: 200
+                data:
+                  id: 0192f5a1-3b4c-7d5e-8f6a-7b8c9d0e1f23
+                  number: DM-104821
+                  relationship: placed
+                  status: completed
+                  financial_status: paid
+                  fulfillment_status: fulfilled
+                  placed_at: '2026-09-18T14:22:05.000000Z'
+                  currency: USD
+                  total: '89.97'
+                  customer:
+                    id: 0192f3a8-5c1e-7d42-9b6a-3e8f1c2d4a57
+                    name: Dwight Schrute
+                  volume:
+                    cv: '74.97'
+                    qv: '74.97'
+                  line_items:
+                  - id: 0192f5a1-4c5d-7e6f-9a7b-8c9d0e1f2a34
+                    title: Dunder Mifflin Premium Copy Paper
+                    variant_title: Letter, 10 reams
+                    sku: DM-PAPER-LTR-10
+                    quantity: 1
+                    unit_price: '74.97'
+                    total: '74.97'
+                    image_url: https://cdn.fluid.app/products/dunder-mifflin/premium-copy-paper.jpg
+                  email: dwight.schrute@dundermifflin.com
+                  phone: '+15705550142'
+                  shipping_address:
+                    name: Dwight Schrute
+                    address1: Schrute Farms
+                    address2: 1725 Slough Avenue
+                    city: Scranton
+                    state: PA
+                    postal_code: '18505'
+                    country_code: US
+                    phone: '+15705550142'
+                  billing_address:
+                    name: Dwight Schrute
+                    address1: 1725 Slough Avenue
+                    address2: null
+                    city: Scranton
+                    state: PA
+                    postal_code: '18505'
+                    country_code: US
+                    phone: '+15705550142'
+                  shipments:
+                  - carrier: UPS
+                    tracking_number: 1Z999AA10123456784
+                    tracking_url: https://www.ups.com/track?tracknum=1Z999AA10123456784
+                  totals:
+                    subtotal: '74.97'
+                    shipping: '9.95'
+                    tax: '5.05'
+                    discount: '0.00'
+                    total: '89.97'
+                meta:
+                  request_uuid: 0192f4cc-a0b1-7c23-94e5-f6a7b8c9d0e1
+                  timestamp: '2026-09-30T15:15:02Z'
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing order, malformed identifier, or order outside the member and company scope.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"

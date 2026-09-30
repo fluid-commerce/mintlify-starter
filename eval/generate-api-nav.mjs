@@ -71,11 +71,12 @@ export function collectOperations(specName, spec) {
 }
 
 // Public: The URL slug Mintlify gives an operation's page: its first tag and its
-// summary, lowercased, apostrophes dropped, other runs collapsed to hyphens, under
+// summary, lowercased, straight apostrophes dropped (Mintlify keeps curly ones),
+// other runs collapsed to hyphens, under
 // the spec's output directory when it has one.
 export function pageSlug(op, config) {
   const slug = (s) =>
-    s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    s.toLowerCase().replace(/'/g, "").replace(/[^a-z0-9\u2019]+/g, "-").replace(/^-+|-+$/g, "");
   const dir = config.specs?.[op.spec]?.openapi?.directory;
   const prefix = dir ? dir.replace(/^api-reference\/?/, "") + "/" : "";
   return `${prefix}${slug(op.tag)}/${slug(op.summary)}`;
