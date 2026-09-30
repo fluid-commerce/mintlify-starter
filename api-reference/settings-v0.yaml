@@ -407,13 +407,14 @@ components:
         One purchase of credits: what was paid, what it granted, and where its
         money stands. succeeded means the credits were granted; processing
         means the payment is still settling.
-      required: [id, origin, status, instrument_type, failure_message, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
+      required: [id, origin, status, instrument_type, failure_message, invoice_available, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
       properties:
         id: { type: integer }
         origin: { type: string, enum: [manual, auto_reload] }
         status: { type: string, enum: [pending, processing, succeeded, failed, refunded, reversed] }
         instrument_type: { type: string, enum: [card, us_bank_account] }
         failure_message: { type: [string, "null"], description: Why the payment failed, for a failed purchase. }
+        invoice_available: { type: boolean, description: "Whether the purchase has a paid Stripe invoice to open; GET /api/settings/billing/credits/purchases/{id}/invoice returns its link." }
         amount_cents: { type: integer, minimum: 1, description: What was paid, in cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100 }
         bonus_cents: { type: integer, minimum: 0 }
@@ -450,7 +451,7 @@ components:
         bank has not settled it yet; a bank debit usually settles in four
         business days. returned means the bank took the money back after it
         settled.
-      required: [id, status, amount_cents, currency_code, instrument_type, invoice_numbers, refunded_cents, submitted_at, settled_at, failed_at, recovered_at]
+      required: [id, status, amount_cents, currency_code, instrument_type, invoice_numbers, invoice_available, refunded_cents, submitted_at, settled_at, failed_at, recovered_at]
       properties:
         id: { type: integer, description: The pull's id. }
         status: { type: string, enum: [submitted, settled, failed, returned, refunded, requires_action], description: Where the pull's money stands. }
@@ -461,11 +462,23 @@ components:
           type: [array, "null"]
           description: The issued invoices whose fees the pull was for, whether or not it settled. Empty while its period is not yet invoiced; null when Fluid has no record of which fees the pull was for.
           items: { type: string }
+        invoice_available: { type: boolean, description: "Whether the pull has a paid Stripe invoice to open; GET /api/settings/billing/payments/{id}/invoice returns its link." }
         refunded_cents: { type: integer, minimum: 0, description: "What completed refunds gave back of this pull, in cents. A refunded pull keeps status settled; this says how much of it came back." }
         submitted_at: { type: string, format: date-time, description: When the pull was sent to the bank. }
         settled_at: { type: [string, "null"], format: date-time, description: When the bank settled it, or null. }
         failed_at: { type: [string, "null"], format: date-time, description: When it failed or came back, or null. }
         recovered_at: { type: [string, "null"], format: date-time, description: For a returned pull, when a won dispute gave the money back; otherwise null. }
+    BillingChargeInvoiceResponse:
+      type: object
+      description: Where to read the Stripe invoice of one charge. Stripe's links expire, so they are fetched when asked for and never stored.
+      required: [invoice]
+      properties:
+        invoice:
+          type: object
+          required: [url, pdf_url]
+          properties:
+            url: { type: string, description: The hosted invoice page on invoice.stripe.com. }
+            pdf_url: { type: [string, "null"], description: The invoice as a PDF, or null when Stripe has none. }
     BillingPaymentsResponse:
       type: object
       description: One page of pulls, newest first.
@@ -3607,6 +3620,65 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/billing/payments/{id}/invoice":
+    get:
+      summary: Get the Stripe invoice link of a payment
+      description: >-
+        The link to the Stripe-hosted invoice page, and its PDF, for one pull from the authenticated company's bank account or card. Stripe's links expire, so each call fetches a fresh one; open it straight away. A pull has an invoice once its payment is paid in Stripe, which the payment's invoice_available says. Reading changes nothing.
+      tags:
+      - billing
+      x-fluid-lint-exempt: "Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions."
+      x-fluid-audience: company
+      operationId: settings_v0_get_billing_payment_invoice
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The pull's id.
+        schema: { type: integer }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BillingChargeInvoiceResponse"
+              example:
+                invoice:
+                  url: https://invoice.stripe.com/i/acct_1MExQ9BjIQrRQnux/live_YWNjdF8xTUV4UTlCaklRclJRbnV4
+                  pdf_url: https://pay.stripe.com/invoice/acct_1MExQ9BjIQrRQnux/live_YWNjdF8xTUV4UTlCaklRclJRbnV4/pdf
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing billing.view permission, not an admin, or a Droplet token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such payment for the company, or it has no paid invoice yet
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '502':
+          description: Stripe refused the request or failed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '503':
+          description: Stripe is not configured for the charge's mode
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/settings/billing/usage-controls":
     get:
       summary: Show the company's spend limits
@@ -4134,6 +4206,7 @@ paths:
                   status: succeeded
                   instrument_type: card
                   failure_message: null
+                  invoice_available: true
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4148,6 +4221,7 @@ paths:
                   status: succeeded
                   instrument_type: card
                   failure_message: null
+                  invoice_available: false
                   amount_cents: 20000
                   bonus_percent: 0
                   bonus_cents: 0
@@ -4232,6 +4306,7 @@ paths:
                   status: succeeded
                   instrument_type: card
                   failure_message: null
+                  invoice_available: false
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4260,6 +4335,7 @@ paths:
                   status: succeeded
                   instrument_type: card
                   failure_message: null
+                  invoice_available: false
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4304,6 +4380,65 @@ paths:
             Payments are unavailable. A new purchase was not charged; a retry
             of a purchase already sent stays pending, so keep its purchase_key
             and check the purchase before buying again
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/billing/credits/purchases/{id}/invoice":
+    get:
+      summary: Get the Stripe invoice link of a credit purchase
+      description: >-
+        The link to the Stripe-hosted invoice page, and its PDF, for one credit purchase of the authenticated company. Stripe's links expire, so each call fetches a fresh one; open it straight away. A purchase has an invoice once its payment is paid in Stripe, which the purchase's invoice_available says. Reading changes nothing.
+      tags:
+      - billing
+      x-fluid-lint-exempt: "Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions."
+      x-fluid-audience: company
+      operationId: settings_v0_get_billing_credit_purchase_invoice
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The credit purchase's id.
+        schema: { type: integer }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BillingChargeInvoiceResponse"
+              example:
+                invoice:
+                  url: https://invoice.stripe.com/i/acct_1MExQ9BjIQrRQnux/live_YWNjdF8xTUV4UTlCaklRclJRbnV4
+                  pdf_url: https://pay.stripe.com/invoice/acct_1MExQ9BjIQrRQnux/live_YWNjdF8xTUV4UTlCaklRclJRbnV4/pdf
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing billing.view permission, not an admin, or a Droplet token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such purchase for the company, or it has no paid invoice yet
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '502':
+          description: Stripe refused the request or failed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '503':
+          description: Stripe is not configured for the charge's mode
           content:
             application/json:
               schema:
