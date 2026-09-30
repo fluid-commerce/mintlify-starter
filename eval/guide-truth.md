@@ -1367,6 +1367,17 @@ navigated pages rather than approximate redirects:
   The temporary `/docs/openapi/forms-v0` redirect now lands on this successor page
   instead of the generic API overview.
 
+### Reversed 2026-09-28 — `/api/public/forms` removed
+
+The `/api/public/forms` page was deleted on request, and its entry was removed from
+`eval/advertised-docs-links.json` and from `docs.json` navigation. `/docs/openapi/forms-v0`
+redirects to `/api/overview` again. No redirect replaces `/api/public/forms`, for the reason
+above: an approximate successor-version target is worse than its 404.
+
+Known consequence: the sunset form-by-ID response still emits `/api/public/forms` in its
+`Link: rel="successor-version"` header, so that header resolves to a 404 until the emitter
+changes. Do not restore the page or add a redirect without a decision recorded here.
+
 ### Runtime docs URLs are registered contracts
 
 `eval/advertised-docs-links.json` is the registry for URLs emitted to third parties by
@@ -1994,3 +2005,175 @@ The example rejects invalid signatures before parsing or accessing member data.
 It intentionally leaves operation validation and member authorization to the
 application, as described immediately below. No signature format, request
 envelope or SDK API is added by this documentation change.
+
+## Storefront guides — resource-generic restructure (2026-09-29)
+
+The five storefront pilot guides under `api/guides/` (find-and-create
+categories/collections, rename-publish-and-schedule, country-availability,
+category-hierarchy, translate-resources) were retired and replaced by a
+**Storefront guides** group in the Documentation tab (`storefront/*.mdx`). The new
+guides describe all eight v2026-04 storefront resources generically and split out
+only what is resource-specific (`storefront/resources.mdx`,
+`storefront/category-hierarchy.mdx`). Their 304 claims were removed and the new guides
+were re-extracted blind under `sf-*` prefixes. The old URLs redirect
+(`permanent: false`) to their nearest replacements.
+
+Behavior was re-verified against the Rails implementation on `origin/main`
+(`eaaf49469a`). Four earlier guide statements were wrong there and are superseded — do
+not restore them:
+
+- **Public show is looser than public list for every resource.** Lists return live rows
+  only. Show-by-slug also returns draft, scheduled-before-`publish_at`, and inactive rows,
+  with `seo.indexable: false`. Show returns `404` only for archived or deleted rows
+  (products, categories, collections, posts) or deleted rows (pages, media, playlists,
+  enrollment packs, which have no archived state). The earlier "a non-live category
+  returns 404 on its public slug" is wrong. So is the overview's "404 for non-public
+  resources". Integration tests pin the looser behavior.
+- **Renaming does not regenerate an existing slug** — except on pages, whose slug follows
+  the title unless `custom_slug: true`. The earlier "an auto-generated slug regenerates on
+  every title change" is wrong for every other resource.
+- **An unsupported `lang` is ignored on reads.** Only writes return `422`. A missing
+  translation falls back to its `en` value.
+- **SEO nested writes replace without `id`.** The SEO association accepts nested
+  attributes without `update_only`, so `search_engine_optimizer_attributes` sent without
+  the record's `id` builds a replacement record, and omitted fields reset. The SEO guide
+  tells integrators to send `seo.id`.
+
+The published `storefront-v2026-04` prose repeated the first two errors, and two
+company `.../products` operations lacked `security`. Corrections are staged upstream on
+the `docs/openapi-api-host-servers-main` branch. Until they sync, generated pages may
+still show the old wording; the guides follow the implementation.
+
+`api/agent-signup.mdx` sits in the API Reference **Overview** group beside
+`api/overview.mdx` and `api/authentication.mdx`. Like those pages, it is not in the
+registry. It documents `POST /api/company` (`company-v0`, unauthenticated). It
+deliberately omits bot-protection field names, rate-limit numbers, and the per-recipient
+confirmation window: they help an abuser, not an integrator. The upstream spec entry for
+that operation is being tightened in the same branch.
+
+### Storefront guides — metafields and FairShare SDK (2026-09-29)
+
+Two guides were added to the storefront group, `storefront/metafields.mdx` and
+`storefront/fairshare-sdk.mdx`, and verified against `origin/main` of the Rails
+monorepo and of `fluid-fairshare`. Durable decisions:
+
+- **Metafield writes follow one contract on six resources.** On categories, posts, pages,
+  media, playlists, and enrollment packs, `metafields_attributes` upserts by
+  `namespace` + `key`. Sending nothing, or `[]`, changes nothing. `_destroy: true` still
+  requires `value` and `value_type`. **Collections** and **products** don't follow that
+  contract on v2026-04: collection writes fail, and product writes can only add. The guide
+  states this as a current limitation. Don't document `id`-based metafield updates —
+  stored metafields have no `id`.
+- **A product translation PATCH is not text-only.** It applies every field sent. The
+  other seven resources are text-only. The translations guide and the upstream spec now
+  say so.
+- **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
+  can double-fire declarative add-to-cart.
+- **Attribution comes from the page URL** and attaches to the cart **at creation**. Item
+  adds don't re-attribute, so a cart created on `/home/...` stays uncredited.
+  `data-*` overrides are first-present, not first-valid, and are remembered in browser
+  storage. The server looks `data-share-guid` up as a **username**, so UUID examples
+  were removed from the SDK pages.
+- **The media widget is broader than the public list.** It renders any non-deleted medium
+  or playlist by id or slug, including drafts and restricted media.
+
+Corrections made to unregistered pages in the same change: `sdk/overview.mdx`,
+`sdk/installation.mdx`, `sdk/cart-api.mdx` (opening the cart after an add is the
+default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.mdx`
+(`/search` is not a page; the playlist and enrollment index routes redirect and drop the
+credit; product detail is by slug).
+
+## API Reference sidebar — generated sections (2026-09-29)
+
+The API Reference tab is organized into sections that mirror Fluid Admin (Storefront,
+Commerce, Checkout, Members, People, Payments, Website, Content and tools, Analytics,
+Settings, DAM, FairShare SDK, Developers) rather than one group per spec.
+`eval/generate-api-nav.mjs` builds those groups from the synced specs using the ordered
+rules in `.github/api-reference-nav.json`. The hourly sync reruns it with every spec
+change, and `validate.yml` fails a PR whose `docs.json` doesn't match. Change placement
+in the rules file, never in `docs.json`. The groups `Overview` and `Portal & Widgets`
+stay hand-edited.
+
+- **URLs are unchanged.** Each endpoint's page URL is still derived from its tag and
+  summary. Before and after the switch, the same 691 pages loaded. `company-v0` pages
+  keep their `/api-reference/company-v0/` prefix because they are referenced from a
+  group that carries the spec's `directory` setting — the "Legacy (v0)" child group.
+  A file-prefixed reference would drop the prefix.
+- **Placement rules.** Every `/api/checkout/` endpoint goes in Checkout, including the
+  shopper's own account, subscriptions, and directory. Members holds only the
+  member-called `/api/member/` routes (identity, memberships, team). Company-side member
+  administration — member management, member types, genealogy trees, and the legacy rep
+  endpoints — goes in People, under "Members". Say "members", not "reps", in section and
+  group names.
+- **Duplicate tag+summary pairs share one URL.** Mintlify fails the build when two
+  sidebar entries resolve to the same page, so the generator keeps the first and warns.
+  Upstream fixes are staged on `docs/openapi-api-host-servers-main`:
+  - The seven storefront Lighthouse and compliance summaries per resource.
+  - The Public SDK "Flag a cart as enrollment eligible" summary.
+  - The media watch GET summary.
+  - The member move-job read summary.
+- **Follow-up when those fixes sync.** Add `permanent: false` redirects from
+  `/api-reference/company/{latest-lighthouse-result,trigger-a-lighthouse-scan,
+  latest-compliance-result,trigger-a-compliance-scan}` to their `-for-a-category`
+  successors. Those were the pages that existed before.
+- **Unsorted endpoints.** An operation no rule places is published under
+  "Unsorted endpoints" with a warning. Add a rule rather than leaving it there.
+- **Member APIs.** `member-people-v2026-10` and `genealogy-v2026-10` are now synced.
+  `api/member-apis.mdx` explains them. Member-type CRUD (`/api/v2025-06/member-types`)
+  is being moved upstream from the unsynced admin spec into `members-v2025-06`, and a
+  rule places it under People → Member types.
+- **DAM** has one hand-written page, `api/dam-upload.mdx`, for
+  `POST https://upload.fluid.app/upload`. The upload service has no OpenAPI spec, so
+  this is a deliberate exception to "no hand-written per-endpoint contracts" until one
+  is published. The page covers only server-side multipart file uploads with company or
+  partner tokens. URL import is left out until its SSRF fix ships. The raw DAM asset
+  endpoints are excluded from the sidebar.
+
+### Settings and admin specs synced (2026-09-30)
+
+`settings-v0` and `admin-v2025-06` were added to the sync so that the API reference
+covers the admin's Settings pages and the admin-only resources: brand guidelines,
+checkout settings, countries, warehouses, promo codes (`discounts`), shipping methods,
+sitemap, points, price types, sales channels, and tokens. A scoped `AGENTS.md` exception
+covers the generated `admin-v2025-06` and `members-v2025-06` pages. The admin spec's
+superseded storefront operations, its Lighthouse and compliance scans, and its
+rep-facing `users` API are excluded by `.github/api-reference-nav.json`. Upstream, on the
+same Fluid branch:
+
+- Both specs lose the `{company}.fluid.app` server.
+- Ten duplicate admin summaries are renamed: shipping methods and rates, the `PUT`
+  aliases, company email settings, and the company subscription list.
+- Member types are removed from the admin spec, now that they live in
+  `members-v2025-06`.
+
+### Unpublished groups, Messaging, Events, and My Site (2026-09-30)
+
+- **Unpublished on request.** These are excluded in `.github/api-reference-nav.json`,
+  not merely hidden, so the site builds no page for them:
+  - leads and visitors;
+  - the auth spec's authentication, single sign-on, social sign-in, and token-exchange
+    operations (multi-factor authentication stays);
+  - trainings, announcements, widgets, explore and pins, comments, and notifications;
+  - shop;
+  - Checkout's member directory (`/reps`, `/users`).
+
+  The `docs.json` AI instructions no longer describe them. They still exist in the
+  published specs on the GCS mirror, which Fluid owns.
+- **Messaging** is a section of its own and holds company messaging only.
+  - `messaging-v1` (`/api/v1/messaging`) is a signed-in user's inbox on a banned legacy
+    path, so it isn't published.
+  - `internal/member-storefront-messaging-v0` is internal, cookie-authenticated, and
+    doesn't parse.
+  - Member messaging waits for a member-API messaging resource.
+- **Events.** The calendar events CRUD (`/api/company/events`) is documented in
+  `webhooks-v0` under the `company-events` tag. It is placed under Content and tools →
+  Events, not Settings. Moving it to a content spec upstream would be cleaner.
+- **My Site** (Website) holds company-side My Site management only:
+  - the company default My Site (`content-v0`);
+  - My Site themes (`themes-v0`);
+  - a member's links (`/api/users/{user_id}/links`, users permission).
+
+  Those two specs are synced but publish only these operations. The member's own
+  `/api/mysite` settings are excluded. `POST /api/user_companies/{company_id}/
+  replace_with_default_mysite` exists in routes but has no spec, so it needs one upstream
+  before it can appear.

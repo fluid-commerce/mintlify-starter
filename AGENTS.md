@@ -1,8 +1,8 @@
 # Documentation project instructions
 
-## Guide truth gate (read before editing `api/guides/` or `api-reference/`)
+## Guide truth gate (read before editing `api/guides/`, `storefront/`, or `api-reference/`)
 
-The task guides in `api/guides/*.mdx` are bound to a claims registry
+The guides listed in the registry's `guides` array — including `api/guides/*.mdx` and `storefront/*.mdx` — are bound to a claims registry
 (`eval/guide-claims.json`) enforced by a deterministic checker in CI
 (`eval/check-guide-claims.mjs`). Editing a guide without updating the registry — or
 vice versa — fails CI. Read `eval/guide-truth.md` first: it defines the claim
@@ -64,7 +64,8 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
   - Passing `page[cursor]` to any of them returns **422** with `errors: {page: ["must be an integer"]}`, not page 1. Request params are validated by a Dry schema before the query runs, so the cursor form fails loudly rather than being silently ignored. This is safe behaviour and worth stating so the question is not re-litigated.
   - Default page sizes differ per operation — 25 for subscriptions, 50 for users, 10 for customer payment methods. State the default per operation; there is no surface-wide default.
   - `list_customer_orders` is cursor-paginated but its response meta also emits `per_page`, `current_page`, and `total_pages` next to the cursors, and `current_page` is hardcoded to `1` upstream. Never present those three as working offset controls on that endpoint.
-- Auth wording: "Bearer token" (`Authorization: Bearer <token>`). Integrator token types are company API tokens, partner tokens, and public (`pub-`) tokens.
+- The member API and genealogy use a newer version, `v2026-10`, with the version after the surface in the path: `/api/member/v2026-10/...` and `/api/company/v2026-10/genealogy/...`. Write both forms exactly as the path shows; don't convert them to the `/api/v202604/` style.
+- Auth wording: "Bearer token" (`Authorization: Bearer <token>`). Integrator token types are company API tokens, partner tokens, public (`pub-`) tokens, and droplet installation (`dit_`) tokens.
 - Banned legacy references in docs content: `company/v1`, `/api/v1/`, `v2025-06` / `v202506`. Four exceptions, each tied to a named surface or an exact generated boundary, each scoped explicitly — an exception to one is not an exception to another:
   - **`/api/v2025-06/tokens/*`** — partner/public token-management endpoints genuinely live there and may be documented as such until a newer surface ships. Scoped to that path prefix on the admin/partner `api/v2025-06` surface (owned by `admin-v2025-06.yaml`, unsynced) and to nothing else. It says nothing about the unrelated `public/v2025-06` surface below.
   - **`webhooks-v0`** — a genuine `v0` API (not legacy `v1`) whose list endpoints use offset `page` / `per_page` pagination; its auto-generated reference reflects the spec. This covers the synced reference only — hand-written prose must still use cursor-pagination language and must not introduce `page` / `per_page` / `offset` terms.
@@ -75,6 +76,8 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
     - **The version label names the spec, not a path prefix.** 18 of its 67 paths sit outside `/api/public/v2025-06`: 12 `/api/v202506/carts/*` payment-gateway callbacks, three `/api/public/health*`, plus `/api/carts/{cart_token}/update_cart_items_prices`, `/api/public/drop_zones`, and `/api/public/leaderboards/countries`. So the exception covers **this spec's operations**, and covers `v202506` as well as `v2025-06`; scoping it to one literal prefix would be wrong.
 
     Do not conflate this with the tokens exception. `api/v2025-06` (admin/partner) and `public/v2025-06` (SDK) are different surfaces owned by different specs that happen to share a version label. This exception covers only the latter and widens nothing about the former.
+  - **`admin-v2025-06` and `members-v2025-06` generated references** — Fluid's current admin API for resources with no newer version (promo codes, shipping methods, sitemap, points, price types, sales channels, API and partner tokens, member management, member types, and more). They are synced so those resources appear in the API reference. The exception covers the **generated reference pages only**: hand-written prose must not introduce `v2025-06` / `v202506` paths or labels beyond the tokens exception above; link to the generated page instead. The admin spec's operations that newer APIs supersede (the storefront resources, Lighthouse and compliance scans) and its rep-facing `users` API are excluded from the sidebar in `.github/api-reference-nav.json`.
+  - **`messaging-v1` generated reference** — Fluid's messaging API genuinely lives at `/api/v1/messaging/*` (channels, messages, drafts, scheduled messages, recipients, bots) and has no newer version. It is synced so the Messaging section is complete. The exception covers the **generated reference pages only**, and only `/api/v1/messaging/*`; it is not an exception for any other `/api/v1/` path, and hand-written prose must not introduce `/api/v1/` paths — link to the generated page instead.
   - **Checkout's reciprocal generated-reference boundary** — `checkout-v2026-04`'s `info.description` correctly says that the FairShare SDK calls the Fluid Public SDK API (`public-v2025-06`). Permit only that exact sentence when the same generated operation page carries a contract line proving it comes from `api-reference/checkout-v2026-04.yaml` at an `/api/checkout/v2026-04/*` path. This is an occurrence-level exception, not a page or tag sanction: another `v2025-06` / `v202506` marker on the same Checkout page must still fail.
 
 ## Style preferences
