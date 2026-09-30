@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.1"
+  version: "1.2"
 ---
 
 # Fluid
@@ -27,6 +27,33 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
 | Call the REST API | https://docs.fluid.app/api/overview, then the task guides under https://docs.fluid.app/api/guides |
 
+## Names that differ
+
+Customers use industry words for things Fluid names differently. Search the docs and the API with Fluid's name.
+
+| Someone says | Fluid calls it | Start here |
+| --- | --- | --- |
+| Promo code, coupon | Discount | `/api/v2025-06/discounts` |
+| Autoship | Subscription | `/api/v2025-06/subscriptions` |
+| Starter kit | Enrollment pack | `/api/enrollment_packs` |
+| Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
+| Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
+| Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
+| Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...` |
+
+## Use the current endpoint
+
+Some areas have more than one generation of endpoints, and search can rank an older one first.
+
+- **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
+- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
+
+## Platform pitfalls
+
+- **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
+- **Checkout is a separate app.** A theme renders the storefront and cart; nothing in it can change checkout.
+- **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`): https://docs.fluid.app/themes/common-pitfalls
+
 ## REST API conventions
 
 - **Hosts:** company endpoints use `https://api.fluid.app`, where the token identifies the company. Public storefront endpoints use `https://{company}.fluid.app`.
@@ -38,10 +65,11 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 
 ## FairShare SDK
 
-Install with one script tag. `data-fluid-shop` is the only required attribute:
+On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is the only required attribute, and the script must keep `type="module"`. Fluid storefront themes already load it, so don't add it there.
 
 ```html
 <script
+  type="module"
   id="fluid-cdn-script"
   src="https://assets.fluid.app/scripts/fluid-sdk/latest/web-widgets/index.js"
   data-fluid-shop="your-shop-id"
