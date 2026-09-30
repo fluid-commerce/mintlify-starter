@@ -110,6 +110,16 @@ components:
       scheme: bearer
       description: Bearer token authentication
   responses:
+    PaymentInProgressError:
+      description: |
+        A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+        cart refuses writes until the charge resolves (`meta.code` =
+        `payment_in_progress`). The provider collects the amount the charge
+        opened with, and the order is built from this cart when it does.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
     ProcessedCartResponse:
       description: >-
         The cart is locked and can no longer be modified. Cart-mutation endpoints
@@ -123,6 +133,80 @@ components:
           schema:
             "$ref": "#/components/schemas/LockedCartErrorResponse"
   schemas:
+    CartPaymentStillOpenResponse:
+      description: |
+        The redirect payment is still open at the provider, so the cart stays
+        locked until the provider resolves it (CURRENT-3992). `cart` is the
+        cart as it stands.
+      type: object
+      additionalProperties: false
+      required:
+      - cart
+      - meta
+      properties:
+        cart:
+          "$ref": "#/components/schemas/CartResponse/properties/cart"
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - payment_in_progress
+    PaymentInProgressErrorResponse:
+      description: |
+        409 envelope for a cart write refused while a redirect payment is
+        open at the provider (CURRENT-3992). `meta.cart` is the cart as it
+        stands, so the client can show the pending payment without a second
+        fetch.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - shop_url
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - payment_in_progress
+            shop_url:
+              type: string
+            cart:
+              "$ref": "#/components/schemas/CartResponse/properties/cart"
     Meta:
       type: object
       # ControllerAction#default_meta always emits both keys and every meta that
@@ -521,6 +605,8 @@ components:
           - enrollment_pack_id
           - enrollment_member_type
           - processed
+          - payment_in_progress
+          - payment_resume_url
           - email_marketing
           - sms_marketing
           - cv_total
@@ -693,6 +779,24 @@ components:
               description: |
                 `true` once the cart has been completed into an order. A processed
                 cart is locked — further mutations return `410`.
+            payment_in_progress:
+              type: boolean
+              description: |
+                `true` while a redirect payment (PPRO, dLocal, Citcon) is open at the
+                provider. Cart writes answer `409` with `meta.code` =
+                `payment_in_progress` until the charge resolves.
+            payment_resume_url:
+              type:
+              - string
+              - 'null'
+              description: |
+                Fluid's resume endpoint for the open payment
+                (`GET /api/checkout/v2026-04/carts/{cart_token}/payment/resume`), which
+                redirects the shopper to the provider page; the provider link itself can
+                carry a session credential and is never returned. The link carries a
+                short-lived token (one hour) minted for the shopper reading the cart, and
+                is absent from callback payloads. `null` when no payment is in progress or
+                the provider gave no page (a BLIK mandate is approved in the banking app).
             email_marketing:
               type: [boolean, 'null']
               description: Email marketing opt-in captured for the buyer; `null` when not asked.
@@ -6744,6 +6848,24 @@ components:
               - 'null'
             processed:
               type: boolean
+            payment_in_progress:
+              type: boolean
+              description: |
+                `true` while a redirect payment (PPRO, dLocal, Citcon) is open at the
+                provider. Cart writes answer `409` with `meta.code` =
+                `payment_in_progress` until the charge resolves.
+            payment_resume_url:
+              type:
+              - string
+              - 'null'
+              description: |
+                Fluid's resume endpoint for the open payment
+                (`GET /api/checkout/v2026-04/carts/{cart_token}/payment/resume`), which
+                redirects the shopper to the provider page; the provider link itself can
+                carry a session credential and is never returned. The link carries a
+                short-lived token (one hour) minted for the shopper reading the cart, and
+                is absent from callback payloads. `null` when no payment is in progress or
+                the provider gave no page (a BLIK mandate is approved in the banking app).
             product_discount_codes:
               type: array
               items:
@@ -10573,11 +10695,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
         '409':
-          description: Checkout holds the cart lock
+          description: Checkout holds the cart lock, or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`)
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                anyOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '410':
           description: The cart is frozen and refuses mutations
           content:
@@ -10627,6 +10751,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '422':
           description: The customer could not be detached from the cart.
           content:
@@ -10803,6 +10929,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           description: Verification code expired, or cart is processed or locked
           content:
@@ -10873,6 +11001,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -10936,6 +11066,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -10987,6 +11119,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '200':
@@ -11247,6 +11381,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '400':
           description: No cart items specified — `items` was present but empty.
           content:
@@ -11421,6 +11557,8 @@ paths:
         schema:
           type: integer
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -11496,6 +11634,8 @@ paths:
         schema:
           type: integer
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '422':
           description: The item could not be removed from the cart.
           content:
@@ -11533,6 +11673,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -11596,6 +11738,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '422':
           description: The points could not be removed, or the cart is in a state that forbids it.
           content:
@@ -11740,11 +11884,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
         '409':
-          description: Checkout holds the cart lock, or an enrollment claim is in progress
+          description: Checkout holds the cart lock, or an enrollment claim is in progress, or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`)
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                anyOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: Success
           content:
@@ -11822,6 +11968,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -12140,6 +12288,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -12174,6 +12324,103 @@ paths:
               required:
               - country_code
       security: []
+  "/api/checkout/v2026-04/carts/{cart_token}/payment":
+    delete:
+      summary: Cancel the open redirect payment
+      tags:
+      - carts
+      operationId: checkout_v2026_04_cancel_cart_payment
+      description: |
+        Gives up the redirect payment (PPRO, dLocal, Citcon) the shopper
+        abandoned, so the cart can be edited again. The cart only unlocks once
+        nothing is left payable at the provider: each open charge is voided at
+        its provider (PPRO discards it, dLocal and Citcon cancel it), and the
+        cart answers `200` once a status read confirms every charge is dead. A
+        charge the provider will not void, or has not confirmed dead, answers
+        `202` with the cart still locked (`meta.code` = `payment_in_progress`);
+        it unlocks when the provider resolves the charge. A cart with no payment
+        in progress answers `200`.
+        Access is scoped by the `cart_token` in the path. Returns `410` when
+        the cart is already completed or carries a charge.
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The cart is unlocked
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartResponse"
+        '202':
+          description: The payment is still open at the provider; the cart stays locked
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartPaymentStillOpenResponse"
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
+  "/api/checkout/v2026-04/carts/{cart_token}/payment/resume":
+    get:
+      summary: Return to the open redirect payment
+      tags:
+      - carts
+      operationId: checkout_v2026_04_resume_cart_payment
+      description: |
+        Redirects the shopper's browser to the provider page of the redirect
+        payment (PPRO, dLocal, Citcon) still open on the cart, so they can
+        finish it instead of opening a second one. This is the URL a cart's
+        `payment_resume_url` names: the provider page link can carry a
+        replayable session credential, so it is never returned in an API
+        response and only travels as this redirect. The link carries a
+        short-lived token (`t`) minted into the cart the shopper reads and
+        never into callback payloads, so holding a cart token alone does not
+        redeem the provider page. Returns `404` when no open payment has a
+        provider page to return to (none is open, or the method, such as a
+        BLIK mandate, is approved in the shopper's banking app), or when `t`
+        is missing, expired or not minted for this cart. Access is scoped by
+        the `cart_token` in the path. Returns `410` when the cart is already
+        completed or carries a charge.
+      parameters:
+      - name: cart_token
+        in: path
+        required: true
+        description: Cart token
+        schema:
+          type: string
+      - name: t
+        in: query
+        required: true
+        description: The short-lived resume token carried by the cart's `payment_resume_url`; valid for one hour.
+        schema:
+          type: string
+      responses:
+        '302':
+          description: Redirects to the provider page of the open payment
+          headers:
+            Location:
+              description: The provider page the shopper resumes the payment on.
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: The cart is not found, or no open payment has a provider page to return to
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          "$ref": "#/components/responses/ProcessedCartResponse"
   "/api/checkout/v2026-04/carts/{cart_token}/language":
     patch:
       summary: Update cart language
@@ -12197,6 +12444,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '400':
           description: The requested `language_iso` is not supported by this company.
           content:
@@ -12268,6 +12517,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -12344,6 +12595,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -12381,6 +12634,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
@@ -12442,6 +12697,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '403':
           description: The authenticated customer's company does not match the cart's company.
           content:
@@ -12496,6 +12753,8 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          "$ref": "#/components/responses/PaymentInProgressError"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '401':
