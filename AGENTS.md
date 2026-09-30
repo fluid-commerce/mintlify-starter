@@ -37,7 +37,7 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
   - Contact details come from `snippets/contact-support.mdx`: `import ContactSupport from "/snippets/contact-support.mdx"`, then `<ContactSupport />`. Never hard-code a support address.
   - Images go under `images/help/<area>/`. Never publish a screenshot that shows real customer data.
   - `introduction.mdx` is the site's landing page. It routes readers to each tab and sits first in the Help Center tab.
-- **Developer Platform**: quickstart, concepts, guides, SDKs, and Portal & Widgets. Put a new page in the matching existing folder.
+- **Developer Platform**: quickstart, concepts, guides, storefront guides (`storefront/**`), SDKs, and Portal & Widgets. Put a new page in the matching existing folder. Storefront guides are bound to the guide truth gate, like `api/guides/`.
 - **Themes** (`themes/**`): storefront theme development, including the member storefront.
 - **API Reference** (`api/**` and the generated `api-reference/**`): see the guide truth gate above.
 

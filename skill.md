@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.0"
+  version: "1.1"
 ---
 
 # Fluid
@@ -19,6 +19,8 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
 | Build a first integration | https://docs.fluid.app/quickstart |
+| Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
+| Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
@@ -28,11 +30,11 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 ## REST API conventions
 
 - **Hosts:** company endpoints use `https://api.fluid.app`, where the token identifies the company. Public storefront endpoints use `https://{company}.fluid.app`.
-- **Version:** the label is `v2026-04` in prose; the path segment is `/api/v202604/...`.
-- **Authentication:** send `Authorization: Bearer <token>`. Token types are company API tokens, partner tokens, and public tokens, which start with `pub-` and are for client-side use.
+- **Version:** the label is `v2026-04` in prose; the path segment is `/api/v202604/...`. The member API and genealogy use `v2026-10`, with the version after the surface: `/api/member/v2026-10/...` and `/api/company/v2026-10/...`. Write each path exactly as its page shows it.
+- **Authentication:** send `Authorization: Bearer <token>`. Token types are company API tokens, partner tokens, public tokens and droplet installation tokens. Public tokens start with `pub-` and are for client-side use. Droplet installation tokens start with `dit_` and let a droplet act for one company that installed it. Member APIs take the member's own credential as the Bearer token instead.
 - **Pagination:** lists use cursor pagination with `page[cursor]` and `page[limit]`. Follow `meta.pagination.next_cursor` until it's null. The generated reference names the few operations that paginate differently.
 - **Parameters and schemas:** read the generated API Reference page for the operation. Don't infer fields.
-- **Legacy paths:** never use `company/v1` or `/api/v1/` paths; no current docs cover them.
+- **Legacy paths:** never use `company/v1` paths, or `/api/v1/` paths outside messaging. The Messaging API is current at `/api/v1/messaging/*`; its operations are in the API Reference.
 
 ## FairShare SDK
 
