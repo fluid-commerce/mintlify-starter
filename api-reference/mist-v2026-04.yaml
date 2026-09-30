@@ -1,0 +1,1226 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Mist v2026-04 API
+  version: v2026-04
+  description: |
+    Mist is Fluid's lite cloud for hosting droplets, drop zones, and app
+    extensions. One API call provisions a GitHub repository, a Postgres
+    database, and a deployment behind a Fluid-hosted subdomain.
+
+    The Fluid CLI (`fluid mist ...`) is built on this API, and every
+    developer-facing Mist workflow is available through it. All endpoints
+    require a company admin Bearer token with the matching `mist.*`
+    permission.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+tags:
+- name: mists
+  description: |
+    Provision, list, inspect, rename, delete, and restore Mist apps.
+    Deleting a Mist starts a 15-day grace period during which it can be
+    restored.
+  x-fluid-section: Developers
+- name: mist_env_vars
+  description: |
+    Read and manage the environment variables on a Mist app's deployment
+    project. Variables that Mist provisions itself are listed but read-only.
+  x-fluid-section: Developers
+- name: mist_code
+  description: |
+    Read a Mist app's deployments and its runtime and build logs.
+  x-fluid-section: Developers
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Accepts company admin tokens with
+        the matching `mist.*` permission:
+          - `mist.view` to list and show Mists
+          - `mist.create` to create and rename Mists
+          - `mist.destroy` to delete and restore Mists
+          - `mist.code` for deployments and logs
+          - `mist.env_vars` to read and manage environment variables
+        Droplet installation tokens are refused.
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Unprocessable:
+      description: Business rule violation or vendor configuration error
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    PaymentRequired:
+      description: >-
+        Billing admission refused the operation before any vendor allocation. error.details carries
+        the shared billing_unresolved details (tier, state, episode_id, condition_id, eligible_since,
+        recovery_path); nothing names a bank account, a waiver, or an actor.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: >-
+        The create collides with earlier work. error.details.reason is duplicate_recent_create
+        (a same-name hosting inside the duplicate-guard window), operation_in_progress (an identical
+        request under this operation key was admitted and has not finished), operation_completed (an
+        identical create under the client's operation key already completed; error.details.provider_reference
+        names the hosting it recorded), operation_uncertain (an identical create started, its outcome is
+        unknown, and a hosting it may have allocated still exists), or operation_conflict (the operation
+        key already admits a different request).
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: >-
+        Billing admission could not be recorded, so nothing was allocated. This is not a refusal;
+        error.details.reason is admission_unavailable and the create may be retried.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: Upstream vendor (GitHub / Neon / Vercel) error
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+  parameters:
+    MistId:
+      name: id
+      in: path
+      required: true
+      description: UUID of the company-owned Mist app.
+      schema:
+        type: string
+        format: uuid
+    NestedMistId:
+      name: mist_id
+      in: path
+      required: true
+      description: UUID of the company-owned Mist app.
+      schema:
+        type: string
+        format: uuid
+    EnvVarKey:
+      name: key
+      in: path
+      required: true
+      description: Environment variable name, such as `STRIPE_API_KEY`.
+      schema:
+        type: string
+        pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+    DeploymentId:
+      name: id
+      in: path
+      required: true
+      description: Deployment ID, prefixed `dpl_`, such as `dpl_9Fq3xTnB7kLm2VwR8cYh4Jd`.
+      schema:
+        type: string
+  schemas:
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    PaginationMeta:
+      type: object
+      properties:
+        cursor:
+          type:
+          - string
+          - 'null'
+        limit:
+          type: integer
+        prev_cursor:
+          type:
+          - string
+          - 'null'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    Mist:
+      type: object
+      description: One Mist hosting — the deployed extension with its repo, database, and Vercel project.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the Mist.
+        slug:
+          type: string
+          description: 6-char URL-safe disambiguator drawn from the random tail of the uuid
+        state:
+          type: string
+          enum: [provisioning, live, failed, pending_destroy, archived]
+        kind:
+          type: string
+          enum: [next_app]
+        name:
+          type:
+          - string
+          - 'null'
+          description: Optional display label
+        public_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+        provisioned_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        scheduled_destroy_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: |
+            ISO-8601 timestamp 15 days after
+            `DELETE /api/v202604/mists/{id}` was called. Non-null only while `state == "pending_destroy"`.
+            After this timestamp the Mist's repository, database, and
+            deployment are permanently torn down; call
+            `POST /api/v202604/mists/{mist_id}/restore` any time before
+            then to cancel the deletion.
+        template:
+          type:
+          - string
+          - 'null'
+          description: |
+            Slug of the template this app was generated from, or null when
+            it came from the install-wide starter. The repo the slug points
+            at and the commit the copy received are internal.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    EnvVar:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        targets:
+          type: array
+          items:
+            type: string
+            enum: [production, preview, development]
+        managed_by:
+          type: string
+          enum: [user, mist]
+          description: |
+            `mist` for variables Mist provisions and rotates itself, such as
+            `DATABASE_URL` and the `FLUID_*` connection variables. `user` for
+            everything else. Mist-managed variables are read-only through
+            this API.
+        pull_to_local:
+          type: boolean
+          description: |
+            Whether the variable belongs in a local development environment
+            file. `false` for Mist-managed variables that only make sense in
+            the deployed app, such as `DATABASE_URL`.
+    Deployment:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Deployment ID, prefixed `dpl_`.
+        state:
+          type: string
+          enum: [ready, building, error, canceled, queued]
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+        commit_sha:
+          type:
+          - string
+          - 'null'
+        commit_message:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        target:
+          type:
+          - string
+          - 'null'
+          enum: [production, preview, null]
+    LogEntry:
+      type: object
+      properties:
+        timestamp:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        level:
+          type: string
+          description: stdout / stderr / build event type
+        message:
+          type:
+          - string
+          - 'null'
+        source:
+          type:
+          - string
+          - 'null'
+          description: lambda / build / etc.
+paths:
+  "/api/v202604/mists":
+    get:
+      operationId: mist_list
+      summary: List the current company's Mists, newest first
+      description: |
+        Returns the current company's Mist apps, newest first by default,
+        including apps that are scheduled for deletion. Filter by `state`
+        or `kind`, and page through the results with
+        `page[cursor]` and `page[limit]`.
+
+        Requires a company admin token with the `mist.view` permission.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: filter[state]
+        in: query
+        description: Return only Mists in this lifecycle state.
+        schema:
+          type: string
+          enum: [provisioning, live, failed, pending_destroy, archived]
+      - name: filter[kind]
+        in: query
+        description: Return only Mists of this kind, such as `next_app`.
+        schema:
+          type: string
+      - name: page[cursor]
+        in: query
+        description: |
+          Opaque cursor from `meta.pagination.next_cursor` or
+          `meta.pagination.prev_cursor` of a previous response. Omit it to
+          start from the first page.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Number of Mists per page. Defaults to 25.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      - name: sort
+        in: query
+        description: |
+          Sort order by creation time. `-created_at` (the default) returns
+          the newest first; `created_at` returns the oldest first.
+        schema:
+          type: string
+          enum: [created_at, -created_at]
+      responses:
+        '200':
+          description: List of mists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mists:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/Mist"
+                  meta:
+                    allOf:
+                    - "$ref": "#/components/schemas/Meta"
+                    - type: object
+                      properties:
+                        pagination:
+                          "$ref": "#/components/schemas/PaginationMeta"
+              example:
+                mists:
+                - id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: live
+                  kind: next_app
+                  name: Loyalty rewards
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at: '2026-04-14T16:22:41Z'
+                  scheduled_destroy_at:
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-14T16:22:41Z'
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+                  pagination:
+                    cursor:
+                    limit: 25
+                    prev_cursor:
+                    next_cursor: eyJjcmVhdGVkX2F0IjoiMjAyNi0wNC0xNFQxNjoyMTo1OFoifQ
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+    post:
+      operationId: mist_create
+      summary: Provision a new Mist
+      description: |
+        Creates a Mist app for the current company. The request creates
+        the app's GitHub repository, Postgres database, API tokens, and
+        deployment project with its public domain, then returns `201` with
+        `state: "provisioning"` and the final `public_url`. The first
+        deployment runs in the background; the Mist moves to `live` when
+        it finishes. Poll `GET /api/v202604/mists/{id}` to watch the state.
+
+        If any provisioning step fails, the steps that already completed
+        are rolled back and the response is `422` naming the failing step.
+
+        The app is created standalone. Attaching it to the Fluid surfaces
+        it plugs into, such as a droplet, a drop zone, or a mobile embed,
+        happens separately after creation.
+
+        Requires a company admin token with the `mist.create` permission.
+        Creating a Mist allocates billable infrastructure, so it can be
+        refused with `402` before anything is allocated.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mist]
+              properties:
+                mist:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      maxLength: 255
+                      description: Optional display label
+                    kind:
+                      type: string
+                      enum: [next_app]
+                      default: next_app
+                    template:
+                      type: string
+                      maxLength: 100
+                      description: |
+                        Slug of the template to generate this app from. Only
+                        templates Fluid has approved for your company are
+                        accepted; a repository name is not. Omit it to use
+                        the default template.
+
+                        A template you cannot use is refused before anything
+                        is allocated, as `422` with `error.details.reason` of
+                        `unknown_template` (no such slug, or one restricted
+                        to another company) or `template_disabled`.
+
+                        A template that fails its checks while the app is
+                        generated is refused as `422` from the provisioning
+                        step, where the machine-readable code is
+                        `error.details.type`, not `reason`:
+                        `template_not_usable` (withdrawn between the request
+                        and generation), `template_sha_drift` (the template
+                        changed since it was reviewed, including during
+                        generation), `template_commit_unresolved` (its
+                        current version could not be read), or
+                        `repo_not_owned` (a repository with the derived name
+                        already exists and was not created for this app, so
+                        it is refused rather than adopted).
+            example:
+              mist:
+                name: Loyalty rewards
+                kind: next_app
+                template: rewards-starter
+      responses:
+        '201':
+          description: |
+            Mist created. `state` is `provisioning` until the first
+            deployment finishes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mist:
+                    "$ref": "#/components/schemas/Mist"
+                  meta:
+                    "$ref": "#/components/schemas/Meta"
+              example:
+                mist:
+                  id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: provisioning
+                  kind: next_app
+                  name: Loyalty rewards
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at:
+                  scheduled_destroy_at:
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-14T16:22:04Z'
+                status: 201
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-14T16:22:04Z'
+        '400':
+          $ref: "#/components/responses/BadRequest"
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '402':
+          $ref: "#/components/responses/PaymentRequired"
+        '409':
+          $ref: "#/components/responses/Conflict"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+        '503':
+          $ref: "#/components/responses/ServiceUnavailable"
+  "/api/v202604/mists/{id}":
+    get:
+      operationId: mist_show
+      summary: Show one Mist
+      description: |
+        Returns one of the current company's Mist apps, including its
+        lifecycle `state`, `public_url`, and, while it is scheduled for
+        deletion, the `scheduled_destroy_at` deadline for restoring it.
+        Poll this endpoint after creating a Mist to see it move from
+        `provisioning` to `live`. A Mist that belongs to another company
+        returns `404`.
+
+        Requires a company admin token with the `mist.view` permission.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/MistId"
+      responses:
+        '200':
+          description: The mist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mist:
+                    "$ref": "#/components/schemas/Mist"
+              example:
+                mist:
+                  id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: live
+                  kind: next_app
+                  name: Loyalty rewards
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at: '2026-04-14T16:22:41Z'
+                  scheduled_destroy_at:
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-14T16:22:41Z'
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '404':
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: mist_update
+      summary: Update a Mist (rename)
+      description: |
+        Edits a Mist's display attributes, such as its `name`. The app's
+        repository, database, and deployment are not re-provisioned.
+
+        Attaching the app to Fluid surfaces is managed separately, not
+        here.
+
+        Returns `409` if the Mist is `pending_destroy`; restore it first
+        with `POST /api/v202604/mists/{mist_id}/restore`.
+
+        Requires a company admin token with the `mist.create` permission.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/MistId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mist]
+              properties:
+                mist:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      maxLength: 255
+                    kind:
+                      type: string
+                      enum: [next_app]
+            example:
+              mist:
+                name: Loyalty rewards (EU)
+      responses:
+        '200':
+          description: Updated mist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mist:
+                    "$ref": "#/components/schemas/Mist"
+              example:
+                mist:
+                  id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: live
+                  kind: next_app
+                  name: Loyalty rewards (EU)
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at: '2026-04-14T16:22:41Z'
+                  scheduled_destroy_at:
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-21T11:03:17Z'
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-21T11:03:17Z'
+        '400':
+          $ref: "#/components/responses/BadRequest"
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '409':
+          description: Mist is pending_destroy
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+    delete:
+      operationId: mist_destroy
+      summary: Schedule a Mist for destruction (15-day grace)
+      description: |
+        Schedules the Mist for deletion 15 days out. The state changes to
+        `pending_destroy` and `scheduled_destroy_at` is set. The app's
+        repository, database, and deployment stay intact throughout the
+        grace period, so an accidental delete can be undone without data
+        loss with `POST /api/v202604/mists/{mist_id}/restore`.
+
+        While the Mist is `pending_destroy`, you can still read and
+        restore it, but its env var, domain, deployment, and log
+        endpoints return `409`. When the grace period ends, the
+        app's resources are permanently torn down.
+
+        Returns `409` if the Mist is already `pending_destroy`.
+
+        Requires a company admin token with the `mist.destroy` permission.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/MistId"
+      responses:
+        '202':
+          description: |
+            Scheduled for destruction. The response carries the mist
+            with `state: "pending_destroy"` and a non-null
+            `scheduled_destroy_at`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mist:
+                    "$ref": "#/components/schemas/Mist"
+              example:
+                mist:
+                  id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: pending_destroy
+                  kind: next_app
+                  name: Loyalty rewards
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at: '2026-04-14T16:22:41Z'
+                  scheduled_destroy_at: '2026-05-06T10:30:00Z'
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-21T10:30:00Z'
+                status: 202
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-21T10:30:00Z'
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '409':
+          description: Mist is already pending_destroy.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v202604/mists/{mist_id}/restore":
+    post:
+      operationId: mist_restore
+      summary: Cancel a pending teardown within the 15-day grace window
+      description: |
+        Cancels the deletion of a `pending_destroy` Mist. The state returns
+        to `live` and `scheduled_destroy_at` is cleared.
+
+        Returns `410 Gone` if the grace period has already ended and the
+        teardown is in progress, and `422` if the Mist is not in the
+        `pending_destroy` state.
+
+        Requires a company admin token with the `mist.destroy` permission,
+        the same permission that deletes a Mist.
+      x-fluid-audience: company
+      tags: [mists]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      responses:
+        '200':
+          description: Restored — state flipped back to live.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mist:
+                    "$ref": "#/components/schemas/Mist"
+              example:
+                mist:
+                  id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
+                  slug: 3bed85
+                  state: live
+                  kind: next_app
+                  name: Loyalty rewards
+                  public_url: https://dunder-mifflin-3bed85.mist.fluid.app
+                  provisioned_at: '2026-04-14T16:22:41Z'
+                  scheduled_destroy_at:
+                  template: rewards-starter
+                  created_at: '2026-04-14T16:21:58Z'
+                  updated_at: '2026-04-22T08:12:45Z'
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-22T08:12:45Z'
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '410':
+          description: Grace period has expired; teardown is in flight.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+  "/api/v202604/mists/{mist_id}/env_vars":
+    get:
+      operationId: mist_env_vars_list
+      summary: List env vars on the Mist's Vercel project
+      description: |
+        Returns every environment variable on the Mist's deployment
+        project, with its value and targets. Each variable carries
+        `managed_by`: `mist` for variables Mist provisions and rotates
+        itself, which are read-only, and `user` for variables you manage.
+        `pull_to_local` marks the variables that belong in a local
+        development environment file.
+
+        Returns `409` while the Mist is `pending_destroy`, and `422` with
+        `error.details.type` of `not_provisioned` if its deployment
+        project does not exist yet.
+
+        Requires a company admin token with the `mist.env_vars` permission.
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      tags: [mist_env_vars]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      responses:
+        '200':
+          description: All env vars (managed_by tagged)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  env_vars:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/EnvVar"
+              example:
+                env_vars:
+                - key: REWARDS_POINTS_PER_DOLLAR
+                  value: '10'
+                  targets: [production, preview, development]
+                  managed_by: user
+                  pull_to_local: true
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '401':
+          $ref: "#/components/responses/Unauthorized"
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+        '502':
+          $ref: "#/components/responses/BadGateway"
+    post:
+      operationId: mist_env_vars_create
+      summary: Add a user-managed env var
+      description: |
+        Adds an environment variable to the Mist's deployment project. It
+        applies to all three targets (`production`, `preview`, and
+        `development`) unless you pass `targets`. The value takes effect on
+        the next deployment.
+
+        Returns `422` with `error.details.type` of `managed_var` if `key`
+        is a Mist-managed variable, such as `DATABASE_URL` or one of the
+        `FLUID_*` connection variables. Returns `409` while the Mist is
+        `pending_destroy`.
+
+        Requires a company admin token with the `mist.env_vars` permission.
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      tags: [mist_env_vars]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [env_var]
+              properties:
+                env_var:
+                  type: object
+                  required: [key, value]
+                  properties:
+                    key:
+                      type: string
+                      pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+                    value:
+                      type: string
+                    targets:
+                      type: array
+                      items:
+                        type: string
+                        enum: [production, preview, development]
+                      default: [production, preview, development]
+            example:
+              env_var:
+                key: REWARDS_POINTS_PER_DOLLAR
+                value: '10'
+                targets: [production, preview]
+      responses:
+        '201':
+          description: Env var added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  env_var:
+                    "$ref": "#/components/schemas/EnvVar"
+              example:
+                env_var:
+                  key: REWARDS_POINTS_PER_DOLLAR
+                  value: '10'
+                  targets: [production, preview]
+                  managed_by: user
+                  pull_to_local: true
+                status: 201
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '400':
+          $ref: "#/components/responses/BadRequest"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+  "/api/v202604/mists/{mist_id}/env_vars/{key}":
+    patch:
+      operationId: mist_env_vars_update
+      summary: Update an env var's value
+      description: |
+        Replaces the value of one of your environment variables on the
+        Mist's deployment project. Pass `targets` to change which
+        environments it applies to; omit it to keep the current targets.
+        The new value takes effect on the next deployment.
+
+        Returns `404` if no variable with that key exists, `422` with
+        `error.details.type` of `managed_var` for a Mist-managed variable,
+        and `409` while the Mist is `pending_destroy`.
+
+        Requires a company admin token with the `mist.env_vars` permission.
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      tags: [mist_env_vars]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - "$ref": "#/components/parameters/EnvVarKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [env_var]
+              properties:
+                env_var:
+                  type: object
+                  required: [value]
+                  properties:
+                    value:
+                      type: string
+                    targets:
+                      type: array
+                      items:
+                        type: string
+                        enum: [production, preview, development]
+            example:
+              env_var:
+                value: '15'
+      responses:
+        '200':
+          description: Env var updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  env_var:
+                    "$ref": "#/components/schemas/EnvVar"
+              example:
+                env_var:
+                  key: REWARDS_POINTS_PER_DOLLAR
+                  value: '15'
+                  targets: [production, preview]
+                  managed_by: user
+                  pull_to_local: true
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+    delete:
+      operationId: mist_env_vars_destroy
+      summary: Remove an env var
+      description: |
+        Removes one of your environment variables from the Mist's
+        deployment project and echoes back the removed variable. The
+        removal takes effect on the next deployment.
+
+        Returns `404` if no variable with that key exists, `422` with
+        `error.details.type` of `managed_var` for a Mist-managed variable,
+        and `409` while the Mist is `pending_destroy`.
+
+        Requires a company admin token with the `mist.env_vars` permission.
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; path segment predates the kebab-case rule"
+      tags: [mist_env_vars]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - "$ref": "#/components/parameters/EnvVarKey"
+      responses:
+        '200':
+          description: Removed env var (echoed back)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  env_var:
+                    "$ref": "#/components/schemas/EnvVar"
+              example:
+                env_var:
+                  key: REWARDS_POINTS_PER_DOLLAR
+                  value: '15'
+                  targets: [production, preview]
+                  managed_by: user
+                  pull_to_local: true
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+  "/api/v202604/mists/{mist_id}/deployments":
+    get:
+      operationId: mist_deployments_list
+      summary: List recent Vercel deployments for the Mist
+      description: |
+        Returns the Mist's most recent deployments, newest first, with each
+        deployment's state, URL, target, and the commit it was built from.
+        Deployments are created when code is pushed to the Mist's
+        repository; this endpoint only reads them. Poll it after a push to
+        follow the build.
+
+        Returns `409` while the Mist is `pending_destroy`, and `422` with
+        `error.details.type` of `not_provisioned` if its deployment
+        project does not exist yet.
+
+        Requires a company admin token with the `mist.code` permission.
+      x-fluid-audience: company
+      tags: [mist_code]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - name: limit
+        in: query
+        description: |
+          Maximum number of deployments to return. Defaults to 20; values
+          outside 1–100 are clamped to that range.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: Recent deployments (newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/Deployment"
+              example:
+                deployments:
+                - id: dpl_9Fq3xTnB7kLm2VwR8cYh4Jd
+                  state: ready
+                  url: https://dunder-mifflin-3bed85-9fq3xtnb7.vercel.app
+                  commit_sha: 4e1b7c9a2d05f3e68b1c7a94d2e05b3f6a8c1d27
+                  commit_message: Add tiered rewards banner
+                  created_at: '2026-04-20T08:58:13Z'
+                  target: production
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+        '502':
+          $ref: "#/components/responses/BadGateway"
+  "/api/v202604/mists/{mist_id}/deployments/{id}":
+    get:
+      operationId: mist_deployments_show
+      summary: Show one Vercel deployment
+      description: |
+        Returns one deployment by its ID, with its current state, URL,
+        target, and commit. Poll it to follow a build until it reaches
+        `ready`, `error`, or `canceled`. When a production deployment of a
+        Mist that is still `provisioning` is `ready`, the Mist moves to
+        `live`.
+
+        Returns `404` if the deployment does not exist, and `409` while the
+        Mist is `pending_destroy`.
+
+        Requires a company admin token with the `mist.code` permission.
+      x-fluid-audience: company
+      tags: [mist_code]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - "$ref": "#/components/parameters/DeploymentId"
+      responses:
+        '200':
+          description: The deployment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment:
+                    "$ref": "#/components/schemas/Deployment"
+              example:
+                deployment:
+                  id: dpl_9Fq3xTnB7kLm2VwR8cYh4Jd
+                  state: ready
+                  url: https://dunder-mifflin-3bed85-9fq3xtnb7.vercel.app
+                  commit_sha: 4e1b7c9a2d05f3e68b1c7a94d2e05b3f6a8c1d27
+                  commit_message: Add tiered rewards banner
+                  created_at: '2026-04-20T08:58:13Z'
+                  target: production
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '502':
+          $ref: "#/components/responses/BadGateway"
+  "/api/v202604/mists/{mist_id}/logs":
+    get:
+      operationId: mist_logs_read
+      summary: Runtime + build logs from a deployment
+      description: |
+        Returns build and runtime log entries from `deployment_id` if
+        supplied, otherwise from the Mist's most recent deployment. The
+        response names the deployment it read from. To tail logs, poll
+        with `since` set to the newest entry's `timestamp` from the
+        previous response.
+
+        Returns `422` with `error.details.type` of `no_deployment` when
+        the Mist has no deployment yet, `404` if `deployment_id` does not
+        exist, and `409` while the Mist is `pending_destroy`.
+
+        Requires a company admin token with the `mist.code` permission.
+      x-fluid-audience: company
+      tags: [mist_code]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - name: deployment_id
+        in: query
+        description: |
+          Deployment to read logs from, prefixed `dpl_`. Defaults to the
+          Mist's most recent deployment.
+        schema:
+          type: string
+      - name: since
+        in: query
+        description: ISO-8601 timestamp; only entries newer than this are returned.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: |
+          Maximum number of log entries to return. Defaults to 100; values
+          outside 1–1000 are clamped to that range.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+      responses:
+        '200':
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment_id:
+                    type: string
+                  logs:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/LogEntry"
+              example:
+                deployment_id: dpl_9Fq3xTnB7kLm2VwR8cYh4Jd
+                logs:
+                - timestamp: '2026-04-20T09:14:57Z'
+                  level: stdout
+                  message: 'GET /api/rewards/balance 200 in 84ms'
+                  source: lambda
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-04-20T09:15:02Z'
+        '404':
+          $ref: "#/components/responses/NotFound"
+        '422':
+          $ref: "#/components/responses/Unprocessable"
+        '502':
+          $ref: "#/components/responses/BadGateway"
