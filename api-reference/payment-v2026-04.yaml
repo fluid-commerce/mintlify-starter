@@ -1110,7 +1110,10 @@ components:
       required: false
       description: |
         Optional client-generated key (UUID recommended) used to deduplicate
-        retries, for up to 24 hours.
+        retries: a stored response replays for up to 24 hours. A request
+        whose outcome is unknown holds its key, normally for at least 24 hours, and
+        while the outcome is unresolved and the key is held, every retry
+        under it answers 409.
 
         The key is bound to the exact request that first used it: the
         method, path and query string, `Content-Type`, body bytes, and
@@ -1170,16 +1173,23 @@ components:
             "$ref": "#/components/schemas/ErrorResponse"
     Conflict:
       description: |
-        One of three states, told apart by the body's `message`:
+        One of four states, told apart by the body's `message`:
 
         - A request with the same Idempotency-Key is still being processed.
           Retry once it completes; the cached response then replays with
           `X-Idempotent-Replayed: true`.
         - The request with this Idempotency-Key reached the payment provider
-          and its outcome is not yet known. Do not retry it: the same 409 is
-          returned for up to 24 hours, and a retry under a fresh key could move
-          the money a second time. Confirm the outcome with support, or by
-          reading the transaction, before acting again.
+          and its outcome is not yet known. Do not retry it: while the
+          outcome is unresolved, every retry under the same Idempotency-Key
+          answers 409 for as long as the key is held, normally at least 24
+          hours, and a retry under a fresh key could move the money a second
+          time. Confirm the outcome with support, or by reading the
+          transaction, before acting again.
+        - The request with this Idempotency-Key reached the payment provider,
+          and support has since confirmed that it moved money. Do not retry
+          it under this key or a fresh one: read the resulting transaction
+          instead. Every retry under the same key answers 409 until 24 hours
+          after the reconciliation.
         - On gateway updates, the gateway's country membership changed since
           the caller loaded it; the body's `errors.current_country_codes` lists
           the current ISO codes.
@@ -1203,6 +1213,22 @@ components:
         run, unless a response is already cached under that key, which
         replays; its `message` says to confirm the outcome of an earlier
         request before sending it again under a different key.
+
+        A request whose payment account uses an adapter not on the guard's
+        audited allowlist also answers 422 and does not run, whether or not
+        an `Idempotency-Key` is present; its `message` says the payment
+        account cannot take this request through the payment API. A key
+        that already holds a response replays it first, so a retry of an
+        earlier request still gets that request's response.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: |
+        The idempotency claim store could not say whether this
+        `Idempotency-Key` already has an outcome. Nothing ran and nothing
+        was sent; retry the same request unchanged under the same key.
       content:
         application/json:
           schema:
@@ -1660,6 +1686,8 @@ paths:
           "$ref": "#/components/responses/Conflict"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+        '503':
+          "$ref": "#/components/responses/ServiceUnavailable"
   "/api/payment/v2026-04/gateways/{id}/authorize":
     parameters:
     - name: id
@@ -1738,6 +1766,8 @@ paths:
           "$ref": "#/components/responses/Conflict"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+        '503':
+          "$ref": "#/components/responses/ServiceUnavailable"
   "/api/payment/v2026-04/gateways/{id}/verify":
     parameters:
     - name: id
@@ -2069,6 +2099,8 @@ paths:
           "$ref": "#/components/responses/Conflict"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+        '503':
+          "$ref": "#/components/responses/ServiceUnavailable"
   "/api/payment/v2026-04/transactions/{id}/void":
     parameters:
     - name: id
@@ -2138,6 +2170,8 @@ paths:
           "$ref": "#/components/responses/Conflict"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+        '503':
+          "$ref": "#/components/responses/ServiceUnavailable"
   "/api/payment/v2026-04/transactions/{id}/credit":
     parameters:
     - name: id
@@ -2248,6 +2282,8 @@ paths:
           "$ref": "#/components/responses/Conflict"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
+        '503':
+          "$ref": "#/components/responses/ServiceUnavailable"
   "/api/payment/v2026-04/merchants/{merchant_id}/billing_pause":
     parameters:
     - name: merchant_id
