@@ -511,6 +511,19 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     but only the implementation settles behaviour, and a single layer read in isolation
     produces confident wrong conclusions. The Kaminari reasoning was correct about code
     that never executes.
+13. **`webhooks-v0` doesn't enumerate subscribable events.** The spec describes
+    registration, the envelope and the schema endpoints, but not which `resource` and
+    `event` pairs exist. That's why the webhooks guide sends readers to
+    `GET /api/company/webhooks/resources` rather than listing them. The order `edited`
+    event (webhooks-050 to webhooks-054) is therefore registered as semantic claims,
+    verified on 2026-09-30 against the backend and the synced commerce spec:
+    `Webhook::TopicRegistry` lists `edited` among the order events; a webhook's
+    `event_identifier` joins the resource and event with an underscore, giving
+    `order_edited`; and the `commerce-v2026-04` description of
+    `POST /api/v202604/orders/{order_id}/edits` says a successful edit fires the
+    `order_edited` lifecycle event with the post-edit payload, while the dry-run preview
+    does not. If `webhooks-v0` starts enumerating events, move these claims to
+    mechanical anchors.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
