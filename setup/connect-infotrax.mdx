@@ -1,0 +1,242 @@
+---
+title: "Connect InfoTrax to Fluid"
+sidebarTitle: "Connect InfoTrax"
+description: "Link InfoTrax to Fluid, set its credentials, map its data to Fluid's, and choose how records sync."
+setup:
+  id: connect-infotrax
+  cli: "@fluid-app/fluid-cli-connect"
+  walk: "fluid connect walk infotrax"
+  steps:
+    - id: install
+      title: "Install InfoTrax"
+      run: "fluid connect install infotrax --yes"
+      changes: true
+    - id: credentials
+      title: "Save the credentials"
+      run: "fluid connect credentials infotrax --set <group.key>=<value> --yes"
+      changes: true
+    - id: review
+      title: "Review the connection"
+      run: "fluid connect show infotrax"
+    - id: unmapped
+      title: "Find what needs mapping"
+      run: "fluid connect unmapped infotrax"
+    - id: map
+      title: "Map the rest"
+      run: "fluid connect map infotrax <type> --set <field>=<value> --yes"
+      changes: true
+      repeat: true
+      done_when: "fluid connect unmapped infotrax reports done: true"
+    - id: settings
+      title: "Choose the sync settings"
+      run: "fluid connect settings infotrax --defaults --yes"
+      changes: true
+---
+
+InfoTrax stays the system of record for your members and orders. Fluid reads changes from InfoTrax's SQL Server, so the connection needs SQL Server access. After setup, records sync between InfoTrax and Fluid on a schedule, every 15 minutes by default.
+
+## Before you start
+
+- A Fluid API token for the company, from **Settings > API Tokens**, or your own sign-in with `fluid login`. The token must have company admin access with permission to view the company; installing the droplet also needs permission to manage droplets.
+- Your InfoTrax credentials (listed in step 2).
+- Install and sign in to the CLI:
+
+```bash
+npm install -g @fluid-app/fluid-cli @fluid-app/fluid-cli-connect
+fluid login
+```
+
+## Steps
+
+<Tip>
+  Prefer to answer questions? `fluid connect walk infotrax` (or `fluid setup run connect-infotrax`) runs every step below in your terminal: it installs InfoTrax if needed, asks for the credentials, asks the InfoTrax value for each unmapped Fluid value, and goes through the common settings. Each answer is saved as you give it; type `<` to go back, `>` to skip, and `?` for a menu.
+</Tip>
+
+<Steps>
+  <Step title="Install InfoTrax">
+    This changes live configuration: it installs the InfoTrax droplet in Fluid, which creates the connection.
+
+    ```bash
+    fluid connect install infotrax --yes
+    ```
+
+    `fluid connect list` shows every provider and whether it's installed. If InfoTrax is already installed, `install` says so and changes nothing.
+  </Step>
+  <Step title="Save the credentials">
+    This changes live configuration. Fluid tests the connection with the credentials before saving them, so a wrong value is reported and nothing is saved.
+
+    ```bash
+    fluid connect credentials infotrax --yes \
+      --set mssql.dataserver=sql.acme.example --set mssql.database=acme \
+  --set mssql.username=reader --set mssql.password=...
+    ```
+
+    | Key | What it is |
+    | --- | --- |
+    | `mssql.dataserver` | InfoTrax SQL Server host (data server). |
+    | `mssql.database` | InfoTrax SQL Server database name. |
+    | `mssql.username` | SQL Server login username. |
+    | `mssql.password` | SQL Server login password. |
+
+    You can update one credential later without re-entering the rest: pass only the keys that changed. Values passed with `--set` stay in your shell history; to type passwords without echoing them, use `fluid connect walk infotrax`.
+  </Step>
+  <Step title="Review the connection">
+    ```bash
+    fluid connect show infotrax
+    ```
+
+    The result lists the connection's state, the mapping types InfoTrax supports (`supportedMappings`), and every sync setting with its current value and default (`settings`). Use it as the reference for the next two steps.
+  </Step>
+  <Step title="Find what needs mapping">
+    A mapping tells Fluid which InfoTrax value matches each Fluid value, for example which InfoTrax customer type is a Fluid `rep`. Do this before the first sync: a value with no row, and no `*` fallback, can't be translated.
+
+    This only reads. InfoTrax's own values aren't listed by the API, so nothing can be matched for you; the report tells you exactly which Fluid values need a row.
+
+    ```bash
+    fluid connect unmapped infotrax
+    ```
+
+    The report has one entry per mapping type InfoTrax supports:
+
+    | `status` | Meaning |
+    | --- | --- |
+    | `covered` | Every Fluid value has a row, or a `*` fallback row covers them (`fallback: true`). Nothing to do. |
+    | `needs_mapping` | `unmapped` lists the Fluid values without a row. Put each `value` in the type's source field (`sourceField`). |
+    | `check_by_hand` | Ranks and ship methods. The API doesn't list Fluid's values for these, so compare `fluid connect mappings infotrax <type>` with your Fluid ranks or shipping methods yourself. |
+    | `error` | The values couldn't be read; `error` says why. |
+
+    `done: true` means every type is covered and you can skip to the settings.
+  </Step>
+  <Step title="Map the rest">
+    For each value in `unmapped`, add a row. This changes live configuration.
+
+    ```bash
+    fluid connect mappings infotrax customer_type --options
+    fluid connect map infotrax customer_type --yes \
+      --set source_type_slug=vip --set target_type_id=2
+    ```
+
+    `--options` returns Fluid's values. Take the InfoTrax side of each mapping from your InfoTrax back office. If many Fluid values should go to the same InfoTrax value, add one row whose source is `*` instead: it's the fallback for any value without its own row. Remove a row with `fluid connect unmap infotrax <type> <id> --yes`.
+
+    Run `fluid connect unmapped infotrax` again until it reports `done: true`. See [Data mapping](#data-mapping) for every mapping type and its fields.
+  </Step>
+  <Step title="Choose the sync settings">
+    A new connection already starts on the default for every setting, and each default is safe. To take them all and move on, do nothing, or put them back after experimenting (this changes live configuration):
+
+    ```bash
+    fluid connect settings infotrax --defaults --yes
+    ```
+
+    Then change only the settings your business needs; start with [Common settings](#common-settings).
+
+    ```bash
+    fluid connect settings infotrax --yes --set order.refund_handling=hold --set product.new_inactive=true
+    ```
+
+    The command prints every setting with its new value. Run `fluid connect settings infotrax` with no flags to list them without changing anything, and `--defaults --only <entity.key>` to restore a single setting.
+  </Step>
+</Steps>
+
+## Data mapping
+
+In every mapping, the **source** fields are Fluid's value and the **target** fields are InfoTrax's. Send a row's fields with `--set field=value`.
+
+| Type | Source (Fluid) | Target (InfoTrax) |
+| --- | --- | --- |
+| `customer_type` | `source_type_slug` — Fluid member type slug, such as `rep` | `target_type_id` — the provider's customer type ID |
+| `customer_status` | `source_status_slug` — Fluid customer status slug | `target_status_id` — the provider's customer status ID |
+| `product_type` | `source_title` — Fluid product type title | `target_title` — the provider's product type |
+| `price_type` | `source_price_type_title` — Fluid price type title | `target_price_type_id` — the provider's price type ID |
+| `order_status` | `source_status_slug` — Fluid order status slug | `target_status_id` — the provider's order status ID |
+| `order_type` | `source_type_slug` — Fluid order type slug | `target_type_id` — the provider's order type ID |
+| `country_market` | `source_title` — Fluid country market title | `target_title` — the provider's market |
+| `warehouse` | `fluid_warehouse_id`, `source_warehouse_title`, `country_code` — Fluid warehouse ID and title | `external_warehouse_id` — the provider's warehouse ID |
+| `ship_method` | `source_shipping_method_title`, `country_code` — Fluid shipping method title | `exigo_ship_method_id` — the provider's ship method ID |
+| `tree` | `source_title` — Fluid tree title | `target_title` — the provider's tree |
+| `rank` | `source_title` — Fluid rank title | `target_title` — the provider's rank |
+
+Customer type, customer status, order status, and order type rows also take `default_for_export=true`: when Fluid exports a record whose value has several matching rows, it uses the default one. Every row takes an optional `description`.
+
+## Common settings
+
+These are the settings to decide before the first sync. Each starts on the default shown; pass `--set <key>=<value>` to change one, or `--defaults --only <key>` to put it back.
+
+| Setting | Default | What it decides |
+| --- | --- | --- |
+| `customer.duplicate_customer_handling` | `skip` | How to handle a customer that already exists in Fluid. Options: `skip` (Skip duplicates), `sync` (Sync anyway), `hold` (Hold for review). |
+| `customer.unverified_customer_handling` | `mark_inactive` | How to handle a customer that has not completed verification. Options: `mark_inactive` (Mark inactive in Fluid), `sync` (Sync as active), `skip` (Skip until verified). |
+| `customer.customer_creation_sync` | `false` | Enable polling for new customers created in InfoTrax. |
+| `order.refund_handling` | `hold` | How to handle refund and return orders. Options: `hold` (Hold for review), `sync` (Sync automatically), `skip` (Skip refunds). |
+| `order.duplicate_order_handling` | `skip` | How to handle an order that already exists in Fluid. Options: `skip` (Skip duplicates), `sync` (Sync anyway), `hold` (Hold for review). |
+| `order.order_creation_sync` | `false` | Enable polling for new orders created in InfoTrax. |
+| `product.new_inactive` | `false` | Set newly synced products as inactive by default. |
+| `product.warehouseless_product_handling` | `mark_inactive` | How to handle a product that has no warehouse. Options: `mark_inactive` (Mark inactive in Fluid), `sync` (Sync as-is), `skip` (Skip the product). |
+| `rank.sync_ranks` | `true` | Enable rank synchronization. |
+
+## All settings
+
+Every setting InfoTrax supports, as `fluid connect show infotrax` reports them. Settings that depend on another one only take effect once that one is on.
+
+| Setting | Label | Default | Options | Description |
+| --- | --- | --- | --- | --- |
+| `customer_type.use_metafield_customer_type` | Use metafield customer type | `false` | — | Use customer_type metafield instead of customer/affiliate |
+| `warehouse.new_missing` | Create missing warehouses | `false` | — | Automatically create warehouses that exist in external system |
+| `product.new_inactive` | New products inactive | `false` | — | Set newly synced products as inactive by default |
+| `product.no_warehouse_inactive` | No warehouse = inactive | `false` | — | Set products without warehouse as inactive |
+| `product.warehouseless_product_handling` | Products without a warehouse | `mark_inactive` | `mark_inactive`, `sync`, `skip` | How to handle a product that has no warehouse. |
+| `product.product_update_sync` | Product update sync | `false` | — | Enable polling for product updates in InfoTrax. |
+| `country_market.new_missing` | Create missing country markets | `false` | — | Automatically create country markets from external system |
+| `rank.new_missing` | Create missing ranks | `false` | — | Automatically create ranks that exist in external system |
+| `rank.sync_ranks` | Sync ranks | `true` | — | Enable rank synchronization |
+| `ship_method.new_missing` | Create missing shipping methods | `false` | — | Automatically create shipping methods that exist in external system |
+| `customer_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of customer metadata fields |
+| `customer_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing customer metadata values during sync |
+| `order_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of order metadata fields |
+| `order_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing order metadata values during sync |
+| `product_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of product metadata fields |
+| `product_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing product metadata values during sync |
+| `order.refund_handling` | Refund orders | `hold` | `hold`, `sync`, `skip` | How to handle refund and return orders. |
+| `order.duplicate_order_handling` | Duplicate orders | `skip` | `skip`, `sync`, `hold` | How to handle an order that already exists in Fluid. |
+| `order.order_creation_sync` | Order creation sync | `false` | — | Enable polling for new orders created in InfoTrax. |
+| `order.order_update_sync` | Order update sync | `false` | — | Enable polling for order updates in InfoTrax. |
+| `customer.duplicate_customer_handling` | Duplicate customers | `skip` | `skip`, `sync`, `hold` | How to handle a customer that already exists in Fluid. |
+| `customer.unverified_customer_handling` | Unverified customers | `mark_inactive` | `mark_inactive`, `sync`, `skip` | How to handle a customer that has not completed verification. |
+| `customer.import_from_empty_field` | Import from empty field | — | `field_name` | Only import customers where this field is empty |
+| `customer.duplicated_customer` | Duplicated customer strategy | `newest` | `newest`, `oldest` | How to handle duplicate customers during sync |
+| `customer.customer_creation_sync` | Customer creation sync | `false` | — | Enable polling for new customers created in InfoTrax. |
+| `customer.customer_creation_apply` | Apply customer creation to Fluid | `false` | — | When enabled, new customers from InfoTrax are pushed to Fluid. When disabled, EntitySync records are created but not applied. |
+| `customer.customer_update_sync` | Customer update sync | `false` | — | Enable polling for customer updates in InfoTrax. |
+
+## What the status means
+
+| Field | Meaning | What to do |
+| --- | --- | --- |
+| `installed: false` (`fluid connect list`) | InfoTrax isn't installed for this company. | Run step 1. |
+| `connected: true` | The connection exists and has credentials. | Continue with mappings and settings. |
+| `liveSyncState` | Whether records are syncing now. | When it reports degraded, read `liveSyncDegradedReason`. |
+| `done: false` (`fluid connect unmapped`) | Some Fluid values have no row. | Map each value in `unmapped`, or add a `*` fallback. |
+| `mapped: false` (`--options`) | No row matches this value yet. | Add a row, or a `*` fallback. |
+
+## Troubleshooting
+
+**`credentials` fails with a 422.** InfoTrax rejected the credentials during the connection test. The error's `details` carry InfoTrax's reason. Check the value it names and run the step again; nothing was saved.
+
+**`install` says the droplet isn't in the catalog.** InfoTrax isn't available to this company yet. Ask Fluid to make it available.
+
+**`isn't installed for this company`.** Every command after step 1 needs the connection. Run `fluid connect install infotrax --yes` first.
+
+**A mapping command fails with `isn't a mapping type`.** Use the type names in [Data mapping](#data-mapping), without the `_mappings` suffix.
+
+**A 503 from any command.** Fluid couldn't verify your token at that moment. Run the command again shortly.
+
+## Use the API directly
+
+The CLI calls the Fluid Connect API with your Fluid API token as the bearer token. The steps map onto these operations, in order:
+
+1. Install the droplet in Fluid (`POST /api/droplet_installations`), which creates the connection.
+2. Find the connection: `GET /api/v1/integrations/infotrax` returns its `company_integration_id`.
+3. Save credentials or settings: `PUT /api/v1/company_integrations/{id}`.
+4. Read the schema and current values: `GET /api/v1/company_integrations/{id}`.
+5. List, add, or remove mapping rows: `/api/v1/company_integrations/{id}/{type}_mappings`, with the values to choose from at `.../source_options`.
+
+The Fluid Connect API isn't in the API reference yet, so use the CLI where you can.
