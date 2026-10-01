@@ -2067,8 +2067,9 @@ company `.../products` operations lacked `security`. Corrections are staged upst
 the `docs/openapi-api-host-servers-main` branch. Until they sync, generated pages may
 still show the old wording; the guides follow the implementation.
 
-`api/agent-signup.mdx` sits in the API Reference **Overview** group beside
-`api/overview.mdx` and `api/authentication.mdx`. Like those pages, it is not in the
+`api/agent-signup.mdx` sat in the API Reference **Overview** group beside
+`api/overview.mdx` and `api/authentication.mdx`. It moved to the **Guided setup** group on
+2026-10-01 (see the agent launch guide entry). Like those pages, it is not in the
 registry. It documents `POST /api/company` (`company-v0`, unauthenticated). It
 deliberately omits bot-protection field names, rate-limit numbers, and the per-recipient
 confirmation window: they help an abuser, not an integrator. The upstream spec entry for
@@ -2200,3 +2201,55 @@ same Fluid branch:
   `/api/mysite` settings are excluded. `POST /api/user_companies/{company_id}/
   replace_with_default_mysite` exists in routes but has no spec, so it needs one upstream
   before it can appear.
+
+## Onboarding API adopted for the agent launch guide (2026-10-01)
+
+`onboarding-v0` (`api-reference/onboarding-v0.yaml`, `info.title: Fluid Onboarding API`)
+now syncs from the mirror. It is the API behind **Settings → Onboarding**, the Fluid
+Payments onboarding form, and the API the `fluid payments onboarding` CLI plugin calls.
+It was never deliberately deferred. Its sidebar rules put `onboarding_info`, `entities`,
+`owners`, `bank_accounts`, and the company-scoped `company_countries` under
+**Payments → Payments onboarding**, and the four `/api/companies/set_*` operations under
+**Settings → Company**.
+
+This supersedes the payments onboarding guided setup's note (item 14 of its upstream
+spec gaps) that the onboarding form's operations "aren't in any synced spec yet". That
+guide may now link the generated reference from its **Use the API directly** section.
+
+Verified against `origin/main` of the Rails monorepo:
+
+- **The onboarding update is a partial write.** Omitted top-level fields are left
+  alone, and `underwriting_info`, `data_migration`, and `onboarding_steps` merge into
+  what's stored. An optional `onboarding_info_version` turns a write built on a
+  superseded revision into `409`.
+- **Submitting needs a person.** The update stamps the calling user as the signer of the
+  steps audit and the terms acceptance, and a company API token has no user. With a
+  company token, the CLI's `submit` changes nothing and returns `ready_to_submit` with a
+  `submitUrl`, the admin's onboarding form, where a person submits. Writes that don't
+  touch those fields work with either token.
+
+### Agent launch guide (`api/agent-launch.mdx`)
+
+The guide sits right after `api/agent-signup.mdx` in the Developer Platform **Guided setup**
+group, after `setup/overview`. Both moved there from the API Reference **Overview** group on
+2026-10-01, and their URLs didn't change. Like agent signup, the guide is not in the claims registry. It sequences the guided setups rather than
+restating them: Connect (Exigo, InfoTrax, ByDesign, Pillars), payments onboarding, open a
+country, add a language, the TikTok Shop, Meta, and Google Merchant Center channels, and
+custom domain, plus create a page. All of them landed in #101. Step details, commands,
+and contracts stay on those pages.
+
+The agent prefills payments onboarding, and the merchant provides owners, bank accounts,
+and documents and submits. An existing sales-channel account needs the merchant to approve
+Fluid in a browser, through the channel guided setups.
+
+**Fluid sets up sales-channel accounts from the onboarding form, as an opt-in.** When a
+merchant has no TikTok Shop, Meta, or Google account, Fluid's team can create them from the
+business details in the payments onboarding form. It's an optional service the merchant
+opts in to, not a default. This is a service Fluid provides, confirmed by the docs
+owner on 2026-10-01. It's not an automated code path, so don't look for it in the
+onboarding or channel code, and don't remove the claim because the code doesn't show it.
+The channel guided setups cover connecting accounts the merchant already has.
+
+One product claim comes from the requester, not the implementation, and is open for
+confirmation on PR #90: a merchant can build and preview a store before adding a card at
+**Settings → Billing**. Nothing in the code gates going live on a card.
