@@ -2238,9 +2238,10 @@ The agent prefills payments onboarding, and the merchant provides owners, bank a
 and documents and submits. An existing sales-channel account needs the merchant to approve
 Fluid in a browser, through the channel guided setups.
 
-**Fluid sets up sales-channel accounts from the onboarding form.** When a merchant has no
-TikTok Shop, Meta, or Google account, Fluid's team creates them from the business details
-in the payments onboarding form. This is a service Fluid provides, confirmed by the docs
+**Fluid sets up sales-channel accounts from the onboarding form, as an opt-in.** When a
+merchant has no TikTok Shop, Meta, or Google account, Fluid's team can create them from the
+business details in the payments onboarding form. It's an optional service the merchant
+opts in to, not a default. This is a service Fluid provides, confirmed by the docs
 owner on 2026-10-01. It's not an automated code path, so don't look for it in the
 onboarding or channel code, and don't remove the claim because the code doesn't show it.
 The channel guided setups cover connecting accounts the merchant already has.
