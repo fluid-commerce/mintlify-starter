@@ -17,23 +17,27 @@ setup:
     - id: review
       title: "Review the connection"
       run: "fluid connect show exigo"
+    - id: unmapped
+      title: "Find what needs mapping"
+      run: "fluid connect unmapped exigo --auto-map --yes"
+      changes: true
     - id: map
-      title: "Map your data"
+      title: "Map the rest"
       run: "fluid connect map exigo <type> --set <field>=<value> --yes"
       changes: true
       repeat: true
-      done_when: "fluid connect mappings exigo <type> --options shows mapped: true for every value you sync"
+      done_when: "fluid connect unmapped exigo reports done: true"
     - id: settings
       title: "Choose the sync settings"
-      run: "fluid connect settings exigo --set <entity.key>=<value> --yes"
+      run: "fluid connect settings exigo --defaults --yes"
       changes: true
 ---
 
-Exigo stays the system of record for your distributors, orders, and genealogy. Fluid reads changes from Exigo's SQL Server and writes new orders and customers back through Exigo's API, so the connection needs both. After setup, records sync between Exigo and Fluid on a schedule, every 15 minutes by default.
+Exigo stays the system of record for your members, orders, and genealogy. Fluid reads changes from Exigo's SQL Server and writes new orders and customers back through Exigo's API, so the connection needs both. After setup, records sync between Exigo and Fluid on a schedule, every 15 minutes by default.
 
 ## Before you start
 
-- A Fluid API token for the company, from **Settings > API Tokens**, or your own sign-in with `fluid login`. The token needs permission to view the company; installing the droplet also needs permission to manage droplets.
+- A Fluid API token for the company, from **Settings > API Tokens**, or your own sign-in with `fluid login`. The token must have company admin access with permission to view the company; installing the droplet also needs permission to manage droplets.
 - Your Exigo credentials (listed in step 2).
 - Install and sign in to the CLI:
 
@@ -85,30 +89,55 @@ fluid login
 
     The result lists the connection's state, the mapping types Exigo supports (`supportedMappings`), and every sync setting with its current value and default (`settings`). Use it as the reference for the next two steps.
   </Step>
-  <Step title="Map your data">
+  <Step title="Find what needs mapping">
     A mapping tells Fluid which Exigo value matches each Fluid value, for example which Exigo customer type is a Fluid `rep`. Do this before the first sync: a value with no row, and no `*` fallback, can't be translated.
 
-    For each mapping type, list the values to match, then add a row per value. This changes live configuration.
+    This changes live configuration: `--auto-map` first adds a row wherever a Fluid value's name matches exactly one Exigo value, for example a Fluid customer type titled `VIP` and an Exigo customer type titled `VIP`. Names that match more than one Exigo value are left for you.
+
+    ```bash
+    fluid connect unmapped exigo --auto-map --yes
+    ```
+
+    Leave out `--auto-map` to only list what's missing without adding anything.
+
+    The report has one entry per mapping type Exigo supports:
+
+    | `status` | Meaning |
+    | --- | --- |
+    | `covered` | Every Fluid value has a row, or a `*` fallback row covers them (`fallback: true`). Nothing to do. |
+    | `needs_mapping` | `unmapped` lists the Fluid values without a row. Put each `value` in the type's source field (`sourceField`). |
+    | `check_by_hand` | Ranks and ship methods. The API doesn't list Fluid's values for these, so compare `fluid connect mappings exigo <type>` with your Fluid ranks or shipping methods yourself. |
+    | `error` | The values couldn't be read; `error` says why. |
+
+    `done: true` means every type is covered and you can skip to the settings.
+  </Step>
+  <Step title="Map the rest">
+    For each value in `unmapped`, add a row. This changes live configuration.
 
     ```bash
     fluid connect mappings exigo customer_type --options
     fluid connect map exigo customer_type --yes \
-      --set source_type_slug=rep --set target_type_id=2
-    fluid connect mappings exigo customer_type
+      --set source_type_slug=vip --set target_type_id=2
     ```
 
-    For Exigo, `--options` returns both Fluid's values (`fluid`) and Exigo's own (`provider`), so you can map each side from real values. Each option carries `mapped: true` once a row covers it. A row whose source is `*` is the fallback for any value without its own row. Remove a row with `fluid connect unmap exigo <type> <id> --yes`.
+    For Exigo, `--options` returns both Fluid's values (`fluid`) and Exigo's own (`provider`), so you can map each side from real values. If many Fluid values should go to the same Exigo value, add one row whose source is `*` instead: it's the fallback for any value without its own row. Remove a row with `fluid connect unmap exigo <type> <id> --yes`.
 
-    See [Data mapping](#data-mapping) for every mapping type and its fields.
+    Run `fluid connect unmapped exigo` again until it reports `done: true`. See [Data mapping](#data-mapping) for every mapping type and its fields.
   </Step>
   <Step title="Choose the sync settings">
-    This changes live configuration. Settings decide what syncs and how conflicts are handled. Each one has a safe default, so change only the ones your business needs; start with [Common settings](#common-settings).
+    A new connection already starts on the default for every setting, and each default is safe. To take them all and move on, do nothing, or put them back after experimenting (this changes live configuration):
+
+    ```bash
+    fluid connect settings exigo --defaults --yes
+    ```
+
+    Then change only the settings your business needs; start with [Common settings](#common-settings).
 
     ```bash
     fluid connect settings exigo --yes --set order.refund_handling=hold --set product.new_inactive=true
     ```
 
-    The command prints every setting with its new value. Run `fluid connect settings exigo` without `--set` to list them without changing anything.
+    The command prints every setting with its new value. Run `fluid connect settings exigo` with no flags to list them without changing anything, and `--defaults --only <entity.key>` to restore a single setting.
   </Step>
 </Steps>
 
@@ -139,7 +168,7 @@ Customer type, customer status, order status, and order type rows also take `def
 
 ## Common settings
 
-These are the settings to decide before the first sync. Pass each as `--set <key>=<value>`.
+These are the settings to decide before the first sync. Each starts on the default shown; pass `--set <key>=<value>` to change one, or `--defaults --only <key>` to put it back.
 
 | Setting | Default | What it decides |
 | --- | --- | --- |
@@ -245,6 +274,7 @@ Every setting Exigo supports, as `fluid connect show exigo` reports them. Settin
 | `installed: false` (`fluid connect list`) | Exigo isn't installed for this company. | Run step 1. |
 | `connected: true` | The connection exists and has credentials. | Continue with mappings and settings. |
 | `liveSyncState` | Whether records are syncing now. | When it reports degraded, read `liveSyncDegradedReason`. |
+| `done: false` (`fluid connect unmapped`) | Some Fluid values have no row. | Map each value in `unmapped`, or add a `*` fallback. |
 | `mapped: false` (`--options`) | No row matches this value yet. | Add a row, or a `*` fallback. |
 
 ## Troubleshooting
