@@ -98,7 +98,10 @@ const SEARCH_TOOL = "search_fluid";
 const RETRIEVAL_RATE_FLOOR = 0.9;
 
 // Legacy-endpoint patterns. A hit anywhere in retrieved content or in
-// llms-full.txt is a failure unless it lands in a sanctioned section (below).
+// llms-full.txt is a failure unless it lands in a sanctioned section (below),
+// except the unversioned v1 markers in ADVISORY_LEGACY: AGENTS.md prefers the
+// newer version of an operation but allows a v1 path that has none, so those
+// hits are reported as warnings for a person to judge.
 const LEGACY_PATTERNS = [
   /company\/v1\//,
   /\/api\/v1\//,
@@ -106,6 +109,8 @@ const LEGACY_PATTERNS = [
   /v202506/,
   /\bper_page\b/,
 ];
+
+const ADVISORY_LEGACY = /^(?:company\/v1\/|\/api\/v1\/)$/;
 
 // AGENTS.md carves out two places where a legacy marker is correct, and both show
 // up in the published agent surface. Sanctioning them by section keeps the scan
@@ -683,9 +688,11 @@ function isSanctionedLegacyHit(marker, label, sectionText = "") {
 }
 
 // Finds every legacy marker in `text`, attributing each to the section that holds
-// it and splitting sanctioned from unsanctioned.
+// it and splitting sanctioned, advisory (v1 markers, reported but not failing),
+// and unsanctioned hits.
 function scanLegacyAttributed(sections) {
   const sanctioned = [];
+  const advisory = [];
   const unsanctioned = [];
   for (const section of sections) {
     const checkoutBoundary = removeCheckoutPublicSdkBoundary(section.text);
@@ -695,10 +702,11 @@ function scanLegacyAttributed(sections) {
     for (const marker of scanLegacy(checkoutBoundary.text)) {
       const hit = { marker, label: section.label };
       if (isSanctionedLegacyHit(marker, section.label, checkoutBoundary.text)) sanctioned.push(hit);
+      else if (ADVISORY_LEGACY.test(marker)) advisory.push(hit);
       else unsanctioned.push(hit);
     }
   }
-  return { sanctioned, unsanctioned };
+  return { sanctioned, advisory, unsanctioned };
 }
 
 // Every hosted `.md` page opens with the same block-quoted documentation-index and
@@ -962,7 +970,7 @@ async function main() {
         repeatHits: null,
         chars: 0,
         pages: [],
-        legacy: { sanctioned: [], unsanctioned: [] },
+        legacy: { sanctioned: [], advisory: [], unsanctioned: [] },
       };
     }
   });
@@ -985,7 +993,7 @@ async function main() {
   // Union the corpus scan with every prompt's retrieved chunks. Both surfaces see
   // different material: llms-full.txt gives one terse section per reference page,
   // while /mcp returns the spec-derived parameter detail underneath it.
-  const legacyHits = { sanctioned: new Map(), unsanctioned: new Map() };
+  const legacyHits = { sanctioned: new Map(), advisory: new Map(), unsanctioned: new Map() };
   const collect = (bucket, hits, source) => {
     for (const h of hits) {
       const key = `${h.marker} ${h.label}`;
@@ -994,9 +1002,11 @@ async function main() {
     }
   };
   collect(legacyHits.sanctioned, corpusLegacy.sanctioned, "llms-full.txt");
+  collect(legacyHits.advisory, corpusLegacy.advisory, "llms-full.txt");
   collect(legacyHits.unsanctioned, corpusLegacy.unsanctioned, "llms-full.txt");
   for (const r of perPrompt) {
     collect(legacyHits.sanctioned, r.legacy.sanctioned, "/mcp + target pages");
+    collect(legacyHits.advisory, r.legacy.advisory, "/mcp + target pages");
     collect(legacyHits.unsanctioned, r.legacy.unsanctioned, "/mcp + target pages");
   }
   const unsanctionedLegacy = [...legacyHits.unsanctioned.values()];
@@ -1005,8 +1015,13 @@ async function main() {
   process.stdout.write(
     `[${unsanctionedLegacy.length === 0 ? "PASS" : "FAIL"}] ` +
       `${unsanctionedLegacy.length} unsanctioned marker/page pair(s), ` +
-      `${legacyHits.sanctioned.size} sanctioned\n`,
+      `${legacyHits.sanctioned.size} sanctioned, ${legacyHits.advisory.size} v1 warning(s)\n`,
   );
+  for (const h of legacyHits.advisory.values()) {
+    process.stdout.write(
+      `    WARN ${h.marker} in ${h.label} (seen via ${[...h.sources].join(", ")}) — fine only if no newer version covers it\n`,
+    );
+  }
   for (const h of unsanctionedLegacy) {
     process.stdout.write(`    LEAK ${h.marker} in ${h.label} (seen via ${[...h.sources].join(", ")})\n`);
   }
@@ -1116,6 +1131,7 @@ async function main() {
         legacy: {
           unsanctioned: unsanctionedLegacy.map((h) => ({ ...h, sources: [...h.sources] })),
           sanctioned: [...legacyHits.sanctioned.values()].map((h) => ({ ...h, sources: [...h.sources] })),
+          advisory: [...legacyHits.advisory.values()].map((h) => ({ ...h, sources: [...h.sources] })),
         },
         prompts: perPrompt,
       },
