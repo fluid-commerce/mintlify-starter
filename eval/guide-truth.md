@@ -2205,31 +2205,41 @@ same Fluid branch:
 
 `onboarding-v0` (`api-reference/onboarding-v0.yaml`, `info.title: Fluid Onboarding API`)
 now syncs from the mirror. It is the API behind **Settings → Onboarding**, the Fluid
-Payments onboarding form. It was never deliberately deferred; nothing linked to it
-until `api/agent-launch.mdx` needed agents to prefill the form. Its sidebar rules put
-`onboarding_info`, `entities`, `owners`, `bank_accounts`, and the company-scoped
-`company_countries` under **Payments → Payments onboarding**, and the four
-`/api/companies/set_*` operations under **Settings → Company**.
+Payments onboarding form, and the API the `fluid payments onboarding` CLI plugin calls.
+It was never deliberately deferred. Its sidebar rules put `onboarding_info`, `entities`,
+`owners`, `bank_accounts`, and the company-scoped `company_countries` under
+**Payments → Payments onboarding**, and the four `/api/companies/set_*` operations under
+**Settings → Company**.
 
-`api/agent-launch.mdx` sits beside `api/agent-signup.mdx` in the API Reference
-**Overview** group and, like it, is not in the claims registry. Verified against
-`origin/main` of the Rails monorepo when it was written:
+This supersedes the payments onboarding guided setup's note (item 14 of its upstream
+spec gaps) that the onboarding form's operations "aren't in any synced spec yet". That
+guide may now link the generated reference from its **Use the API directly** section.
+
+Verified against `origin/main` of the Rails monorepo:
 
 - **The onboarding update is a partial write.** Omitted top-level fields are left
   alone, and `underwriting_info`, `data_migration`, and `onboarding_steps` merge into
   what's stored. An optional `onboarding_info_version` turns a write built on a
   superseded revision into `409`.
-- **The terms acceptance is stamped server-side from the calling user.** A
-  client-sent signer or timestamp is ignored. The guide therefore tells agents never to
-  send the terms agreement: with the merchant's token, it would record the merchant as
-  the signer.
-- **The guide leaves owners and bank accounts to the merchant** even though the API
-  exposes them. They are personal and financial data that an agent shouldn't source
-  from scraping.
+- **Submitting needs a person.** The update stamps the calling user as the signer of the
+  steps audit and the terms acceptance, so a company API token, which has no user, can't
+  submit. Writes that don't touch those fields work with either token.
 
-Two product claims in that guide come from the requester, not the implementation, and
-are open for confirmation on PR #90. One is that Fluid sets up social sales channels
-from the onboarding business details. The other is that a merchant can build and
-preview a store before adding a card at **Settings → Billing**. Neither is visible in
-the code: onboarding doesn't feed the sales-channel connections, and nothing gates
-going live on a card.
+### Agent launch guide (`api/agent-launch.mdx`)
+
+The guide sits beside `api/agent-signup.mdx` in the API Reference **Overview** group
+and, like it, is not in the claims registry. It sequences the guided setups rather than
+restating them: Connect (Exigo, InfoTrax, ByDesign, Pillars), payments onboarding, open a
+country, add a language, the TikTok Shop, Meta, and Google Merchant Center channels, and
+custom domain. Step details, commands, and contracts stay on those pages. It has to merge
+after the guided setup pages it links to.
+
+The agent prefills payments onboarding, and the merchant provides owners, bank accounts,
+and documents and submits. Each sales channel needs the merchant to approve Fluid in a
+browser.
+
+One product claim comes from the requester, not the implementation, and is open for
+confirmation on PR #90: a merchant can build and preview a store before adding a card at
+**Settings → Billing**. Nothing in the code gates going live on a card. The earlier claim
+that Fluid sets up social channels from the onboarding business details was dropped: the
+channel guided setups connect each channel through the merchant's own approval.
