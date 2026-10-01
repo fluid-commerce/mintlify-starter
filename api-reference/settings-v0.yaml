@@ -49,6 +49,17 @@ components:
           type: array
           description: The accrual grouped by heading.
           items: { "$ref": "#/components/schemas/BillingUpcomingGroup" }
+    BillingInvoiceEntry:
+      type: object
+      description: One product on an issued invoice.
+      required: [product_code, description, amount_cents, paid_with_credits]
+      properties:
+        product_code: { type: string, description: The SKU this line came from. }
+        description: { type: string, description: The SKU's display name. }
+        quantity: { type: [string, "null"], description: How many units accrued, as a decimal string. }
+        unit: { type: [string, "null"], description: What one unit is. }
+        amount_cents: { type: integer, description: What the product came to, in cents. }
+        paid_with_credits: { type: [boolean, "null"], description: "Whether the credit balance paid this line. Null for a company whose billing is not paid from credits, whose statement lines carry no such mark." }
     BillingInvoiceGroup:
       type: object
       description: One heading on an issued invoice and what sat under it. Group amounts sum to the invoice total.
@@ -59,7 +70,7 @@ components:
         entries:
           type: array
           description: The products under this heading, as they were invoiced.
-          items: { "$ref": "#/components/schemas/BillingUpcomingEntry" }
+          items: { "$ref": "#/components/schemas/BillingInvoiceEntry" }
     BillingInvoiceSummary:
       type: object
       description: One issued invoice as it appears in the merchant's history.
@@ -198,7 +209,7 @@ components:
       description: One independent unpaid amount.
       required: [kind, financial_started_at, amount_cents, currency_code]
       properties:
-        kind: { type: string, enum: [failed_debit, manual_invoice], description: A failed direct debit or an overdue manual invoice. }
+        kind: { type: string, enum: [failed_debit, manual_invoice, credit_debt], description: A failed direct debit, an overdue manual invoice, or unpaid credit debt after a failed charge. }
         financial_started_at: { type: string, format: date-time, description: When the debit failed or the invoice fell due. }
         amount_cents: { type: integer, description: What remains unpaid for this source, in cents. }
         currency_code: { type: string, description: ISO currency of the amount. }
@@ -207,7 +218,7 @@ components:
       description: One open condition and the dates each tier could act on it.
       required: [kind, financial_started_at, grace_started_at, eligible_after]
       properties:
-        kind: { type: string, enum: [failed_debit, manual_invoice, missing_authorization] }
+        kind: { type: string, enum: [failed_debit, manual_invoice, missing_authorization, credit_debt] }
         financial_started_at: { type: string, format: date-time }
         grace_started_at: { type: string, format: date-time, description: When this condition's grace began. }
         eligible_after:
@@ -301,7 +312,7 @@ components:
         The company's credits: its plan, what its usage has drawn this month,
         and what more cost. One credit is one dollar, and every kind of usage
         draws on one balance. Priced but not billed or for sale yet.
-      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, pending, drawn_cents, pace, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms]
+      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms]
       properties:
         balance_cents: { type: integer, description: "The credit balance, in cents: the sum of every credit movement. Below zero only when usage overdraws it." }
         spendable_cents: { type: integer, description: "What new usage may draw on, in cents: the balance less expired_cents and held_cents." }
@@ -312,12 +323,20 @@ components:
           type: array
           description: The kinds of usage paid from this balance as they run; the rest stay on the bill.
           items: { type: string, enum: [ai, platform] }
-        drawn_cents: { type: integer, minimum: 0, description: "What usage that occurred this UTC month drew from the balance, in cents, overdrawn parts included. Usage billed on the invoice draws nothing." }
+        drawn_cents: { type: integer, minimum: 0, description: "What AI usage that occurred this UTC month drew from the balance, in cents, overdrawn parts included. Usage billed on the invoice draws nothing, and platform fees paid from credits are not counted." }
         pace:
           oneOf:
           - { "$ref": "#/components/schemas/BillingCreditPace" }
           - { type: "null" }
           description: How fast the balance is drawn now, or null when no usage is paid from it.
+        credit_billing:
+          oneOf:
+          - { "$ref": "#/components/schemas/BillingCreditBilling" }
+          - { type: "null" }
+          description: >-
+            For a company whose billing is paid from credits, the debt and the way out of it: the last failed charge, whether
+            automatic charges are blocked, whether Pay now can run, and what the next billing run will draw. Null for every
+            other company, and for one whose credits billing date has not come.
         pending:
           type: object
           description: >-
@@ -380,6 +399,60 @@ components:
           properties:
             version: { type: string }
             text: { type: string }
+    BillingCreditBilling:
+      type: object
+      additionalProperties: false
+      description: A credit-billed company's debt and the way out of it.
+      required: [credits_billing_at, debt_cents, last_failed_charge, automatic_charges_blocked, pay_now, upcoming_estimate]
+      properties:
+        credits_billing_at: { type: string, format: date-time, description: "From this instant the company's non-AI billing is paid from credits; 00:00 UTC on the 1st of a month." }
+        debt_cents: { type: integer, minimum: 0, description: "What the credits are overdrawn by, in cents: minus the sum of the overdrawn parts of the credit movements (usage that found too few credits). Zero when nothing is overdrawn. Pay now charges at least this." }
+        last_failed_charge:
+          oneOf:
+          - { "$ref": "#/components/schemas/BillingCreditFailedCharge" }
+          - { type: "null" }
+          description: The latest automatic or Pay now charge that failed or was returned. Null when the debt is zero or no such charge failed.
+        automatic_charges_blocked: { type: boolean, description: "Whether Fluid has stopped charging the saved payment method by itself after a failed charge. Pay now still works. The block lifts on a new payment method, a successful Pay now, or a successful retry." }
+        pay_now: { "$ref": "#/components/schemas/BillingCreditPayNow" }
+        upcoming_estimate: { "$ref": "#/components/schemas/BillingCreditUpcomingEstimate" }
+    BillingCreditFailedCharge:
+      type: object
+      additionalProperties: false
+      description: >-
+        A charge for the company's credits that was declined or returned since the company last had no debt. A charge
+        that was never sent, a provider outage, and a failure the merchant has since paid past are not shown.
+      required: [purchase_id, origin, amount_cents, failure_code, reason, failed_at]
+      properties:
+        purchase_id: { type: integer, description: The credit purchase of the charge; GET /api/settings/billing/credits/purchases lists it. }
+        origin: { type: string, enum: [auto_reload, settlement], description: "Who started the charge: auto_reload is a top-up, settlement is a charge for the debt." }
+        amount_cents: { type: integer, minimum: 1, description: What the charge was for, in cents. }
+        failure_code: { type: [string, "null"], description: "The processor's code for the failure, such as insufficient_funds; returned for a bank payment taken back. Null when none was given." }
+        reason: { type: string, description: Why the charge failed, in words for the merchant. }
+        failed_at: { type: string, format: date-time, description: When the charge failed or came back. }
+    BillingCreditPayNow:
+      type: object
+      additionalProperties: false
+      description: Whether the merchant can pay the debt now, and why not.
+      required: [available, reason]
+      properties:
+        available: { type: boolean, description: "Whether POST /api/settings/billing/credits/pay-now would charge now." }
+        reason:
+          type: [string, "null"]
+          enum: [no_debt, in_flight, no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch, null]
+          description: Why it cannot, when available is false; null when it can.
+    BillingCreditUpcomingEstimate:
+      type: object
+      additionalProperties: false
+      description: >-
+        Fees written and not yet drawn from the credits, as of the last draw cutoff. An estimate, not a charge: the billing
+        run draws them from the credits first and charges only the part that overdraws them. It can lag a fee whose write
+        committed late. It counts the fees dated before the moment of the read. Tonight's run draws every fee dated before
+        00:00 UTC tomorrow, so a fee dated later today is not yet counted.
+      required: [draws_cents, adjustment_credits_cents, net_cents]
+      properties:
+        draws_cents: { type: integer, minimum: 0, description: Fees to draw, in cents. }
+        adjustment_credits_cents: { type: integer, minimum: 0, description: "Credits Fluid will return for corrections and lower true-ups, in cents, as a positive number." }
+        net_cents: { type: integer, description: draws_cents less adjustment_credits_cents. }
     BillingCreditPace:
       type: object
       description: >-
@@ -429,13 +502,14 @@ components:
         means the payment is still settling. origin is manual (the merchant
         bought), auto_reload (a low balance bought), or settlement (a charge
         for what a credit-billed company owes, with any auto-reload top-up).
-      required: [id, origin, status, instrument_type, failure_message, invoice_available, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
+      required: [id, origin, status, instrument_type, failure_message, invoice_available, top_up_cents, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
       properties:
         id: { type: integer }
         origin: { type: string, enum: [manual, auto_reload, settlement] }
         status: { type: string, enum: [pending, processing, succeeded, failed, refunded, reversed] }
         instrument_type: { type: string, enum: [card, us_bank_account] }
         failure_message: { type: [string, "null"], description: Why the payment failed, for a failed purchase. }
+        top_up_cents: { type: [integer, "null"], minimum: 0, description: "For a settlement, the part of amount_cents that is the auto-reload top-up; the rest paid the debt and any surplus up to the rail's smallest charge. Null for every other origin." }
         invoice_available: { type: boolean, description: "Whether the purchase has a paid Stripe invoice to open; GET /api/settings/billing/credits/purchases/{id}/invoice returns its link." }
         amount_cents: { type: integer, minimum: 1, description: What was paid, in cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100 }
@@ -3406,6 +3480,7 @@ paths:
                         quantity: '721.0'
                         unit: transaction
                         amount_cents: 21630
+                        paid_with_credits: null
                   billing_email: angela.martin@dundermifflin.com
                   payment_method:
                     status: usable
@@ -3525,6 +3600,7 @@ paths:
                         quantity: '721.0'
                         unit: transaction
                         amount_cents: 21630
+                        paid_with_credits: null
                   billing_email: angela.martin@dundermifflin.com
                   payment_method:
                     status: usable
@@ -4077,6 +4153,7 @@ paths:
                   low_balance_cents: 2000
                   funded_categories:
                   - ai
+                  credit_billing: null
                   plan:
                     key: growth
                     name: Growth
@@ -4207,6 +4284,7 @@ paths:
                   low_balance_cents: 2000
                   funded_categories:
                   - ai
+                  credit_billing: null
                   plan:
                     key: launch
                     name: Launch
@@ -4423,6 +4501,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: true
+                  top_up_cents: null
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4438,6 +4517,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  top_up_cents: null
                   amount_cents: 20000
                   bonus_percent: 0
                   bonus_cents: 0
@@ -4447,6 +4527,22 @@ paths:
                   created_at: '2026-09-03T08:11:40Z'
                   succeeded_at: '2026-09-03T08:11:42Z'
                   failed_at: null
+                - id: 7390
+                  origin: settlement
+                  status: failed
+                  instrument_type: card
+                  failure_message: Your card was declined.
+                  invoice_available: false
+                  top_up_cents: 2500
+                  amount_cents: 12500
+                  bonus_percent: 0
+                  bonus_cents: 0
+                  credit_cents: 12500
+                  refunded_cents: 0
+                  credits_expire_at: '2027-09-29T04:00:03Z'
+                  created_at: '2026-09-29T04:00:01Z'
+                  succeeded_at: null
+                  failed_at: '2026-09-29T04:00:03Z'
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -4523,6 +4619,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  top_up_cents: null
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4552,6 +4649,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  top_up_cents: null
                   amount_cents: 100000
                   bonus_percent: 10
                   bonus_cents: 10000
@@ -4696,6 +4794,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  top_up_cents: 0
                   amount_cents: 100000
                   bonus_percent: 0
                   bonus_cents: 0
@@ -4843,6 +4942,7 @@ paths:
                         quantity: '721.0'
                         unit: transaction
                         amount_cents: 21630
+                        paid_with_credits: null
                   billing_email: angela.martin@dundermifflin.com
                   payment_method:
                     status: usable
