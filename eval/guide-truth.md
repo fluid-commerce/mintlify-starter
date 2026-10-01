@@ -2235,11 +2235,16 @@ custom domain. Step details, commands, and contracts stay on those pages. It has
 after the guided setup pages it links to.
 
 The agent prefills payments onboarding, and the merchant provides owners, bank accounts,
-and documents and submits. Each sales channel needs the merchant to approve Fluid in a
-browser.
+and documents and submits. An existing sales-channel account needs the merchant to approve
+Fluid in a browser, through the channel guided setups.
+
+**Fluid sets up sales-channel accounts from the onboarding form.** When a merchant has no
+TikTok Shop, Meta, or Google account, Fluid's team creates them from the business details
+in the payments onboarding form. This is a service Fluid provides, confirmed by the docs
+owner on 2026-10-01. It's not an automated code path, so don't look for it in the
+onboarding or channel code, and don't remove the claim because the code doesn't show it.
+The channel guided setups cover connecting accounts the merchant already has.
 
 One product claim comes from the requester, not the implementation, and is open for
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
-**Settings → Billing**. Nothing in the code gates going live on a card. The earlier claim
-that Fluid sets up social channels from the onboarding business details was dropped: the
-channel guided setups connect each channel through the merchant's own approval.
+**Settings → Billing**. Nothing in the code gates going live on a card.
