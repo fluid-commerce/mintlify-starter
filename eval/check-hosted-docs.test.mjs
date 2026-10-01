@@ -1039,8 +1039,8 @@ describe("scanLegacyAttributed", () => {
     ]);
   });
 
-  it("splits sanctioned from unsanctioned and keeps the owning section label", () => {
-    const { sanctioned, unsanctioned } = scanLegacyAttributed([
+  it("splits sanctioned, advisory, and unsanctioned hits and keeps the owning section label", () => {
+    const { sanctioned, advisory, unsanctioned } = scanLegacyAttributed([
       { label: "(agent-instructions banner)", text: "never use per_page" },
       { label: "api-reference/webhooks/list-webhooks", text: "pages with page/per_page" },
       { label: "api/guides/collections", text: "pass per_page=50" },
@@ -1050,10 +1050,16 @@ describe("scanLegacyAttributed", () => {
       sanctioned.map((h) => h.label),
       ["(agent-instructions banner)", "api-reference/webhooks/list-webhooks"],
     );
-    assert.deepEqual(unsanctioned, [
-      { marker: "per_page", label: "api/guides/collections" },
-      { marker: "/api/v1/", label: "api/guides/legacy" },
+    assert.deepEqual(unsanctioned, [{ marker: "per_page", label: "api/guides/collections" }]);
+    assert.deepEqual(advisory, [{ marker: "/api/v1/", label: "api/guides/legacy" }]);
+  });
+
+  it("reports a v1 path as a warning, not a failure: it is allowed when no newer version exists", () => {
+    const { advisory, unsanctioned } = scanLegacyAttributed([
+      { label: "api/guides/companies", text: "GET /api/company/v1/companies/me" },
     ]);
+    assert.deepEqual(unsanctioned, []);
+    assert.deepEqual(advisory, [{ marker: "company/v1/", label: "api/guides/companies" }]);
   });
 
   it("reports nothing for a clean corpus", () => {
