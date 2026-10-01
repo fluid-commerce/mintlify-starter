@@ -426,11 +426,13 @@ components:
       description: >-
         One purchase of credits: what was paid, what it granted, and where its
         money stands. succeeded means the credits were granted; processing
-        means the payment is still settling.
+        means the payment is still settling. origin is manual (the merchant
+        bought), auto_reload (a low balance bought), or settlement (a charge
+        for what a credit-billed company owes, with any auto-reload top-up).
       required: [id, origin, status, instrument_type, failure_message, invoice_available, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
       properties:
         id: { type: integer }
-        origin: { type: string, enum: [manual, auto_reload] }
+        origin: { type: string, enum: [manual, auto_reload, settlement] }
         status: { type: string, enum: [pending, processing, succeeded, failed, refunded, reversed] }
         instrument_type: { type: string, enum: [card, us_bank_account] }
         failure_message: { type: [string, "null"], description: Why the payment failed, for a failed purchase. }
@@ -464,6 +466,13 @@ components:
         credit_purchase: { "$ref": "#/components/schemas/BillingCreditPurchase" }
         balance_cents: { type: integer, description: The credit balance after the purchase, in cents. }
         duplicate: { type: boolean, description: Whether this returns a purchase already made with the same key. }
+    BillingCreditPayNowResponse:
+      type: object
+      description: The charge Pay now made.
+      required: [credit_purchase, balance_cents]
+      properties:
+        credit_purchase: { "$ref": "#/components/schemas/BillingCreditPurchase" }
+        balance_cents: { type: integer, description: The credit balance after the charge, in cents. Still below zero while a bank payment settles. }
     BillingPayment:
       type: object
       description: >-
@@ -4646,6 +4655,97 @@ paths:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '503':
           description: Stripe is not configured for the charge's mode
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/billing/credits/pay-now":
+    post:
+      summary: Pay the overdrawn credit balance now
+      description: >-
+        Charges the saved card or bank account for what the credit balance is
+        overdrawn by, now instead of at the next billing run: at least the
+        rail's smallest charge, any surplus added as credits, and no
+        auto-reload top-up. Only for a company whose billing is paid from
+        credits. It is the merchant's own charge, so it works while automatic
+        charges are blocked: a success lifts that block, a failure keeps it. A
+        declined card returns the charge as failed, with its reason (201).
+        Takes no body and no key. Only one charge runs at a time: while one is
+        on its way a repeat is refused (409), and once the debt is paid a
+        repeat finds nothing owed (422); neither charges. Needs billing.update;
+        never a Droplet token.
+      tags:
+      - billing
+      x-fluid-lint-exempt: "Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions."
+      x-fluid-audience: company
+      operationId: settings_v0_create_billing_credit_debt_payment
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: The charge was reserved and sent; its status says where the payment stands
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BillingCreditPayNowResponse"
+              example:
+                credit_purchase:
+                  id: 7391
+                  origin: settlement
+                  status: succeeded
+                  instrument_type: card
+                  failure_message: null
+                  invoice_available: false
+                  amount_cents: 100000
+                  bonus_percent: 0
+                  bonus_cents: 0
+                  credit_cents: 100000
+                  refunded_cents: 0
+                  credits_expire_at: '2027-09-30T14:05:11Z'
+                  created_at: '2026-09-30T14:05:09Z'
+                  succeeded_at: '2026-09-30T14:05:11Z'
+                  failed_at: null
+                balance_cents: 0
+                status: 201
+                meta:
+                  request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
+                  timestamp: '2026-09-30T14:05:11Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing billing.update permission, not an admin, or a Droplet token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company's billing is not paid from credits (not_credit_billed)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: A charge is already on its way (in_flight); nothing was charged
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Nothing is owed (no_debt), or the saved payment method cannot be charged (no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '503':
+          description: >-
+            Payments are unavailable (purchase_unavailable). Nothing was
+            charged and nothing sends the charge again: the attempt is
+            recorded as a failed purchase (provider_unconfigured). Pay again
+            when payments return, or the next billing run charges the debt
           content:
             application/json:
               schema:
