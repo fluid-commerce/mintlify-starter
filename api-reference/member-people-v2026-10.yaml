@@ -34,6 +34,9 @@ tags:
     description: The signed-in member's own identity
   - name: profile
     description: The signed-in member's shared public profile
+  - name: socials
+    x-fluid-section: People
+    description: The signed-in member's shared social accounts
   - name: companies
     description: The memberships the signed-in member's user holds, for a company switcher
 components:
@@ -161,6 +164,71 @@ components:
         - name
         - subdomain
         - logo_url
+    SocialLink:
+      type: object
+      description: A shared-user social account. Blank platforms are omitted from the collection.
+      additionalProperties: false
+      required: [platform, handle, url, verified]
+      properties:
+        platform:
+          type: string
+          description: Public platform key; x maps to the legacy twitter column.
+          enum: [facebook, instagram, x, linkedin, whatsapp, wechat, youtube, tiktok, pinterest]
+          example: x
+        handle:
+          type: string
+          description: Saved account handle or platform-specific profile path, preserving legacy values on reads.
+          example: rae_kim
+        url:
+          type: [string, "null"]
+          description: Canonical HTTPS profile URL, or null for WeChat and ambiguous legacy values. Bare stored YouTube values remain unresolved until explicitly edited.
+          example: https://x.com/rae_kim
+        verified:
+          type: boolean
+          const: false
+          description: Always false; existing login data does not attest ownership of an editable social handle.
+          example: false
+    SocialLinkUpdate:
+      type: object
+      description: Exactly one handle or full HTTP(S) profile URL for the selected platform.
+      additionalProperties: false
+      oneOf:
+        - required: [handle]
+        - required: [url]
+      properties:
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: "\\S"
+          description: Account handle; WhatsApp uses international digits with an optional leading plus. YouTube also accepts channel/, c/, and user/ paths.
+          example: rae_kim
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: Full profile URL on the selected platform. Unsupported paths, query strings, fragments, credentials and custom ports are refused.
+          example: https://x.com/rae_kim
+    SocialLinkEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          "$ref": "#/components/schemas/SocialLink"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+    SocialLinksEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          maxItems: 9
+          description: Supported saved accounts in platform order. This bounded collection is not paginated.
+          items:
+            "$ref": "#/components/schemas/SocialLink"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
     Profile:
       type: object
       description: |
@@ -484,6 +552,162 @@ components:
         - data
         - meta
 paths:
+  "/api/member/v2026-10/socials":
+    get:
+      summary: List the signed-in member's social accounts
+      description: |
+        Returns at most nine saved social accounts from the shared user. Edits
+        through any membership or legacy profile writer are visible here.
+        Private responses have max-age=300 and an ETag over the rendered links
+        and current membership. Authentication runs before conditional handling.
+        Spotify and other catalogue resources are not exposed by this endpoint.
+      operationId: member_socials_index
+      x-fluid-audience: member
+      tags: [socials]
+      parameters:
+        - name: If-None-Match
+          in: header
+          description: ETag from a prior socials response.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The bounded collection of saved social accounts.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLinksEnvelope"
+              example:
+                data:
+                - platform: x
+                  handle: rae_kim
+                  url: https://x.com/rae_kim
+                  verified: false
+                meta:
+                  request_uuid: 0198ec16-a579-7000-8000-000000000001
+                  timestamp: "2026-10-01T12:00:00Z"
+        "304":
+          description: The authenticated member's representation is unchanged.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        "401":
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/socials/{platform}":
+    parameters:
+      - name: platform
+        in: path
+        required: true
+        description: Supported social platform; unknown keys return 422.
+        schema:
+          type: string
+          enum: [facebook, instagram, x, linkedin, whatsapp, wechat, youtube, tiktok, pinterest]
+          example: x
+    put:
+      summary: Upsert one social account
+      description: |
+        Accepts exactly one handle or profile URL at the top level. Changes the
+        shared user, so all memberships see the edit. The existing lifecycle
+        invalidates MySite caches; an actual change publishes profiles.updated
+        with changed_fields=[socials] after commit. Unchanged values are a no-op.
+        Only writable member tokens may write; member and portal JWTs return 403.
+
+        x accepts x.com and twitter.com URLs; LinkedIn URLs must use /in/handle.
+        YouTube normalizes bare handle input to @handle and supports channel/,
+        c/, or user/ profile paths. Full YouTube URLs must already use one of
+        these profile forms, including the @ prefix for a handle URL.
+        WhatsApp uses an international number or wa.me URL. WeChat accepts a
+        handle only and returns a null URL. For other platforms use a single
+        profile handle, not a post URL. URLs may include www and a trailing slash.
+        Query strings, fragments, custom ports and credentials are unsupported.
+        Unknown or read-only fields return 422. Writes do not use the read cache policy.
+      operationId: member_socials_update
+      x-fluid-audience: member
+      tags: [socials]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SocialLinkUpdate"
+            example:
+              handle: rae_kim
+      responses:
+        "200":
+          description: The saved social account.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLinkEnvelope"
+              example:
+                data:
+                  platform: x
+                  handle: rae_kim
+                  url: https://x.com/rae_kim
+                  verified: false
+                meta:
+                  request_uuid: 0198ec16-a579-7000-8000-000000000001
+                  timestamp: "2026-10-01T12:00:00Z"
+        "401":
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: The member credential is read-only.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Unknown platform, invalid profile input or model validation failure.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Remove one social account
+      description: |
+        Clears only the selected shared-user social field. Removing an absent
+        account succeeds without writing or publishing an event. Actual removals
+        use the same lifecycle and profiles.updated event as PUT. Only writable
+        member tokens may remove an account; JWT credentials return 403.
+      operationId: member_socials_destroy
+      x-fluid-audience: member
+      tags: [socials]
+      responses:
+        "204":
+          description: The social account is absent. No response body.
+        "401":
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: The member credential is read-only.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Unknown platform or model validation failure.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/profile":
     get:
       summary: Show the signed-in member's public profile
