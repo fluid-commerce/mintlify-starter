@@ -1,0 +1,272 @@
+---
+title: "Connect Exigo to Fluid"
+sidebarTitle: "Connect Exigo"
+description: "Link Exigo to Fluid, set its credentials, map its data to Fluid's, and choose how records sync."
+setup:
+  id: connect-exigo
+  cli: "@fluid-app/fluid-cli-connect"
+  steps:
+    - id: install
+      title: "Install Exigo"
+      run: "fluid connect install exigo --yes"
+      changes: true
+    - id: credentials
+      title: "Save the credentials"
+      run: "fluid connect credentials exigo --set <group.key>=<value> --yes"
+      changes: true
+    - id: review
+      title: "Review the connection"
+      run: "fluid connect show exigo"
+    - id: map
+      title: "Map your data"
+      run: "fluid connect map exigo <type> --set <field>=<value> --yes"
+      changes: true
+      repeat: true
+      done_when: "fluid connect mappings exigo <type> --options shows mapped: true for every value you sync"
+    - id: settings
+      title: "Choose the sync settings"
+      run: "fluid connect settings exigo --set <entity.key>=<value> --yes"
+      changes: true
+---
+
+Exigo stays the system of record for your distributors, orders, and genealogy. Fluid reads changes from Exigo's SQL Server and writes new orders and customers back through Exigo's API, so the connection needs both. After setup, records sync between Exigo and Fluid on a schedule, every 15 minutes by default.
+
+## Before you start
+
+- A Fluid API token for the company, from **Settings > API Tokens**, or your own sign-in with `fluid login`. The token needs permission to view the company; installing the droplet also needs permission to manage droplets.
+- Your Exigo credentials (listed in step 2).
+- Install and sign in to the CLI:
+
+```bash
+npm install -g @fluid-app/fluid-cli @fluid-app/fluid-cli-connect
+fluid login
+```
+
+## Steps
+
+<Steps>
+  <Step title="Install Exigo">
+    This changes live configuration: it installs the Exigo droplet in Fluid, which creates the connection.
+
+    ```bash
+    fluid connect install exigo --yes
+    ```
+
+    `fluid connect list` shows every provider and whether it's installed. If Exigo is already installed, `install` says so and changes nothing.
+  </Step>
+  <Step title="Save the credentials">
+    This changes live configuration. Fluid tests the connection with the credentials before saving them, so a wrong value is reported and nothing is saved.
+
+    ```bash
+    fluid connect credentials exigo --yes \
+      --set api.company=acme --set api.username=api_user --set api.password=... \
+  --set mssql.dataserver=sql.acme.example --set mssql.database=acme \
+  --set mssql.username=reader --set mssql.password=... --set environment=production
+    ```
+
+    | Key | What it is |
+    | --- | --- |
+    | `api.company` | Your Exigo company login (company code). |
+    | `api.username` | Exigo API service-account username. |
+    | `api.password` | Exigo API service-account password. |
+    | `mssql.dataserver` | Exigo SQL Server host (data server). |
+    | `mssql.database` | Exigo SQL Server database name. |
+    | `mssql.username` | SQL Server login username. |
+    | `mssql.password` | SQL Server login password. |
+    | `environment` | `production` for your live Exigo, or a sandbox. A sandbox also needs `sandbox_id`. |
+    | `sandbox_id` | Your Exigo sandbox's ID, the subdomain part of its address. Sandbox only. |
+
+    You can update one credential later without re-entering the rest: pass only the keys that changed.
+  </Step>
+  <Step title="Review the connection">
+    ```bash
+    fluid connect show exigo
+    ```
+
+    The result lists the connection's state, the mapping types Exigo supports (`supportedMappings`), and every sync setting with its current value and default (`settings`). Use it as the reference for the next two steps.
+  </Step>
+  <Step title="Map your data">
+    A mapping tells Fluid which Exigo value matches each Fluid value, for example which Exigo customer type is a Fluid `rep`. Do this before the first sync: a value with no row, and no `*` fallback, can't be translated.
+
+    For each mapping type, list the values to match, then add a row per value. This changes live configuration.
+
+    ```bash
+    fluid connect mappings exigo customer_type --options
+    fluid connect map exigo customer_type --yes \
+      --set source_type_slug=rep --set target_type_id=2
+    fluid connect mappings exigo customer_type
+    ```
+
+    For Exigo, `--options` returns both Fluid's values (`fluid`) and Exigo's own (`provider`), so you can map each side from real values. Each option carries `mapped: true` once a row covers it. A row whose source is `*` is the fallback for any value without its own row. Remove a row with `fluid connect unmap exigo <type> <id> --yes`.
+
+    See [Data mapping](#data-mapping) for every mapping type and its fields.
+  </Step>
+  <Step title="Choose the sync settings">
+    This changes live configuration. Settings decide what syncs and how conflicts are handled. Each one has a safe default, so change only the ones your business needs; start with [Common settings](#common-settings).
+
+    ```bash
+    fluid connect settings exigo --yes --set order.refund_handling=hold --set product.new_inactive=true
+    ```
+
+    The command prints every setting with its new value. Run `fluid connect settings exigo` without `--set` to list them without changing anything.
+  </Step>
+</Steps>
+
+## Data mapping
+
+In every mapping, the **source** fields are Fluid's value and the **target** fields are Exigo's. Send a row's fields with `--set field=value`.
+
+| Type | Source (Fluid) | Target (Exigo) |
+| --- | --- | --- |
+| `customer_type` | `source_type_slug` — Fluid member type slug, such as `rep` | `target_type_id` — the provider's customer type ID |
+| `customer_status` | `source_status_slug` — Fluid customer status slug | `target_status_id` — the provider's customer status ID |
+| `product_type` | `source_title` — Fluid product type title | `target_title` — the provider's product type |
+| `price_type` | `source_price_type_title` — Fluid price type title | `target_price_type_id` — the provider's price type ID |
+| `order_status` | `source_status_slug` — Fluid order status slug | `target_status_id` — the provider's order status ID |
+| `order_type` | `source_type_slug` — Fluid order type slug | `target_type_id` — the provider's order type ID |
+| `country_market` | `source_title` — Fluid country market title | `target_title` — the provider's market |
+| `warehouse` | `fluid_warehouse_id`, `source_warehouse_title`, `country_code` — Fluid warehouse ID and title | `external_warehouse_id` — the provider's warehouse ID |
+| `ship_method` | `source_shipping_method_title`, `country_code` — Fluid shipping method title | `exigo_ship_method_id` — the provider's ship method ID |
+| `tree` | `source_title` — Fluid tree title | `target_title` — the provider's tree |
+| `rank` | `source_title` — Fluid rank title | `target_title` — the provider's rank |
+| `payable_type` | `source_type_slug` — Fluid member type slug | `target_payable_id` — Exigo payable type ID |
+| `customer_warehouse` | `source_country_code` — Country code | `target_warehouse_id` — Exigo warehouse ID for customers in that country |
+| `payment_type` | `source_payment_method` — Fluid payment method | `target_payment_type` — Exigo payment type |
+| `wallet_type` | `source_payment_method` — Fluid payment method | `target_wallet_type_id` — Exigo wallet type ID |
+| `fraud_decision` | `source_decision` — Fluid fraud decision | `target_field_value` — the value written to Exigo's fraud decision field |
+
+Customer type, customer status, order status, and order type rows also take `default_for_export=true`: when Fluid exports a record whose value has several matching rows, it uses the default one. Every row takes an optional `description`.
+
+## Common settings
+
+These are the settings to decide before the first sync. Pass each as `--set <key>=<value>`.
+
+| Setting | Default | What it decides |
+| --- | --- | --- |
+| `customer.duplicate_customer_handling` | `skip` | How to handle a customer that already exists in Fluid. Options: `skip` (Skip duplicates), `sync` (Sync anyway), `hold` (Hold for review). |
+| `customer.unverified_customer_handling` | `mark_inactive` | How to handle a customer that has not completed verification. Options: `mark_inactive` (Mark inactive in Fluid), `sync` (Sync as active), `skip` (Skip until verified). |
+| `customer.customer_creation_sync` | `true` | Enable polling for new customers created in Exigo. Disables V1 customer delta sync — enable customer_changelog_sync as well so updates continue flowing. |
+| `customer.customer_changelog_sync` | `true` | Enable changelog-based polling for customer updates. When enabled, replaces standard customer delta sync after initialization. |
+| `order.refund_handling` | `hold` | How to handle refund and return orders. Options: `hold` (Hold for review), `sync` (Sync automatically), `skip` (Skip refunds). |
+| `order.duplicate_order_handling` | `skip` | How to handle an order that already exists in Fluid. Options: `skip` (Skip duplicates), `sync` (Sync anyway), `hold` (Hold for review). |
+| `order.order_creation_sync` | `false` | Enable polling for new orders created in Exigo. |
+| `order.order_changelog_sync` | `false` | Enable changelog-based polling for order updates from Exigo. |
+| `product.new_inactive` | `false` | Set newly synced products as inactive by default. |
+| `product.warehouseless_product_handling` | `mark_inactive` | How to handle a product that has no warehouse. Options: `mark_inactive` (Mark inactive in Fluid), `sync` (Sync as-is), `skip` (Skip the product). |
+| `rank.sync_ranks` | `true` | Enable rank synchronization. |
+| `rank.pulled_from` | `customer` | Source for rank data during synchronization. Options: `customer` (Customer), `rank` (Period Volume Rank), `paidrank` (Period Volume Paid Rank). |
+| `sponsor_tree.sponsor_tree` | `unilevel` | Which tree endpoint to use for sponsor data. Options: `enroller` (Enroller Tree (tree/enroller endpoint)), `unilevel` (Unilevel/Sponsor Tree (tree/unilevel endpoint)). |
+
+## All settings
+
+Every setting Exigo supports, as `fluid connect show exigo` reports them. Settings that depend on another one only take effect once that one is on.
+
+| Setting | Label | Default | Options | Description |
+| --- | --- | --- | --- | --- |
+| `customer_type.use_metafield_customer_type` | Use metafield customer type | `false` | — | Use customer_type metafield instead of customer/affiliate |
+| `warehouse.new_missing` | Create missing warehouses | `false` | — | Automatically create warehouses that exist in external system |
+| `product.new_inactive` | New products inactive | `false` | — | Set newly synced products as inactive by default |
+| `product.no_warehouse_inactive` | No warehouse = inactive | `false` | — | Set products without warehouse as inactive |
+| `product.warehouseless_product_handling` | Products without a warehouse | `mark_inactive` | `mark_inactive`, `sync`, `skip` | How to handle a product that has no warehouse. |
+| `product.product_changelog_sync` | Product changelog sync | `false` | — | Enable changelog-based polling for product updates from Exigo. |
+| `country_market.new_missing` | Create missing country markets | `false` | — | Automatically create country markets from external system |
+| `rank.new_missing` | Create missing ranks | `false` | — | Automatically create ranks that exist in external system |
+| `rank.sync_ranks` | Sync ranks | `true` | — | Enable rank synchronization |
+| `rank.pulled_from` | Rank pulled from | `customer` | `customer`, `rank`, `paidrank` | Source for rank data during synchronization |
+| `rank.period_type` | Period type | — | — | Period type for rank volume calculation |
+| `ship_method.new_missing` | Create missing shipping methods | `false` | — | Automatically create shipping methods that exist in external system |
+| `customer_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of customer metadata fields |
+| `customer_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing customer metadata values during sync |
+| `order_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of order metadata fields |
+| `order_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing order metadata values during sync |
+| `product_metadata.sync_metadata` | Sync metadata fields | `false` | — | Enable synchronization of product metadata fields |
+| `product_metadata.overwrite_existing` | Overwrite existing metadata values | `false` | — | Overwrite existing product metadata values during sync |
+| `order.refund_handling` | Refund orders | `hold` | `hold`, `sync`, `skip` | How to handle refund and return orders. |
+| `order.duplicate_order_handling` | Duplicate orders | `skip` | `skip`, `sync`, `hold` | How to handle an order that already exists in Fluid. |
+| `order.order_changelog_sync` | Order changelog sync | `false` | — | Enable changelog-based polling for order updates from Exigo. |
+| `order.order_creation_sync` | Order creation sync | `false` | — | Enable polling for new orders created in Exigo. |
+| `order.import_skip_flag_field` | Skip-import flag field | `None` | `None`, `Other1`, `Other2`, `Other3`, `Other4`, `Other5`, `Other6`, `Other7`, `Other8`, `Other9`, `Other10`, `Other11`, `Other12`, `Other13`, `Other14`, `Other15`, `Other16`, `Other17`, `Other18`, `Other19`, `Other20` | Exigo order Other field that marks an order this platform must not import: when it holds 1 (or true), order creation polling and changelog JIT recovery skip that order, while 0, false and blank import as before. Use it when a second system creates orders in this Exigo database on your behalf (a checkout that creates the Exigo order itself) — Fluid receives its own order for the same purchase moments later, so importing the Exigo row would land a duplicate, permanently unpaid Fluid order. Blank (default) = no check, and the scan is unchanged for every tenant that leaves it blank. |
+| `order.adopt_checkout_order_id` | Adopt the checkout-created Exigo order | `false` | — | When on, an order whose metadata carries exigo_order_id — stamped by a checkout that created the Exigo order itself — adopts that OrderID instead of creating a second Exigo order, and the id is written back to the Fluid order as its external_id so both sides stay linked. Off (default) = the export behaves exactly as before. PREREQUISITE: storing the id also routes every later order update through Exigo UpdateOrder, which overwrites that order with the totals Fluid holds. Leave this off until the cart-pricing fixes land, or those updates will replace a correct Exigo total with a wrong one. |
+| `order.return_order_export` | Return order export | `false` | — | When enabled, Fluid refunds create matching Exigo Return Orders (OrderType=8) for commission tracking. Each refund maps to one Return Order pointing back to the original Exigo OrderID. |
+| `order.return_order_import` | Return order import | `false` | — | Inbound mirror of return order export. When enabled, Exigo Return Orders (OrderType=8) are mirrored into Fluid as refunds pointing at the original order. Each Exigo Return Order maps to one Fluid refund. |
+| `order.fraud_decision_field` | Fraud decision field | `Other11` | `Other1`, `Other2`, `Other3`, `Other4`, `Other5`, `Other6`, `Other7`, `Other8`, `Other9`, `Other10`, `Other11`, `Other12`, `Other13`, `Other14`, `Other15`, `Other16`, `Other17`, `Other18`, `Other19`, `Other20` | Which Exigo Other field the fraud/review decision value is stamped into. Applies to all fraud decision mappings for this integration. Defaults to Other11. |
+| `order.price_type_role_titles` | Price type by customer role | — | `rep`, `preferred`, `customer`, `admin` | Optional. Maps a Fluid customer role (for instance "rep") to the price type title used for that order, overriding the price type the order itself carries. The title must be named by a Price Type Mapping row for this integration; one that is not holds the order instead of falling back, so a typo here is visible rather than silent. Leave empty (the default) to use each order's own price type, which is the behavior for every role that is not listed. With "Resolve customer type from member type" off an order carries the legacy role, so only admin, rep, customer and preferred_customer can match; any other member-type slug needs that setting on -- including the seeded subscriber tier, whose slug is "preferred", NOT the legacy "preferred_customer". |
+| `order.wallet_merchant_type_id` | Wallet payment merchant type | — | — | When set, an e-wallet payment whose Fluid payment method has a Wallet Type mapping is sent to Exigo as a CreatePaymentWalletRequest carrying this MerchantTypeID, so the invoice names the actual tender (e.g. GCash) instead of a generic wallet label. Exigo requires this field, so leaving it unset (the default) disables the behavior and leaves e-wallet payments as generic payments. |
+| `order.export_gross_to_other1` | Export gross product prices to Other1 | `false` | — | When on, each product line carries its gross VAT-inclusive price in Other1Each, and the order-level discount line carries Other1Each = PriceEach to match. The two move together on purpose so the order Other1 column stays internally consistent. |
+| `order.order_field_mappings` | Order field mappings | — | — | Stamp a Fluid order attribute (e.g. Order number) into an Exigo order Other field (Other1-20) on export. Only configured mappings are stamped. |
+| `order.commission_enrichment` | Commission enrichment | — | — | Stamp order-line Exigo Other fields from Exigo ItemPrices at a chosen price type. |
+| `order.commission_skip_child` | Commission enrichment: price the parent only | `false` | — | When on, bundle child lines (with a parent item) are left unenriched so the commission stays on the parent line. Off (default) enriches every line. |
+| `order.commission_return_reversal` | Commission enrichment: reverse on return orders | `false` | — | When on, a return order reverses the configured fields using the per-unit values the PARENT order recorded in Exigo, rather than today's prices. Business volume and commissionable volume can only be reversed this way — they are never stamped on a forward order, where Fluid is the source of record. Off (default) leaves return orders untouched. |
+| `order.commission_discount_scale_basis` | Commission enrichment: what a discount scales by | `price` | `price`, `cv` | Which reduction a scale_by_discount entry follows. "Order price discount" (default) spreads one order-wide ratio across every stamped line, so a discount that removed no volume — an insert promo delivered as a one dollar line plus a one dollar discount — still reduces the commission on the real product. "Line commissionable volume" measures each line against its own catalogue volume, so only a discount that actually reduced volume reduces the commission. A line carrying NO volume is never scaled on that basis: bundle expansion zeroes one side of a bundle deliberately and that side can still carry a real commission value, so reading zero as "all of it was discounted away" would erase it — at the cost of also leaving a line genuinely discounted to zero volume unscaled. Confirm the tenant's ItemPrices rows carry CommissionableVolume before turning this on. |
+| `order.commission_return_price_fallback` | Commission enrichment: fall back to current prices on returns | `false` | — | When on, a return line the parent order does not carry is reversed from today's ItemPrices instead. Off (default) leaves it unreversed, which is safer: prices may have changed since the sale. Only turn this on for a company whose parent orders are known to be incomplete. |
+| `order.order_discount_line` | Export order discount as line item | `false` | — | When on, any part of a Fluid order discount that is not already reflected in the exported line prices or in an exported payment is added as an extra negative-price Exigo line item, so the Exigo order total matches the amount paid. Requires an order discount SKU. |
+| `order.order_gross_prices_with_promo_lines` | Export gross prices with a line per promotion | `false` | — | When on, Exigo product lines carry the same unit prices Fluid shows and each promotion is exported as its own negative-price line named after the promotion, instead of the discount being subtracted from the product prices. Supersedes "Export order discount as line item". Requires an order discount SKU. |
+| `order.order_discount_sku` | Order discount SKU | — | — | Exigo ItemCode used for the order discount line item, and for the promotion lines when gross prices are enabled. |
+| `customer.duplicate_customer_handling` | Duplicate customers | `skip` | `skip`, `sync`, `hold` | How to handle a customer that already exists in Fluid. |
+| `customer.unverified_customer_handling` | Unverified customers | `mark_inactive` | `mark_inactive`, `sync`, `skip` | How to handle a customer that has not completed verification. |
+| `customer.default_customer` | Default customer | `\{"sponsor": "2", "enroller": "2"\}` | `sponsor`, `enroller` | Default sponsor and enroller IDs for new customers |
+| `customer.member_type_resolution` | Resolve customer type from member type | `false` | — | Resolve the Exigo CustomerType, PayableType and tree placement from the Fluid member-type slug rather than the legacy role. Fluid filters role to admin/rep/customer/preferred_customer, so a seeded "preferred" tier or any custom member type arrives as the wrong type. Off by default because the mapping tables are what this reads: turn it on only once this company has a Customer Type row for every Fluid member type, and its Tree settings cover those same types. Without a row the export fails outright, and tree placement is applied once at create and is permanent in Exigo. |
+| `customer.sync_contacts` | Sync customer contacts | `false` | — | Enrich imported customers with their secondary contact records from ExigoWebContext.Contacts. Off by default because many Exigo sources (e.g. reporting replicas) do not expose that table, and a missing table fails the whole customer fetch. Turn on only for a source confirmed to expose it; customers import either way, just without their secondary contacts when off. |
+| `customer.phone_source` | Phone field | `Phone` | `Phone`, `MobilePhone`, `Phone2`, `Fax` | Which Exigo phone column this company uses. Fluid stores a single phone number; on import this column feeds the Fluid customer phone, and on export the Fluid phone is written back to this same column. The other phone columns are left untouched. |
+| `customer.phone_mirror_columns` | Phone mirror columns | — | `Phone`, `MobilePhone`, `Phone2`, `Fax` | Additional Exigo phone columns that receive the same Fluid phone number on export. This is export-only and does not affect which column feeds Fluid on import; configure that with Phone field. |
+| `customer.lifecycle_terms_slot` | Member terms-acceptance date field | `None` | `None`, `Date1`, `Date2`, `Date3`, `Date4`, `Date5` | Optional. Which Exigo customer Date column records when the member accepted the current tier's policies / terms. Stamped on member-type transitions (e.g. an upgrade to affiliate). "None" disables it. Exigo's own "Date Entered" is never modified. |
+| `customer.lifecycle_start_slot` | Member start date field | `None` | `None`, `Date1`, `Date2`, `Date3`, `Date4`, `Date5` | Optional. Which Exigo customer Date column records the member's start date for the current tier. On an upgrade to affiliate it is overwritten with the became-affiliate date. "None" disables it. |
+| `customer.lifecycle_downgrade_slot` | Affiliate downgrade date field | `None` | `None`, `Date1`, `Date2`, `Date3`, `Date4`, `Date5` | Optional. Which Exigo customer Date column records when an affiliate is downgraded back to customer. "None" disables it. |
+| `customer.duplicated_customer` | Duplicated customer strategy | `newest` | `newest`, `oldest` | How to handle duplicate customers during sync |
+| `customer.skip_type_sync_after_create` | Skip type sync after create | `false` | — | Skip customer type synchronization after initial customer creation |
+| `customer.customer_changelog_sync` | Customer changelog sync | `true` | — | Enable changelog-based polling for customer updates. When enabled, replaces standard customer delta sync after initialization. |
+| `customer.customer_creation_sync` | Customer creation sync | `true` | — | Enable polling for new customers created in Exigo. Disables V1 customer delta sync — enable customer_changelog_sync as well so updates continue flowing. |
+| `customer.strict_status_mapping` | Use customer status mappings as sync scope | `false` | — | When enabled, the Customer Status mappings define which customers sync: mapped Exigo statuses import, unmapped statuses are excluded at the source and never create a sync. Customers already in Fluid that move to an unmapped status are held for review rather than imported with a default status. Blank Exigo statuses remain in scope. |
+| `customer.customer_creation_apply` | Apply customer creation to Fluid | `true` | — | When enabled, new customers from Exigo are pushed to Fluid. When disabled, EntitySync records are created but not applied. |
+| `customer.username_from_external_id` | Set username to Exigo Customer ID | `false` | — | After a customer is created in Exigo, overwrite the Fluid username and the Exigo WebAlias with the new Exigo Customer ID. Fluid assigns a random username at signup; enable this when the Exigo Customer ID must be the username. |
+| `customer.customer_constant_stamps` | Customer constant stamps | — | — | Stamp a fixed value into an Exigo customer Field column on create. Each row can apply to affiliates, customers, or every member tier. |
+| `customer.custom_field_metafields` | Custom field metafields | — | — | Map Exigo custom fields (Field1-15 / Date1-4) to Fluid customer metafields (namespace / key / value_type). Only mapped fields are synced to Fluid. |
+| `customer.email_consent_sync` | Sync email marketing consent | `false` | — | When enabled, email opt-in/opt-out changes in Fluid are pushed to Exigo on customer update (OptInEmail / OptOutEmail). Create-time opt-in always applies regardless of this setting. |
+| `customer.sms_consent_sync` | Sync SMS marketing consent | `false` | — | When enabled, SMS opt-in/opt-out changes in Fluid are pushed to Exigo on customer update (OptInSms / OptOutSms). Create-time opt-in always applies regardless of this setting. |
+| `customer.email_link_excluded_status_ids` | Email link excluded statuses | — | — | Exigo CustomerStatuses that must never be matched by email when Fluid looks for an existing Exigo customer before creating one (e.g. Terminated). A match on one of these statuses is skipped rather than paired to, so a new signup reusing a former member's email creates a new Exigo account instead of silently reattaching to the old one. Leave empty (the default) for unchanged behavior: every status is eligible to pair. |
+| `tree.binary_placement_enabled` | Binary placement | `false` | — | Send BinaryPlacementPreference when creating customers in Exigo |
+| `tree.binary_placement_preference` | Binary placement preference | `5` | — | Default binary placement preference for new customers |
+| `tree.binary_tree_insertion_enabled` | Insert into binary tree | `false` | — | Call PlaceBinaryNode after creating customers in Exigo, using the Fluid enroller as the parent and the binary placement preference as the placement type |
+| `tree.tree_mapping` | Tree mapping | — | — | Map external tree types to customer types |
+| `sponsor_tree.sponsor_tree` | Sponsor tree type | `unilevel` | `enroller`, `unilevel` | Which tree endpoint to use for sponsor data |
+| `point_sync.points_export_enabled` | Points export & sync | `false` | — | Enable Exigo Points debit, refund-restore, admin adjustments, and the Exigo→Fluid balance sync for this company. No-op when off. |
+| `point_sync.points_default_account_id` | Default Points account ID | — | — | Exigo PointAccountID used when no currency-specific mapping matches. |
+| `point_sync.points_account_ids_by_currency` | Points account IDs by currency | — | — | Map of ISO 4217 currency code to Exigo PointAccountID, e.g. \{ "USD": 6, "CAD": 7 \}. |
+| `point_sync.country_to_currency` | Country to currency | — | — | Map of ISO country code to currency, e.g. \{ "US": "USD", "CA": "CAD" \}. Used to resolve the Points account for admin adjustments, whose webhook carries country_iso (not currency). |
+| `point_sync.email_whitelist_enabled` | Restrict sync to a whitelist | `false` | — | When on, the Exigo→Fluid balance sync and login-sync only touch customers whose email is in the whitelist below. Use for a phased rollout / testing (ported from the droplet). |
+| `point_sync.email_whitelist` | Email whitelist | — | — | Array of customer emails to sync when the whitelist is enabled, e.g. ["a@x.com", "b@y.com"]. Matching is case-insensitive. Ignored when the whitelist is off. |
+| `point_sync.slack_notifications_enabled` | Slack sync reports | `false` | — | Post a per-run Slack summary (and failure alerts) for the Exigo→Fluid points sync. Ported from the droplet reporter. Off by default. |
+| `point_sync.slack_webhook_url` | Slack webhook URL | — | — | Slack Incoming Webhook URL to post the points sync reports to (same webhook the droplet used — posts as "Points and Rewards Reporter" into its bound channel). No bot token needed. Required for reports to send. |
+
+## What the status means
+
+| Field | Meaning | What to do |
+| --- | --- | --- |
+| `installed: false` (`fluid connect list`) | Exigo isn't installed for this company. | Run step 1. |
+| `connected: true` | The connection exists and has credentials. | Continue with mappings and settings. |
+| `liveSyncState` | Whether records are syncing now. | When it reports degraded, read `liveSyncDegradedReason`. |
+| `mapped: false` (`--options`) | No row matches this value yet. | Add a row, or a `*` fallback. |
+
+## Troubleshooting
+
+**`credentials` fails with a 422.** Exigo rejected the credentials during the connection test. The error's `details` carry Exigo's reason. Check the value it names and run the step again; nothing was saved.
+
+**`install` says the droplet isn't in the catalog.** Exigo isn't available to this company yet. Ask Fluid to make it available.
+
+**`isn't installed for this company`.** Every command after step 1 needs the connection. Run `fluid connect install exigo --yes` first.
+
+**A mapping command fails with `isn't a mapping type`.** Use the type names in [Data mapping](#data-mapping), without the `_mappings` suffix.
+
+**A 503 from any command.** Fluid couldn't verify your token at that moment. Run the command again shortly.
+
+## Use the API directly
+
+The CLI calls the Fluid Connect API with your Fluid API token as the bearer token. The steps map onto these operations, in order:
+
+1. Install the droplet in Fluid (`POST /api/droplet_installations`), which creates the connection.
+2. Find the connection: `GET /api/v1/integrations/exigo` returns its `company_integration_id`.
+3. Save credentials or settings: `PUT /api/v1/company_integrations/{id}`.
+4. Read the schema and current values: `GET /api/v1/company_integrations/{id}`.
+5. List, add, or remove mapping rows: `/api/v1/company_integrations/{id}/{type}_mappings`, with the values to choose from at `.../source_options` and `.../exigo_options`.
+
+The Fluid Connect API isn't in the API reference yet, so use the CLI where you can.
