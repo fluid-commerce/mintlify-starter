@@ -173,9 +173,9 @@ components:
         billing_email:
           type: [string, "null"]
           description: >-
-            Where this company's invoices and credit notices are sent. Null
-            means none is nominated, and Fluid falls back to the
-            longest-standing administrator.
+            Where this company's invoices, receipts, and other billing
+            emails are sent. Null means none is nominated, and Fluid sends no
+            billing email until one is.
         payment_method:
           oneOf:
           - { "$ref": "#/components/schemas/BillingPaymentMethod" }
@@ -258,6 +258,21 @@ components:
         included_credits: { type: integer, minimum: 0, description: The usage it buys each month, bonus included; one credit is one dollar. }
         billing_interval: { type: string, enum: [monthly, annual], description: How the plan is paid for. }
         monthly_charge_cents: { type: integer, minimum: 0, description: What the plan costs a month on its interval, after any annual discount. }
+    BillingCreditNextPlan:
+      type: object
+      description: >-
+        The plan chosen for the months ahead. The month it was chosen in keeps
+        its plan; this one starts, and is first charged, on starts_on.
+      required: [key, name, monthly_price_cents, bonus_percent, included_credits, billing_interval, monthly_charge_cents, starts_on]
+      properties:
+        key: { type: string, description: The plan's key. }
+        name: { type: string, description: The plan's name. }
+        monthly_price_cents: { type: integer, minimum: 0, description: What the plan costs each month, in cents, before any annual discount. }
+        bonus_percent: { type: integer, minimum: 0, maximum: 100, description: "The credit tier the price reaches, as the percent of usage added on top of what is paid ($100 at 10% buys 110 credits)." }
+        included_credits: { type: integer, minimum: 0, description: The usage it buys each month, bonus included; one credit is one dollar. }
+        billing_interval: { type: string, enum: [monthly, annual], description: How the plan is paid for. }
+        monthly_charge_cents: { type: integer, minimum: 0, description: What the plan costs a month on its interval, after any annual discount. }
+        starts_on: { type: string, format: date, description: The 1st of the UTC month the plan starts on. }
     BillingCreditUsage:
       type: object
       description: >-
@@ -286,7 +301,7 @@ components:
         The company's credits: its plan, what its usage has drawn this month,
         and what more cost. One credit is one dollar, and every kind of usage
         draws on one balance. Priced but not billed or for sale yet.
-      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, pending, drawn_cents, pace, expiries, plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms]
+      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, pending, drawn_cents, pace, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms]
       properties:
         balance_cents: { type: integer, description: "The credit balance, in cents: the sum of every credit movement. Below zero only when usage overdraws it." }
         spendable_cents: { type: integer, description: "What new usage may draw on, in cents: the balance less expired_cents and held_cents." }
@@ -296,7 +311,7 @@ components:
         funded_categories:
           type: array
           description: The kinds of usage paid from this balance as they run; the rest stay on the bill.
-          items: { type: string, enum: [ai] }
+          items: { type: string, enum: [ai, platform] }
         drawn_cents: { type: integer, minimum: 0, description: "What usage that occurred this UTC month drew from the balance, in cents, overdrawn parts included. Usage billed on the invoice draws nothing." }
         pace:
           oneOf:
@@ -328,7 +343,12 @@ components:
           oneOf:
           - { "$ref": "#/components/schemas/BillingCreditPlan" }
           - { type: "null" }
-          description: The company's plan; the lowest tier until another is chosen. Null when platform billing does not invoice the company.
+          description: The company's plan this UTC month; the lowest tier until another is chosen. Null when platform billing does not invoice the company.
+        next_plan:
+          oneOf:
+          - { "$ref": "#/components/schemas/BillingCreditNextPlan" }
+          - { type: "null" }
+          description: The plan chosen for the months ahead, or null when the plan stays as it is or platform billing does not invoice the company.
         plans:
           type: array
           description: The monthly minimum tiers a plan can be priced at, smallest first; empty when platform billing does not invoice the company.
@@ -386,7 +406,7 @@ components:
         id: { type: string, format: uuid, description: The movement's id. }
         kind: { type: string, enum: [grant, draw, overdraft_repayment, expiry, revocation, refund, reversal], description: What changed the balance. }
         label: { type: string, description: "What the movement is called, such as Promotional credits." }
-        source: { type: [string, "null"], enum: [purchase, bonus, promotional, plan, null], description: Where the credits it changed came from, when they share one source. }
+        source: { type: [string, "null"], enum: [purchase, bonus, promotional, plan, adjustment, null], description: Where the credits it changed came from, when they share one source. }
         amount_cents: { type: integer, description: Signed change to the balance, in cents. }
         balance_after_cents: { type: integer, description: The balance after the movement, in cents. }
         category: { type: [string, "null"], description: For usage, the kind of usage it paid for. }
@@ -3424,8 +3444,8 @@ paths:
       summary: Set where the company's invoices are sent
       description: >-
         Nominates the address Fluid emails this company's invoices to. Sending
-        null or an empty string clears the nomination and returns the company
-        to its longest-standing administrator. Everything else on the billing
+        null or an empty string clears the nomination, and Fluid then sends no
+        billing email until one is set. Everything else on the billing
         page is set by Fluid and cannot be changed here.
       tags:
       - billing
@@ -4056,6 +4076,7 @@ paths:
                     included_credits: 16500
                     billing_interval: monthly
                     monthly_charge_cents: 1500000
+                  next_plan: null
                   plans:
                   - monthly_price_cents: 250000
                     bonus_percent: 0
@@ -4119,10 +4140,12 @@ paths:
     patch:
       summary: Move the company onto another plan
       description: >-
-        Moves the authenticated company onto another plan, sized to its usage,
-        and sets how it is paid for. A price or credit amount Fluid agreed with
-        the company stays as it was. Recorded, not yet billed. Only a company
-        platform billing invoices has a plan to change.
+        Chooses the authenticated company's plan from the 1st of next UTC
+        month, sized to its usage, and how it is paid for. This month keeps
+        its plan and its usage; the new plan is first charged when it starts.
+        The answer shows the choice as next_plan. Choosing the plan in force,
+        or sending keep_current_plan, cancels a waiting choice. Only a company platform billing invoices
+        has a plan to change.
       tags:
       - billing
       operationId: settings_v0_update_billing_credits
@@ -4138,6 +4161,7 @@ paths:
                 plan_key: { type: string, description: Key of the plan to move to. }
                 billing_interval: { type: string, enum: [monthly, annual], description: How the plan is paid for. }
                 monthly_price_cents: { type: [integer, "null"], minimum: 1, description: "What the plan costs each month, sized between the catalog's; it buys that much usage plus its tier's bonus. Null is the plan's own price." }
+                keep_current_plan: { type: boolean, description: "True stays on the plan in force and drops the plan chosen for next month, whatever its key, price or interval. The other fields are then ignored." }
             example:
               plan_key: growth
               billing_interval: annual
@@ -4175,6 +4199,14 @@ paths:
                   funded_categories:
                   - ai
                   plan:
+                    key: launch
+                    name: Launch
+                    monthly_price_cents: 250000
+                    bonus_percent: 0
+                    included_credits: 2500
+                    billing_interval: monthly
+                    monthly_charge_cents: 250000
+                  next_plan:
                     key: growth
                     name: Growth
                     monthly_price_cents: 1500000
@@ -4182,6 +4214,7 @@ paths:
                     included_credits: 16500
                     billing_interval: annual
                     monthly_charge_cents: 1350000
+                    starts_on: '2026-10-01'
                   plans:
                   - monthly_price_cents: 250000
                     bonus_percent: 0
