@@ -12626,6 +12626,29 @@ components:
       - type: string
       - "$ref": "#/components/schemas/ErrorBag"
       - type: 'null'
+    FailureEnvelopeResponse:
+      description: The API's failure envelope for a client error. `data.error` carries the message.
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [fail]
+        data:
+          type: object
+          properties:
+            error:
+              "$ref": "#/components/schemas/ErrorMessage"
+          additionalProperties:
+            "$ref": "#/components/schemas/JsonValue"
+      additionalProperties: false
+    ValidationErrorsResponse:
+      description: A record's validation errors, keyed by attribute (`base` for the record as a whole), each a list of messages.
+      type: object
+      additionalProperties:
+        type: array
+        items:
+          type: string
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the shopper agreed to, so nothing
@@ -15581,18 +15604,87 @@ components:
           type:
           - object
           - 'null'
+          description: Null when the order has no payment method. A stored card serves the flat card keys, id through logo_url. Every other integration (PayPal, Affirm, Bread, Klarna, wallets and the rest) serves payment_type, payment_title and details instead; Apple Pay, Google Pay and a card without a stored card also serve source.
           additionalProperties: true
           properties:
+            id:
+              type:
+              - integer
+              - 'null'
+              description: The order's payment method id. Card only.
+            card_id:
+              type: integer
+              description: Card only.
+            full_name:
+              type:
+              - string
+              - 'null'
+              description: Cardholder name. Card only.
+            month:
+              type:
+              - integer
+              - 'null'
+              description: Expiry month. Card only.
+            year:
+              type:
+              - integer
+              - 'null'
+              description: Expiry year. Card only.
+            number:
+              type: string
+              description: Masked card number, such as "**** **** **** 4242". Card only.
+            last_four_digits:
+              type:
+              - string
+              - 'null'
+              description: Card only.
+            first_six_digits:
+              type:
+              - string
+              - 'null'
+              description: Card only.
+            default:
+              type:
+              - boolean
+              - 'null'
+              description: Whether this is the customer's default card. Card only.
+            email:
+              type:
+              - string
+              - 'null'
+              description: Card only. Null for companies whose payment tokens are isolated.
+            source:
+              type:
+              - string
+              - 'null'
+              description: The payment method's source, such as card or apple_pay.
             card_network:
               type:
               - string
               - 'null'
-              description: Card network from the stored card or successful payment.
+              description: Card network from the stored card, the payment method or the successful payment, titleized (Visa, Mastercard). Card only.
             card_type:
               type:
               - string
               - 'null'
-              description: Card funding classification when known, such as debit.
+              description: Card funding classification when known, such as debit. Card only.
+            logo_url:
+              type: string
+              description: Card brand logo. Card only; other integrations serve it inside details.
+            payment_type:
+              type:
+              - string
+              - 'null'
+              description: The integration, such as PayPal, Affirm or Credit Card; null when the payment method records no integration. Every integration but a stored card.
+            payment_title:
+              type:
+              - string
+              - 'null'
+              description: Display title for the payment method. Every integration but a stored card.
+            details:
+              type: object
+              additionalProperties: true
+              description: Integration-specific details, such as a transaction id, status, amount and logo_url. Their keys depend on payment_type. Every integration but a stored card.
         payment_status:
           type: string
         is_cancellable:
@@ -34815,14 +34907,14 @@ paths:
     get:
       operationId: company_v0_company_orders_find_by_external_id_get
       summary: Find an order by external ID
-      description: Looks up one of the company's orders by the identifier your external system assigned to it, and returns the full order. Requires a company token with permission to view orders. Returns 400 when `external_id` is missing and 404 when no order matches.
+      description: Looks up one of the company's orders by the identifier your external system assigned to it, and returns the full order. Requires a company token with permission to view orders. Returns 400 when `external_id` is missing or blank and 404 when no order matches.
       tags:
       - company
       parameters:
       - name: external_id
         in: query
-        required: false
-        description: The order's external ID. Required; the request fails with 400 without it.
+        required: true
+        description: The order's external ID. The request fails with 400 when it is missing or blank.
         schema:
           type: string
         example: NS-SO-77120
@@ -34886,12 +34978,33 @@ paths:
                   total_tax_in_currency: $6.60
                   price_inclusive_of_tax: false
                   tax_label: Sales Tax
+        '400':
+          description: >-
+            `external_id` is missing or blank. The body is `{"error": …}` with the localized message (`external_id required.` in English).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: >-
+            The token is not a company admin's (`{"message": …}`); or its role lacks orders.view, a droplet token lacks the orders scope, or a public token is used (`{"error": …}`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '404':
+          description: >-
+            No order of the company has this external ID. The body is `{"error": …}` with the localized message (`Orders not found.` in English).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security:
       - bearer_auth: []
   "/api/company/orders/{id}":
@@ -34973,6 +35086,20 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: >-
+            The token is not a company admin's (`{"message": …}`); or its role lacks orders.view, a droplet token lacks the orders scope, or a public token is used (`{"error": …}`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '404':
+          description: >-
+            The company has no order with this ID. The body is `{"error": …}` with the localized message (`Order not found.` in English). The order is looked up before the orders.view check, so a token without that permission gets this 404, not the 403, for an ID the company does not have.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security:
       - bearer_auth: []
     patch:
@@ -34993,6 +35120,8 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+              - order
               properties:
                 order:
                   type: object
@@ -35033,7 +35162,7 @@ paths:
                             type: string
                           shipping_carrier:
                             type: string
-                  description: Required.
+                  description: The attributes to change. Send at least one of them. A body without the `order` key is also accepted through Rails' JSON parameter wrapping, but the wrapped form is the contract.
             example:
               order:
                 status: shipped
@@ -35101,12 +35230,35 @@ paths:
                   total_tax_in_currency: $6.60
                   price_inclusive_of_tax: false
                   tax_label: Sales Tax
+        '400':
+          description: >-
+            The update failed. When `order` carries no attribute the endpoint accepts (for example `{"order": {}}`), the body is the API's failure envelope (`{"status": "fail", "data": {"error": …}}`); when the order fails validation it is the validation errors keyed by field.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/FailureEnvelopeResponse"
+                - "$ref": "#/components/schemas/ValidationErrorsResponse"
         '401':
           description: Unauthorized
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: >-
+            The token is not a company admin's (`{"message": …}`); or its role lacks orders.update, a droplet token lacks the orders scope, or a public token is used (`{"error": …}`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '404':
+          description: >-
+            The company has no order with this ID. The body is `{"error": …}` with the localized message (`Order not found.` in English). The order is looked up before the orders.update check, so a token without that permission gets this 404, not the 403, for an ID the company does not have.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security:
       - bearer_auth: []
   "/api/company/refunds/{id}":
