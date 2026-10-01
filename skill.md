@@ -61,7 +61,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Authentication:** send `Authorization: Bearer <token>`. Token types are company API tokens, partner tokens, public tokens and droplet installation tokens. Public tokens start with `pub-` and are for client-side use. Droplet installation tokens start with `dit_` and let a droplet act for one company that installed it. Member APIs take the member's own credential as the Bearer token instead.
 - **Pagination:** lists use cursor pagination with `page[cursor]` and `page[limit]`. Follow `meta.pagination.next_cursor` until it's null. The generated reference names the few operations that paginate differently.
 - **Parameters and schemas:** read the generated API Reference page for the operation. Don't infer fields.
-- **Legacy paths:** never use `company/v1` paths, or `/api/v1/` paths outside messaging. The Messaging API is current at `/api/v1/messaging/*`; its operations are in the API Reference.
+- **Legacy paths:** prefer the newest version of an operation. Use an older path, such as `company/v1` or `/api/v1/`, only when no newer version covers the task. The Messaging API is current at `/api/v1/messaging/*`; its operations are in the API Reference.
 
 ## FairShare SDK
 
