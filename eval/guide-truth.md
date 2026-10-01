@@ -2067,8 +2067,9 @@ company `.../products` operations lacked `security`. Corrections are staged upst
 the `docs/openapi-api-host-servers-main` branch. Until they sync, generated pages may
 still show the old wording; the guides follow the implementation.
 
-`api/agent-signup.mdx` sits in the API Reference **Overview** group beside
-`api/overview.mdx` and `api/authentication.mdx`. Like those pages, it is not in the
+`api/agent-signup.mdx` sat in the API Reference **Overview** group beside
+`api/overview.mdx` and `api/authentication.mdx`. It moved to the **Guided setup** group on
+2026-10-01 (see the agent launch guide entry). Like those pages, it is not in the
 registry. It documents `POST /api/company` (`company-v0`, unauthenticated). It
 deliberately omits bot-protection field names, rate-limit numbers, and the per-recipient
 confirmation window: they help an abuser, not an integrator. The upstream spec entry for
@@ -2222,17 +2223,20 @@ Verified against `origin/main` of the Rails monorepo:
   what's stored. An optional `onboarding_info_version` turns a write built on a
   superseded revision into `409`.
 - **Submitting needs a person.** The update stamps the calling user as the signer of the
-  steps audit and the terms acceptance, so a company API token, which has no user, can't
-  submit. Writes that don't touch those fields work with either token.
+  steps audit and the terms acceptance, and a company API token has no user. With a
+  company token, the CLI's `submit` changes nothing and returns `ready_to_submit` with a
+  `submitUrl`, the admin's onboarding form, where a person submits. Writes that don't
+  touch those fields work with either token.
 
 ### Agent launch guide (`api/agent-launch.mdx`)
 
-The guide sits beside `api/agent-signup.mdx` in the API Reference **Overview** group
-and, like it, is not in the claims registry. It sequences the guided setups rather than
+The guide sits right after `api/agent-signup.mdx` in the Developer Platform **Guided setup**
+group, after `setup/overview`. Both moved there from the API Reference **Overview** group on
+2026-10-01, and their URLs didn't change. Like agent signup, the guide is not in the claims registry. It sequences the guided setups rather than
 restating them: Connect (Exigo, InfoTrax, ByDesign, Pillars), payments onboarding, open a
 country, add a language, the TikTok Shop, Meta, and Google Merchant Center channels, and
-custom domain. Step details, commands, and contracts stay on those pages. It has to merge
-after the guided setup pages it links to.
+custom domain, plus create a page. All of them landed in #101. Step details, commands,
+and contracts stay on those pages.
 
 The agent prefills payments onboarding, and the merchant provides owners, bank accounts,
 and documents and submits. An existing sales-channel account needs the merchant to approve
