@@ -524,6 +524,16 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     `order_edited` lifecycle event with the post-edit payload, while the dry-run preview
     does not. If `webhooks-v0` starts enumerating events, move these claims to
     mechanical anchors.
+14. **`company-v0` leaves `providers.psps` items unmodelled on the payments status
+    response.** `GET /api/companies/{id}/payments_status` models every field of a
+    `providers.apms` item, including `onboarding_status`, but gives `providers.psps`
+    items an empty schema, although its own example and the response share one provider
+    shape. The payments onboarding guided setup's claim that card processors carry
+    `onboarding_status` (payments-onboarding-013) is therefore semantic. Make it
+    mechanical once the psps item schema is filled in. The onboarding form's own
+    operations (onboarding info, legal entities, bank accounts, people, and document
+    upload) aren't in any synced spec yet, so that guide sends readers to the CLI for
+    them and asserts nothing about their contracts.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
