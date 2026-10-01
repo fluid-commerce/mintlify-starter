@@ -18,6 +18,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | --- | --- |
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
+| Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
 | Build a first integration | https://docs.fluid.app/quickstart |
 | Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
 | Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
