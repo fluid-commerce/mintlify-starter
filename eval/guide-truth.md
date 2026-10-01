@@ -1229,9 +1229,9 @@ The same triage (ENG-1091) kept three older guides redirected rather than 404:
   page, which documents the route the guide described.
 - `guides/mobile-widget-implementation` keeps `/api/overview`.
 - `guides/payment-processing`, and its Mintlify-era twin `/guides/payment-processing`, go to
-  `/concepts/checkout`, the page that describes Fluid's payment layer. That is a decision, not a
-  claim of coverage: payment routing itself has no published page yet. Repoint both when the Help
-  Center's Payment Routing article ships.
+  `/help/admin/settings/payment-routing`, the Help Center's Payment Routing article. Until that
+  article shipped, both went to `/concepts/checkout`, the page that describes Fluid's payment
+  layer.
 
 No blanket catch-all wildcard is added. A catch-all would hide which URLs are actually being hit;
 one analytics cycle of real 404 data is the cheaper way to decide the long tail.
