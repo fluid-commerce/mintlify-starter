@@ -94,8 +94,9 @@ components:
     BillingPaymentMethod:
       type: object
       description: The instrument funds are pulled from, masked.
-      required: [status, method, bank_account_id, instrument_type, display]
+      required: [status, method, bank_account_id, instrument_type, display, key]
       properties:
+        key: { type: [string, "null"], description: "An opaque key naming the payment method charges go to now. Send it back as expected_payment_method_key with a purchase, so one reserved after another admin saved a different method is refused (409 quote_changed). Not a provider reference." }
         status: { type: [string, "null"], description: Whether the instrument is usable. }
         method: { type: string, description: How this company is collected from. }
         bank: { type: [string, "null"], description: The bank's display name. }
@@ -166,8 +167,9 @@ components:
         When invoicing is false, platform billing is left out: the upcoming
         charge is zero with no groups and no scheduled date, there are no
         invoices, transaction_rates is null, and the pull schedule is null.
-      required: [invoicing, upcoming, invoices]
+      required: [invoicing, upcoming, invoices, card_surcharge]
       properties:
+        card_surcharge: { "$ref": "#/components/schemas/BillingCardSurcharge" }
         invoicing:
           type: boolean
           description: >-
@@ -198,6 +200,43 @@ components:
           - { type: "null" }
           description: The contracted rate card, or null when no rate is contracted or invoicing is false.
         pull_schedule: { "$ref": "#/components/schemas/BillingPullSchedule" }
+    BillingCardSurcharge:
+      type: object
+      additionalProperties: false
+      description: >-
+        Whether the company's charges carry the credit card fee: a fee on top
+        of each charge to a saved credit card. Debit cards, prepaid cards,
+        cards whose funding is not known, and bank accounts carry none. The
+        amounts always come from the server: the credits quote, pay_now, and
+        each plan carry the fee and the total.
+      required: [rate_basis_points, applies, auto_reload_applies]
+      properties:
+        rate_basis_points: { type: integer, minimum: 0, description: "The fee rate in basis points: 290 is 2.9%." }
+        applies: { type: boolean, description: Whether a charge to the payment method on file carries the fee. }
+        auto_reload_applies:
+          type: boolean
+          description: >-
+            Whether an automatic reload carries the fee: applies, and the
+            auto-reload consent on record names the reload authorization in
+            force. False while auto-reload is off or its consent names an
+            older authorization.
+    BillingCreditQuote:
+      type: object
+      additionalProperties: false
+      description: What a purchase of credits would cost and grant now, priced by the same server code the purchase is.
+      required: [amount_cents, bonus_percent, bonus_cents, credit_cents, surcharge_cents, total_cents]
+      properties:
+        amount_cents: { type: integer, minimum: 1, description: The amount the credits cost, in cents. }
+        bonus_percent: { type: integer, minimum: 0, maximum: 100 }
+        bonus_cents: { type: integer, minimum: 0 }
+        credit_cents: { type: integer, minimum: 1, description: Every credit the purchase grants, bonus included. Send it as expected_credit_cents. }
+        surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on the amount; 0 when none. Send it as expected_surcharge_cents. }
+        total_cents: { type: integer, minimum: 1, description: What the payment method is charged, amount_cents plus surcharge_cents. }
+    BillingCreditQuoteResponse:
+      type: object
+      required: [quote]
+      properties:
+        quote: { "$ref": "#/components/schemas/BillingCreditQuote" }
     BillingPageResponse:
       type: object
       description: The merchant billing page.
@@ -260,8 +299,12 @@ components:
     BillingCreditPlan:
       type: object
       description: The company's plan under credits billing.
-      required: [key, name, monthly_price_cents, bonus_percent, included_credits, billing_interval, monthly_charge_cents]
+      required: [key, name, monthly_price_cents, bonus_percent, included_credits, billing_interval, monthly_charge_cents, monthly_surcharge_cents, monthly_total_cents, monthly_price_surcharge_cents, monthly_price_total_cents]
       properties:
+        monthly_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_charge_cents; 0 when none. }
+        monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge takes from the payment method, monthly_charge_cents plus monthly_surcharge_cents. }
+        monthly_price_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_price_cents, which each month is charged if the plan is billed monthly; 0 when none. }
+        monthly_price_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method if the plan is billed monthly, monthly_price_cents plus monthly_price_surcharge_cents. }
         key: { type: string, description: The plan's key. }
         name: { type: string, description: The plan's name. }
         monthly_price_cents: { type: integer, minimum: 0, description: What the plan costs each month, in cents, before any annual discount. }
@@ -274,8 +317,12 @@ components:
       description: >-
         The plan chosen for the months ahead. The month it was chosen in keeps
         its plan; this one starts, and is first charged, on starts_on.
-      required: [key, name, monthly_price_cents, bonus_percent, included_credits, billing_interval, monthly_charge_cents, starts_on]
+      required: [key, name, monthly_price_cents, bonus_percent, included_credits, billing_interval, monthly_charge_cents, monthly_surcharge_cents, monthly_total_cents, monthly_price_surcharge_cents, monthly_price_total_cents, starts_on]
       properties:
+        monthly_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_charge_cents; 0 when none. }
+        monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge takes from the payment method, monthly_charge_cents plus monthly_surcharge_cents. }
+        monthly_price_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_price_cents, which each month is charged if the plan is billed monthly; 0 when none. }
+        monthly_price_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method if the plan is billed monthly, monthly_price_cents plus monthly_price_surcharge_cents. }
         key: { type: string, description: The plan's key. }
         name: { type: string, description: The plan's name. }
         monthly_price_cents: { type: integer, minimum: 0, description: What the plan costs each month, in cents, before any annual discount. }
@@ -300,10 +347,11 @@ components:
     BillingCreditPending:
       type: object
       description: The purchases on one payment method still waiting to be paid.
-      required: [amount_cents, credit_cents, count]
+      required: [amount_cents, total_cents, credit_cents, count]
       additionalProperties: false
       properties:
-        amount_cents: { type: integer, minimum: 0, description: What they charge, in cents. }
+        amount_cents: { type: integer, minimum: 0, description: What buys their credits, in cents, before any credit card fee. }
+        total_cents: { type: integer, minimum: 0, description: "What they charge the payment method, in cents: amount_cents plus any credit card fee." }
         credit_cents: { type: integer, minimum: 0, description: The credits they add once paid, bonus included, in cents. }
         count: { type: integer, minimum: 0, description: How many purchases are waiting. }
     BillingCredits:
@@ -312,7 +360,7 @@ components:
         The company's credits: its plan, what its usage has drawn this month,
         and what more cost. One credit is one dollar, and every kind of usage
         draws on one balance. Priced but not billed or for sale yet.
-      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms]
+      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms, card_surcharge]
       properties:
         balance_cents: { type: integer, description: "The credit balance, in cents: the sum of every credit movement. Below zero only when usage overdraws it." }
         spendable_cents: { type: integer, description: "What new usage may draw on, in cents: the balance less expired_cents and held_cents." }
@@ -433,9 +481,14 @@ components:
     BillingCreditPayNow:
       type: object
       additionalProperties: false
-      description: Whether the merchant can pay the debt now, and why not.
-      required: [available, reason]
+      description: >-
+        Whether the merchant can pay the debt now, why not, and what it would
+        charge. A pay now sends total_cents back as expected_total_cents.
+      required: [available, reason, amount_cents, surcharge_cents, total_cents]
       properties:
+        amount_cents: { type: integer, minimum: 0, description: "Exactly the debt, in cents; 0 when there is no debt. A debt under the smallest charge is unavailable (reason below_minimum)." }
+        surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on amount_cents; 0 when none. }
+        total_cents: { type: integer, minimum: 0, description: What pay now would charge, amount_cents plus surcharge_cents. }
         available: { type: boolean, description: "Whether POST /api/settings/billing/credits/pay-now would charge now." }
         reason:
           type: [string, "null"]
@@ -528,7 +581,7 @@ components:
         means the payment is still settling. origin is manual (the merchant
         bought), auto_reload (a low balance bought), or settlement (a charge
         for what a credit-billed company owes, with any auto-reload top-up).
-      required: [id, origin, status, instrument_type, failure_message, invoice_available, top_up_cents, amount_cents, bonus_percent, bonus_cents, credit_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
+      required: [id, origin, status, instrument_type, failure_message, invoice_available, top_up_cents, amount_cents, bonus_percent, bonus_cents, credit_cents, surcharge_cents, total_cents, refunded_cents, credits_expire_at, created_at, succeeded_at, failed_at]
       properties:
         id: { type: integer }
         origin: { type: string, enum: [manual, auto_reload, settlement, plan], description: "How the purchase began: manual, auto_reload, settlement (a charge for what the company owes), or plan (the monthly plan charge)." }
@@ -541,7 +594,9 @@ components:
         bonus_percent: { type: integer, minimum: 0, maximum: 100 }
         bonus_cents: { type: integer, minimum: 0 }
         credit_cents: { type: integer, minimum: 1, description: Every credit the purchase grants, bonus included. }
-        refunded_cents: { type: integer, minimum: 0, description: What Fluid refunded, in cents. }
+        surcharge_cents: { type: integer, minimum: 0, description: The credit card fee charged on top of amount_cents, in cents; 0 when none. }
+        total_cents: { type: integer, minimum: 1, description: What the payment method was charged, amount_cents plus surcharge_cents. }
+        refunded_cents: { type: integer, minimum: 0, description: What Fluid refunded to the payment method, in cents, its share of the fee included. }
         credits_expire_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         succeeded_at: { type: [string, "null"], format: date-time }
@@ -580,11 +635,13 @@ components:
         bank has not settled it yet; a bank debit usually settles in four
         business days. returned means the bank took the money back after it
         settled.
-      required: [id, status, amount_cents, currency_code, instrument_type, invoice_numbers, invoice_available, refunded_cents, submitted_at, settled_at, failed_at, recovered_at]
+      required: [id, status, amount_cents, surcharge_cents, total_cents, currency_code, instrument_type, invoice_numbers, invoice_available, refunded_cents, submitted_at, settled_at, failed_at, recovered_at]
       properties:
         id: { type: integer, description: The pull's id. }
         status: { type: string, enum: [submitted, settled, failed, returned, refunded, requires_action], description: Where the pull's money stands. }
-        amount_cents: { type: integer, minimum: 1, description: What was pulled, in cents. }
+        amount_cents: { type: integer, minimum: 1, description: The fees the pull paid, in cents. }
+        surcharge_cents: { type: integer, minimum: 0, description: The credit card fee charged on top of amount_cents, in cents; 0 when none. }
+        total_cents: { type: integer, minimum: 1, description: What was pulled from the payment method, amount_cents plus surcharge_cents. }
         currency_code: { type: string, description: The ISO 4217 currency of the pull. }
         instrument_type: { type: string, enum: [us_bank_account, card], description: What the pull debited. }
         invoice_numbers:
@@ -592,7 +649,7 @@ components:
           description: The issued invoices whose fees the pull was for, whether or not it settled. Empty while its period is not yet invoiced; null when Fluid has no record of which fees the pull was for.
           items: { type: string }
         invoice_available: { type: boolean, description: "Whether the pull has a paid Stripe invoice to open; GET /api/settings/billing/payments/{id}/invoice returns its link." }
-        refunded_cents: { type: integer, minimum: 0, description: "What completed refunds gave back of this pull, in cents. A refunded pull keeps status settled; this says how much of it came back." }
+        refunded_cents: { type: integer, minimum: 0, description: "What completed refunds gave back of this pull, in cents, their share of the credit card fee included; compare it with total_cents. A refunded pull keeps status settled; this says how much of it came back." }
         submitted_at: { type: string, format: date-time, description: When the pull was sent to the bank. }
         settled_at: { type: [string, "null"], format: date-time, description: When the bank settled it, or null. }
         failed_at: { type: [string, "null"], format: date-time, description: When it failed or came back, or null. }
@@ -677,9 +734,11 @@ components:
       description: >-
         One monthly minimum tier a plan can be priced at: the commitment, the
         discount it earns as usage on top, and the usage it buys.
-      required: [monthly_price_cents, bonus_percent, included_credits]
+      required: [monthly_price_cents, bonus_percent, included_credits, monthly_surcharge_cents, monthly_total_cents]
       properties:
         monthly_price_cents: { type: integer, minimum: 0, description: The monthly minimum, in cents. }
+        monthly_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_price_cents, billed monthly; 0 when none. }
+        monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method, monthly_price_cents plus monthly_surcharge_cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100, description: "The tier's discount, as the percent of usage added on top of what is paid ($100 at 10% buys 110 credits)." }
         included_credits: { type: integer, minimum: 0, description: The usage it buys each month, bonus included; one credit is one dollar. }
     BillingUsageControls:
@@ -689,13 +748,20 @@ components:
         auto-reload, which buys the reload amount with the payment method on
         file when the spendable balance falls below the threshold, within the
         reload caps, and only with its authorization on record.
-      required: [limits_enabled, auto_reload, reload_caps, limits, daily_limits, reload_threshold_cents, reload_amount_cents, reload_authorized, reload_authorization, reload_block]
+      required: [limits_enabled, auto_reload, reload_caps, limits, daily_limits, reload_threshold_cents, reload_amount_cents, reload_authorized, reload_authorization_current, reload_authorization, reload_block]
       properties:
         limits_enabled: { type: boolean, description: Whether the monthly spend limits are on. }
         auto_reload: { type: boolean, description: Whether a low balance reloads itself. Never true without the authorization on record. }
         reload_threshold_cents: { type: integer, minimum: 1, description: The spendable balance below which a reload is bought, in cents. }
         reload_amount_cents: { type: integer, minimum: 1, description: What one reload buys, in cents. }
         reload_authorized: { type: boolean, description: Whether the merchant's auto-reload authorization is on record. }
+        reload_authorization_current:
+          type: boolean
+          description: >-
+            Whether the authorization on record is the one in force. False
+            while auto-reload is off, or while it is on under an older
+            authorization; saving auto_reload true with the version in force
+            then renews the consent.
         reload_authorization:
           type: object
           description: The authorization in force, shown before auto-reload is turned on.
@@ -3464,6 +3530,10 @@ paths:
                 "$ref": "#/components/schemas/BillingPageResponse"
               example:
                 billing:
+                  card_surcharge:
+                    rate_basis_points: 290
+                    applies: false
+                    auto_reload_applies: false
                   invoicing: true
                   upcoming:
                     total_cents: 18420
@@ -3518,6 +3588,7 @@ paths:
                     display:
                       bank_name: PNC Bank
                       last4: '6789'
+                    key: 9f2c41d07a3b8e65c1f04d2a7b9e3c18
                   transaction_rates:
                     reset_period: monthly_calendar
                     accumulated_cents: 4829150
@@ -3584,6 +3655,10 @@ paths:
                 "$ref": "#/components/schemas/BillingPageResponse"
               example:
                 billing:
+                  card_surcharge:
+                    rate_basis_points: 290
+                    applies: false
+                    auto_reload_applies: false
                   invoicing: true
                   upcoming:
                     total_cents: 18420
@@ -3638,6 +3713,7 @@ paths:
                     display:
                       bank_name: PNC Bank
                       last4: '6789'
+                    key: 9f2c41d07a3b8e65c1f04d2a7b9e3c18
                   transaction_rates:
                     reset_period: monthly_calendar
                     accumulated_cents: 4829150
@@ -3779,12 +3855,16 @@ paths:
                   kind: credit_note
                   description: "Refund: usage credits"
                   amount_cents: 5000
+                  surcharge_cents: 0
+                  total_cents: 5000
                   currency_code: USD
                   occurred_at: "2026-09-29T14:12:03Z"
                 - id: 409
                   kind: invoice
                   description: Usage credits
                   amount_cents: 10000
+                  surcharge_cents: 0
+                  total_cents: 10000
                   currency_code: USD
                   occurred_at: "2026-09-28T09:30:41Z"
                 meta:
@@ -4020,9 +4100,10 @@ paths:
                   reload_threshold_cents: 5000
                   reload_amount_cents: 20000
                   reload_authorized: true
+                  reload_authorization_current: true
                   reload_authorization:
-                    version: '2026-09-26'
-                    text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again.
+                    version: '2026-10-02'
+                    text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again. A reload charged to a credit card carries a credit card fee of 2.9% of the reload amount, charged with it. Debit cards and prepaid cards carry no fee.
                   reload_block: null
                 status: 200
                 meta:
@@ -4072,15 +4153,23 @@ paths:
                 studios_daily_limit_cents: { type: [integer, "null"], minimum: 1, description: Daily ceiling on Fluid Studios, in cents. }
                 auto_reload_daily_cap_cents: { type: [integer, "null"], minimum: 1, description: The most auto-reload tops up in a day; null is Fluid's default. }
                 auto_reload_monthly_cap_cents: { type: [integer, "null"], minimum: 1, description: The most auto-reload tops up in a month; null is Fluid's default. }
+                shown_reload_threshold_cents: { type: integer, minimum: 1, description: "The reload threshold the merchant was shown with the consent, as reload_threshold_cents reads it. Sent with a save that turns auto-reload on or renews its consent; if the threshold the save would store differs, the save is refused with 409 usage_controls_changed. A renewal renews the consent only when it sends all four shown_reload_* figures: with none, the old consent stays and the rest of the save applies; with only some, the save is refused with 422. Left out of a first turn-on, it is not checked." }
+                shown_reload_amount_cents: { type: integer, minimum: 1, description: "The reload amount shown with the consent, as reload_amount_cents reads it; checked like shown_reload_threshold_cents." }
+                shown_reload_daily_cap_cents: { type: integer, minimum: 1, description: "The daily reload cap shown with the consent, as reload_caps.daily_cents reads it; checked like shown_reload_threshold_cents." }
+                shown_reload_monthly_cap_cents: { type: integer, minimum: 1, description: "The monthly reload cap shown with the consent, as reload_caps.monthly_cents reads it; checked like shown_reload_threshold_cents." }
             example:
               limits_enabled: true
               ai_limit_cents: 150000
               studios_limit_cents: 75000
               ai_daily_limit_cents: 10000
               auto_reload: true
-              reload_authorization_version: '2026-09-26'
+              reload_authorization_version: '2026-10-02'
               auto_reload_threshold_cents: 5000
               auto_reload_amount_cents: 20000
+              shown_reload_threshold_cents: 5000
+              shown_reload_amount_cents: 20000
+              shown_reload_daily_cap_cents: 50000
+              shown_reload_monthly_cap_cents: 500000
       responses:
         '200':
           description: Success
@@ -4106,9 +4195,10 @@ paths:
                   reload_threshold_cents: 5000
                   reload_amount_cents: 20000
                   reload_authorized: true
+                  reload_authorization_current: true
                   reload_authorization:
-                    version: '2026-09-26'
-                    text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again.
+                    version: '2026-10-02'
+                    text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again. A reload charged to a credit card carries a credit card fee of 2.9% of the reload amount, charged with it. Debit cards and prepaid cards carry no fee.
                   reload_block: null
                 status: 200
                 meta:
@@ -4122,6 +4212,17 @@ paths:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
           description: Missing billing.update or billing.view permission, or a Droplet token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: >-
+            The reload figures the save would store are not the ones it says it
+            showed with the consent (usage_controls_changed). Nothing was saved;
+            the details carry the figures in force (reload_threshold_cents,
+            reload_amount_cents, reload_daily_cap_cents, reload_monthly_cap_cents),
+            to show and accept again.
           content:
             application/json:
               schema:
@@ -4155,6 +4256,10 @@ paths:
                 "$ref": "#/components/schemas/BillingCreditsResponse"
               example:
                 credits:
+                  card_surcharge:
+                    rate_basis_points: 290
+                    applies: false
+                    auto_reload_applies: false
                   balance_cents: 184250
                   spendable_cents: 184250
                   expired_cents: 0
@@ -4163,10 +4268,12 @@ paths:
                     card:
                       count: 0
                       amount_cents: 0
+                      total_cents: 0
                       credit_cents: 0
                     us_bank_account:
                       count: 0
                       amount_cents: 0
+                      total_cents: 0
                       credit_cents: 0
                   drawn_cents: 0
                   pace: null
@@ -4197,20 +4304,32 @@ paths:
                     included_credits: 16500
                     billing_interval: monthly
                     monthly_charge_cents: 1500000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 1500000
+                    monthly_price_surcharge_cents: 0
+                    monthly_price_total_cents: 1500000
                   next_plan: null
                   plans:
                   - monthly_price_cents: 250000
                     bonus_percent: 0
                     included_credits: 2500
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 250000
                   - monthly_price_cents: 1000000
                     bonus_percent: 10
                     included_credits: 11000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 1000000
                   - monthly_price_cents: 2500000
                     bonus_percent: 20
                     included_credits: 30000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 2500000
                   - monthly_price_cents: 5000000
                     bonus_percent: 30
                     included_credits: 65000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 5000000
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4240,8 +4359,8 @@ paths:
                     percent_off: 30
                   purchasable: true
                   purchase_terms:
-                    version: '2026-09-26'
-                    text: Usage credits are prepaid. One credit pays for one US dollar of Fluid usage. Credits you buy, and any bonus credits on them, expire one year after the purchase date. Credits are not refundable and cannot move between companies, except where Fluid refunds unused purchased credits to the payment method that paid for them. If a payment is refunded, returned, or disputed, the credits it paid for, and their bonus share, are taken back, even when that makes the balance negative.
+                    version: '2026-10-02'
+                    text: Usage credits are prepaid. One credit pays for one US dollar of Fluid usage. Credits you buy, and any bonus credits on them, expire one year after the purchase date. Credits are not refundable and cannot move between companies, except where Fluid refunds unused purchased credits to the payment method that paid for them. If a payment is refunded, returned, or disputed, the credits it paid for, and their bonus share, are taken back, even when that makes the balance negative. A purchase paid with a credit card carries a credit card fee of 2.9% of the amount, shown before you pay and charged with it. Debit cards, prepaid cards, and bank accounts carry no fee, and you can pay with a bank account instead. A refund returns the fee in proportion to the amount refunded.
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -4298,6 +4417,10 @@ paths:
                 "$ref": "#/components/schemas/BillingCreditsResponse"
               example:
                 credits:
+                  card_surcharge:
+                    rate_basis_points: 290
+                    applies: false
+                    auto_reload_applies: false
                   balance_cents: 184250
                   spendable_cents: 184250
                   expired_cents: 0
@@ -4306,10 +4429,12 @@ paths:
                     card:
                       count: 0
                       amount_cents: 0
+                      total_cents: 0
                       credit_cents: 0
                     us_bank_account:
                       count: 0
                       amount_cents: 0
+                      total_cents: 0
                       credit_cents: 0
                   drawn_cents: 0
                   pace: null
@@ -4340,6 +4465,10 @@ paths:
                     included_credits: 2500
                     billing_interval: monthly
                     monthly_charge_cents: 250000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 250000
+                    monthly_price_surcharge_cents: 0
+                    monthly_price_total_cents: 250000
                   next_plan:
                     key: growth
                     name: Growth
@@ -4348,20 +4477,32 @@ paths:
                     included_credits: 16500
                     billing_interval: annual
                     monthly_charge_cents: 1350000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 1350000
+                    monthly_price_surcharge_cents: 0
+                    monthly_price_total_cents: 1500000
                     starts_on: '2026-10-01'
                   plans:
                   - monthly_price_cents: 250000
                     bonus_percent: 0
                     included_credits: 2500
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 250000
                   - monthly_price_cents: 1000000
                     bonus_percent: 10
                     included_credits: 11000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 1000000
                   - monthly_price_cents: 2500000
                     bonus_percent: 20
                     included_credits: 30000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 2500000
                   - monthly_price_cents: 5000000
                     bonus_percent: 30
                     included_credits: 65000
+                    monthly_surcharge_cents: 0
+                    monthly_total_cents: 5000000
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4391,8 +4532,8 @@ paths:
                     percent_off: 30
                   purchasable: true
                   purchase_terms:
-                    version: '2026-09-26'
-                    text: Usage credits are prepaid. One credit pays for one US dollar of Fluid usage. Credits you buy, and any bonus credits on them, expire one year after the purchase date. Credits are not refundable and cannot move between companies, except where Fluid refunds unused purchased credits to the payment method that paid for them. If a payment is refunded, returned, or disputed, the credits it paid for, and their bonus share, are taken back, even when that makes the balance negative.
+                    version: '2026-10-02'
+                    text: Usage credits are prepaid. One credit pays for one US dollar of Fluid usage. Credits you buy, and any bonus credits on them, expire one year after the purchase date. Credits are not refundable and cannot move between companies, except where Fluid refunds unused purchased credits to the payment method that paid for them. If a payment is refunded, returned, or disputed, the credits it paid for, and their bonus share, are taken back, even when that makes the balance negative. A purchase paid with a credit card carries a credit card fee of 2.9% of the amount, shown before you pay and charged with it. Debit cards, prepaid cards, and bank accounts carry no fee, and you can pay with a bank account instead. A refund returns the fee in proportion to the amount refunded.
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -4511,6 +4652,66 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/billing/credits/quote":
+    get:
+      summary: Price a purchase of credits
+      description: >-
+        What a purchase of amount_cents would cost and grant now, priced by
+        the same server code the purchase is: the bonus, the credits, and the
+        credit card fee with the total charged. The page shows these before
+        Buy and sends credit_cents and surcharge_cents back with the purchase,
+        which refuses any other figure as quote_changed. Reading changes
+        nothing.
+      tags:
+      - billing
+      x-fluid-lint-exempt: "Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions."
+      x-fluid-audience: company
+      operationId: settings_v0_show_billing_credit_quote
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: amount_cents
+        in: query
+        required: true
+        description: The amount to buy, in cents; whole dollars within the purchase limits.
+        schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BillingCreditQuoteResponse"
+              example:
+                quote:
+                  amount_cents: 100000
+                  bonus_percent: 10
+                  bonus_cents: 10000
+                  credit_cents: 110000
+                  surcharge_cents: 2900
+                  total_cents: 102900
+                status: 200
+                meta:
+                  request_id: 5d1e8c2a-7b3f-4e9a-a6c0-2f4b8d1e7c93
+                  timestamp: '2026-10-02T14:05:11Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing billing.view permission, or a Droplet token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: The amount is missing, not whole dollars, or outside the purchase limits
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/settings/billing/credits/purchases":
     get:
       summary: List the company's credit purchases
@@ -4553,6 +4754,8 @@ paths:
                   bonus_percent: 10
                   bonus_cents: 10000
                   credit_cents: 110000
+                  surcharge_cents: 0
+                  total_cents: 100000
                   refunded_cents: 0
                   credits_expire_at: '2027-09-12T16:20:05Z'
                   created_at: '2026-09-12T16:19:58Z'
@@ -4569,6 +4772,8 @@ paths:
                   bonus_percent: 0
                   bonus_cents: 0
                   credit_cents: 20000
+                  surcharge_cents: 0
+                  total_cents: 20000
                   refunded_cents: 0
                   credits_expire_at: '2027-09-03T08:11:42Z'
                   created_at: '2026-09-03T08:11:40Z'
@@ -4585,6 +4790,8 @@ paths:
                   bonus_percent: 0
                   bonus_cents: 0
                   credit_cents: 12500
+                  surcharge_cents: 0
+                  total_cents: 12500
                   refunded_cents: 0
                   credits_expire_at: '2027-09-29T04:00:03Z'
                   created_at: '2026-09-29T04:00:01Z'
@@ -4624,8 +4831,10 @@ paths:
         and the bonus its tier gives, once Stripe reports the money received:
         at once for a card that succeeds, else when the payment settles. The
         server prices every purchase: expected_credit_cents must equal what it
-        quotes, and terms_version the terms in force, or nothing is charged
-        (409). A repeat of the same purchase_key charges once and returns the
+        quotes, expected_surcharge_cents the credit card fee it charges (0
+        when left out), expected_payment_method_key the payment method it
+        charges (not checked when left out), and terms_version the terms in
+        force, or nothing is charged (409). A repeat of the same purchase_key charges once and returns the
         first purchase (200). A declined card returns the purchase as failed
         with its reason. Needs billing.update; never a Droplet token.
       tags:
@@ -4646,11 +4855,13 @@ paths:
                 expected_credit_cents: { type: integer, minimum: 1, description: The credits the page quoted, bonus included, in cents. }
                 purchase_key: { type: string, format: uuid, description: Caller-supplied UUID naming this purchase, so a retry charges once. }
                 terms_version: { type: string, description: The purchase terms version shown before Buy. }
+                expected_surcharge_cents: { type: integer, minimum: 0, description: "The credit card fee the page showed, in cents, charged on top of amount_cents. Left out means the page showed no fee." }
+                expected_payment_method_key: { type: string, minLength: 1, description: "The payment_method.key the page showed. A new purchase is refused (409 quote_changed, details.payment_method_changed true, nothing reserved) when the saved method is another. A repeat of a purchase_key already used charges the method that purchase was reserved on. Left out means the method is not checked." }
             example:
               amount_cents: 100000
               expected_credit_cents: 110000
               purchase_key: 3f7a2c91-8e4d-4b6a-9c15-e2d8b0f47a36
-              terms_version: '2026-09-26'
+              terms_version: '2026-10-02'
       responses:
         '201':
           description: The purchase was made; its status says where the payment stands
@@ -4671,6 +4882,8 @@ paths:
                   bonus_percent: 10
                   bonus_cents: 10000
                   credit_cents: 110000
+                  surcharge_cents: 0
+                  total_cents: 100000
                   refunded_cents: 0
                   credits_expire_at: '2027-09-12T16:20:05Z'
                   created_at: '2026-09-12T16:19:58Z'
@@ -4701,6 +4914,8 @@ paths:
                   bonus_percent: 10
                   bonus_cents: 10000
                   credit_cents: 110000
+                  surcharge_cents: 0
+                  total_cents: 100000
                   refunded_cents: 0
                   credits_expire_at: '2027-09-12T16:20:05Z'
                   created_at: '2026-09-12T16:19:58Z'
@@ -4815,10 +5030,13 @@ paths:
         credits. It is the merchant's own charge, so it works while automatic
         charges are blocked: a success lifts that block, a failure keeps it. A
         declined card returns the charge as failed, with its reason (201).
-        Takes no body and no key. Only one charge runs at a time: while one is
-        on its way a repeat is refused (409), and once the debt is paid a
-        repeat finds nothing owed (422); neither charges. Needs billing.update;
-        never a Droplet token.
+        Takes no key. The optional body names the total the page showed,
+        credit card fee included; a total that is no longer what the charge
+        would be is refused (409, quote_changed), and a request with no total
+        is refused the same way when the charge carries a fee. Only one charge
+        runs at a time: while one is on its way a repeat is refused (409), and
+        once the debt is paid a repeat finds nothing owed (422); neither
+        charges. Needs billing.update; never a Droplet token.
       tags:
       - billing
       x-fluid-lint-exempt: "Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions."
@@ -4826,6 +5044,17 @@ paths:
       operationId: settings_v0_create_billing_credit_debt_payment
       security:
       - bearer_auth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                expected_total_cents: { type: integer, minimum: 1, description: "The total the page showed, in cents: exactly the debt, plus any credit card fee. Left out means the page showed the debt with no fee." }
+            example:
+              expected_total_cents: 102900
       responses:
         '201':
           description: The charge was reserved and sent; its status says where the payment stands
@@ -4846,6 +5075,8 @@ paths:
                   bonus_percent: 0
                   bonus_cents: 0
                   credit_cents: 100000
+                  surcharge_cents: 0
+                  total_cents: 100000
                   refunded_cents: 0
                   credits_expire_at: '2027-09-30T14:05:11Z'
                   created_at: '2026-09-30T14:05:09Z'
@@ -4875,7 +5106,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '409':
-          description: A charge is already on its way (in_flight); nothing was charged
+          description: A charge is already on its way (in_flight), or the total is not the one the page showed (quote_changed); nothing was charged
           content:
             application/json:
               schema:
@@ -4947,6 +5178,10 @@ paths:
                 "$ref": "#/components/schemas/BillingPageResponse"
               example:
                 billing:
+                  card_surcharge:
+                    rate_basis_points: 290
+                    applies: false
+                    auto_reload_applies: false
                   invoicing: true
                   upcoming:
                     total_cents: 18420
@@ -5001,6 +5236,7 @@ paths:
                     display:
                       bank_name: PNC Bank
                       last4: '6789'
+                    key: 9f2c41d07a3b8e65c1f04d2a7b9e3c18
                   transaction_rates:
                     reset_period: monthly_calendar
                     accumulated_cents: 4829150
@@ -5104,8 +5340,8 @@ paths:
                     version: fluid-ach-v1
                     digest: b624e6f9fe13a72526ed0cde8e2dbb492933a7bbb528ba98aa3eaef9269f0fc1
                   card:
-                    version: fluid-card-v1
-                    digest: 28454951345cf4fe2b43b180fa751686d63bc996cf02b96542ee917267e43857
+                    version: fluid-card-v2
+                    digest: 370b3cc305ab0d510aa6b640170b6cf718de5834d83e7267aabbac0c0e2a5101
                 allowed_instrument_types:
                 - us_bank_account
                 - card
@@ -5189,8 +5425,8 @@ paths:
                     version: fluid-ach-v1
                     digest: b624e6f9fe13a72526ed0cde8e2dbb492933a7bbb528ba98aa3eaef9269f0fc1
                   card:
-                    version: fluid-card-v1
-                    digest: 28454951345cf4fe2b43b180fa751686d63bc996cf02b96542ee917267e43857
+                    version: fluid-card-v2
+                    digest: 370b3cc305ab0d510aa6b640170b6cf718de5834d83e7267aabbac0c0e2a5101
                 allowed_instrument_types:
                 - us_bank_account
                 - card
@@ -5368,8 +5604,8 @@ paths:
                     version: fluid-ach-v1
                     digest: b624e6f9fe13a72526ed0cde8e2dbb492933a7bbb528ba98aa3eaef9269f0fc1
                   card:
-                    version: fluid-card-v1
-                    digest: 28454951345cf4fe2b43b180fa751686d63bc996cf02b96542ee917267e43857
+                    version: fluid-card-v2
+                    digest: 370b3cc305ab0d510aa6b640170b6cf718de5834d83e7267aabbac0c0e2a5101
                 allowed_instrument_types:
                 - us_bank_account
                 - card
@@ -5478,8 +5714,8 @@ paths:
                     version: fluid-ach-v1
                     digest: b624e6f9fe13a72526ed0cde8e2dbb492933a7bbb528ba98aa3eaef9269f0fc1
                   card:
-                    version: fluid-card-v1
-                    digest: 28454951345cf4fe2b43b180fa751686d63bc996cf02b96542ee917267e43857
+                    version: fluid-card-v2
+                    digest: 370b3cc305ab0d510aa6b640170b6cf718de5834d83e7267aabbac0c0e2a5101
                 allowed_instrument_types:
                 - us_bank_account
                 - card
