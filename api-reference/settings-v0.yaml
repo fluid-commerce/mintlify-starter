@@ -363,7 +363,7 @@ components:
           oneOf:
           - { "$ref": "#/components/schemas/BillingCreditPlan" }
           - { type: "null" }
-          description: The company's plan this UTC month; the lowest tier until another is chosen. Null when platform billing does not invoice the company.
+          description: The company's plan this UTC month, or null when it has none. A company created before plans has none until it chooses one; a newly created company starts on the first plan. Null when platform billing does not invoice the company.
         next_plan:
           oneOf:
           - { "$ref": "#/components/schemas/BillingCreditNextPlan" }
@@ -439,8 +439,12 @@ components:
         available: { type: boolean, description: "Whether POST /api/settings/billing/credits/pay-now would charge now." }
         reason:
           type: [string, "null"]
-          enum: [no_debt, in_flight, no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch, null]
-          description: Why it cannot, when available is false; null when it can.
+          enum: [no_debt, below_minimum, in_flight, no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch, null]
+          description: >-
+            Why it cannot, when available is false; null when it can. below_minimum means the debt is under the
+            smallest charge, $0.50 on any rail. Pay now charges the debt alone, so it needs a debt of at least $0.50;
+            nothing is charged now. The automatic charge can be sent sooner when a consented auto-reload top-up
+            lifts the total over $0.50.
     BillingCreditUpcomingEstimate:
       type: object
       additionalProperties: false
@@ -531,7 +535,7 @@ components:
         status: { type: string, enum: [pending, processing, succeeded, failed, refunded, reversed] }
         instrument_type: { type: string, enum: [card, us_bank_account] }
         failure_message: { type: [string, "null"], description: Why the payment failed, for a failed purchase. }
-        top_up_cents: { type: [integer, "null"], minimum: 0, description: "For a settlement, the part of amount_cents that is the auto-reload top-up; the rest paid the debt and any surplus up to the rail's smallest charge. Null for every other origin." }
+        top_up_cents: { type: [integer, "null"], minimum: 0, description: "For a settlement, the part of amount_cents that is the auto-reload top-up; the rest paid the debt and, for older charges raised to a rail minimum, may include surplus added to credits. Null for every other origin." }
         invoice_available: { type: boolean, description: "Whether the purchase has a paid Stripe invoice to open; GET /api/settings/billing/credits/purchases/{id}/invoice returns its link." }
         amount_cents: { type: integer, minimum: 1, description: What was paid, in cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100 }
@@ -4259,10 +4263,13 @@ paths:
       description: >-
         Chooses the authenticated company's plan from the 1st of next UTC
         month, sized to its usage, and how it is paid for. This month keeps
-        its plan and its usage; the new plan is first charged when it starts.
-        The answer shows the choice as next_plan. Choosing the plan in force,
-        or sending keep_current_plan, cancels a waiting choice. Only a company platform billing invoices
-        has a plan to change.
+        its plan, or its lack of one, and its usage. A company with no plan
+        chooses its first one here; a choice for a company with no plan must
+        name a plan_key or a monthly_price_cents. The plan is charged from
+        the month a root admin sets as its plan billing start. The answer
+        shows the choice as next_plan. Choosing the plan in force, or sending
+        keep_current_plan, cancels a waiting choice. Only a company platform
+        billing invoices has a plan to change.
       tags:
       - billing
       operationId: settings_v0_update_billing_credits
@@ -4802,9 +4809,9 @@ paths:
       summary: Pay the overdrawn credit balance now
       description: >-
         Charges the saved card or bank account for what the credit balance is
-        overdrawn by, now instead of at the next billing run: at least the
-        rail's smallest charge, any surplus added as credits, and no
-        auto-reload top-up. Only for a company whose billing is paid from
+        overdrawn by, now instead of at the next billing run: exactly the debt
+        (never more), at least $0.50 on any rail, and no auto-reload top-up. A
+        debt under $0.50 is refused (below_minimum, 422). Only for a company whose billing is paid from
         credits. It is the merchant's own charge, so it works while automatic
         charges are blocked: a success lifts that block, a failure keeps it. A
         declined card returns the charge as failed, with its reason (201).
@@ -4874,7 +4881,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
-          description: Nothing is owed (no_debt), or the saved payment method cannot be charged (no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch)
+          description: Nothing is owed (no_debt), the debt is under the $0.50 smallest charge (below_minimum), or the saved payment method cannot be charged (no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch)
           content:
             application/json:
               schema:
