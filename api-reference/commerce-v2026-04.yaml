@@ -104,8 +104,10 @@ components:
           the order's current value; `details.current_updated_at` carries
           the value to re-fetch and echo back on retry
         - a bare `{ status, message }` object when a request with the same
-          `Idempotency-Key` is still in flight; `status` is the literal
-          string "error", not an HTTP status code
+          `Idempotency-Key` is still in flight, or when the key is held
+          because an earlier request's outcome is unknown or was confirmed
+          by support; `status` is the literal string "error", not an HTTP
+          status code
       oneOf:
       - "$ref": "#/components/schemas/ErrorResponse"
       - type: object
@@ -117,12 +119,16 @@ components:
             type: string
             enum:
             - error
-            description: Literal string `"error"` — a status label, not an HTTP
-              status code. Marks the in-flight-`Idempotency-Key` conflict body.
+            description: Literal string `"error"`, a status label, not an HTTP
+              status code. Marks the in-flight or held `Idempotency-Key`
+              conflict body.
           message:
             type: string
             description: Explains that a request with the same `Idempotency-Key`
-              is still being processed; retry once it completes.
+              is still being processed and to retry once it completes; or that
+              the key is held because an earlier request's outcome is unknown,
+              or was confirmed by support, and must not be retried under a new
+              key.
             example: A request with this Idempotency-Key is already being processed
     OrderEditUnprocessableError:
       description: |
@@ -935,14 +941,20 @@ components:
             "$ref": "#/components/schemas/ErrorResponse"
     Conflict:
       description: |
-        Two distinct concurrent-edit cases collapse to this status, each
-        with its own body shape:
+        Three cases collapse to this status, in two body shapes:
           - `expected_updated_at` mismatched the order's current value —
             wrapped `ErrorResponse`; `details.current_updated_at` carries
             the value the client should re-fetch and echo back on retry.
           - An `Idempotency-Key` is already in flight on another request —
             bare `{ status, message }`. The client should retry once the
             in-flight request completes; the cached response will replay.
+          - An `Idempotency-Key` is held because an earlier request under it
+            has an unknown outcome, bare `{ status, message }`. Every retry
+            under the key answers 409 until support resolves the outcome; do
+            not retry under a new key, and read the order to confirm the
+            outcome instead. Once support confirms the outcome, the key stays
+            held for 24 hours if the earlier request took effect, or can be
+            used again if it did not.
       content:
         application/json:
           schema:
@@ -975,8 +987,13 @@ components:
     ServiceUnavailable:
       description: |
         The idempotency claim store could not say whether this
-        `Idempotency-Key` already has an outcome. Nothing ran and nothing
-        was sent; retry the same request unchanged under the same key.
+        `Idempotency-Key` already has an outcome, or the payment provider
+        did not answer before any request that can move money was sent
+        (an OAuth token fetch that timed out). Nothing that can move money
+        was sent; retry the same request unchanged under the same key. When
+        the server could not confirm that the key was released, the message
+        says so: the key may still be held, and if that retry is refused as
+        held, contact support.
       content:
         application/json:
           schema:
@@ -1347,7 +1364,11 @@ paths:
         required: false
         description: |
           Optional client-generated key (UUID recommended) that the server
-          uses to deduplicate retries, for up to 24 hours. The key is bound
+          uses to deduplicate retries: a stored response replays for up to 24
+          hours. An edit whose outcome is unknown holds its key until support
+          resolves it, and every retry under it answers 409 until then; once
+          support resolves it, the key stays held for 24 hours if the edit
+          took effect, or can be used again if it did not. The key is bound
           to the exact request that first used it: the method, path and
           query string, `Content-Type` and body bytes, and the editor the
           edit is attributed to. A retry must resend that request unchanged,
