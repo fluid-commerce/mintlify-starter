@@ -1664,6 +1664,16 @@ adoption.
 
 Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
 
+**Header binding and import additions (navigation-menus-016 to -031, plus edits to -003, -006, -010).** Verified against fluid `8b78b0a`:
+
+- Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
+- `Menu` validates `countries` presence, so an empty `country_ids` fails. The schema defaults `active` to false. The `-006` example now sends a country ID.
+- Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
+- Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
+- `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
+- Section setting values live in the template's schema `sections` settings. The visual editor saves the template content, and schema defaults apply only when a key is missing or null. Live rendering reads the published template snapshot, and a resource push saves without publishing.
+- The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
+
 
 ### Member manifest v2 authoring
 
