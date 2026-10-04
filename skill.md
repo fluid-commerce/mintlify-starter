@@ -53,6 +53,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 
 - **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
 - **Checkout is a separate app.** A theme renders the storefront and cart; nothing in it can change checkout.
+- **Order totals across currencies:** each order's `amount` is in its own `currency_code`. Sum `amount_in_base`, which is always US dollars, converted at the rate saved on the order: https://docs.fluid.app/concepts/order-currency
 - **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`): https://docs.fluid.app/themes/common-pitfalls
 
 ## REST API conventions
