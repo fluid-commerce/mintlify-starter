@@ -2114,7 +2114,9 @@ monorepo and of `fluid-fairshare`. Durable decisions:
 - **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
   can double-fire declarative add-to-cart.
 - **Attribution comes from the page URL** and attaches to the cart **at creation**. Item
-  adds don't re-attribute, so a cart created on `/home/...` stays uncredited.
+  adds don't re-attribute. A cart created on `/home/...` by a visitor without FairShare
+  credit has no rep; a visitor a member already credited keeps that member's credit
+  (amended 2026-10-04, see the FairShare credit model entry below).
   `data-*` overrides are first-present, not first-valid, and are remembered in browser
   storage. The server looks `data-share-guid` up as a **username**, so UUID examples
   were removed from the SDK pages.
@@ -2124,8 +2126,37 @@ monorepo and of `fluid-fairshare`. Durable decisions:
 Corrections made to unregistered pages in the same change: `sdk/overview.mdx`,
 `sdk/installation.mdx`, `sdk/cart-api.mdx` (opening the cart after an add is the
 default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.mdx`
-(`/search` is not a page; the playlist and enrollment index routes redirect and drop the
-credit; product detail is by slug).
+(`/search` is not a page; the playlist and enrollment index routes redirect to `/`, which
+carries no credit segment; product detail is by slug).
+
+### FairShare credit model — established, then kept (2026-10-04)
+
+The docs owner's model of rep credit is authoritative for every page:
+
+- A visit to a member's credit path (`/<username>/...`, a rep subdomain, or a `username` /
+  `referral` query parameter) that the SDK logs **establishes** that member's credit.
+- The member **keeps** it. FairShare's tracking (cookies, browser fingerprint, and similar
+  signals) carries it across later pages and visits, including `/home/...` pages, custom
+  routes, and marketing URLs that redirect, such as `/tv-offer`.
+- Non-credited pages, redirects, and marketing URLs establish no new credit and **never
+  remove** existing credit. Don't write that they "lose", "drop", "strip", or "remove" it.
+  The CDN doesn't strip credit or the `username` / `share_guid` parameters.
+- When a credited visitor later lands on a different member's credit path, the admin's
+  **Shared links (multi-rep)** setting (first touch, last touch, most activity) decides
+  commission. Don't document a fixed precedence or a credit duration.
+- Members share credit paths; marketing and legacy URLs serve orphaned customers.
+
+`concepts/fair-share.mdx#how-credit-is-established-and-kept` is the single canonical
+explanation. Other pages link to it instead of restating it.
+
+Code evidence (`origin/main`, 2026-10-04): the SDK writes the server-resolved affiliate to a
+`fluid_affiliate` cookie and never clears it when a later page resolves no rep, so hydration
+keeps showing the member on `/home/...`. `getAttribution()` and the attribution sent at
+cart creation reflect only the current URL (or an override), so a cart created on
+`/home/...` carries no rep of its own. The order's rep is then resolved server-side from the
+session's earlier credited visits, under the company's first/last/most-touch setting. The
+cross-session carry and the fingerprint's role are the owner's statement; the traced
+order path links visits by session, and is noted for the owner rather than documented.
 
 ## API Reference sidebar — generated sections (2026-09-29)
 
