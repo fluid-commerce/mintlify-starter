@@ -2269,7 +2269,8 @@ confirmation on PR #90: a merchant can build and preview a store before adding a
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
 were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
 (`b26e25102b`). They aren't in the registry. One bullet in `storefront/fairshare-sdk.mdx`
-was added with claims `sf-fairshare-078` and `-079`. Durable decisions:
+was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was dropped on
+2026-10-04 with that clause). Durable decisions:
 
 - **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
   serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
@@ -2277,6 +2278,12 @@ was added with claims `sf-fairshare-078` and `-079`. Durable decisions:
   their own links. Don't document adding rep credit to a marketing URL, and don't tie the
   redirect's query-string behavior to that pattern. Non-credited routes are the option only
   when the address must stay in the address bar.
+- **Credit wording follows the owner's model.** Non-credited routes and redirects establish
+  no credit; a visitor a member already credited keeps that credit. Never write that a route
+  or redirect loses, drops, or strips credit, and don't present the query string a redirect
+  doesn't forward as a credit risk. The two verified risks are the `404` at
+  `/<username>/<non-credited-path>` and the username/route collision, which credits the
+  matching member for the route's visits.
 - **Per-country targets need country routes.** Redirects have one target (optionally one
   domain, API only). Country-route redirects are `302`.
 - **Country detection is `?region=`, then the country in the `fluid_locale` cookie, then
