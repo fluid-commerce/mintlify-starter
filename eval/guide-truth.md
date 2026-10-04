@@ -2314,3 +2314,31 @@ was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was 
   routes has no effect, and username/route collisions aren't prevented.
 - **Generated pages linked by current URL.** fluid#24889 renames the five theme region rule
   operations; a separate docs PR adds `permanent: false` redirects from the old URLs.
+
+## Navigation APIs told apart (2026-10-04)
+
+Fluid has three navigation APIs, and the reference didn't say which was which. They are now named
+consistently, in the specs (fluid#24884), the sidebar, and AGENTS.md:
+
+- **Website navigation menus** (`content-v0`, `/api/menus` and `menu_items`): the storefront's
+  navigation bars, footers, and other site menus. Website → **Navigation menus**. They were hidden by
+  the `content-v0` exclude rule, whose comment wrongly called them superseded: `storefront-v2026-04`
+  has no menu paths. The `docs.json` AI instruction that said they weren't in any synced spec was
+  also wrong. Both are corrected.
+- **Mobile app navigation** (`mobile-v2`, `/api/v2/mobile_navigations`): the Fluid mobile app's
+  navigation. Mobile app → **Navigation**. `mobile-v2` now syncs, but its `mobile-pages` tag stays
+  excluded: none of its 21 operations has a description, and most summaries are machine-generated
+  ("Explore explore"). Publish it once the spec describes it.
+- **Portal navigation** (`fluid-os-v0`): a portal definition's navigation. Each has a `platform` of
+  `web` or `mobile` (`FluidOS::Navigation` `enum :platform`), which the profile importer describes as
+  "browser or mobile". The docs don't say that `mobile` means the Fluid mobile app, because the code
+  doesn't establish it.
+
+Two list operations get narrow offset-pagination exceptions in AGENTS.md, verified against Rails:
+List website navigation menus and List mobile app navigations
+(`.page(page_param).per(records_per_page)`).
+
+Generated tags keep their hyphens apart from case folding, so `fluid-os - navigations` serves at
+`fluid-os--navigations`, with two hyphens. Check the live sitemap before writing a redirect to a tag
+with punctuation: four guessed variants failed the broken-links check before the sitemap showed the
+real one.
