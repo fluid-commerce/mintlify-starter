@@ -2441,3 +2441,45 @@ forms actions, models, and serializers and against the admin's form builder.
   parameters, and their `pagination` schema lists `next_page` / `prev_page`, which aren't returned. The
   statistics `id` parameter is marked required but ignored. Embed settings has no request body schema.
   The descriptions say how each actually behaves; the structural fixes need a contract change upstream.
+
+## Theme error pages (`themes/error-pages.mdx`, 2026-10-04)
+
+`themes/error-pages.mdx` documents the `error_page` 404 and 503 templates. Like
+`themes/theme-variables.mdx` and `themes/developer-guide.mdx`, it isn't in the claims
+registry: it asserts no API path, parameter or status-code contract, only storefront
+rendering behavior. Each claim was checked against `origin/main` of the Rails monorepo
+(the error renderer, the errors routes, the theme region router, the CDN function and
+the Base root theme) and of fluid-admin (template grouping, type labels and template
+actions). Re-verify against both before changing a behavioral claim.
+
+Durable decisions:
+
+- **Lookup is by name on the active theme.** The template must be named `404` or `503`,
+  be the active default for that name, and have a published version. A template named
+  `default` never renders. Defaults are scoped by name, so the 404 and 503 defaults are
+  independent. Region rules don't apply.
+- **Single-segment paths aren't 404s.** `/:credit` matches any one-segment path, so an
+  unknown `/spring-sale` renders the home page. The page's 404 table describes
+  multi-segment unknown paths, and says so.
+- **The fallback status differs.** With no themed 503, an unhandled error returns the
+  static page with `500`. The themed page returns `503`.
+- **`content_for_header` is head Global Embeds only on error pages.** The renderer skips
+  the usual header builder, so there's no title, meta, CSRF tag, Fluid script or theme
+  stylesheet. The page tells authors to load CSS and a title from the layout.
+- **Error pages render in English, and `t | default:` doesn't fall back.** The errors
+  controller doesn't switch locale, and the `t` filter returns the
+  `Translation missing: …` string for an absent key, which `default:` doesn't replace.
+  The Base theme's error templates use `t | default:` with no `error.*` keys in its
+  locales, so they render that string today. It is flagged for an upstream fix; don't
+  document `default:` as a fallback until the filter or the Base locales change.
+- **CLI push makes only the first error template the default.** The resource write
+  makes a template default only when its type has no active default, without scoping by
+  name. The page's warning tells authors to use **Make Default** on the second one.
+  A theme import makes each imported template default and publishes it.
+- **Current behavior tied to in-progress fixes, described neutrally.** Missing records
+  "currently" redirect to `/404` (302) rather than rendering in place, and the storefront
+  error routes "currently" always use the active theme, so `fluid theme dev` and theme
+  previews show the live theme's error page. Update both statements when the fixes land.
+- **Pages a theme can't style** (billing pause, unreachable origin, rate limiting,
+  blocked IPs, unknown host) are listed without internals. The billing pause links to the
+  Help Center Billing **Status** card. There is no maintenance or password mode.
