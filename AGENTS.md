@@ -55,10 +55,20 @@ The site has four tabs. Grouping lives only in `docs.json`: a page's URL is its 
   Public vs. company is expressed per operation, not by splitting the docs.
 - Resources are plural kebab-case nouns (`enrollment-packs`). Actions are HTTP methods — never verbs in paths.
 - Canonical storefront field vocabulary — use these exact names in prose and examples: `id`, `slug`, `title`, `description`, `image_url`, `canonical_url`, `images`, `active`, `status`, `publish_at`, `seo`, `metafields`, `countries`, `languages`.
-- Pagination is **cursor pagination**: request with `page[cursor]` / `page[limit]`; responses return `meta.pagination.next_cursor` / `meta.pagination.prev_cursor`. Cursors are opaque strings. The terms `page`, `per_page`, `offset`, and any totals-based pagination language are banned. Three exceptions, all narrow and verified against the implementation rather than the spec:
+- Navigation means three different things. Say which one you mean:
+  - **Website navigation menus**: the storefront's navigation bars, footers, and other site menus (`/api/menus`, Website > Navigation menus).
+  - **Mobile app navigation**: the Fluid mobile app's navigation (`/api/v2/mobile_navigations`, Mobile app > Navigation).
+  - **Portal navigation**: a portal definition's navigation, for `web` or `mobile` (Portal > Portal navigation).
+
+  On website pages, "mobile" can also mean a small screen. Say "small screens" or "phone-sized layout" there, so it isn't read as the mobile app.
+- Pagination is **cursor pagination**: request with `page[cursor]` / `page[limit]`; responses return `meta.pagination.next_cursor` / `meta.pagination.prev_cursor`. Cursors are opaque strings. The terms `page`, `per_page`, `offset`, and any totals-based pagination language are banned. Four exceptions, all narrow and verified against the implementation rather than the spec:
   - The `webhooks-v0` surface — see the legacy-reference exception below.
   - Seven `checkout-v2026-04` list operations are genuinely offset-paginated in the Rails implementation, and their generated reference correctly says so: `list_customer_addresses`, `list_customer_payment_methods`, `list_customer_points`, `list_reps`, `get_store_drop_zones`, `list_subscriptions`, and `list_users`. Cursor pagination was available on the same base class these actions inherit and was deliberately not used, so this is the API's design, not drift — do not "fix" the spec, and do not describe these seven as cursor-paginated. Everything else on `checkout-v2026-04`, including `list_customer_orders`, remains cursor and is held to the rule above.
   - The Public SDK Drop Zones operation `public_v2025_06_index_public_drop_zones`, generated only at `/api-reference/public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`, genuinely uses offset `page` / `per_page` pagination. This exception applies only to that generated page. It does not sanction another Public SDK page or hand-written prose.
+
+  - Two website and mobile app navigation list operations genuinely use offset `page` / `per_page` pagination, verified against the Rails implementation. Both exceptions apply only to their generated pages:
+    - `content-v0` **List website navigation menus** (`GET /api/menus`), generated at `/api-reference/menus/list-website-navigation-menus`.
+    - `mobile-v2` **List mobile app navigations** (`GET /api/v2/mobile_navigations`), generated at `/api-reference/mobile-navigations/list-mobile-app-navigations`. The controller paginates with `.page(page_param).per(records_per_page)`.
 
   Three details to preserve when documenting the seven:
   - Passing `page[cursor]` to any of them returns **422** with `errors: {page: ["must be an integer"]}`, not page 1. Request params are validated by a Dry schema before the query runs, so the cursor form fails loudly rather than being silently ignored. This is safe behaviour and worth stating so the question is not re-litigated.
