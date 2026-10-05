@@ -534,6 +534,16 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     operations (onboarding info, legal entities, bank accounts, people, and document
     upload) aren't in any synced spec yet, so that guide sends readers to the CLI for
     them and asserts nothing about their contracts.
+15. **`checkout-v2026-04` misnames the currency of `amount_in_base`.** Its order schema
+    describes `amount_in_base` as the "Order total expressed in the company's base
+    currency". It's in the platform base currency, US dollars, for every company: Rails
+    sets `MoneyRails.default_currency` to `:usd`, and the `_in_base` columns divide the
+    order amount by the order's `base_to_currency_rate`. `analytics-v0` gets this right
+    ("the platform base currency") but doesn't name USD. The other specs that carry
+    `_in_base` fields (`admin-v2025-06`, `company-v0`, `members-v2025-06`,
+    `commerce-v2026-04`, `public-v2025-06`) leave them undescribed. `concepts/order-currency.mdx`
+    follows the implementation, and carries a note about the wrong wording until the
+    specs are corrected. When they are, drop that note.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
