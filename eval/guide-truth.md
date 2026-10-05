@@ -2273,3 +2273,44 @@ The channel guided setups cover connecting accounts the merchant already has.
 One product claim comes from the requester, not the implementation, and is open for
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
 **Settings → Billing**. Nothing in the code gates going live on a card.
+
+## Sitemap, custom routes, and redirects (2026-10-04)
+
+`help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
+were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
+(`b26e25102b`). They aren't in the registry. One bullet in `storefront/fairshare-sdk.mdx`
+was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was dropped on
+2026-10-04 with that clause). Durable decisions:
+
+- **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
+  serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
+  product or page. Members share credited `/<username>/...` paths from the mobile app or
+  their own links. Don't document adding rep credit to a marketing URL, and don't tie the
+  redirect's query-string behavior to that pattern. Non-credited routes are the option only
+  when the address must stay in the address bar.
+- **Credit wording follows the owner's model.** Non-credited routes and redirects establish
+  no credit; a visitor a member already credited keeps that credit. Never write that a route
+  or redirect loses, drops, or strips credit, and don't present the query string a redirect
+  doesn't forward as a credit risk. The two verified risks are the `404` at
+  `/<username>/<non-credited-path>` and the username/route collision, which credits the
+  matching member for the route's visits.
+- **Per-country targets need country routes.** Redirects have one target (optionally one
+  domain, API only). Country-route redirects are `302`.
+- **Country detection is `?region=`, then the country in the `fluid_locale` cookie, then
+  geolocation headers, then the company default, then `US`.** An internal design doc names
+  a `fluid_country` cookie; the router doesn't read it. Don't document it. Don't claim how
+  the CDN treats `?region=` — that's unverified.
+- **The URL Redirects screen isn't in the admin sidebar.** It's reachable at
+  `/url_redirects` and through the admin search, which lists it as **Url Redirects**. The
+  page header says **URL Redirects**, which is the `sidebarTitle`.
+- **Current behavior documented as such** (fixes pending in fluid; update the pages when
+  they ship): the custom-route drawer's **Include in Sitemap** off also deactivates the
+  route; the sitemap lists credited custom routes at `/<path>` instead of `/home/<path>`;
+  redirects and `302` route rules don't forward the query string; redirect lookups are
+  cached per path and host for up to 30 days and saving a redirect clears a different
+  cache key, so changes can lag; the drawer offers **Post** and **Playlist** overrides that
+  the API rejects.
+- **Product decisions documented as current behavior:** the Fair Share option on country
+  routes has no effect, and username/route collisions aren't prevented.
+- **Generated pages linked by current URL.** fluid#24889 renames the five theme region rule
+  operations; a separate docs PR adds `permanent: false` redirects from the old URLs.
