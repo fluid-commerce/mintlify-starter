@@ -19,10 +19,12 @@ tags:
     adjustments or discounts to existing orders, with an optional dry-run
     preview of the recalculated totals.
 - name: orders
-  description: Company order listing — a cursor-paginated, Elasticsearch-backed
-    index of the authenticated company's orders, with free-text search and
+  description: Company order listing — a cursor-paginated index of the
+    authenticated company's orders, answered from the database or the search
+    index per request, with free-text search and
     filtering on status, type, country, customer, rep, subscription and
     effective sale date.
+  x-fluid-section: Commerce
 components:
   securitySchemes:
     bearer_auth:
@@ -499,18 +501,14 @@ components:
           description: ISO 4217 currency code the order's money amounts are
             expressed in (e.g. `USD`).
         amount:
-          type:
-          - string
-          - integer
+          type: string
           description: Original checkout total (immutable), as a decimal string;
-            the integer 0 when the stored total is null. For the recalculated equivalent
+            `"0.0"` when the stored total is null. For the recalculated equivalent
             see `current_amount`.
         tax:
-          type:
-          - string
-          - integer
-          description: Original checkout tax, as a decimal string; the integer 0
-            when the stored tax is null. Preserved on the order and surfaced as
+          type: string
+          description: Original checkout tax, as a decimal string; `"0.0"` when
+            the stored tax is null. Preserved on the order and surfaced as
             `current_tax` for symmetry.
         shipping:
           type: string
@@ -521,11 +519,9 @@ components:
             Shipping amount actually charged. Zero when the order has free
             shipping.
         amount_in_base:
-          type:
-          - string
-          - integer
-          description: Total in base currency (USD), as a decimal string; the
-            integer 0 when this base value is not stored.
+          type: string
+          description: Total in base currency (USD), as a decimal string;
+            `"0.0"` when this base value is not stored.
         base_to_currency_rate:
           type: string
           description: Exchange rate used to convert to the base currency.
@@ -539,12 +535,9 @@ components:
             absolute sum of the order's pricing-adjustment amounts, gated by
             its discounts. Subtracted in `current_amount`.
         current_adjustment_total:
-          type:
-          - string
-          - integer
+          type: string
           description: Sum of post-checkout `OrderAdjustment.amount` values, as a
-            decimal string (`"0.0"` when the stored total is zero); the integer
-            0 when the stored total is null.
+            decimal string (`"0.0"` when the stored total is zero or null).
         current_tax:
           type: string
           description: Preserved from checkout (not recalculated).
@@ -669,18 +662,13 @@ components:
           - 'null'
           description: Display symbol for the order's currency.
         amount:
-          type:
-          - string
-          - integer
-          description: Checkout total, as a decimal string; the integer 0 when
-            none is stored.
-        amount_in_base:
-          type:
-          - string
-          - integer
-          description: Checkout total converted to the company's base currency,
-            as a decimal string; the integer 0 when this base value is not
+          type: string
+          description: Checkout total, as a decimal string; `"0.0"` when none is
             stored.
+        amount_in_base:
+          type: string
+          description: Checkout total converted to the company's base currency,
+            as a decimal string; `"0.0"` when this base value is not stored.
         total_display_amount:
           type: string
           description: Pre-formatted total for display, after any points
@@ -758,8 +746,8 @@ components:
     CursorPagination:
       type: object
       description: |
-        Cursor pagination metadata. Cursors are opaque Elasticsearch
-        `search_after` tokens — echo them back verbatim. Unlike the
+        Cursor pagination metadata. Cursors are opaque — echo them back
+        verbatim. Unlike the
         v2025-06 index this carries no `total_pages` / `current_page`:
         cursor pagination has no page number to report.
       properties:
@@ -786,7 +774,9 @@ components:
         total_count:
           type: integer
           description: Exact number of orders matching the query across all
-            pages.
+            pages. Present only when the search index answered; absent when
+            the database answered, in which case
+            `GET /api/v202604/orders/count` returns it.
     OrderListResponse:
       type: object
       description: |
@@ -823,6 +813,48 @@ components:
             pagination:
               description: Cursor pagination for walking the result set.
               "$ref": "#/components/schemas/CursorPagination"
+    OrderCountResponse:
+      type: object
+      description: |
+        The number of orders matching the request's filters.
+      required:
+        - total_count
+        - calculated_at
+        - status
+        - meta
+      properties:
+        total_count:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+          description: Exact number of matching orders, or null when the
+            count did not finish within the server's time limit.
+        calculated_at:
+          type: string
+          format: date-time
+          description: When this count was computed. A cached count keeps
+            its original time.
+        status:
+          type: integer
+          description: HTTP status code, repeated in the body (`200` on
+            success).
+        meta:
+          type: object
+          description: Response metadata — request correlation fields.
+          required:
+            - request_uuid
+            - timestamp
+          properties:
+            request_uuid:
+              type:
+                - string
+                - "null"
+              description: Server-assigned identifier for this request.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server time the response was generated.
     OrderResponse:
       description: |
         Order response wrapper. The `order` object includes the eight
@@ -900,6 +932,130 @@ components:
         404.
       schema:
         type: integer
+    OrderFilterStatus:
+      name: filter[status]
+      in: query
+      required: false
+      description: |
+        Restrict to one order status. The sentinel `all` imposes no
+        constraint and is equivalent to omitting the filter.
+      schema:
+        type: string
+        enum:
+        - all
+        - draft
+        - pending
+        - pending_review
+        - processing
+        - completed
+        - cancelled
+        - archived
+      example: completed
+    OrderFilterType:
+      name: filter[type]
+      in: query
+      required: false
+      description: Restrict to one order class.
+      schema:
+        type: string
+        enum:
+        - sample_order
+        - customer_order
+        - member_order
+        - enrollment_order
+        - autoship_order
+      example: customer_order
+    OrderFilterOrderNumber:
+      name: filter[order_number]
+      in: query
+      required: false
+      description: Exact match on the human-facing order number.
+      schema:
+        type: string
+    OrderFilterCartSource:
+      name: filter[cart_source]
+      in: query
+      required: false
+      description: Restrict to orders whose originating cart carried this
+        source value.
+      schema:
+        type: string
+    OrderFilterCartToken:
+      name: filter[cart_token]
+      in: query
+      required: false
+      description: Restrict to orders placed from the cart with this exact
+        token. A token that matches no cart of the company returns no
+        orders.
+      schema:
+        type: string
+      example: ct_a1b2c3d4
+    OrderFilterCustomerId:
+      name: filter[customer_id]
+      in: query
+      required: false
+      description: Restrict to one customer's orders, matched on either the
+        owning member or a legacy customer id carried on order metadata.
+      schema:
+        type: integer
+    OrderFilterUserCompanyId:
+      name: filter[user_company_id]
+      in: query
+      required: false
+      description: Restrict to orders a given rep holds volume credit on,
+        addressed by legacy UserCompany id.
+      schema:
+        type: integer
+    OrderFilterSubscriptionId:
+      name: filter[subscription_id]
+      in: query
+      required: false
+      description: Restrict to orders belonging to one subscription.
+      schema:
+        type: integer
+    OrderFilterCountryIsos:
+      name: filter[country_isos]
+      in: query
+      required: false
+      description: Comma-separated ISO-2 country codes; matches the order's
+        own country, not the shipping address.
+      schema:
+        type: string
+      example: US,CA
+    OrderFilterStartDate:
+      name: filter[start_date]
+      in: query
+      required: false
+      description: |
+        Inclusive lower bound on the effective sale date, as a calendar
+        date resolved through `filter[timezone]`.
+      schema:
+        type: string
+        format: date
+      example: '2026-08-01'
+    OrderFilterEndDate:
+      name: filter[end_date]
+      in: query
+      required: false
+      description: |
+        Inclusive upper bound on the effective sale date, as a calendar
+        date resolved through `filter[timezone]`.
+      schema:
+        type: string
+        format: date
+      example: '2026-08-31'
+    OrderFilterTimezone:
+      name: filter[timezone]
+      in: query
+      required: false
+      description: |
+        IANA timezone used to resolve `filter[start_date]` and
+        `filter[end_date]` to day boundaries, so a day means the caller's
+        day. Defaults to UTC; `Etc/Unknown` is treated as absent. An
+        unrecognised zone returns 422.
+      schema:
+        type: string
+      example: America/New_York
   responses:
     BadRequest:
       description: Malformed payload. `details` carries Dry-Validation field errors
@@ -976,7 +1132,7 @@ components:
     SearchUnavailable:
       description: |
         The search index could not answer the request. Returned by the
-        orders index, which resolves entirely from Elasticsearch and has
+        orders index for the requests the search index serves, which have
         no SQL fallback — a slow fallback would hide the outage and
         reintroduce the database load the endpoint exists to avoid. The
         request is safe to retry.
@@ -1020,9 +1176,15 @@ paths:
       operationId: commerce_v2026_04_list_orders
       summary: List the company's orders
       description: |
-        Cursor-paginated index of the authenticated company's orders,
-        resolved entirely from Elasticsearch — filtering, sorting and
-        pagination all happen in the search index rather than in Postgres.
+        Cursor-paginated index of the authenticated company's orders.
+
+        An unsearched request with no `sort`, or on the `created_at`,
+        `sale_date` or `id` sorts, is answered from the database for
+        companies that have opted in, so a new or changed order is listed
+        on the next request; it carries no `meta.pagination.total_count` — fetch the
+        total from `GET /api/v202604/orders/count`. A request with
+        `search`, or on the `customer`, `amount` or `status` sorts, is
+        answered from the search index and does carry `total_count`.
 
         Two deliberate differences from `GET /api/v202506/orders`:
 
@@ -1032,15 +1194,18 @@ paths:
           `GET /api/v202506/orders/stats`, which is cached and built for
           them. Computing a whole-set aggregation on every page of a list
           endpoint is what made the v2025-06 index expensive.
-        - **No SQL fallback.** If the search index cannot answer, this
-          endpoint returns `503` rather than quietly running the slow
-          query it exists to replace. Callers that need availability over
-          index freshness should stay on v2025-06.
+        - **No fallback for search.** If the search index cannot answer a
+          request it serves, this endpoint returns `503`. Requests the
+          database serves do not depend on the index.
 
-        Cursors are Elasticsearch `search_after` tokens. They are opaque:
+        Cursors are opaque and tied to the source and sort that produced them:
         echo `meta.pagination.next_cursor` back as `page[cursor]` to walk
         forward and `prev_cursor` to walk back. They are **not**
-        interchangeable with the v2025-06 Rotulus cursors.
+        interchangeable with the v2025-06 Rotulus cursors. Start again from
+        the first page whenever `search` or `sort` changes. A cursor the
+        server can tell belongs to another query — one from the other
+        source, or a database cursor sent with a different `sort` —
+        returns `422`.
 
         Visibility follows the authenticated credential, never a
         parameter: a company admin sees the company's orders, and a rep
@@ -1114,9 +1279,12 @@ paths:
         in: query
         required: false
         description: |
-          Opaque `search_after` cursor from a previous response's
+          Opaque cursor from a previous response's
           `meta.pagination.next_cursor` or `prev_cursor`. Omit for the
-          first page. A malformed cursor returns 422.
+          first page. A malformed cursor returns 422. Start again from the
+          first page whenever `search` or `sort` changes; a cursor from the
+          other source, or a database cursor sent with a different `sort`,
+          returns 422.
         schema:
           type: string
       - name: page[limit]
@@ -1128,118 +1296,18 @@ paths:
           minimum: 1
           maximum: 100
         example: 25
-      - name: filter[status]
-        in: query
-        required: false
-        description: |
-          Restrict to one order status. The sentinel `all` imposes no
-          constraint and is equivalent to omitting the filter.
-        schema:
-          type: string
-          enum:
-          - all
-          - draft
-          - pending
-          - pending_review
-          - processing
-          - completed
-          - cancelled
-          - archived
-        example: completed
-      - name: filter[type]
-        in: query
-        required: false
-        description: Restrict to one order class.
-        schema:
-          type: string
-          enum:
-          - sample_order
-          - customer_order
-          - member_order
-          - enrollment_order
-          - autoship_order
-        example: customer_order
-      - name: filter[order_number]
-        in: query
-        required: false
-        description: Exact match on the human-facing order number.
-        schema:
-          type: string
-      - name: filter[cart_source]
-        in: query
-        required: false
-        description: Restrict to orders whose originating cart carried this
-          source value.
-        schema:
-          type: string
-      - name: filter[cart_token]
-        in: query
-        required: false
-        description: Restrict to orders placed from the cart with this exact
-          token. A token that matches no cart of the company returns no
-          orders.
-        schema:
-          type: string
-        example: ct_a1b2c3d4
-      - name: filter[customer_id]
-        in: query
-        required: false
-        description: Restrict to one customer's orders, matched on either the
-          owning member or a legacy customer id carried on order metadata.
-        schema:
-          type: integer
-      - name: filter[user_company_id]
-        in: query
-        required: false
-        description: Restrict to orders a given rep holds volume credit on,
-          addressed by legacy UserCompany id.
-        schema:
-          type: integer
-      - name: filter[subscription_id]
-        in: query
-        required: false
-        description: Restrict to orders belonging to one subscription.
-        schema:
-          type: integer
-      - name: filter[country_isos]
-        in: query
-        required: false
-        description: Comma-separated ISO-2 or ISO-3 country codes; matches
-          orders shipped to any of them.
-        schema:
-          type: string
-        example: US,CA
-      - name: filter[start_date]
-        in: query
-        required: false
-        description: |
-          Inclusive lower bound on the effective sale date, as a calendar
-          date resolved through `filter[timezone]`.
-        schema:
-          type: string
-          format: date
-        example: '2026-08-01'
-      - name: filter[end_date]
-        in: query
-        required: false
-        description: |
-          Inclusive upper bound on the effective sale date, as a calendar
-          date resolved through `filter[timezone]`.
-        schema:
-          type: string
-          format: date
-        example: '2026-08-31'
-      - name: filter[timezone]
-        in: query
-        required: false
-        description: |
-          IANA timezone used to resolve `filter[start_date]` and
-          `filter[end_date]` to day boundaries, so a day means the caller's
-          day. Defaults to UTC; `Etc/Unknown` is treated as absent. An
-          unrecognised zone returns 422.
-        schema:
-          type: string
-        example: America/New_York
+      - "$ref": "#/components/parameters/OrderFilterStatus"
+      - "$ref": "#/components/parameters/OrderFilterType"
+      - "$ref": "#/components/parameters/OrderFilterOrderNumber"
+      - "$ref": "#/components/parameters/OrderFilterCartSource"
+      - "$ref": "#/components/parameters/OrderFilterCartToken"
+      - "$ref": "#/components/parameters/OrderFilterCustomerId"
+      - "$ref": "#/components/parameters/OrderFilterUserCompanyId"
+      - "$ref": "#/components/parameters/OrderFilterSubscriptionId"
+      - "$ref": "#/components/parameters/OrderFilterCountryIsos"
+      - "$ref": "#/components/parameters/OrderFilterStartDate"
+      - "$ref": "#/components/parameters/OrderFilterEndDate"
+      - "$ref": "#/components/parameters/OrderFilterTimezone"
       responses:
         '200':
           description: A page of orders, newest first unless `sort` says
@@ -1334,6 +1402,65 @@ paths:
           "$ref": "#/components/responses/UnprocessableEntity"
         '503':
           "$ref": "#/components/responses/SearchUnavailable"
+  "/api/v202604/orders/count":
+    get:
+      operationId: commerce_v2026_04_count_orders
+      summary: Count the company's orders
+      x-fluid-audience: company
+      description: |
+        Exact number of the authenticated company's orders matching the
+        same `filter[...]` parameters as `GET /api/v202604/orders`, under
+        the same credential-derived visibility.
+
+        Use it when a list response carries no
+        `meta.pagination.total_count`. The list omits the total when the
+        database answered, so its first page never waits on a count.
+
+        The count is cached for 60 seconds per company, caller visibility and
+        filter set;
+        `calculated_at` says when it was computed. A count that does not
+        finish within the server's time limit returns `200` with
+        `total_count: null`, and that answer is cached for the same 60
+        seconds.
+
+        `search`, `sort` and `page` are not accepted and return `422`.
+      tags:
+        - orders
+      security:
+        - bearer_auth: []
+      parameters:
+        - "$ref": "#/components/parameters/OrderFilterStatus"
+        - "$ref": "#/components/parameters/OrderFilterType"
+        - "$ref": "#/components/parameters/OrderFilterOrderNumber"
+        - "$ref": "#/components/parameters/OrderFilterCartSource"
+        - "$ref": "#/components/parameters/OrderFilterCartToken"
+        - "$ref": "#/components/parameters/OrderFilterCustomerId"
+        - "$ref": "#/components/parameters/OrderFilterUserCompanyId"
+        - "$ref": "#/components/parameters/OrderFilterSubscriptionId"
+        - "$ref": "#/components/parameters/OrderFilterCountryIsos"
+        - "$ref": "#/components/parameters/OrderFilterStartDate"
+        - "$ref": "#/components/parameters/OrderFilterEndDate"
+        - "$ref": "#/components/parameters/OrderFilterTimezone"
+      responses:
+        "200":
+          description: The count, or null when it did not finish in time.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderCountResponse"
+              example:
+                total_count: 137
+                calculated_at: "2026-10-05T10:15:00Z"
+                status: 200
+                meta:
+                  request_uuid: 3f9c2a7e-5b1d-4e8a-9c6f-2d7b8e4a1c05
+                  timestamp: "2026-10-05T10:15:02Z"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "422":
+          "$ref": "#/components/responses/UnprocessableEntity"
   "/api/v202604/orders/{order_id}/edits":
     post:
       operationId: commerce_v2026_04_create_order_edit

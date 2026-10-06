@@ -45,8 +45,8 @@ tags:
   description: Cart-scoped customer authentication — magic-link challenge, verification,
     identity, and logout.
 - name: cart-discount
-  description: Apply, list, and remove cart discount codes, including admin manual
-    discounts.
+  description: Apply, list, and remove promo codes (discount codes) on a cart,
+    including admin manual discounts.
 - name: cart-items
   description: Add, update, and remove line items on a cart.
 - name: cart-points
@@ -2986,12 +2986,13 @@ components:
           type: [string, 'null']
         source:
           type: [string, 'null']
-        # orders.amount / amount_in_base / base_to_currency_rate are decimal
-        # columns; BigDecimal serializes as a string.
+        # amount / amount_in_base serialize Money#amount, a BigDecimal, as a
+        # decimal string; a NULL cents column floors to "0.0", never null.
+        # base_to_currency_rate is a decimal column, null when unset.
         amount:
-          type: [string, number, 'null']
+          type: string
         amount_in_base:
-          type: [string, number, 'null']
+          type: string
         base_to_currency_rate:
           type: [string, number, 'null']
         note:
@@ -3011,9 +3012,9 @@ components:
           additionalProperties: true
         token:
           type: [string, 'null']
-        # Computed as a BigDecimal (serializes as string) or the Integer 0.
+        # A BigDecimal clamped at 0.to_d, so always a decimal string.
         refundable_amount:
-          type: [string, number]
+          type: string
         order_status:
           type: string
         fulfillment_status:
@@ -3879,9 +3880,7 @@ components:
                 (e.g. on an order-confirmation page); it is returned by
                 `complete_cart`.
             refundable_amount:
-              type:
-              - string
-              - number
+              type: string
             order_status:
               type:
               - string
@@ -12048,12 +12047,23 @@ paths:
       security: []
   "/api/checkout/v2026-04/carts/{cart_token}/discount":
     post:
-      summary: Apply discount code
+      summary: Apply a promo code to a cart
       tags:
       - cart-discount
       operationId: checkout_v2026_04_apply_cart_discount
-      description: Applies a discount code to the cart. Not idempotent — applying
-        the same code twice returns an error.
+      description: |-
+        Applies a promo code (discount code) to the cart. Not idempotent — applying the same code twice returns an error.
+
+        Errors name the code in `errors.discount_code`:
+
+        - **404** `not found` — no promo code with this code exists for the company, the code is outside its start and end dates, or it isn't a code shoppers can redeem (for example a droplet-only code).
+        - **422** `enter_email_to_use_this_code` — the code is limited to first-time customers or to one use per customer, and the cart has no email yet. Set the cart email and try again.
+        - **422** `already applied` — the code is already on the cart.
+        - **422** `cannot be applied` — the code exists but this cart doesn't qualify: it is inactive, has reached its usage limit, or fails one of its rules (products, countries, customers, minimum purchase, or combining with discounts already on the cart).
+        - **422** `cannot be processed` — the code qualifies but produced no discount on this cart.
+        - **422** with another message — an installed droplet that validates discount codes rejected the code.
+
+        The response doesn't say which rule failed.
       parameters:
       - name: cart_token
         in: path
@@ -12067,7 +12077,7 @@ paths:
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '404':
-          description: Cart not found
+          description: Cart or discount code not found
           content:
             application/json:
               schema:
@@ -12445,12 +12455,12 @@ paths:
               - discount_code
       security: []
     delete:
-      summary: Remove discount code
+      summary: Remove a promo code from a cart
       tags:
       - cart-discount
       operationId: checkout_v2026_04_remove_cart_discount
       description: |
-        Removes a previously applied discount code from the cart and recalculates
+        Removes a previously applied promo code (discount code) from the cart and recalculates
         totals. The `discount_code` to remove is required in the body. Access is
         scoped by the `cart_token` in the path — the endpoint itself does not
         require authentication. In Fluid's recommended server-side integration you
@@ -13310,11 +13320,11 @@ paths:
       - bearer_auth: []
   "/api/checkout/v2026-04/carts/{cart_token}/discounts":
     get:
-      summary: List all discounts applied to a cart
+      summary: List the promo codes and discounts on a cart
       tags:
       - cart-discount
       operationId: checkout_v2026_04_list_cart_discounts
-      description: Returns per-discount detail for all active discounts on a cart,
+      description: Returns per-discount detail for every active discount on a cart, promo codes and manual discounts alike,
         including code, reason, type, defined value, and actual amount applied.
       parameters:
       - name: cart_token
@@ -23818,6 +23828,13 @@ paths:
         Creates a subscription from the supplied `subscription` payload. Requires a
         bearer token. Returns `201` on success, `422` on validation failure, `404`
         when a referenced resource is not found, and `401` when unauthenticated.
+
+        `subscription.metadata` must not contain platform-owned keys (`cv`, `qv`,
+        `base_cv`, `base_qv`, `volume_basis`, `volume_store`, `dunning_retry`,
+        `dunning_notice`, `retry_refusal`, `auto_apply_points`, `discounts`,
+        `total_discount_amount`, `cart_token`); a create or update request
+        that sends one gets a `422` naming it. On create, `timezone` in `metadata` is accepted but
+        ignored; send the top-level `timezone`.
       security:
       - bearer_auth: []
       responses:
@@ -24528,6 +24545,13 @@ paths:
         (PATCH semantics - only supplied keys change). Requires a bearer token.
         Returns `422` on validation failure, `404` when not found, and `401` when
         unauthenticated.
+
+        `subscription.metadata` must not contain platform-owned keys (`cv`, `qv`,
+        `base_cv`, `base_qv`, `volume_basis`, `volume_store`, `dunning_retry`,
+        `dunning_notice`, `retry_refusal`, `auto_apply_points`, `discounts`,
+        `total_discount_amount`, `cart_token`); a create or update request
+        that sends one gets a `422` naming it. `timezone` changes are not supported through
+        `metadata`.
 
         `auto_apply_points_scope` decides how far an `auto_apply_points` write
         reaches. Under `bundle` the accepted payload is deliberately narrower than
@@ -26971,8 +26995,8 @@ paths:
       summary: Retry billing on a past-due subscription
       description: Queues an immediate billing attempt against the payment method
         currently on file. The endpoint is idempotent for an eligible found subscription.
-        A payment method carrying a processor-recorded cardholder instruction to
-        stop recurring charges returns 422 and must be replaced before retrying.
+        Stopped credentials may be queued. Free or fully points-funded renewals
+        can settle, while any remaining cash charge is refused during billing.
         A rapid duplicate returns queued true while preserving the first retry
         time and does not enqueue another billing attempt. A subscription that
         is not past_due, or whose billing date has not yet arrived in its own
@@ -27301,7 +27325,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
         '422':
-          description: The current payment method was stopped for recurring charges, the current plan's maximum successful billing-cycle limit was reached or invalid, or retry state could not be persisted
+          description: The current plan's maximum successful billing-cycle limit was reached or invalid, or retry state could not be persisted
           content:
             application/json:
               schema:

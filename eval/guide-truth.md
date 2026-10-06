@@ -534,6 +534,16 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     operations (onboarding info, legal entities, bank accounts, people, and document
     upload) aren't in any synced spec yet, so that guide sends readers to the CLI for
     them and asserts nothing about their contracts.
+15. **`checkout-v2026-04` misnames the currency of `amount_in_base`.** Its order schema
+    describes `amount_in_base` as the "Order total expressed in the company's base
+    currency". It's in the platform base currency, US dollars, for every company: Rails
+    sets `MoneyRails.default_currency` to `:usd`, and the `_in_base` columns divide the
+    order amount by the order's `base_to_currency_rate`. `analytics-v0` gets this right
+    ("the platform base currency") but doesn't name USD. The other specs that carry
+    `_in_base` fields (`admin-v2025-06`, `company-v0`, `members-v2025-06`,
+    `commerce-v2026-04`, `public-v2025-06`) leave them undescribed. `concepts/order-currency.mdx`
+    follows the implementation, and carries a note about the wrong wording until the
+    specs are corrected. When they are, drop that note.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
@@ -1664,6 +1674,16 @@ adoption.
 
 Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
 
+**Header binding and import additions (navigation-menus-016 to -031, plus edits to -003, -006, -010).** Verified against fluid `8b78b0a`:
+
+- Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
+- `Menu` validates `countries` presence, so an empty `country_ids` fails. The schema defaults `active` to false. The `-006` example now sends a country ID.
+- Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
+- Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
+- `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
+- Section setting values live in the template's schema `sections` settings. The visual editor saves the template content, and schema defaults apply only when a key is missing or null. Live rendering reads the published template snapshot, and a resource push saves without publishing.
+- The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
+
 
 ### Member manifest v2 authoring
 
@@ -2094,7 +2114,9 @@ monorepo and of `fluid-fairshare`. Durable decisions:
 - **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
   can double-fire declarative add-to-cart.
 - **Attribution comes from the page URL** and attaches to the cart **at creation**. Item
-  adds don't re-attribute, so a cart created on `/home/...` stays uncredited.
+  adds don't re-attribute. A cart created on `/home/...` by a visitor without FairShare
+  credit has no rep; a visitor a member already credited keeps that member's credit
+  (amended 2026-10-04, see the FairShare credit model entry below).
   `data-*` overrides are first-present, not first-valid, and are remembered in browser
   storage. The server looks `data-share-guid` up as a **username**, so UUID examples
   were removed from the SDK pages.
@@ -2104,8 +2126,37 @@ monorepo and of `fluid-fairshare`. Durable decisions:
 Corrections made to unregistered pages in the same change: `sdk/overview.mdx`,
 `sdk/installation.mdx`, `sdk/cart-api.mdx` (opening the cart after an add is the
 default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.mdx`
-(`/search` is not a page; the playlist and enrollment index routes redirect and drop the
-credit; product detail is by slug).
+(`/search` is not a page; the playlist and enrollment index routes redirect to `/`, which
+carries no credit segment; product detail is by slug).
+
+### FairShare credit model — established, then kept (2026-10-04)
+
+The docs owner's model of rep credit is authoritative for every page:
+
+- A visit to a member's credit path (`/<username>/...`, a rep subdomain, or a `username` /
+  `referral` query parameter) that the SDK logs **establishes** that member's credit.
+- The member **keeps** it. FairShare's tracking (cookies, browser fingerprint, and similar
+  signals) carries it across later pages and visits, including `/home/...` pages, custom
+  routes, and marketing URLs that redirect, such as `/tv-offer`.
+- Non-credited pages, redirects, and marketing URLs establish no new credit and **never
+  remove** existing credit. Don't write that they "lose", "drop", "strip", or "remove" it.
+  The CDN doesn't strip credit or the `username` / `share_guid` parameters.
+- When a credited visitor later lands on a different member's credit path, the admin's
+  **Shared links (multi-rep)** setting (first touch, last touch, most activity) decides
+  commission. Don't document a fixed precedence or a credit duration.
+- Members share credit paths; marketing and legacy URLs serve orphaned customers.
+
+`concepts/fair-share.mdx#how-credit-is-established-and-kept` is the single canonical
+explanation. Other pages link to it instead of restating it.
+
+Code evidence (`origin/main`, 2026-10-04): the SDK writes the server-resolved affiliate to a
+`fluid_affiliate` cookie and never clears it when a later page resolves no rep, so hydration
+keeps showing the member on `/home/...`. `getAttribution()` and the attribution sent at
+cart creation reflect only the current URL (or an override), so a cart created on
+`/home/...` carries no rep of its own. The order's rep is then resolved server-side from the
+session's earlier credited visits, under the company's first/last/most-touch setting. The
+cross-session carry and the fingerprint's role are the owner's statement; the traced
+order path links visits by session, and is noted for the owner rather than documented.
 
 ## API Reference sidebar — generated sections (2026-09-29)
 
@@ -2253,3 +2304,84 @@ The channel guided setups cover connecting accounts the merchant already has.
 One product claim comes from the requester, not the implementation, and is open for
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
 **Settings → Billing**. Nothing in the code gates going live on a card.
+
+## Sitemap, custom routes, and redirects (2026-10-04)
+
+`help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
+were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
+(`b26e25102b`). They aren't in the registry. One bullet in `storefront/fairshare-sdk.mdx`
+was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was dropped on
+2026-10-04 with that clause). Durable decisions:
+
+- **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
+  serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
+  product or page. Members share credited `/<username>/...` paths from the mobile app or
+  their own links. Don't document adding rep credit to a marketing URL, and don't tie the
+  redirect's query-string behavior to that pattern. Non-credited routes are the option only
+  when the address must stay in the address bar.
+- **Credit wording follows the owner's model.** Non-credited routes and redirects establish
+  no credit; a visitor a member already credited keeps that credit. Never write that a route
+  or redirect loses, drops, or strips credit, and don't present the query string a redirect
+  doesn't forward as a credit risk. The two verified risks are the `404` at
+  `/<username>/<non-credited-path>` and the username/route collision, which credits the
+  matching member for the route's visits.
+- **Per-country targets need country routes.** Redirects have one target (optionally one
+  domain, API only). Country-route redirects are `302`.
+- **Country detection is `?region=`, then the country in the `fluid_locale` cookie, then
+  geolocation headers, then the company default, then `US`.** An internal design doc names
+  a `fluid_country` cookie; the router doesn't read it. Don't document it. Don't claim how
+  the CDN treats `?region=` — that's unverified.
+- **The URL Redirects screen isn't in the admin sidebar.** It's reachable at
+  `/url_redirects` and through the admin search, which lists it as **Url Redirects**. The
+  page header says **URL Redirects**, which is the `sidebarTitle`.
+- **Current behavior documented as such** (fixes pending in fluid; update the pages when
+  they ship): the custom-route drawer's **Include in Sitemap** off also deactivates the
+  route; the sitemap lists credited custom routes at `/<path>` instead of `/home/<path>`;
+  redirects and `302` route rules don't forward the query string; redirect lookups are
+  cached per path and host for up to 30 days and saving a redirect clears a different
+  cache key, so changes can lag; the drawer offers **Post** and **Playlist** overrides that
+  the API rejects.
+- **Product decisions documented as current behavior:** the Fair Share option on country
+  routes has no effect, and username/route collisions aren't prevented.
+- **Generated pages linked by current URL.** fluid#24889 renames the five theme region rule
+  operations; a separate docs PR adds `permanent: false` redirects from the old URLs.
+
+## Navigation APIs told apart (2026-10-04)
+
+Fluid has three navigation APIs, and the reference didn't say which was which. They are now named
+consistently, in the specs (fluid#24884), the sidebar, and AGENTS.md:
+
+- **Website navigation menus** (`content-v0`, `/api/menus` and `menu_items`): the storefront's
+  navigation bars, footers, and other site menus. Website → **Navigation menus**. They were hidden by
+  the `content-v0` exclude rule, whose comment wrongly called them superseded: `storefront-v2026-04`
+  has no menu paths. The `docs.json` AI instruction that said they weren't in any synced spec was
+  also wrong. Both are corrected.
+- **Mobile app navigation** (`mobile-v2`, `/api/v2/mobile_navigations`): the Fluid mobile app's
+  navigation. Mobile app → **Navigation**. `mobile-v2` now syncs, but its `mobile-pages` tag stays
+  excluded: none of its 21 operations has a description, and most summaries are machine-generated
+  ("Explore explore"). Publish it once the spec describes it.
+- **Portal navigation** (`fluid-os-v0`): a portal definition's navigation. Each has a `platform` of
+  `web` or `mobile` (`FluidOS::Navigation` `enum :platform`), which the profile importer describes as
+  "browser or mobile". The docs don't say that `mobile` means the Fluid mobile app, because the code
+  doesn't establish it.
+
+Two list operations get narrow offset-pagination exceptions in AGENTS.md, verified against Rails:
+List website navigation menus and List mobile app navigations
+(`.page(page_param).per(records_per_page)`).
+
+Generated tags keep their hyphens apart from case folding, so `fluid-os - navigations` serves at
+`fluid-os--navigations`, with two hyphens. Check the live sitemap before writing a redirect to a tag
+with punctuation: four guessed variants failed the broken-links check before the sitemap showed the
+real one.
+
+## FairShare credit across domains and browsers (2026-10-05)
+
+The docs owner confirmed both: **credit carries across domains, but not across browsers.** A shopper
+credited by a member's link keeps that credit on the company's other domains and at checkout, in
+the same browser. Opening the store in another browser or on another device doesn't carry it. This
+supersedes the earlier "browser storage doesn't cross domains, so keep shoppers on one domain"
+guidance. Browser storage itself is still per domain, and so is the cart, which reaches checkout
+through its token. Credit is the part that carries. `concepts/fair-share.mdx`,
+`platform-overview.mdx`, `concepts/we-commerce.mdx`, and `storefront/fairshare-sdk.mdx`
+(`sf-fairshare-081`) say so. The fingerprint's role in deciding credit is still unconfirmed by code;
+the docs keep the owner's wording ("cookies, browser fingerprint, and similar signals").

@@ -25,6 +25,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
+| Decide between a Fluid theme and a headless front end | https://docs.fluid.app/themes/why-fluid-themes |
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
 | Call the REST API | https://docs.fluid.app/api/overview, then the task guides under https://docs.fluid.app/api/guides |
 
@@ -53,6 +54,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 
 - **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
 - **Checkout is a separate app.** A theme renders the storefront and cart; nothing in it can change checkout.
+- **Order totals across currencies:** each order's `amount` is in its own `currency_code`. Sum `amount_in_base`, which is always US dollars, converted at the rate saved on the order: https://docs.fluid.app/concepts/order-currency
 - **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`): https://docs.fluid.app/themes/common-pitfalls
 
 ## REST API conventions

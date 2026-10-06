@@ -455,9 +455,9 @@ components:
       type: object
       additionalProperties: false
       description: A credit-billed company's debt and the way out of it.
-      required: [credits_billing_at, debt_cents, last_failed_charge, automatic_charges_blocked, pay_now, upcoming_estimate]
+      required: [cutover_at, debt_cents, last_failed_charge, automatic_charges_blocked, pay_now, upcoming_estimate]
       properties:
-        credits_billing_at: { type: string, format: date-time, description: "From this instant the company's non-AI billing is paid from credits; 00:00 UTC on the 1st of a month." }
+        cutover_at: { type: string, format: date-time, description: "The billing start date: from this instant the company's billing is paid from credits." }
         debt_cents: { type: integer, minimum: 0, description: "What the credits are overdrawn by, in cents: minus the sum of the overdrawn parts of the credit movements (usage that found too few credits). Zero when nothing is overdrawn. Pay now charges at least this." }
         last_failed_charge:
           oneOf:
@@ -751,7 +751,7 @@ components:
         auto-reload, which buys the reload amount with the payment method on
         file when the spendable balance falls below the threshold, within the
         reload caps, and only with its authorization on record.
-      required: [limits_enabled, auto_reload, reload_caps, limits, daily_limits, reload_threshold_cents, reload_amount_cents, reload_authorized, reload_authorization_current, reload_authorization, reload_block]
+      required: [limits_enabled, auto_reload, reload_caps, limits, daily_limits, reload_threshold_cents, reload_amount_cents, reload_authorized, reload_authorization_current, reload_authorization, reload_block, reload_cap_reached]
       properties:
         limits_enabled: { type: boolean, description: Whether the monthly spend limits are on. }
         auto_reload: { type: boolean, description: Whether a low balance reloads itself. Never true without the authorization on record. }
@@ -780,6 +780,20 @@ components:
             properties:
               reason: { type: string }
               blocked_at: { type: string, format: date-time }
+          - type: "null"
+        reload_cap_reached:
+          description: >-
+            Set while auto-reload is on and the next reload would pass a
+            reload cap, so none is bought until the period ends. The monthly
+            cap is named when both hold.
+          oneOf:
+          - type: object
+            required: [period, reloaded_cents, cap_cents, resumes_at]
+            properties:
+              period: { type: string, enum: [daily, monthly] }
+              reloaded_cents: { type: integer, minimum: 0, description: Reloaded in the period so far, in cents. }
+              cap_cents: { type: integer, minimum: 1, description: The cap for the period, in cents. }
+              resumes_at: { type: [string, "null"], format: date-time, description: "When the period ends (UTC) and the cap lifts; null when one reload alone passes the cap, which only a raised cap or a smaller reload lifts." }
           - type: "null"
         reload_caps:
           type: object
@@ -919,10 +933,33 @@ components:
             type: [integer, "null"]
           exp_year:
             type: [integer, "null"]
+    BillingSavedBankAccounts:
+      type: array
+      description: >-
+        Bank accounts entered through Stripe (typed in or connected), other
+        than the one in use, newest first. They have no saved company bank
+        account. Their earlier ACH authorization still applies, so switching
+        onto one needs no new acceptance or verification; the switch asks
+        Stripe whether it can still collect from the account.
+      items:
+        type: object
+        additionalProperties: false
+        required: [id, bank, last4]
+        properties:
+          id:
+            type: integer
+            minimum: 1
+            description: The bank account's instrument setup, sent back as instrument_setup_id to switch onto it.
+          bank:
+            type: [string, "null"]
+            description: The bank's name as Stripe reported it.
+          last4:
+            type: [string, "null"]
+            description: The last four digits of the account number.
     BillingInstrumentSetupCreateResponse:
       type: object
       additionalProperties: false
-      required: [instrument_setup, authorization, authorizations, allowed_instrument_types, publishable_key, authorized_bank_account_ids, saved_cards, client_secret, status, meta]
+      required: [instrument_setup, authorization, authorizations, allowed_instrument_types, publishable_key, authorized_bank_account_ids, saved_cards, saved_bank_accounts, client_secret, status, meta]
       properties:
         instrument_setup: { "$ref": "#/components/schemas/BillingInstrumentSetup" }
         authorization: { "$ref": "#/components/schemas/BillingAchAuthorization" }
@@ -932,6 +969,7 @@ components:
           type: string
         authorized_bank_account_ids: { "$ref": "#/components/schemas/BillingAuthorizedBankAccountIds" }
         saved_cards: { "$ref": "#/components/schemas/BillingSavedCards" }
+        saved_bank_accounts: { "$ref": "#/components/schemas/BillingSavedBankAccounts" }
         client_secret:
           type: string
         status:
@@ -941,7 +979,7 @@ components:
     BillingInstrumentSetupShowResponse:
       type: object
       additionalProperties: false
-      required: [instrument_setup, authorization, authorizations, allowed_instrument_types, publishable_key, authorized_bank_account_ids, saved_cards, status, meta]
+      required: [instrument_setup, authorization, authorizations, allowed_instrument_types, publishable_key, authorized_bank_account_ids, saved_cards, saved_bank_accounts, status, meta]
       properties:
         instrument_setup:
           oneOf:
@@ -954,6 +992,7 @@ components:
           type: string
         authorized_bank_account_ids: { "$ref": "#/components/schemas/BillingAuthorizedBankAccountIds" }
         saved_cards: { "$ref": "#/components/schemas/BillingSavedCards" }
+        saved_bank_accounts: { "$ref": "#/components/schemas/BillingSavedBankAccounts" }
         status:
           type: integer
           const: 200
@@ -4114,6 +4153,7 @@ paths:
                     version: '2026-10-02'
                     text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again. A reload charged to a credit card carries a credit card fee of 2.9% of the reload amount, charged with it. Debit cards and prepaid cards carry no fee.
                   reload_block: null
+                  reload_cap_reached: null
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -4209,6 +4249,7 @@ paths:
                     version: '2026-10-02'
                     text: You authorize Fluid to charge the card or debit the bank account on file for the reload amount you set whenever your usage credits fall below your threshold, up to your daily and monthly reload limits. Each reload is a purchase of usage credits on the purchase terms. You can turn auto-reload off at any time. A declined or returned reload pauses further reloads until you change your payment method or turn auto-reload off and on again. A reload charged to a credit card carries a credit card fee of 2.9% of the reload amount, charged with it. Debit cards and prepaid cards carry no fee.
                   reload_block: null
+                  reload_cap_reached: null
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -4228,10 +4269,16 @@ paths:
         '409':
           description: >-
             The reload figures the save would store are not the ones it says it
-            showed with the consent (usage_controls_changed). Nothing was saved;
-            the details carry the figures in force (reload_threshold_cents,
-            reload_amount_cents, reload_daily_cap_cents, reload_monthly_cap_cents),
-            to show and accept again.
+            showed with the consent, or a consent to turn auto-reload on found
+            it already on under the authorization in force
+            (usage_controls_changed). Nothing was saved; the details carry the
+            figures in force (reload_threshold_cents, reload_amount_cents,
+            reload_daily_cap_cents, reload_monthly_cap_cents). Read the controls
+            again: while reload_authorized is false or
+            reload_authorization_current is false, show those figures and accept
+            again; while auto-reload is on under the authorization in force, send
+            the intended changes as an edit, without reload_authorization_version
+            or the shown_reload_* figures.
           content:
             application/json:
               schema:
@@ -5142,9 +5189,10 @@ paths:
     patch:
       summary: Switch collections onto an authorized bank account or saved card
       description: |
-        Move the authenticated company's collections onto a saved bank account
-        or a saved card the merchant already authorized through instrument
-        setup. Send exactly one of `bank_account_id` or `instrument_setup_id`.
+        Move the authenticated company's collections onto a saved bank account,
+        a saved card, or a bank account entered through Stripe that the
+        merchant already authorized through instrument setup. Send exactly one
+        of `bank_account_id` or `instrument_setup_id`.
         The authorization recorded then is reused, so no authorization text is
         accepted here. Fails when the instrument was never authorized, a bank
         account's details changed since, Stripe can no longer collect from it,
@@ -5176,7 +5224,7 @@ paths:
                     instrument_setup_id:
                       type: integer
                       minimum: 1
-                      description: A saved card, by the id the setup state lists in `saved_cards`.
+                      description: A saved card or a bank account entered through Stripe, by the id the setup state lists in `saved_cards` or `saved_bank_accounts`.
             example:
               instrument:
                 bank_account_id: 3187
@@ -5368,6 +5416,10 @@ paths:
                   last4: '4242'
                   exp_month: 11
                   exp_year: 2028
+                saved_bank_accounts:
+                - id: 5598
+                  bank: STRIPE TEST BANK
+                  last4: '6789'
                 status: 200
                 meta:
                   request_uuid: 7c2e9a41-3b8d-4f62-a1c5-9d0e6f2b8a37
@@ -5453,6 +5505,10 @@ paths:
                   last4: '4242'
                   exp_month: 11
                   exp_year: 2028
+                saved_bank_accounts:
+                - id: 5598
+                  bank: STRIPE TEST BANK
+                  last4: '6789'
                 status: 200
                 meta:
                   request_uuid: 7c2e9a41-3b8d-4f62-a1c5-9d0e6f2b8a37
@@ -5632,6 +5688,10 @@ paths:
                   last4: '4242'
                   exp_month: 11
                   exp_year: 2028
+                saved_bank_accounts:
+                - id: 5598
+                  bank: STRIPE TEST BANK
+                  last4: '6789'
                 client_secret: seti_1Q8wLmHx8Zr2VbTm4cPq7WdL_secret_R3kD9fXq2VnBz7YtMw1sLp0aE6uJgKh
                 status: 201
                 meta:
@@ -5742,6 +5802,10 @@ paths:
                   last4: '4242'
                   exp_month: 11
                   exp_year: 2028
+                saved_bank_accounts:
+                - id: 5598
+                  bank: STRIPE TEST BANK
+                  last4: '6789'
                 status: 200
                 meta:
                   request_uuid: 7c2e9a41-3b8d-4f62-a1c5-9d0e6f2b8a37
