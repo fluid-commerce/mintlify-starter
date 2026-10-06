@@ -421,10 +421,13 @@ components:
         subscription LIST (not this object at all -- `subscription: null` on the
         row) is a separate, unrelated miss. price is a decimal string at the
         currency's exponent, matching CatalogOneTimePrice; cv and qv are the
-        same format but nullable.
+        same format but nullable. volume_overrides_one_time is always emitted
+        on an explicit row (PLAN-SUBSCRIPTION-VOLUME.md slice S1c): true when
+        this row's cv/qv was explicitly set apart from its tier's one-time
+        cv/qv.
       oneOf:
       - type: object
-        required: [price, cv, qv]
+        required: [price, cv, qv, volume_overrides_one_time]
         additionalProperties: false
         properties:
           price:
@@ -436,6 +439,8 @@ components:
           qv:
             type: [string, 'null']
             format: decimal
+          volume_overrides_one_time:
+            type: boolean
       - type: object
         required: [follows_one_time]
         additionalProperties: false
@@ -718,12 +723,27 @@ components:
         "Same as Retail". No key outside the ones listed here is accepted;
         an extra key refuses the whole cell.
 
-        A system SUBSCRIPTION cell may carry only price -- compare_at_price,
-        cv, qv and points have no subscription-specific storage on the
-        legacy columns and are refused (:unsupported_subscription_field)
-        rather than silently dropped. A custom subscription cell may carry
-        all five; its price list row stores them independently of the
-        one-time row.
+        A system SUBSCRIPTION cell may carry only price -- compare_at_price
+        and points have no subscription-specific storage on the legacy
+        columns and are refused (:unsupported_subscription_field) rather
+        than silently dropped. cv and qv are refused there too, UNLESS the
+        company's subscription CV/QV is editable apart from one-time
+        (PLAN-SUBSCRIPTION-VOLUME.md slice S1c), in which case both must be
+        supplied as a pair or one at a time: both numeric sets them apart
+        from one-time; ONE numeric (an older client) sets that side and
+        pairs it with the other side's effective value (the stored override
+        when the row is already an override, else the one-time value); both
+        null reverts to following one-time (the row then carries the
+        one-time cv/qv); a null beside a numeric, or a lone null, is
+        refused (:subscription_volume_pair_required). Setting them (numeric)
+        while this same edit clears the subscription price is refused
+        (:subscription_volume_requires_price) -- there would be no row left
+        to carry them; the same refusal applies when price is OMITTED
+        (keep current) and no row exists yet at all. A null pair (revert)
+        with no existing row is a no-op either way -- there is nothing to
+        revert. A custom subscription cell may carry all five under the
+        same pair rule when editable; its price list row stores them
+        independently of the one-time row.
       required: [variant_id, market_id, currency_code, pricing_tier_id, purchase_type]
       additionalProperties: false
       properties:
@@ -776,20 +796,34 @@ components:
           description: >-
             Must be finite, and fit its destination column (see price; a
             system tier's cv/qv are Volume cents, bigint, not the
-            decimal(15,5) price columns). Omitting the key leaves the
-            row's current value alone (a new custom row starts at zero).
-            An explicit null clears it to zero -- the storage has no other
+            decimal(15,5) price columns).
+
+            On a one_time cell, or a subscription cell outside the
+            subscription-CV/QV gate (PLAN-SUBSCRIPTION-VOLUME.md slice
+            S1c -- see purchase_type): omitting the key leaves the row's
+            current value alone (a new custom row starts at zero); an
+            explicit null clears it to zero -- the storage has no other
             "cleared" state, including on a system Wholesale cell, whose
             legacy `pc_cv` column is otherwise nullable.
+
+            On a subscription cell UNDER the gate, cv and qv are a pair
+            (see the class description): both numeric sets them apart
+            from one-time; both null reverts to following one-time (the
+            row, if any, takes the tier's current one-time cv -- NOT
+            zero); both omitted preserves a flagged override
+            (volume_overrides_one_time) but refreshes an unflagged
+            (inherited) row's cv/qv from the one-time row; ONE numeric
+            value alone sets that side and pairs it with the other side's
+            effective value (the stored override when the row is already
+            an override, else the one-time value); a null beside a numeric,
+            or a lone null, is refused
+            (:subscription_volume_pair_required).
         qv:
           type: [string, number, 'null']
           description: >-
-            Must be finite, and fit its destination column (see cv).
-            Omitting the key leaves the row's current value alone (a new
-            custom row starts at zero). An explicit null clears it to zero
-            -- the storage has no other "cleared" state, including on a
-            system Wholesale cell, whose legacy `pc_qv` column is
-            otherwise nullable.
+            Must be finite, and fit its destination column (see cv). Follows
+            the exact same one_time/gate-off-subscription vs.
+            gate-on-subscription distinction as cv -- see its description.
         points:
           type: [string, number, 'null']
           description: >-
