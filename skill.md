@@ -25,6 +25,8 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
+| Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
+| Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
 | Decide between a Fluid theme and a headless front end | https://docs.fluid.app/themes/why-fluid-themes |
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
 | Call the REST API | https://docs.fluid.app/api/overview, then the task guides under https://docs.fluid.app/api/guides |
