@@ -2373,3 +2373,15 @@ Generated tags keep their hyphens apart from case folding, so `fluid-os - naviga
 `fluid-os--navigations`, with two hyphens. Check the live sitemap before writing a redirect to a tag
 with punctuation: four guessed variants failed the broken-links check before the sitemap showed the
 real one.
+
+## FairShare credit across domains and browsers (2026-10-05)
+
+The docs owner confirmed both: **credit carries across domains, but not across browsers.** A shopper
+credited by a member's link keeps that credit on the company's other domains and at checkout, in
+the same browser. Opening the store in another browser or on another device doesn't carry it. This
+supersedes the earlier "browser storage doesn't cross domains, so keep shoppers on one domain"
+guidance. Browser storage itself is still per domain, and so is the cart, which reaches checkout
+through its token. Credit is the part that carries. `concepts/fair-share.mdx`,
+`platform-overview.mdx`, `concepts/we-commerce.mdx`, and `storefront/fairshare-sdk.mdx`
+(`sf-fairshare-081`) say so. The fingerprint's role in deciding credit is still unconfirmed by code;
+the docs keep the owner's wording ("cookies, browser fingerprint, and similar signals").
