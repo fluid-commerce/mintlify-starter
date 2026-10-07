@@ -239,6 +239,65 @@ components:
             properties:
               pagination:
                 "$ref": "#/components/schemas/PaginationMeta"
+    TeamLevelCount:
+      type: object
+      description: How many Team members sit at one level below the signed-in member.
+      additionalProperties: false
+      required:
+      - level
+      - count
+      properties:
+        level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Levels below the signed-in member; 1 is a direct report.
+        count:
+          type: integer
+          minimum: 0
+          description: Team members at this level.
+    TeamSummary:
+      type: object
+      description: >-
+        The signed-in member's Team counted as the list shows it: the same members, over the same five
+        levels. Removed members and everyone below them are not counted.
+      additionalProperties: false
+      required:
+      - direct_count
+      - total_count
+      - by_level
+      properties:
+        direct_count:
+          type: integer
+          minimum: 0
+          description: Team members directly below the signed-in member. It equals the count at level 1.
+        total_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Team members at all five levels the list reaches. It is the number of members
+            `GET /api/member/v2026-10/team?filter[depth]=5` returns across all its pages.
+        by_level:
+          type: array
+          description: Team members at each of the five levels, nearest first. Always five entries.
+          minItems: 5
+          maxItems: 5
+          items:
+            "$ref": "#/components/schemas/TeamLevelCount"
+    TeamSummaryEnvelope:
+      type: object
+      description: The signed-in member's Team counts.
+      required:
+      - status
+      - data
+      - meta
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/TeamSummary"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
 paths:
   "/api/member/v2026-10/team":
     get:
@@ -259,7 +318,8 @@ paths:
 
         The Team follows the legacy My Team rule (`authorize_rep_tier`): reps, company admins and root
         admins. A company admin credential is not a member credential and gets 401, so in practice a rep's
-        or a root admin's membership, on a member token or portal JWT, reads the Team. A customer or
+        membership reads the Team on a member token or portal JWT, and a root admin's membership on a member
+        token only: a portal JWT signed for an admin or root admin login is refused with 401. A customer or
         preferred-customer membership is refused with 403, even with a valid credential, as is a member
         session JWT.
 
@@ -380,6 +440,105 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: A query parameter is invalid or unknown.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/team/summary":
+    get:
+      operationId: member_team_summary
+      tags:
+      - team
+      summary: Summarize the member's Team
+      description: |
+        How many members sit at each of the five levels below the signed-in member, with the direct
+        report count and the total. The counts are those of `GET /api/member/v2026-10/team`: the same
+        members, found the same way, so paging the list at `filter[depth]=5` returns exactly
+        `total_count` members. A company reads its Team from the enrollment tree when it has tree reads
+        enabled and from the enroller relation otherwise, as the legacy My Team does. Members who were
+        removed are not counted, and nor is anyone below a removed member. Members deeper than five levels
+        are not counted, the depth the legacy My Team stops at.
+
+        A member with no downline gets zeros. In a company on tree reads, a member with no seat in the
+        enrollment tree gets 404, as in the list.
+
+        The summary follows the list's rule, the legacy My Team `authorize_rep_tier`: reps, company admins
+        and root admins. A company admin credential is not a member credential and gets 401, so in practice
+        a rep's membership reads the summary on a member token or portal JWT, and a root admin's membership
+        on a member token only: a portal JWT signed for an admin or root admin login is refused with 401. A
+        customer or preferred-customer membership is refused with 403, even with a valid credential, as is a
+        member session JWT.
+
+        Current Team membership is rechecked on every request, so the response is private and must be
+        revalidated before reuse.
+      x-fluid-audience: member
+      parameters:
+      - name: If-None-Match
+        in: header
+        required: false
+        description: A previously returned ETag. Authentication and the current Team read run before a
+          304 is considered.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The member's current Team counts.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TeamSummaryEnvelope"
+              example:
+                status: 200
+                data:
+                  direct_count: 4
+                  total_count: 27
+                  by_level:
+                  - level: 1
+                    count: 4
+                  - level: 2
+                    count: 11
+                  - level: 3
+                    count: 9
+                  - level: 4
+                    count: 3
+                  - level: 5
+                    count: 0
+                meta:
+                  request_uuid: '01a0f4fe-de00-75b3-8d8a-b74b0cde8b07'
+                  timestamp: '2026-10-01T15:04:05Z'
+        '304':
+          description: The member's current Team counts have not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing credential, or a credential that is not a usable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry,
+            which cannot read the Team, or the membership is a customer or preferred customer, which has no Team.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The company reads its Team from trees and the member has no seat.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The request carries a query parameter; the summary takes none.
           content:
             application/json:
               schema:
