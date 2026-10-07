@@ -2417,3 +2417,27 @@ decisions, all verified against the implementation rather than the spec:
   `.github/synced-api-references.json`, so no generated page exists to link. The pages say the
   API Reference doesn't publish form management yet and do not hand-write `/api/forms` paths.
   This does not change the 2026-09-28 decision to keep `/api/public/forms` removed.
+
+## Forms API adopted (2026-10-07)
+
+`forms-v0` (Fluid Forms API, `/api/forms/*`, 20 operations) now syncs from the mirror. It is the
+admin's More → Content → Forms, so its operations sit in Content and tools → **Forms**, through one
+spec-wide rule in `.github/api-reference-nav.json`. The upstream spec was described end to end first
+(fluid#25245): all 20 operations, 27 parameters, and 194 schema properties, verified against the Rails
+forms actions, models, and serializers and against the admin's form builder.
+
+- **Pagination.** Four list operations use offset `page` / `per_page`, verified against the Rails
+  actions: List forms, List form elements, List form respondents, and List incomplete enrollees.
+  AGENTS.md names each generated page, and `eval/check-hosted-docs.mjs` sanctions `per_page` on those
+  four pages only. No other Forms page, and no hand-written prose, inherits the exception.
+- **Legacy markers.** The spec names no `v2025-06` path. Where it sends public respondents elsewhere,
+  it names the Fluid Public SDK API's token-addressed forms operations instead of typing their path,
+  so no Forms page needs the Public SDK version sanction.
+- **Not a successor for `/api/public/forms`.** The Forms reference is the company-side admin API.
+  It doesn't change the 2026-09-28 decision above, and the sunset form-by-ID response's
+  `successor-version` header is unaffected.
+- **Known spec gaps, reported upstream rather than restated here.** The create request body is drawn
+  flat, though the API reads it under `form`. List forms and List form respondents declare no query
+  parameters, and their `pagination` schema lists `next_page` / `prev_page`, which aren't returned. The
+  statistics `id` parameter is marked required but ignored. Embed settings has no request body schema.
+  The descriptions say how each actually behaves; the structural fixes need a contract change upstream.
