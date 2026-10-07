@@ -10,6 +10,13 @@ info:
 servers:
 - url: https://api.fluid.app
 tags:
+- name: tokens
+  description: >-
+    Create and manage the company's API credentials: partner and public
+    tokens, and the scoped clients that replace them for a company on identity
+    sign-in, and for every company once scoped client creation is switched on
+    for all.
+  x-fluid-section: Developers
 - name: products
   description: Products, variants and their prices, including the per-price-type
     price grid of a bundle product.
@@ -179,6 +186,70 @@ components:
         updated_at:
           type: string
           format: date-time
+    ScopedClientRecord:
+      type: object
+      description: >-
+        A scoped client as the identity service's lifecycle API describes it
+        (`ScopedClient` in services/identity/api/openapi.yaml), passed through
+        by Rails. It never carries a secret or a digest.
+      required: [client_id, kind, name, org, scopes, allowed_origins, grant_types, created_at]
+      properties:
+        client_id:
+          type: string
+          description: '`fci_` for a confidential client, `fcp_` for a publishable one.'
+        kind:
+          type: string
+          enum: [confidential, publishable]
+        name:
+          type: string
+        org:
+          type: string
+          format: uuid
+          description: The company the client acts for.
+        scopes:
+          type: array
+          items:
+            type: string
+        allowed_origins:
+          type: array
+          items:
+            type: string
+        grant_types:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
+        secret_rotated_at:
+          type: [string, 'null']
+          format: date-time
+        previous_secret_expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the secret the last rotation replaced stops authenticating.
+      additionalProperties: false
+    ScopedClientIssuedResponse:
+      type: object
+      description: A client and, from a create or a rotate of a confidential client, its one-time secret.
+      required: [client]
+      properties:
+        client:
+          $ref: '#/components/schemas/ScopedClientRecord'
+        client_secret:
+          type: string
+          description: Shown once. Absent for a publishable client.
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+      additionalProperties: false
     Meta:
       type: object
       properties:
@@ -529,7 +600,10 @@ components:
         One stored (price type, currency) cell of a bundle group or in-kit item.
         Amounts are decimal strings at the currency's exponent, null when the
         row leaves the field blank (a blank amount falls back to the plan, the
-        item sum or the catalog -- see the resolvers). lock_token is the
+        item sum or the catalog -- see the resolvers). A group cell's price is
+        null when the row holds volumes, points or a subscription price but no
+        one-time price; that is "no price", never 0, and a checkout that needs
+        it is refused. lock_token is the
         row's lock_token.
       required: [pricing_tier_id, currency_code, price, subscription_price, cv, qv, creditable_points, lock_token]
       additionalProperties: false
@@ -705,7 +779,11 @@ components:
                 description: The cell's lock_token as read; null or absent for a cell that does not exist yet.
               price:
                 type: [number, string, 'null']
-                description: Decimal amount; cannot be cleared on a bundle or group cell.
+                description: >-
+                  Decimal amount; cannot be cleared on a bundle cell. A group cell's price may
+                  be null only while the cell still holds a cv, qv, creditable_points or
+                  subscription_price (a group with no price of its own, such as a dynamic
+                  group); a group cell left with none of them is refused (price_required). At Retail and Wholesale a null price is refused (legacy_json_unmappable) where legacy would still charge a price: the legacy bundle price JSON holds one for that country, or (Retail only) the group has a configured fixed_price. Where legacy has neither it is accepted, and checkout refuses wherever it reads that price.
               compare_at_price:
                 type: [number, string, 'null']
                 description: Bundle cells only.
@@ -17646,6 +17724,357 @@ paths:
         required: true
         schema:
           type: string
+  /api/v2025-06/tokens/clients:
+    get:
+      operationId: admin_v2025_06_tokens_clients_get
+      x-fluid-audience: company
+      summary: List the company's scoped clients
+      description: >-
+        Lists the scoped clients bound to the authenticated company, the
+        credentials that replace company, partner, and public tokens for a
+        company on identity sign-in, and for every company once scoped client
+        creation is switched on for all. Rails reads them from the identity
+        service's lifecycle API and passes its client shape through; no secret
+        is ever listed. Requires a company admin Bearer token with the
+        developer view permission, for a company whose credentials are scoped clients.
+      tags: [tokens]
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                clients:
+                - client_id: fci_kq3vx7m2n9p4r6t8w1y5z0b2c4
+                  kind: confidential
+                  name: Order sync
+                  org: 0199a3f2-7c41-7e2b-9d5a-3f6b8c1e4a27
+                  scopes: ['orders:read']
+                  allowed_origins: []
+                  grant_types: [client_credentials]
+                  created_at: '2026-10-01T12:00:00Z'
+                  expires_at:
+                  revoked_at:
+                  secret_rotated_at:
+                  previous_secret_expires_at:
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-01T12:00:00Z'
+              schema:
+                type: object
+                required: [clients]
+                properties:
+                  clients:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScopedClientRecord'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company admin with the developer permission, the caller is a machine credential (a company, partner, droplet, public, or client token), or the company's credentials are not scoped clients (it is not on identity sign-in and scoped client creation is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The identity service could not be reached; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      operationId: admin_v2025_06_tokens_clients_post
+      x-fluid-audience: company
+      summary: Create a scoped client
+      description: >-
+        Creates a scoped client bound to the authenticated company through the
+        identity service. Rails fills in the company (`org`) and the acting
+        administrator (`actor`) from the session; neither is read from the
+        request. A confidential client's secret is in this response and never
+        again; a publishable client has no secret and is held to its allowed
+        origins. Scopes are `resource:verb` (`view` is spelled `read`, write
+        actions `write`). A publishable client is limited to the public token
+        scopes. Returns 422 for a publishable client asking for any other
+        scope, and when the identity service refuses the scopes, origins, or
+        expiry. Requires a company admin Bearer token with
+        the developer update permission, for a company whose credentials are scoped clients.
+      tags: [tokens]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              name: Order sync
+              kind: confidential
+              scopes: ['orders:read']
+              expires_at:
+            schema:
+              type: object
+              required: [name, kind, scopes]
+              properties:
+                name:
+                  type: string
+                  description: A label shown to administrators.
+                kind:
+                  type: string
+                  enum: [confidential, publishable]
+                  description: A confidential client has a secret; a publishable one is held to its allowed origins instead.
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: The `resource:verb` scopes the client may hold; may be empty. A publishable client may hold only the scopes a public token could (dam:upload, dam:browse, dam:unsplash, dam:ai_generate, media:read, products:read, enrollments:read, playlists:read, forms:read); any other is refused with 422 and needs a confidential client.
+                allowed_origins:
+                  type: array
+                  items:
+                    type: string
+                  description: Required for a publishable client, refused for a confidential one. Each entry is `scheme://host[:port]`.
+                expires_at:
+                  type: [string, 'null']
+                  format: date-time
+                  description: When the client stops authenticating, or null for never.
+      responses:
+        '201':
+          description: Created. `Cache-Control` is `no-store`; the secret is never shown again.
+          content:
+            application/json:
+              example:
+                client:
+                  client_id: fci_kq3vx7m2n9p4r6t8w1y5z0b2c4
+                  kind: confidential
+                  name: Order sync
+                  org: 0199a3f2-7c41-7e2b-9d5a-3f6b8c1e4a27
+                  scopes: ['orders:read']
+                  allowed_origins: []
+                  grant_types: [client_credentials]
+                  created_at: '2026-10-01T12:00:00Z'
+                  expires_at:
+                  revoked_at:
+                  secret_rotated_at:
+                  previous_secret_expires_at:
+                client_secret: fcs_example-only-shown-once
+                status: 201
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-01T12:00:00Z'
+              schema:
+                $ref: '#/components/schemas/ScopedClientIssuedResponse'
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company admin with the developer permission, the caller is a machine credential (a company, partner, droplet, public, or client token), or the company's credentials are not scoped clients (it is not on identity sign-in and scoped client creation is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: The request is invalid, or the identity service refused the scopes, origins, or expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The identity service could not be reached; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/tokens/clients/{client_id}/rotate:
+    post:
+      operationId: admin_v2025_06_tokens_clients_rotate_post
+      x-fluid-audience: company
+      summary: Rotate a scoped client's secret
+      description: >-
+        Replaces a confidential client's secret and returns the new one, once.
+        The replaced secret keeps working for `previous_secret_ttl` seconds (0
+        ends it at once, at most 604800, the identity service's default when
+        omitted). Returns 404 for a client that does not belong to the company
+        and 409 for one with no secret, revoked, or expired. Requires a company
+        admin Bearer token with the developer update permission, for a company
+        whose credentials are scoped clients.
+      tags: [tokens]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        description: The scoped client's id.
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            example:
+              previous_secret_ttl: 86400
+            schema:
+              type: object
+              properties:
+                previous_secret_ttl:
+                  type: integer
+                  minimum: 0
+                  maximum: 604800
+                  description: Seconds the replaced secret keeps working.
+      responses:
+        '200':
+          description: Success. `Cache-Control` is `no-store`; the secret is never shown again.
+          content:
+            application/json:
+              example:
+                client:
+                  client_id: fci_kq3vx7m2n9p4r6t8w1y5z0b2c4
+                  kind: confidential
+                  name: Order sync
+                  org: 0199a3f2-7c41-7e2b-9d5a-3f6b8c1e4a27
+                  scopes: ['orders:read']
+                  allowed_origins: []
+                  grant_types: [client_credentials]
+                  created_at: '2026-10-01T12:00:00Z'
+                  expires_at:
+                  revoked_at:
+                  secret_rotated_at:
+                  previous_secret_expires_at:
+                client_secret: fcs_example-only-shown-once
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-01T12:00:00Z'
+              schema:
+                $ref: '#/components/schemas/ScopedClientIssuedResponse'
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company admin with the developer permission, the caller is a machine credential (a company, partner, droplet, public, or client token), or the company's credentials are not scoped clients (it is not on identity sign-in and scoped client creation is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No client with this id belongs to the company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The client has no secret to rotate, or has been revoked or has expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: previous_secret_ttl is outside 0 to 604800 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The identity service could not be reached; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/tokens/clients/{client_id}/revoke:
+    post:
+      operationId: admin_v2025_06_tokens_clients_revoke_post
+      x-fluid-audience: company
+      summary: Revoke a scoped client
+      description: >-
+        Revokes a client bound to the company. It stops authenticating at once,
+        and its outstanding tokens are refused within one revocation-list
+        refresh. Returns 404 for a client that does not belong to the company.
+        Requires a company admin Bearer token with the developer update
+        permission, for a company whose credentials are scoped clients.
+      tags: [tokens]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: client_id
+        in: path
+        required: true
+        description: The scoped client's id.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                client:
+                  client_id: fci_kq3vx7m2n9p4r6t8w1y5z0b2c4
+                  kind: confidential
+                  name: Order sync
+                  org: 0199a3f2-7c41-7e2b-9d5a-3f6b8c1e4a27
+                  scopes: ['orders:read']
+                  allowed_origins: []
+                  grant_types: [client_credentials]
+                  created_at: '2026-10-01T12:00:00Z'
+                  expires_at:
+                  revoked_at: '2026-10-02T09:00:00Z'
+                  secret_rotated_at:
+                  previous_secret_expires_at:
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-01T12:00:00Z'
+              schema:
+                type: object
+                required: [client]
+                properties:
+                  client:
+                    $ref: '#/components/schemas/ScopedClientRecord'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company admin with the developer permission, the caller is a machine credential (a company, partner, droplet, public, or client token), or the company's credentials are not scoped clients (it is not on identity sign-in and scoped client creation is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No client with this id belongs to the company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The identity service could not be reached; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/v2025-06/tokens/public:
     get:
       operationId: admin_v2025_06_tokens_public_get
