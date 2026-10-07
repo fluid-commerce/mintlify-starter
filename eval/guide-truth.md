@@ -2412,11 +2412,12 @@ decisions, all verified against the implementation rather than the spec:
 - **The order, not the form, makes the member.** The order is placed and the enrollment
   member is created before the form appears; the form only decides whether the enrollment is
   complete (reminders, the member-record copy of the answers, and the completion webhook).
-- **Upstream spec gap — update enrollment field answer.** The PATCH operation's path segment
-  is described as "Field ID", but the action resolves it as the saved answer's
-  `field_answer_id`. The guide states the implemented behaviour (claim
-  `checkout-forms-029`). Hosted checkout passes the field id there, which looks like a bug;
-  flagged in the PR, not hidden here.
+- **Update enrollment field answer takes the field id (fixed in fluid#25248).** The PATCH
+  action used to resolve `{field_id}` as the saved answer's `field_answer_id`, against the
+  spec. It now takes the field's `id`, like submit, updates the enrollment's latest answer
+  to that field, and returns `404` when the field has no answer yet. The legacy answer-id
+  route is unchanged and stays undocumented. The guide says so (claims
+  `checkout-forms-028`, `-029`, `-107`, `-108`); the synced spec's description matches.
 - **General forms can hold enrollments open.** Completion counts every active form for the
   country, while hosted checkout renders only `post_purchase` fields. Documented as a gotcha;
   revisit if the backend scopes completion to Post Purchase forms.
@@ -2475,8 +2476,19 @@ enrollment renderer, and the canonical country rows:
   (gaiyo shomen) form is created whenever the country requires it, flag or not; not documented.
 - **Atlas component mapping** follows the admin builder's mapping, since the atlas `component`
   names are the builder's component names.
-- **Not documented:** the separate, unreleased CLI command for country forms. Document it only
-  once its plugin version is published.
+- **`fluid countries forms` is step 6 of Open a country (2026-10-07).** Merged in fluid#25342
+  and published in `@fluid-app/fluid-cli-localization` 0.1.6, checked on npm before it was
+  documented. Verified against the merged command, its report and plan code, and the plugin
+  README: read-only by default; `--create --yes` makes `Enrollment - <Country>` as a draft
+  (`--activate` publishes it) or adds only missing fields, sending existing components back
+  with their ids; `--form <id>` takes only a Post Purchase form for that country alone;
+  forms shared with other countries are never changed; reps-only (`requiredFor`) fields,
+  SSNs and value fields labelled as ID, tax, bank or card numbers or passwords, and
+  multiple choices without options are left `byHand`. `status` gained the `enrollment_form`
+  check and an `enrollmentForm` block, and `byHand.enrollmentFields` now lists only what the
+  command leaves to a person. The atlas component mapping moved to **Use the API directly**,
+  with the plugin's `puck_type` values; it no longer lists an SSN mapping, because the
+  command never creates one. Claims `open-country-034` to `-060`.
   
 ## Theme error pages (`themes/error-pages.mdx`, 2026-10-04)
 
@@ -2490,10 +2502,13 @@ actions). Re-verify against both before changing a behavioral claim.
 
 Durable decisions:
 
-- **Lookup is by name on the active theme.** The template must be named `404` or `503`,
+- **Lookup is by name on the active theme, or the previewed one.** The template must be named `404` or `503`,
   be the active default for that name, and have a published version. A template named
   `default` never renders. Defaults are scoped by name, so the 404 and 503 defaults are
-  independent. Region rules don't apply.
+  independent. Region rules don't apply. Since fluid#24895, a preview
+  (`preview_theme_id`, the preview cookie, or the `X-Fluid-Theme` header `fluid theme dev`
+  sends) renders the previewed company theme's template; when it has none, the static page
+  renders, not the active theme's.
 - **Single-segment paths aren't 404s.** `/:credit` matches any one-segment path, so an
   unknown `/spring-sale` renders the home page. The page's 404 table describes
   multi-segment unknown paths, and says so.
@@ -2502,20 +2517,31 @@ Durable decisions:
 - **`content_for_header` is head Global Embeds only on error pages.** The renderer skips
   the usual header builder, so there's no title, meta, CSRF tag, Fluid script or theme
   stylesheet. The page tells authors to load CSS and a title from the layout.
-- **Error pages render in English, and `t | default:` doesn't fall back.** The errors
-  controller doesn't switch locale, and the `t` filter returns the
-  `Translation missing: …` string for an absent key, which `default:` doesn't replace.
-  The Base theme's error templates use `t | default:` with no `error.*` keys in its
-  locales, so they render that string today. It is flagged for an upstream fix; don't
-  document `default:` as a fallback until the filter or the Base locales change.
-- **CLI push makes only the first error template the default.** The resource write
-  makes a template default only when its type has no active default, without scoping by
-  name. The page's warning tells authors to use **Make Default** on the second one.
-  A theme import makes each imported template default and publishes it.
-- **Current behavior tied to in-progress fixes, described neutrally.** Missing records
-  "currently" redirect to `/404` (302) rather than rendering in place, and the storefront
-  error routes "currently" always use the active theme, so `fluid theme dev` and theme
-  previews show the live theme's error page. Update both statements when the fixes land.
+- **Mostly English, and `t | default:` falls back (fluid#24897).** The errors controller
+  doesn't switch locale, and a missing record's rescue handler runs after the storefront's
+  locale `around_action` has unwound, so those render in English. Missing enrollment packs,
+  libraries (playlists) and rep sites call the 404 inside the action, so they render in the
+  visitor's language; the page says so. For a key no locale defines, `t` now returns
+  the `Translation missing: …` text as a value that reads as empty, so `default:` and
+  `blank` checks fall through; a filter between `t` and `default:` loses that. Base's 19
+  locales gained the five `error.*` keys; existing themes aren't re-synced, so the page
+  says older Base copies show the templates' English fallback.
+- **CLI push makes each error template its own default (fluid#24898).** The resource
+  write now checks for an existing default per name for `error_page`, and skips a
+  bodiless error page (a sidecar written before `index.liquid`). Themes pushed before
+  the fix weren't backfilled, so the page keeps a note to use **Make Default**. A theme
+  import makes each imported template default and publishes it.
+- **Missing records render the 404 in place (fluid#24894).** HTML requests (any `Accept`
+  listing HTML, or bare `*/*`; `text/html;q=0` counts as rejecting HTML) get the 404
+  with status `404` at the original URL, and `request.path` is that URL; other formats
+  still redirect to `/404`. `/my/home` and placeholder-username MySite links redirect to
+  `/`. Still redirecting, and not documented because theme authors don't style them:
+  `/s/:token` share links, the media spam check, and the subscription and conversation
+  unsubscribe-token pages.
+- **Editor preview links (fluid#24895).** Error-page preview links carry the template's
+  `preview_theme_id`, so a draft theme's template previews without a cookie. The 503
+  template previews at `/errors/503`, because a static file answers `/500` before the
+  app; `/404` is unchanged.
 - **Pages a theme can't style** (billing pause, unreachable origin, rate limiting,
   blocked IPs, unknown host) are listed without internals. The billing pause links to the
   Help Center Billing **Status** card. There is no maintenance or password mode.
