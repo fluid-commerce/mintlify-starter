@@ -1,0 +1,601 @@
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — Statistics
+  description: >-
+    Numbers about the signed-in member's own activity: a dashboard of MySite, share, contact,
+    credited-order, Team and points totals, the storefront assets the member drove the most visits or
+    shares to, and one asset's statistics. The bearer credential determines the member and company; no
+    path, query or body parameter can widen either. Statistics are read from daily rollups and
+    maintained counters, never counted from raw activity on request. A period is the trailing 7, 30,
+    90 or 365 UTC days including today, or every day on record (the default), and rollups are recomputed
+    every 15 minutes for today, nightly for the 364 days before today, and weekly for older days. A
+    company's rollup numbers are served only once its statistics rollups are enabled, which is done after
+    its history is backfilled; until then the requests that need them answer 503, never zeros.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+  - MemberBearer: []
+servers:
+  - url: https://api.fluid.app
+    description: Production API server
+  - url: https://api.fluid.test
+    description: Local development server
+tags:
+  - name: stats
+    description: >-
+      The signed-in member's own activity over a period, from daily rollups and maintained counters.
+      Asset statistics cover the storefront assets the member's content resources can see.
+    x-fluid-section: Members
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header: a member
+        session JWT, a portal JWT whose login is linked to a membership in
+        that company, or an opaque member token. The credential alone
+        identifies the member and company.
+  headers:
+    ETag:
+      description: >-
+        Fingerprint of this member's representation. Send it back in If-None-Match to skip the body while it
+        is unchanged.
+      schema:
+        type: string
+    CacheControl:
+      description: >-
+        Standard HTTP Cache-Control directive. The dashboard is private for 60 seconds. Asset statistics
+        send max-age=0, so a client revalidates with If-None-Match on every use and an asset that leaves the
+        member's scope is not reused from cache.
+      schema:
+        type: string
+        example: max-age=60, private
+  parameters:
+    PeriodQuery:
+      name: period
+      in: query
+      description: Trailing UTC days including today (7d, 30d, 90d, 1y), or every day on record (all). Defaults to all.
+      schema:
+        $ref: '#/components/schemas/Period'
+  responses:
+    NotModified:
+      description: The member's representation matches If-None-Match.
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+    Unauthorized:
+      description: Missing or unusable member credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: The credential is the shopper session JWT that order and subscription email links carry, which cannot read statistics; or, for the asset statistics, the membership cannot share content.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Unknown asset kind, malformed identifier, or an asset outside the member's scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Invalid:
+      description: Unsupported parameter or invalid value, with field-keyed details.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unavailable:
+      description: >-
+        The statistics cannot be served; retry shortly. Either the company's statistics rollups are not
+        enabled yet (`details.error` is `not_reconciled`) or the member's Team counters could not be read
+        (`unavailable`). Neither is ever reported as zero.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            status: 503
+            error:
+              message: Statistics are awaiting reconciliation
+              details:
+                error: not_reconciled
+            meta:
+              request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+              timestamp: '2026-10-01T15:04:05Z'
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+        - request_uuid
+        - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          description: The error message and field-keyed details.
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              description: Field-keyed error details.
+              additionalProperties: true
+          required:
+            - message
+            - details
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - error
+        - meta
+    Period:
+      type: string
+      description: Trailing UTC days including today (7d, 30d, 90d, 1y is 365 days), or every day on record (all). Defaults to all.
+      default: all
+      enum:
+        - 7d
+        - 30d
+        - 90d
+        - 1y
+        - all
+    ComputedThrough:
+      type:
+        - string
+        - 'null'
+      format: date-time
+      description: The newest recompute time among the rollup rows read, including the member's contacts snapshot, not a bound on every row; null when no rollup row was read.
+    Dashboard:
+      type: object
+      description: The member's activity blocks for one period.
+      additionalProperties: false
+      properties:
+        period:
+          $ref: '#/components/schemas/Period'
+        mysite:
+          type: object
+          description: Visits to and leads captured by the member's MySite.
+          additionalProperties: false
+          properties:
+            views:
+              type: integer
+              minimum: 0
+              description: MySite visits in the period.
+            leads:
+              type: integer
+              minimum: 0
+              description: Leads captured by the MySite in the period.
+          required:
+            - views
+            - leads
+        shares:
+          type: object
+          description: Share links the member created and the visits they drew.
+          additionalProperties: false
+          properties:
+            sent:
+              type: integer
+              minimum: 0
+              description: Share links created in the period.
+            opened:
+              type: integer
+              minimum: 0
+              description: Visits to the member's share links in the period.
+          required:
+            - sent
+            - opened
+        contacts:
+          type: object
+          description: The member's contacts.
+          additionalProperties: false
+          properties:
+            total:
+              type: integer
+              minimum: 0
+              description: Contacts the member owns, as of the latest recompute.
+            new:
+              type: integer
+              minimum: 0
+              description: Contacts added in the period.
+          required:
+            - total
+            - new
+        orders:
+          type: object
+          description: Orders whose volume is credited to the member.
+          additionalProperties: false
+          properties:
+            credited_count:
+              type: integer
+              minimum: 0
+              description: Paid or refund-pending, not cancelled, credited orders dated in the period by their sale date.
+            credited_total:
+              type: string
+              description: Sum of credited order totals in the platform base currency (USD) that orders store, as a decimal string; it is not converted to the company's own currency.
+              example: '1240.50'
+          required:
+            - credited_count
+            - credited_total
+        team:
+          type: object
+          description: >-
+            Team totals from the maintained genealogy counters of the member's own seat in the company's
+            enrollment tree; zeros when the member has no seat or the membership is not rep-eligible.
+          additionalProperties: false
+          properties:
+            direct_count:
+              type: integer
+              minimum: 0
+              description: Seats directly below the member.
+            total_count:
+              type: integer
+              minimum: 0
+              description: All seats below the member.
+          required:
+            - direct_count
+            - total_count
+        points:
+          type: object
+          description: The member's points.
+          additionalProperties: false
+          properties:
+            balance:
+              type: integer
+              description: Current points balance from the ledger's running total.
+          required:
+            - balance
+        computed_through:
+          $ref: '#/components/schemas/ComputedThrough'
+      required:
+        - period
+        - mysite
+        - shares
+        - contacts
+        - orders
+        - team
+        - points
+        - computed_through
+    DashboardEnvelope:
+      type: object
+      description: The member's dashboard.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/Dashboard'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - data
+        - meta
+    AssetKind:
+      type: string
+      description: Storefront asset kind.
+      enum:
+        - products
+        - enrollment-packs
+        - pages
+        - media
+        - playlists
+    RankedAsset:
+      type: object
+      description: One storefront asset and the member's count for the ranking metric.
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: '#/components/schemas/AssetKind'
+        id:
+          type: string
+          format: uuid
+          description: The asset's public id.
+        title:
+          type:
+            - string
+            - 'null'
+          description: The asset's title.
+        image_url:
+          type:
+            - string
+            - 'null'
+          description: The asset's own image, or null when it has none.
+        count:
+          type: integer
+          minimum: 1
+          description: Visits or shares, depending on the requested metric.
+      required:
+        - kind
+        - id
+        - title
+        - image_url
+        - count
+    RankedAssetsEnvelope:
+      type: object
+      description: Up to ten assets, highest count first, then by kind and asset.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          type: array
+          maxItems: 10
+          description: Ranked assets.
+          items:
+            $ref: '#/components/schemas/RankedAsset'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - data
+        - meta
+    AssetStats:
+      type: object
+      description: The member's own visits and shares for one storefront asset.
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: '#/components/schemas/AssetKind'
+        id:
+          type: string
+          format: uuid
+          description: The asset's public id.
+        title:
+          type:
+            - string
+            - 'null'
+          description: The asset's title.
+        image_url:
+          type:
+            - string
+            - 'null'
+          description: The asset's own image, or null when it has none.
+        period:
+          $ref: '#/components/schemas/Period'
+        visits:
+          type: integer
+          minimum: 0
+          description: Visits the member drove to the asset in the period.
+        shares:
+          type: integer
+          minimum: 0
+          description: Share links the member created for the asset in the period.
+      required:
+        - kind
+        - id
+        - title
+        - image_url
+        - period
+        - visits
+        - shares
+    AssetStatsEnvelope:
+      type: object
+      description: Statistics for one asset.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/AssetStats'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - data
+        - meta
+paths:
+  /api/member/v2026-10/stats:
+    get:
+      operationId: member_stats_show
+      tags:
+        - stats
+      summary: Show the member's dashboard
+      x-fluid-audience: member
+      description: >-
+        Returns MySite, share, contact, credited-order, Team and points totals for the period. Windowed
+        numbers come from the daily member rollup, Team totals from genealogy counters and the balance from
+        the points ledger. Every membership may read its own dashboard; the Team totals are a rep's, so a
+        membership that is not rep-eligible reads zero for them. Responses are private for 60 seconds. The
+        request is 503, never zeros, until the company's statistics rollups are enabled and when the Team
+        counters cannot be read.
+      parameters:
+        - $ref: '#/components/parameters/PeriodQuery'
+      responses:
+        '200':
+          description: The member's dashboard.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardEnvelope'
+              example:
+                status: 200
+                data:
+                  period: 30d
+                  mysite:
+                    views: 412
+                    leads: 9
+                  shares:
+                    sent: 38
+                    opened: 121
+                  contacts:
+                    total: 214
+                    new: 12
+                  orders:
+                    credited_count: 17
+                    credited_total: '1240.50'
+                  team:
+                    direct_count: 4
+                    total_count: 37
+                  points:
+                    balance: 1850
+                  computed_through: '2026-10-01T15:00:00Z'
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/member/v2026-10/stats/top:
+    get:
+      operationId: member_stats_top
+      tags:
+        - stats
+      summary: Rank the member's top assets
+      x-fluid-audience: member
+      description: >-
+        Returns up to ten storefront assets the member drove the most visits or shares to in the period,
+        among the assets the member's content resources can see. An asset the company removes, unpublishes
+        or makes private stops ranking on the next request. Only memberships that may share content may
+        read it. A share ranking answers 503 until the company's statistics rollups are enabled; a visit
+        ranking does not depend on them.
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          description: Rank by visits the member drove or by share links the member created.
+          schema:
+            type: string
+            enum:
+              - visits
+              - shares
+        - $ref: '#/components/parameters/PeriodQuery'
+      responses:
+        '200':
+          description: The ranked assets.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RankedAssetsEnvelope'
+              example:
+                status: 200
+                data:
+                  - kind: products
+                    id: 01a05c3e-77b2-7c1d-9a0e-2b4f6d8e1a3c
+                    title: Daily Greens
+                    image_url: https://cdn.fluid.app/primex/daily-greens.jpg
+                    count: 57
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/member/v2026-10/stats/assets/{kind}/{id}:
+    get:
+      operationId: member_stats_asset
+      tags:
+        - stats
+      summary: Show the member's statistics for one asset
+      x-fluid-audience: member
+      description: >-
+        Returns the member's own visits and shares for one storefront asset the member's content resources
+        can see: a catalogue product, enrollment pack or page, the member's own or the company's public
+        media, or the member's own or the company's shareable playlist. Anything else, an unknown kind or a
+        malformed id is 404. Only memberships that may share content may read it. It answers 503 until the
+        company's statistics rollups are enabled.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          description: Storefront asset kind.
+          schema:
+            $ref: '#/components/schemas/AssetKind'
+        - name: id
+          in: path
+          required: true
+          description: The asset's public id.
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/PeriodQuery'
+      responses:
+        '200':
+          description: The member's statistics for the asset.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetStatsEnvelope'
+              example:
+                status: 200
+                data:
+                  kind: products
+                  id: 01a05c3e-77b2-7c1d-9a0e-2b4f6d8e1a3c
+                  title: Daily Greens
+                  image_url: https://cdn.fluid.app/primex/daily-greens.jpg
+                  period: 30d
+                  visits: 57
+                  shares: 6
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Unavailable'
