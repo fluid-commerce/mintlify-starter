@@ -1,0 +1,904 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — AI
+  description: |-
+    The signed-in member's own conversations with the company's AI assistant: history, replies, stopping a reply and feedback. Conversations belong to the member the bearer credential speaks for; another member's conversation is 404. The assistant is available to rep-eligible memberships; a customer membership gets 403. Replies use the company's assistant configuration and AI billing. A member session JWT, the kind order and subscription email links carry, cannot read conversations and also gets 403.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+- MemberBearer: []
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+- url: https://api.fluid.test
+  description: Local development server
+tags:
+- name: ai
+  description: The signed-in member's conversations with the company's AI assistant.
+  x-fluid-section: Members
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header: a member
+        session JWT, a portal JWT whose login is linked to a membership in
+        that company, or a member token. The credential alone
+        identifies the member and company.
+  headers:
+    ETag:
+      description: >-
+        Fingerprint of this member's representation. Send it back in If-None-Match; the server rechecks the
+        member's access before answering 304.
+      schema:
+        type: string
+    CacheControl:
+      description: >-
+        Standard HTTP Cache-Control directive. Conversation reads are private and sent with max-age=0, so a
+        client revalidates with If-None-Match on every use. Writes are no-store.
+      schema:
+        type: string
+        example: max-age=0, private
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+      - request_uuid
+      - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          description: The error message and field-keyed details.
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              description: Machine-readable details, keyed by field where a field is at fault.
+              additionalProperties: true
+          required:
+          - message
+          - details
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - error
+      - meta
+    RateLimitBody:
+      type: object
+      description: >-
+        The body of a request refused by the credential's rate limit, sent by the platform's rate limiter
+        before the request reaches the assistant. It is not the standard error envelope.
+      additionalProperties: true
+      properties:
+        error:
+          type: string
+          description: Short name of the refusal.
+        message:
+          type: string
+          description: Human-readable explanation.
+        retry_after:
+          type: integer
+          description: Seconds until the limit window ends and the credential may send again.
+      required:
+      - error
+      - message
+      - retry_after
+      example:
+        error: Rate limit exceeded
+        message: Too many requests. Please wait before trying again.
+        retry_after: 37
+    PaginationMeta:
+      type: object
+      description: Keyset pagination state for a list.
+      additionalProperties: false
+      properties:
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send as `page[cursor]` for the next page; null on the last page.
+      required:
+      - next_cursor
+    Message:
+      type: object
+      description: One turn of a member AI conversation.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Message id.
+        conversation_id:
+          type: string
+          format: uuid
+          description: The conversation it belongs to.
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+          description: Who wrote it.
+        text:
+          type: string
+          description: Message text.
+        tool_calls:
+          type: array
+          maxItems: 0
+          description: Read-only summary of assistant tool calls. The assistant has no tools, so this is always empty.
+          items:
+            type: object
+            description: A tool call summary.
+        status:
+          type:
+          - string
+          - 'null'
+          enum:
+          - completed
+          - stopped
+          - failed
+          - null
+          description: >-
+            How a reply ended: completed, stopped by the member, or failed partway. Null on the member's own
+            messages.
+        feedback:
+          type:
+          - object
+          - 'null'
+          description: The member's rating of a reply, or null when there is none.
+          additionalProperties: false
+          properties:
+            rating:
+              type: string
+              enum:
+              - up
+              - down
+              description: Thumbs up or down.
+            comment:
+              type:
+              - string
+              - 'null'
+              description: Optional comment.
+          required:
+          - rating
+          - comment
+        created_at:
+          type: string
+          format: date-time
+          description: When it was recorded.
+      required:
+      - id
+      - conversation_id
+      - role
+      - text
+      - tool_calls
+      - status
+      - feedback
+      - created_at
+    Conversation:
+      type: object
+      description: A member-owned AI conversation.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Conversation id.
+        title:
+          type: string
+          description: Title; a conversation started without one is `New conversation`.
+        created_at:
+          type: string
+          format: date-time
+          description: When it was started.
+        last_message_at:
+          type: string
+          format: date-time
+          description: When its latest message was recorded, or when it was started; the list's sort key.
+        replying:
+          type: boolean
+          description: >-
+            Whether a reply is being generated now, including one asked to stop that has not been stored
+            yet.
+      required:
+      - id
+      - title
+      - created_at
+      - last_message_at
+      - replying
+    ConversationDetail:
+      type: object
+      description: A conversation with all its messages, oldest first.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Conversation id.
+        title:
+          type: string
+          description: Title; a conversation started without one is `New conversation`.
+        created_at:
+          type: string
+          format: date-time
+          description: When it was started.
+        last_message_at:
+          type: string
+          format: date-time
+          description: When its latest message was recorded, or when it was started; the list's sort key.
+        replying:
+          type: boolean
+          description: >-
+            Whether a reply is being generated now, including one asked to stop that has not been stored
+            yet.
+        messages:
+          type: array
+          description: Every message of the conversation, oldest first.
+          items:
+            $ref: '#/components/schemas/Message'
+      required:
+      - id
+      - title
+      - created_at
+      - last_message_at
+      - replying
+      - messages
+    ConversationPage:
+      type: object
+      description: A page of conversations.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          type: array
+          description: Conversations, most recent message first.
+          items:
+            $ref: '#/components/schemas/Conversation'
+        meta:
+          allOf:
+          - $ref: '#/components/schemas/ResponseMeta'
+          - type: object
+            properties:
+              pagination:
+                $ref: '#/components/schemas/PaginationMeta'
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+    ConversationDetailEnvelope:
+      type: object
+      description: One conversation with its messages.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/ConversationDetail'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - data
+      - meta
+    ConversationCreatedEnvelope:
+      type: object
+      description: The started conversation.
+      properties:
+        status:
+          type: integer
+          const: 201
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/ConversationDetail'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - data
+      - meta
+    StopAcceptedEnvelope:
+      type: object
+      description: The conversation whose reply was asked to stop.
+      properties:
+        status:
+          type: integer
+          const: 202
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/Conversation'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - data
+      - meta
+    MessageEnvelope:
+      type: object
+      description: One message.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/Message'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - data
+      - meta
+    ExchangeEnvelope:
+      type: object
+      description: The member's message and the reply.
+      properties:
+        status:
+          type: integer
+          const: 201
+          description: HTTP response status.
+        data:
+          type: object
+          description: The stored exchange.
+          additionalProperties: false
+          properties:
+            user_message:
+              $ref: '#/components/schemas/Message'
+            assistant_message:
+              $ref: '#/components/schemas/Message'
+          required:
+          - user_message
+          - assistant_message
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+      - status
+      - data
+      - meta
+  responses:
+    NotModified:
+      description: The member still sees the representation named by If-None-Match.
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+    InvalidCursor:
+      description: Malformed, tampered or expired cursor.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or unusable member credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: >-
+        The membership has no AI assistant (it is not rep-eligible), a write was made with a read-only
+        credential, or a read was made with a member session JWT, the kind order and subscription email links
+        carry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: The conversation or message is missing, deleted, malformed or another member's.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InvalidParameters:
+      description: Unsupported parameter, invalid value, or a rating on the member's own message.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unavailable:
+      description: >-
+        The assistant could not answer, or its reply ran past the time allowed. The member's message is kept,
+        and any part of the reply already produced is stored with status `failed`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooManyRequests:
+      description: >-
+        Either the standard error envelope, when the company's AI usage cap or limit is reached (the
+        member's message is kept) or the member already has 10 replies being generated (nothing is stored),
+        or the rate limiter's own body, when the credential sent more than 20 messages in a minute (nothing
+        is stored). The rate limiter's response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+        `X-RateLimit-Reset` headers.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ErrorEnvelope'
+            - $ref: '#/components/schemas/RateLimitBody'
+    PaymentRequired:
+      description: The company's AI billing is unresolved or its credits are used up; the member's message is kept.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: >-
+        A reply is already being generated in the conversation (send), or none is (stop). After a stop, a new
+        message is refused until the stopped reply is stored.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  parameters:
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      description: Conversation id.
+      schema:
+        type: string
+        format: uuid
+    PageCursor:
+      name: page[cursor]
+      in: query
+      description: Opaque continuation from `meta.pagination.next_cursor`, bound to the same member and query.
+      schema:
+        type: string
+    PageLimit:
+      name: page[limit]
+      in: query
+      description: Maximum number of conversations returned.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    MessageId:
+      name: id
+      in: path
+      required: true
+      description: Message id.
+      schema:
+        type: string
+        format: uuid
+paths:
+  /api/member/v2026-10/ai/conversations:
+    get:
+      operationId: member_ai_conversations_index
+      tags:
+      - ai
+      summary: List AI conversations
+      x-fluid-audience: member
+      description: >-
+        Returns the member's own conversations, most recent message first. Private and revalidated on every
+        read.
+      parameters:
+      - $ref: '#/components/parameters/PageCursor'
+      - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: A page of conversations.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPage'
+              example:
+                status: 200
+                data:
+                - id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                  title: Follow-up for Sam
+                  created_at: '2026-10-01T15:00:41.000000Z'
+                  last_message_at: '2026-10-01T15:01:04.512000Z'
+                  replying: false
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+                  pagination:
+                    next_cursor: null
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/InvalidCursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+    post:
+      operationId: member_ai_conversations_create
+      tags:
+      - ai
+      summary: Start an AI conversation
+      x-fluid-audience: member
+      description: Starts an empty conversation with the company's assistant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The new conversation; send `{}` to start it untitled.
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                  description: Conversation title; must contain a non-space character.
+            example:
+              title: Follow-up for Sam
+      responses:
+        '201':
+          description: The started conversation.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationCreatedEnvelope'
+              example:
+                status: 201
+                data:
+                  id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                  title: Follow-up for Sam
+                  created_at: '2026-10-01T15:00:41.000000Z'
+                  last_message_at: '2026-10-01T15:00:41.000000Z'
+                  replying: false
+                  messages: []
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/member/v2026-10/ai/conversations/{id}:
+    get:
+      operationId: member_ai_conversations_show
+      tags:
+      - ai
+      summary: Show an AI conversation
+      x-fluid-audience: member
+      description: >-
+        Returns one owned conversation with all its messages, oldest first. Private and revalidated on
+        every read.
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: The conversation.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationDetailEnvelope'
+              example:
+                status: 200
+                data:
+                  id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                  title: Follow-up for Sam
+                  created_at: '2026-10-01T15:00:41.000000Z'
+                  last_message_at: '2026-10-01T15:01:04.512000Z'
+                  replying: false
+                  messages:
+                  - id: 01a0f512-2c1e-7b11-9a3d-4f0e8d1c2b10
+                    conversation_id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                    role: user
+                    text: Draft a follow-up for Sam, who asked about the starter kit
+                    tool_calls: []
+                    status: null
+                    feedback: null
+                    created_at: '2026-10-01T15:01:00.104000Z'
+                  - id: 01a0f512-2c40-7d55-a1b2-0c9e8f7a6b54
+                    conversation_id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                    role: assistant
+                    text: Hi Sam, thanks for asking about the starter kit. Would a quick call on Thursday work?
+                    tool_calls: []
+                    status: completed
+                    feedback: null
+                    created_at: '2026-10-01T15:01:04.512000Z'
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: member_ai_conversations_destroy
+      tags:
+      - ai
+      summary: Delete an AI conversation
+      x-fluid-audience: member
+      description: >-
+        Deletes an owned conversation: it disappears from every read. Its stored messages are kept until the
+        membership is deleted.
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/member/v2026-10/ai/messages/{id}/feedback:
+    post:
+      operationId: member_ai_messages_feedback
+      tags:
+      - ai
+      summary: Rate a reply
+      x-fluid-audience: member
+      description: >-
+        Records the member's thumbs up or down, with an optional comment, on a reply in one of their
+        conversations. A new rating replaces the last one. The member's own messages take no rating.
+      parameters:
+      - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The rating.
+              additionalProperties: false
+              required:
+              - rating
+              properties:
+                rating:
+                  type: string
+                  enum:
+                  - up
+                  - down
+                  description: Thumbs up or down.
+                comment:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 2000
+                  description: Optional comment; null or blank clears it.
+            example:
+              rating: down
+              comment: Too long for a text message
+      responses:
+        '200':
+          description: The rated reply.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageEnvelope'
+              example:
+                status: 200
+                data:
+                  id: 01a0f512-2c40-7d55-a1b2-0c9e8f7a6b54
+                  conversation_id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                  role: assistant
+                  text: Hi Sam, thanks for asking about the starter kit. Would a quick call on Thursday work?
+                  tool_calls: []
+                  status: completed
+                  feedback:
+                    rating: down
+                    comment: Too long for a text message
+                  created_at: '2026-10-01T15:01:04.512000Z'
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/member/v2026-10/ai/conversations/{id}/stop:
+    post:
+      operationId: member_ai_conversations_stop
+      tags:
+      - ai
+      summary: Stop the reply in progress
+      x-fluid-audience: member
+      description: >-
+        Asks the reply being generated to stop. The reply ends when its next part arrives from the model, at
+        most a quarter of a second later while it is producing text, and is stored with status `stopped` and
+        the text produced until then; the send request returns it, or its stream ends with it. Until then the conversation is still
+        `replying` and a new message gets 409. Usage already incurred is billed.
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '202':
+          description: The stop was requested.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopAcceptedEnvelope'
+              example:
+                status: 202
+                data:
+                  id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                  title: Follow-up for Sam
+                  created_at: '2026-10-01T15:00:41.000000Z'
+                  last_message_at: '2026-10-01T15:01:00.104000Z'
+                  replying: true
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/member/v2026-10/ai/conversations/{id}/messages:
+    post:
+      operationId: member_ai_messages_create
+      tags:
+      - ai
+      summary: Send a message to the assistant
+      x-fluid-audience: member
+      description: >-
+        Stores the member's message, generates the reply with the company's assistant and returns both. One
+        reply runs per conversation, and at most 10 replies run at once for a member. The first message names
+        an untitled conversation. Send `Accept: text/event-stream` to receive the reply as it is written, as
+        the company's admin chat streams it: `data:` frames of JSON, `{"delta": "<text>"}` for each part of
+        the reply, then `{"exchange": {...}}` with the stored messages (the same object as the `data` of the
+        201), then `data: END_OF_STREAM`. A failure after the stream has opened arrives as
+        `{"error": "<message>", "status": <status>}` before the end; one found before it opens (a conflict,
+        a billing refusal, a limit) is the JSON error below. A client that prefers `application/json`, or
+        sends no `Accept`, gets the completed exchange instead. Stopping the reply, with the stop
+        operation or by closing the connection, ends the stream with the reply stored as `stopped`. Limited
+        to 20 messages per minute per credential, past which the rate limiter answers 429 with its own body
+        rather than the error envelope; replies use the company's AI billing, which can refuse with 402 or
+        429 in the error envelope.
+      parameters:
+      - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The member's message.
+              additionalProperties: false
+              required:
+              - text
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 8000
+                  description: The message; must contain a non-space character.
+            example:
+              text: Draft a follow-up for Sam, who asked about the starter kit
+      responses:
+        '201':
+          description: >-
+            The stored exchange. The reply's status is `completed`, or `stopped` when the member stopped it,
+            with the text produced until then.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeEnvelope'
+              example:
+                status: 201
+                data:
+                  user_message:
+                    id: 01a0f512-2c1e-7b11-9a3d-4f0e8d1c2b10
+                    conversation_id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                    role: user
+                    text: Draft a follow-up for Sam, who asked about the starter kit
+                    tool_calls: []
+                    status: null
+                    feedback: null
+                    created_at: '2026-10-01T15:01:00.104000Z'
+                  assistant_message:
+                    id: 01a0f512-2c40-7d55-a1b2-0c9e8f7a6b54
+                    conversation_id: 01a0f512-1a00-7c22-8b11-5e3f2a1d0c01
+                    role: assistant
+                    text: Hi Sam, thanks for asking about the starter kit. Would a quick call on Thursday work?
+                    tool_calls: []
+                    status: completed
+                    feedback: null
+                    created_at: '2026-10-01T15:01:04.512000Z'
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-01T15:04:05Z'
+        '200':
+          description: >-
+            The reply as server-sent events, sent when `Accept` prefers `text/event-stream`. The status is
+            200 because it is sent before the reply is complete; the reply's outcome is in the final frames.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  Frames separated by a blank line. Each starts with `data: ` and holds one JSON object
+                  (`delta`, `exchange` or `error`), except the last, `END_OF_STREAM`.
+              example: |
+                data: {"delta":"Hi Sam, "}
+
+                data: {"delta":"thanks for asking about the starter kit."}
+
+                data: {"exchange":{"user_message":{"id":"01a0f512-2c1e-7b11-9a3d-4f0e8d1c2b10","conversation_id":"01a0f512-1a00-7c22-8b11-5e3f2a1d0c01","role":"user","text":"Draft a follow-up for Sam","tool_calls":[],"status":null,"feedback":null,"created_at":"2026-10-01T15:01:00.104000Z"},"assistant_message":{"id":"01a0f512-2c40-7d55-a1b2-0c9e8f7a6b54","conversation_id":"01a0f512-1a00-7c22-8b11-5e3f2a1d0c01","role":"assistant","text":"Hi Sam, thanks for asking about the starter kit.","tool_calls":[],"status":"completed","feedback":null,"created_at":"2026-10-01T15:01:04.512000Z"}}}
+
+                data: END_OF_STREAM
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'

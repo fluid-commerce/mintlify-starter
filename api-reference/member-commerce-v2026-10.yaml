@@ -1,0 +1,4632 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — Commerce
+  description: >-
+    Order and product-subscription history for the authenticated member. The bearer credential determines member and
+    company; query filters cannot change either. Uses the same member credentials as the People API. Money is
+    serialized as decimal strings in the enclosing currency. Order item counts and individual shipment statuses are
+    not exposed because maintained source fields do not yet exist. A subscription's next-charge total (next_total,
+    next_order_preview) carries the known pre-reward-points renewal charge when it can be stated from stored facts
+    without pricing the renewal; it is null for current-rate, bundled, tax-inclusive, tax-exempt, audience-discount, expiring-discount
+    or missing-fact subscriptions. Its subtotal is net of discounts. Authoritative saved per-line amounts are also
+    exposed on the detail's items[].
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+- MemberBearer: []
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+- url: https://api.fluid.test
+  description: Local development server
+tags:
+- name: orders
+  description: The signed-in member’s own purchases and volume-credited orders.
+  x-fluid-section: Members
+- name: subscriptions
+  description: The signed-in member’s own product subscriptions.
+  x-fluid-section: Members
+- name: carts
+  description: The signed-in member's own carts, addressed by checkout token, and claiming a guest cart.
+  x-fluid-section: Commerce
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header: a member
+        session JWT, a portal JWT whose login is linked to a membership in
+        that company, or an opaque member token. The credential alone
+        identifies the member and company.
+  headers:
+    ETag:
+      description: >-
+        Fingerprint of this member's representation. Send it back in If-None-Match to skip the body while it is
+        unchanged.
+      schema:
+        type: string
+    CacheControl:
+      description: Standard HTTP Cache-Control directive. Always private for this surface.
+      schema:
+        type: string
+        example: max-age=60, private
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+      - request_uuid
+      - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              additionalProperties: true
+          required:
+          - message
+          - details
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - error
+      - meta
+    PaginationMeta:
+      type: object
+      description: Keyset pagination state for a list.
+      additionalProperties: false
+      properties:
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send as `page[cursor]` for the next page; null on the last page.
+      required:
+      - next_cursor
+    Order:
+      type: object
+      description: Order summary. Item counts are not exposed until a maintained counter exists.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order identifier.
+          format: uuid
+        number:
+          type:
+          - string
+          - 'null'
+          description: Human-readable order number, or null for an unnumbered historical order.
+        relationship:
+          type: string
+          description: >-
+            Own purchases are placed; other orders credited to this member are credited. Placed wins when both apply,
+            including with the credited filter. An order of one of the member's contacts that the member neither placed
+            nor is credited for appears only in GET /contacts/{id}/orders, as contact.
+          enum:
+          - placed
+          - credited
+          - contact
+        status:
+          type: string
+          description: Current order lifecycle state.
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+        financial_status:
+          type: string
+          description: Current payment state.
+          enum:
+          - pending
+          - authorized
+          - partially_paid
+          - paid
+          - refund_pending
+          - partially_refunded
+          - refunded
+          - voided
+          - marked_free
+          - marked_paid
+        fulfillment_status:
+          type: string
+          description: Overall order fulfillment state.
+          enum:
+          - unfulfilled
+          - in_progress
+          - on_hold
+          - partially_fulfilled
+          - scheduled
+          - fulfilled
+        placed_at:
+          type: string
+          description: Sale time, falling back to creation time for historical orders.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for all amounts in this order.
+          example: USD
+        total:
+          type: string
+          description: Order total in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        customer:
+          type: object
+          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          additionalProperties: false
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+              description: Native member identifier; null for orders linked only through legacy customer metadata.
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+              description: Purchaser name recorded on the order.
+          required:
+          - id
+          - name
+        volume:
+          type: object
+          description: Commissionable and qualifying volume, omitted when the company hides customer-facing volume.
+          additionalProperties: false
+          properties:
+            cv:
+              type:
+              - string
+              - 'null'
+              description: Commissionable volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            qv:
+              type:
+              - string
+              - 'null'
+              description: Qualifying volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - cv
+          - qv
+      required:
+      - id
+      - number
+      - relationship
+      - status
+      - financial_status
+      - fulfillment_status
+      - placed_at
+      - currency
+      - total
+    Address:
+      type: object
+      description: Normalized order address, with the historical JSON snapshot as fallback.
+      additionalProperties: false
+      properties:
+        name:
+          type:
+          - string
+          - 'null'
+          description: Recorded name.
+        address1:
+          type:
+          - string
+          - 'null'
+          description: Recorded address1.
+        address2:
+          type:
+          - string
+          - 'null'
+          description: Recorded address2.
+        city:
+          type:
+          - string
+          - 'null'
+          description: Recorded city.
+        state:
+          type:
+          - string
+          - 'null'
+          description: Recorded state.
+        postal_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded postal code.
+        country_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded country code.
+        phone:
+          type:
+          - string
+          - 'null'
+          description: Recorded phone.
+      required:
+      - name
+      - address1
+      - address2
+      - city
+      - state
+      - postal_code
+      - country_code
+      - phone
+    LineItem:
+      type: object
+      description: One order line with its external identifier and stored amounts.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order line identifier.
+          format: uuid
+        title:
+          type:
+          - string
+          - 'null'
+          description: Recorded product title, falling back to the current product title.
+        variant_title:
+          type:
+          - string
+          - 'null'
+          description: Customer-facing variant title.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: Variant stock keeping unit.
+        quantity:
+          type: integer
+          description: Ordered quantity.
+        unit_price:
+          type: string
+          description: Stored unit price in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        total:
+          type: string
+          description: Unit price multiplied by quantity in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        image_url:
+          type:
+          - string
+          - 'null'
+          description: Variant image URL, falling back to the product image.
+      required:
+      - id
+      - title
+      - variant_title
+      - sku
+      - quantity
+      - unit_price
+      - total
+      - image_url
+    Shipment:
+      type: object
+      description: Recorded tracking information; individual shipment status is not stored and is omitted.
+      additionalProperties: false
+      properties:
+        carrier:
+          type:
+          - string
+          - 'null'
+          description: Recorded shipping carrier.
+        tracking_number:
+          type:
+          - string
+          - 'null'
+          description: Carrier tracking number.
+        tracking_url:
+          type:
+          - string
+          - 'null'
+          description: Stored tracking URL, or a URL derived by the carrier integration.
+      required:
+      - carrier
+      - tracking_number
+      - tracking_url
+    OrderDetail:
+      type: object
+      description: >-
+        Accessible order detail. Credited-only orders omit buyer contact fields until a visibility policy is available.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External order identifier.
+          format: uuid
+        number:
+          type:
+          - string
+          - 'null'
+          description: Human-readable order number, or null for an unnumbered historical order.
+        relationship:
+          type: string
+          description: >-
+            Own purchases are placed; other orders credited to this member are credited. Placed wins when both apply,
+            including with the credited filter. An order of one of the member's contacts that the member neither placed
+            nor is credited for appears only in GET /contacts/{id}/orders, as contact.
+          enum:
+          - placed
+          - credited
+          - contact
+        status:
+          type: string
+          description: Current order lifecycle state.
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+        financial_status:
+          type: string
+          description: Current payment state.
+          enum:
+          - pending
+          - authorized
+          - partially_paid
+          - paid
+          - refund_pending
+          - partially_refunded
+          - refunded
+          - voided
+          - marked_free
+          - marked_paid
+        fulfillment_status:
+          type: string
+          description: Overall order fulfillment state.
+          enum:
+          - unfulfilled
+          - in_progress
+          - on_hold
+          - partially_fulfilled
+          - scheduled
+          - fulfilled
+        placed_at:
+          type: string
+          description: Sale time, falling back to creation time for historical orders.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for all amounts in this order.
+          example: USD
+        total:
+          type: string
+          description: Order total in major currency units.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '45.98'
+        customer:
+          type: object
+          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          additionalProperties: false
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+              description: Native member identifier; null for orders linked only through legacy customer metadata.
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+              description: Purchaser name recorded on the order.
+          required:
+          - id
+          - name
+        volume:
+          type: object
+          description: Commissionable and qualifying volume, omitted when the company hides customer-facing volume.
+          additionalProperties: false
+          properties:
+            cv:
+              type:
+              - string
+              - 'null'
+              description: Commissionable volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            qv:
+              type:
+              - string
+              - 'null'
+              description: Qualifying volume in the order currency.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - cv
+          - qv
+        line_items:
+          type: array
+          description: Order lines, loaded only on the detail endpoint.
+          items:
+            "$ref": "#/components/schemas/LineItem"
+        email:
+          type:
+          - string
+          - 'null'
+          description: Recorded purchaser email; present only for an own purchase.
+        phone:
+          type:
+          - string
+          - 'null'
+          description: Recorded purchaser phone; present only for an own purchase.
+        shipping_address:
+          description: Shipping address or null; omitted for credited-only orders.
+          oneOf:
+          - "$ref": "#/components/schemas/Address"
+          - type: 'null'
+        billing_address:
+          description: Billing address or null; omitted for credited-only orders.
+          oneOf:
+          - "$ref": "#/components/schemas/Address"
+          - type: 'null'
+        shipments:
+          type: array
+          description: Recorded shipment tracking information.
+          items:
+            "$ref": "#/components/schemas/Shipment"
+        totals:
+          type: object
+          description: Order amounts in the enclosing order currency.
+          additionalProperties: false
+          properties:
+            subtotal:
+              type: string
+              description: Order subtotal in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            shipping:
+              type: string
+              description: Order shipping in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            tax:
+              type: string
+              description: Order tax in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            discount:
+              type: string
+              description: Order discount in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+            total:
+              type: string
+              description: Order total in major currency units.
+              pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+              example: '45.98'
+          required:
+          - subtotal
+          - shipping
+          - tax
+          - discount
+          - total
+      required:
+      - id
+      - number
+      - relationship
+      - status
+      - financial_status
+      - fulfillment_status
+      - placed_at
+      - currency
+      - total
+      - line_items
+      - shipments
+      - totals
+    OrderEnvelope:
+      type: object
+      description: One accessible order.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          "$ref": "#/components/schemas/OrderDetail"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    OrdersEnvelope:
+      type: object
+      description: A page of orders.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          type: array
+          description: Matching orders on this page.
+          items:
+            "$ref": "#/components/schemas/Order"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+    Subscription:
+      type: object
+      description: >-
+        Product subscription summary. next_total carries the known pre-points renewal charge, or null when the charge
+        cannot be stated without pricing the renewal (see the detail's items[] for authoritative saved line amounts).
+        Discarded, missing or foreign-company catalog references suppress the preview. A discarded product cannot
+        supply the product or title required for a renewal order item.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External subscription identifier.
+          format: uuid
+        status:
+          type: string
+          description: Current subscription lifecycle state.
+          enum:
+          - pending
+          - active
+          - paused
+          - past_due
+          - cancelled
+        frequency:
+          type: object
+          description: How often the subscription bills, from its plan.
+          additionalProperties: false
+          properties:
+            interval:
+              type:
+              - integer
+              - 'null'
+              description: Number of units between renewals.
+            unit:
+              type:
+              - string
+              - 'null'
+              description: Interval unit, e.g. week or month.
+          required:
+          - interval
+          - unit
+        next_billing_at:
+          type:
+          - string
+          - 'null'
+          description: When the subscription next bills, or null when cancelled or paused indefinitely.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for this subscription's amounts.
+          example: USD
+        next_total:
+          type:
+          - string
+          - 'null'
+          description: >-
+            The known pre-reward-points next-order total charge, or null when it cannot be stated without pricing the
+            renewal (current-rate, bundled, tax-inclusive, tax-exempt, audience-discount, expiring-discount or missing-fact). Never a
+            stored gross sum, which would overstate a discounted or tax-inclusive renewal.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '49.99'
+        items_count:
+          type:
+          - integer
+          - 'null'
+          description: Units billed each cycle, or null when the saved quantity is unknown.
+        paused_until:
+          type:
+          - string
+          - 'null'
+          description: When a paused subscription resumes billing, or null when not paused or paused indefinitely.
+          format: date-time
+        created_at:
+          type: string
+          description: When the subscription was created.
+          format: date-time
+      required:
+      - id
+      - status
+      - frequency
+      - next_billing_at
+      - currency
+      - next_total
+      - items_count
+      - paused_until
+      - created_at
+    SubscriptionItem:
+      type: object
+      description: One billed line of a subscription, with its authoritative saved recurring amounts.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External identifier of the subscribed variant, falling back to the subscription's own.
+          format: uuid
+        title:
+          type:
+          - string
+          - 'null'
+          description: Product title.
+        variant_title:
+          type:
+          - string
+          - 'null'
+          description: Customer-facing variant title.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: Variant stock keeping unit.
+        quantity:
+          type:
+          - integer
+          - 'null'
+          description: Units billed each cycle, or null when the saved quantity is unknown.
+        unit_price:
+          type:
+          - string
+          - 'null'
+          description: Saved recurring price of one unit in major currency units, or null when unknown.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '49.99'
+        total:
+          type:
+          - string
+          - 'null'
+          description: Saved recurring line total in major currency units, or null when price or quantity is unknown.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '99.98'
+        image_url:
+          type:
+          - string
+          - 'null'
+          description: Variant image URL, falling back to the product image.
+      required:
+      - id
+      - title
+      - variant_title
+      - sku
+      - quantity
+      - unit_price
+      - total
+      - image_url
+    SubscriptionAddress:
+      type: object
+      description: The subscription's shipping destination, from its snapshot with an ActiveRecord fallback.
+      additionalProperties: false
+      properties:
+        name:
+          type:
+          - string
+          - 'null'
+          description: Recorded name.
+        address1:
+          type:
+          - string
+          - 'null'
+          description: Recorded address1.
+        address2:
+          type:
+          - string
+          - 'null'
+          description: Recorded address2.
+        city:
+          type:
+          - string
+          - 'null'
+          description: Recorded city.
+        state:
+          type:
+          - string
+          - 'null'
+          description: Recorded state.
+        postal_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded postal code.
+        country_code:
+          type:
+          - string
+          - 'null'
+          description: Recorded country code.
+      required:
+      - name
+      - address1
+      - address2
+      - city
+      - state
+      - postal_code
+      - country_code
+    SubscriptionPaymentMethod:
+      type: object
+      description: The stored payment method's presentational fields. Never a PAN or reusable credential.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External payment method identifier.
+          format: uuid
+        brand:
+          type:
+          - string
+          - 'null'
+          description: Card network or wallet brand.
+        last4:
+          type:
+          - string
+          - 'null'
+          description: Last four digits of the stored card.
+      required:
+      - id
+      - brand
+      - last4
+    SubscriptionDiscount:
+      type: object
+      description: An active discount attached to the subscription, with its configured value. No computed applied amount.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: External discount attachment identifier.
+          format: uuid
+        code:
+          type:
+          - string
+          - 'null'
+          description: Discount code.
+        type:
+          type:
+          - string
+          - 'null'
+          description: Price discount type, e.g. flat or percentage.
+        flat_value:
+          type:
+          - number
+          - 'null'
+          description: Configured flat amount, when the type is flat.
+        percentage_value:
+          type:
+          - number
+          - 'null'
+          description: Configured percentage, when the type is percentage.
+        duration:
+          type:
+          - string
+          - 'null'
+          description: How long the discount applies, e.g. once, repeating or forever.
+      required:
+      - id
+      - code
+      - type
+      - flat_value
+      - percentage_value
+      - duration
+    SubscriptionNextOrderPreview:
+      type:
+      - object
+      - 'null'
+      description: >-
+        The known pre-reward-points next-order amounts, or null when they cannot be stated without pricing the
+        renewal. See the subscription's items[] for authoritative saved line amounts.
+      additionalProperties: false
+      properties:
+        subtotal:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          description: Next order subtotal in major currency units, net of discounts.
+        shipping:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          description: Next order shipping in major currency units.
+        tax:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          description: Next order tax in major currency units.
+        total:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          description: Next order total in major currency units.
+      required:
+      - subtotal
+      - shipping
+      - tax
+      - total
+    SubscriptionDetail:
+      type: object
+      description: A subscription with its billed items, shipping, payment method, discounts and bundle.
+      additionalProperties: false
+      properties:
+        auto_apply_points:
+          type: boolean
+          description: Whether renewal may automatically spend this member's reward points.
+        id:
+          type: string
+          description: External subscription identifier.
+          format: uuid
+        status:
+          type: string
+          description: Current subscription lifecycle state.
+          enum:
+          - pending
+          - active
+          - paused
+          - past_due
+          - cancelled
+        frequency:
+          type: object
+          description: How often the subscription bills, from its plan.
+          additionalProperties: false
+          properties:
+            interval:
+              type:
+              - integer
+              - 'null'
+              description: Number of units between renewals.
+            unit:
+              type:
+              - string
+              - 'null'
+              description: Interval unit, e.g. week or month.
+          required:
+          - interval
+          - unit
+        next_billing_at:
+          type:
+          - string
+          - 'null'
+          description: When the subscription next bills, or null when cancelled or paused indefinitely.
+          format: date-time
+        currency:
+          type: string
+          description: ISO 4217 currency code for this subscription's amounts.
+          example: USD
+        next_total:
+          type:
+          - string
+          - 'null'
+          description: The next order's total charge, or null when it cannot be stated without pricing the renewal.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '49.99'
+        items_count:
+          type:
+          - integer
+          - 'null'
+          description: Units billed each cycle, or null when the saved quantity is unknown.
+        paused_until:
+          type:
+          - string
+          - 'null'
+          description: When a paused subscription resumes billing, or null when not paused or paused indefinitely.
+          format: date-time
+        created_at:
+          type: string
+          description: When the subscription was created.
+          format: date-time
+        items:
+          type: array
+          description: The subscription's billed lines.
+          items:
+            "$ref": "#/components/schemas/SubscriptionItem"
+        shipping_address:
+          description: The subscription's shipping destination, or null.
+          oneOf:
+          - "$ref": "#/components/schemas/SubscriptionAddress"
+          - type: 'null'
+        payment_method:
+          description: The stored payment method, or null when none is set.
+          oneOf:
+          - "$ref": "#/components/schemas/SubscriptionPaymentMethod"
+          - type: 'null'
+        discounts:
+          type: array
+          description: Active discounts attached to the subscription.
+          items:
+            "$ref": "#/components/schemas/SubscriptionDiscount"
+        bundle:
+          type: array
+          description: Matching siblings from this bounded candidate page. Follow meta.bundle_pagination.next_cursor even when this array is absent; an empty candidate page can have a continuation.
+          items:
+            "$ref": "#/components/schemas/Subscription"
+        next_order_preview:
+          "$ref": "#/components/schemas/SubscriptionNextOrderPreview"
+      required:
+      - id
+      - status
+      - frequency
+      - next_billing_at
+      - currency
+      - next_total
+      - items_count
+      - paused_until
+      - created_at
+      - items
+      - shipping_address
+      - payment_method
+      - discounts
+      - next_order_preview
+      - auto_apply_points
+    SubscriptionPause:
+      type: object
+      description: Pause indefinitely with an empty body, or choose a future date or number of upcoming orders, never both.
+      additionalProperties: false
+      properties:
+        next_bill_date:
+          type: string
+          format: date
+          description: Resume date after today in the subscription timezone, capped at two years for yearly plans or twelve months otherwise.
+        number_of_orders:
+          type: integer
+          minimum: 1
+          description: Upcoming cycles to skip before resuming, subject to the same future-date and horizon limits.
+      not:
+        required: [next_bill_date, number_of_orders]
+    SubscriptionResume:
+      type: object
+      description: Resume a paused subscription, or waive an exhausted failed cycle using the existing recovery policy.
+      additionalProperties: false
+      properties:
+        next_bill_date:
+          type: string
+          format: date
+          description: Optional future local billing date with the same horizon as pause. Exhausted-cycle recovery uses its existing schedule and ignores this field.
+    SubscriptionReactivate:
+      type: object
+      description: Reactivate a cancelled subscription, optionally confirming a saved shipping address in its existing country.
+      additionalProperties: false
+      properties:
+        address_id:
+          type: string
+          format: uuid
+          description: Public UUID of an owned saved address. Omission preserves the current address; country cannot change.
+    SubscriptionEmptyTransition:
+      type: object
+      description: No transition fields are accepted. Supply an empty JSON object.
+      additionalProperties: false
+    SubscriptionRetryEnvelope:
+      description: Fresh subscription detail with explicit asynchronous retry queue status.
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionEnvelope"
+      - type: object
+        properties:
+          meta:
+            type: object
+            properties:
+              subscription_retry:
+                type: object
+                additionalProperties: false
+                properties:
+                  queued:
+                    type: boolean
+                    description: True when a manual retry is pending, including accepted duplicates; false for a no-op when the subscription is not past due or not yet due.
+                required: [queued]
+            required: [subscription_retry]
+    SubscriptionUpdate:
+      type: object
+      description: Safe subscription edits. Omitted fields retain their current values. References use public UUIDs.
+      additionalProperties: false
+      properties:
+        payment_method_id:
+          type: string
+          format: uuid
+          description: A saved payment method owned by the member or available through their shared wallet. Isolated companies require a company-local owned method.
+        address_id:
+          type: string
+          format: uuid
+          description: An owned saved address in the subscription's existing country. Country changes require cancellation and recreation.
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Units per cycle, subject to the variant's subscription quantity cap.
+        next_bill_date:
+          type: string
+          format: date
+          description: A date strictly after today in the subscription's timezone. Preserves billing time of day and aligned shipping. Maximum two years for yearly plans, twelve months otherwise.
+        auto_apply_points:
+          type: boolean
+          description: Opt in or out of automatically applying points on renewal. Requires an actual JSON boolean.
+        auto_apply_points_scope:
+          type: string
+          enum: [subscription, bundle]
+          default: subscription
+          description: Apply the points flag to this subscription or atomically to its renewal bundle. Payment and quantity edits always affect only the target. Bundle scope forbids address and date edits.
+      anyOf:
+      - required: [payment_method_id]
+      - required: [address_id]
+      - required: [quantity]
+      - required: [next_bill_date]
+      - required: [auto_apply_points]
+      allOf:
+      - if:
+          properties:
+            auto_apply_points_scope:
+              const: bundle
+          required: [auto_apply_points_scope]
+        then:
+          required: [auto_apply_points]
+          not:
+            anyOf:
+            - required: [address_id]
+            - required: [next_bill_date]
+    SubscriptionUpdateEnvelope:
+      description: Refreshed detail plus public IDs covered and changed by the edit. No-op edits have an empty changed_ids array.
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionEnvelope"
+      - type: object
+        properties:
+          meta:
+            type: object
+            properties:
+              subscription_update:
+                type: object
+                additionalProperties: false
+                properties:
+                  resolved_ids:
+                    type: array
+                    description: Public subscription UUIDs covered by this edit, scoped to the acting member.
+                    uniqueItems: true
+                    items:
+                      type: string
+                      format: uuid
+                  changed_ids:
+                    type: array
+                    description: Public subscription UUIDs whose saved attributes changed.
+                    uniqueItems: true
+                    items:
+                      type: string
+                      format: uuid
+                required: [resolved_ids, changed_ids]
+            required: [subscription_update]
+    SubscriptionNextEnvelope:
+      type: object
+      description: The next active scheduled subscription summary, or null when none exists.
+      required: [status, data, meta]
+      additionalProperties: false
+      properties:
+        status:
+          type: integer
+          const: 200
+        data:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required: [id, plan_name, next_billing_at, next_billing_date]
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+                format: uuid
+                description: Public subscription UUID; not a legacy subscription token.
+              plan_name:
+                type: [string, 'null']
+                description: Name of the selected subscription plan, or null if unavailable in this company.
+              next_billing_at:
+                type: string
+                format: date-time
+                description: Scheduled billing timestamp in UTC.
+              next_billing_date:
+                type: string
+                format: date
+                description: Calendar day of the scheduled bill in the subscription's timezone.
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+    SubscriptionEnvelope:
+      type: object
+      description: One accessible subscription.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          "$ref": "#/components/schemas/SubscriptionDetail"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              bundle_pagination:
+                type: object
+                description: Continuation for the bounded sibling candidate scan.
+                properties:
+                  next_cursor:
+                    type: [string, 'null']
+                    description: Send as page[bundle_cursor] on this same detail endpoint; null when all candidates have been considered.
+                required: [next_cursor]
+                additionalProperties: false
+            required: [bundle_pagination]
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionsEnvelope:
+      type: object
+      description: A page of subscriptions.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          type: array
+          description: The member's subscriptions on this page.
+          items:
+            "$ref": "#/components/schemas/Subscription"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionDiscountAttachment:
+      type: object
+      description: A current or removed subscription discount attachment, identified separately
+        from its discount definition.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Public attachment UUID, used when removing this attachment.
+          format: uuid
+        subscription_id:
+          type: string
+          description: Public UUID of the owned subscription.
+          format: uuid
+        currency:
+          type: string
+          description: ISO currency code of this subscription.
+        discount:
+          type:
+          - object
+          - 'null'
+          description: Same-company discount definition; null when unavailable.
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              description: Public discount definition UUID.
+              format: uuid
+            code:
+              type:
+              - string
+              - 'null'
+              description: Immutable captured code, falling back to the definition for
+                historical records.
+          required:
+          - id
+          - code
+        discount_version:
+          type:
+          - object
+          - 'null'
+          description: Immutable economic terms captured when this discount was attached.
+          additionalProperties: false
+          properties:
+            version_number:
+              type: integer
+              description: Immutable version sequence.
+            code:
+              type:
+              - string
+              - 'null'
+              description: Discount code captured in this version.
+            price_discount_type:
+              type: string
+              description: Pricing kind captured in this version.
+            flat_value:
+              type:
+              - string
+              - 'null'
+              description: Flat pricing amount as a decimal string in the subscription
+                currency.
+              pattern: "^-?[0-9]+(?:[.][0-9]+)?$"
+            percentage_value:
+              type:
+              - string
+              - 'null'
+              description: Percentage amount as an exact decimal string.
+              pattern: "^-?[0-9]+(?:[.][0-9]+)?$"
+            apply_to_volume:
+              type: boolean
+              description: Whether this version discounts commission volume.
+          required:
+          - version_number
+          - code
+          - price_discount_type
+          - flat_value
+          - percentage_value
+          - apply_to_volume
+        duration:
+          type: string
+          description: Attachment duration.
+          enum:
+          - forever
+          - once
+          - repeating
+        duration_cycles:
+          type:
+          - integer
+          - 'null'
+          description: Maximum applications for repeating duration; otherwise null.
+        applied_cycles:
+          type: integer
+          description: Number of billing cycles that applied this attachment.
+        starts_at:
+          type: string
+          description: Attachment start timestamp.
+          format: date-time
+        created_at:
+          type: string
+          description: Attachment creation timestamp.
+          format: date-time
+        updated_at:
+          type: string
+          description: Last attachment change timestamp.
+          format: date-time
+        removed_at:
+          type:
+          - string
+          - 'null'
+          description: Removal timestamp; null while active.
+          format: date-time
+        removed_reason:
+          type:
+          - string
+          - 'null'
+          description: Stored removal reason; null while active.
+        removed_detail:
+          type:
+          - string
+          - 'null'
+          description: Optional removal explanation.
+        notes:
+          type:
+          - string
+          - 'null'
+          description: Optional attachment notes.
+        attached_via:
+          type: string
+          description: Source through which the attachment was created.
+        attached_by:
+          type:
+          - object
+          - 'null'
+          description: Attributing actor from this company, or null when unavailable.
+          additionalProperties: false
+          properties:
+            kind:
+              type: string
+              description: Actor kind.
+              enum:
+              - member
+              - droplet_installation
+            id:
+              type: string
+              description: Public member or installation UUID.
+              format: uuid
+            label:
+              type:
+              - string
+              - 'null'
+              description: Stored actor name, without an email fallback.
+          required:
+          - kind
+          - id
+          - label
+      required:
+      - id
+      - subscription_id
+      - currency
+      - discount
+      - discount_version
+      - duration
+      - duration_cycles
+      - applied_cycles
+      - starts_at
+      - created_at
+      - updated_at
+      - removed_at
+      - removed_reason
+      - removed_detail
+      - notes
+      - attached_via
+      - attached_by
+    SubscriptionDiscountAttachmentsEnvelope:
+      type: object
+      description: A bounded page including active and removed attachments.
+      additionalProperties: false
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          type: array
+          description: Discount history on this page.
+          items:
+            "$ref": "#/components/schemas/SubscriptionDiscountAttachment"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionDiscountAttachmentEnvelope:
+      type: object
+      description: The newly attached discount.
+      additionalProperties: false
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 201
+        data:
+          "$ref": "#/components/schemas/SubscriptionDiscountAttachment"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionDiscountCreate:
+      type: object
+      description: Exactly one discount definition selector and its duration; the bearer
+        supplies all ownership and actor fields.
+      additionalProperties: false
+      properties:
+        discount_id:
+          type: string
+          description: Public UUID of an eligible discount definition from this company.
+          format: uuid
+        discount_code:
+          type: string
+          description: Case-insensitive discount code; use instead of discount_id. Ambiguous
+            codes return 422; select a definition by discount_id instead.
+          minLength: 1
+        duration:
+          type: string
+          description: Duration of this attachment.
+          enum:
+          - forever
+          - once
+          - repeating
+        duration_cycles:
+          type: integer
+          description: Positive cycle count, required only for repeating duration.
+          minimum: 1
+          maximum: 2147483647
+        notes:
+          type: string
+          maxLength: 2048
+          description: Optional attachment explanation.
+      required:
+      - duration
+      oneOf:
+      - required:
+        - discount_id
+        not:
+          required:
+          - discount_code
+      - required:
+        - discount_code
+        not:
+          required:
+          - discount_id
+      allOf:
+      - if:
+          properties:
+            duration:
+              const: repeating
+        then:
+          required:
+          - duration_cycles
+        else:
+          not:
+            required:
+            - duration_cycles
+    SubscriptionDiscountRemove:
+      type: object
+      description: Optional explanation for removing an active attachment.
+      additionalProperties: false
+      properties:
+        removed_detail:
+          type: string
+          maxLength: 2048
+          description: Optional removal explanation.
+      required: []
+    SubscriptionWaiverPreviewEnvelope:
+      type: object
+      description: Current waiver eligibility; ineligibility is a successful response.
+      additionalProperties: false
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+          const: 200
+        data:
+          type: object
+          description: Read-only waiver eligibility and proposed future timestamps.
+          additionalProperties: false
+          properties:
+            eligible:
+              type: boolean
+              description: Whether the exhausted billing cycle can currently be waived.
+            next_bill_date:
+              type:
+              - string
+              - 'null'
+              description: Proposed future billing timestamp; null when ineligible.
+              format: date-time
+            next_ship_date:
+              type:
+              - string
+              - 'null'
+              description: Proposed future shipping timestamp; null when ineligible.
+              format: date-time
+          required:
+          - eligible
+          - next_bill_date
+          - next_ship_date
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionWaiverAccept:
+      type: object
+      description: Empty acceptance body; the server determines the next billing and shipping
+        dates.
+      additionalProperties: false
+      properties: {}
+      required: []
+    CartTotals:
+      type: object
+      description: The cart's stored totals in its currency, as decimal strings. Nothing is recalculated on read.
+      additionalProperties: false
+      properties:
+        subtotal:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '89.97'
+        discount:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '10.0'
+        shipping:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '7.5'
+        tax:
+          type: string
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '6.4'
+        total:
+          type:
+          - string
+          - 'null'
+          description: The stored total; null while the cart has not been priced.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '93.87'
+      required:
+      - subtotal
+      - discount
+      - shipping
+      - tax
+      - total
+    Cart:
+      type: object
+      description: One of the member's open carts. No count of its lines is included.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The cart's identifier.
+        token:
+          type:
+          - string
+          - 'null'
+          description: >-
+            The cart's checkout token: the capability the checkout surface uses to edit and pay for this cart, and the
+            identifier of this cart on these routes. Only ever shown for the member's own carts, and only to a
+            credential that can make changes; null for read-only member and portal JWTs.
+          example: ct_6d1f0c2a9b8e4f37
+        state:
+          type:
+          - string
+          - 'null'
+          description: The cart's checkout state; null for an open cart whose state was never set.
+          enum:
+          - start
+          - products
+          - payment_method
+          - authorized
+          - payment_captured
+          - checkout_fail
+          - three_ds_pending
+          - null
+        kind:
+          type: string
+          description: A regular purchase or an enrollment.
+          enum:
+          - regular
+          - enrollment
+        currency:
+          type: string
+          description: ISO 4217 code for every amount in the cart.
+          example: USD
+        totals:
+          "$ref": "#/components/schemas/CartTotals"
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Last change to the cart; the list is ordered by it, newest first.
+      required:
+      - id
+      - token
+      - state
+      - kind
+      - currency
+      - totals
+      - created_at
+      - updated_at
+    CartItem:
+      type: object
+      description: >-
+        One line of a cart, retaining its stored quantity and prices. Live catalog
+        fields are returned only when the variant and product belong to the cart's
+        company. Missing or foreign catalog references return null presentation
+        fields and retain the stored line title when available. Lines without a
+        stored price retain null unit_price and total; a stored zero remains zero.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type:
+          - string
+          - 'null'
+          example: Daily Greens
+        variant_title:
+          type:
+          - string
+          - 'null'
+          example: 30 servings
+        sku:
+          type:
+          - string
+          - 'null'
+          example: DG-30
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        subscription:
+          type: boolean
+          description: Whether this line starts a product subscription at checkout.
+        unit_price:
+          type:
+          - string
+          - 'null'
+          description: Stored unit price, or null when no price is stored.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '29.99'
+        total:
+          type:
+          - string
+          - 'null'
+          description: Stored unit price times quantity, or null when no price is stored.
+          pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
+          example: '59.98'
+        image_url:
+          type:
+          - string
+          - 'null'
+      required:
+      - id
+      - title
+      - variant_title
+      - sku
+      - quantity
+      - subscription
+      - unit_price
+      - total
+      - image_url
+    CartDetail:
+      type: object
+      description: One of the member's open carts with the lines shown to the shopper.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The cart's identifier.
+        token:
+          type:
+          - string
+          - 'null'
+          description: >-
+            The cart's checkout token: the capability the checkout surface uses to edit and pay for this cart, and the
+            identifier of this cart on these routes. Only ever shown for the member's own carts, and only to a
+            credential that can make changes; null for read-only member and portal JWTs.
+          example: ct_6d1f0c2a9b8e4f37
+        state:
+          type:
+          - string
+          - 'null'
+          description: The cart's checkout state; null for an open cart whose state was never set.
+          enum:
+          - start
+          - products
+          - payment_method
+          - authorized
+          - payment_captured
+          - checkout_fail
+          - three_ds_pending
+          - null
+        kind:
+          type: string
+          description: A regular purchase or an enrollment.
+          enum:
+          - regular
+          - enrollment
+        currency:
+          type: string
+          description: ISO 4217 code for every amount in the cart.
+          example: USD
+        totals:
+          "$ref": "#/components/schemas/CartTotals"
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Last change to the cart; the list is ordered by it, newest first.
+        items:
+          type: array
+          description: The lines shown to the shopper.
+          items:
+            "$ref": "#/components/schemas/CartItem"
+      required:
+      - items
+      - id
+      - token
+      - state
+      - kind
+      - currency
+      - totals
+      - created_at
+      - updated_at
+    CartEnvelope:
+      type: object
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/CartDetail"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    CartsEnvelope:
+      type: object
+      properties:
+        status:
+          type: integer
+        data:
+          type: array
+          items:
+            "$ref": "#/components/schemas/Cart"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required:
+            - pagination
+      required:
+      - status
+      - data
+      - meta
+    SubscriptionBundleCandidate:
+      type: object
+      description: A saved subscription line eligible for runtime grouping, not a complete bundle.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Public subscription UUID used to hydrate display details.
+        grouping_key:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Member- and company-scoped opaque key derived from authoritative runtime grouping facts; not a persistent bundle ID.
+        next_billing_date:
+          type: [string, 'null']
+          format: date
+          description: Scheduled calendar date in the subscription's local timezone, including null for unscheduled candidates.
+        currency:
+          type: [string, 'null']
+          description: Currency code for the saved gross line amounts.
+        quantity:
+          type: [integer, 'null']
+          description: Saved subscription quantity.
+        unit_price:
+          type: [string, 'null']
+          pattern: '^-?[0-9]+(\.[0-9]+)?$'
+          description: Saved gross unit price as a decimal string without currency-exponent rounding; not a renewal quote.
+        line_total:
+          type: [string, 'null']
+          pattern: '^-?[0-9]+(\.[0-9]+)?$'
+          description: Saved gross unit price multiplied by quantity without currency-exponent rounding or renewal adjustments; null if either source is absent.
+      required: [id, grouping_key, next_billing_date, currency, quantity, unit_price, line_total]
+    SubscriptionBundleCandidatesEnvelope:
+      type: object
+      description: One bounded fragment of candidate subscriptions; groups can span any number of pages.
+      properties:
+        status:
+          type: integer
+          const: 200
+          description: HTTP response status.
+        data:
+          type: array
+          description: Owned candidates on this page, never a claim of complete bundle membership.
+          items:
+            "$ref": "#/components/schemas/SubscriptionBundleCandidate"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+            required: [pagination]
+      required: [status, data, meta]
+paths:
+  "/api/member/v2026-10/subscriptions/bundle-candidates":
+    get:
+      operationId: member_subscription_bundle_candidates_index
+      x-fluid-audience: member
+      tags: [subscriptions]
+      summary: List runtime bundle candidates
+      description: >-
+        Streams the authenticated member's active, not-disabled subscriptions, including those without a billing date,
+        newest created first with a stable internal tie breaker. Each page is only a fragment: clients must drain every
+        page before constructing complete groups, counts or saved gross totals, and hydrate subscription UUIDs for display
+        details. No complete bundle or persistent bundle ID is returned. Concurrent edits can change membership or keys;
+        refresh the stream before relying on a complete grouping. Grouping follows the existing snapshot/address/customer
+        fallback policy; a native profile without a legacy Customer does not introduce a new address fallback. Saved line
+        amounts are not renewal quotes. Company bundling must be enabled; unsafe related references refuse the page.
+        Only page[cursor] and page[limit] are accepted. Responses are private and require revalidation.
+      parameters:
+      - name: page[cursor]
+        in: query
+        description: Encrypted continuation valid for three days, bound to the member, company and fixed eligibility selection. Foreign or invalid cursors are refused.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum candidate subscriptions returned, not maximum complete bundles.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: One fragment of the owned candidate stream, or an empty page.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionBundleCandidatesEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 01983a21-7b23-7123-8123-123456789abc
+                  grouping_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  next_billing_date: '2026-11-01'
+                  currency: USD
+                  quantity: 2
+                  unit_price: '40.0'
+                  line_total: '80.0'
+                meta:
+                  request_uuid: 01983a21-7b23-7123-8123-123456789abd
+                  timestamp: '2026-10-01T12:00:00Z'
+                  pagination:
+                    next_cursor: null
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, expired, tampered or foreign-member continuation.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter, invalid page value, disabled company bundling or unsafe related reference.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/orders":
+    get:
+      operationId: member_orders_index
+      tags:
+      - orders
+      summary: List the signed-in member’s orders
+      description: >-
+        Returns own purchases and volume-credited orders, newest effective sale time first, with internal ID as
+        the stable tie breaker. Orders merely bought on someone else’s behalf are excluded unless independently
+        owned or credited. Filters apply before pagination. Only page[cursor] and page[limit] pagination is supported;
+        undeclared query parameters are refused. Responses are private and must be revalidated.
+      parameters:
+      - name: filter[relationship]
+        in: query
+        description: Select own purchases or volume-credited orders. Omit for their deduplicated union.
+        schema:
+          type: string
+          enum:
+          - placed
+          - credited
+      - name: filter[status]
+        in: query
+        description: Match the order lifecycle state.
+        schema:
+          type: string
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+      - name: filter[placed_since]
+        in: query
+        description: Include orders placed at or after this timestamp.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[placed_until]
+        in: query
+        description: Include orders placed at or before this timestamp; must not precede placed_since.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[contact_id]
+        in: query
+        description: Match a contact UUID within the current company; never widens the member scope.
+        schema:
+          type: string
+          format: uuid
+      - name: page[cursor]
+        in: query
+        description: >-
+          Encrypted next-page cursor, valid for three days. Changing filters or member ownership restarts at the first
+          page.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum number of orders returned.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A deduplicated page of accessible orders.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrdersEnvelope"
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered or expired cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter or invalid filter/page value.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/orders/{id}":
+    get:
+      operationId: member_orders_show
+      tags:
+      - orders
+      summary: Show one accessible order
+      description: >-
+        Returns an own purchase or volume-credited order within the credential’s company. Credited-only orders omit
+        email, phone and billing/shipping addresses. Authentication runs before conditional cache handling. Responses
+        are private with a 30-second freshness lifetime.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: External order UUID.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The accessible order and its detail.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderEnvelope"
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing order, malformed identifier, or order outside the member and company scope.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/contacts/{id}/orders":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: Public id of one of the member's contacts.
+      schema:
+        type: string
+        format: uuid
+    get:
+      operationId: member_contacts_orders_index
+      tags:
+      - orders
+      x-fluid-audience: member
+      summary: List a contact's orders
+      description: Every regular order this contact placed in the signed-in member's company, newest created first, in the shape of GET /orders. Access follows the contact alone, as the legacy contact orders list does, so orders the member neither placed nor is credited for are included, with relationship contact, and carry no purchaser details. The contact is fixed by the path. Responses are private and must be revalidated.
+      parameters:
+      - name: If-None-Match
+        in: header
+        required: false
+        description: ETag from a previous response.
+        schema:
+          type: string
+      - name: filter[status]
+        in: query
+        description: Match the order lifecycle state.
+        schema:
+          type: string
+          enum:
+          - draft
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+      - name: filter[placed_since]
+        in: query
+        description: Include orders placed at or after this timestamp.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[placed_until]
+        in: query
+        description: Include orders placed at or before this timestamp; must not precede placed_since.
+        schema:
+          type: string
+          format: date-time
+      - name: page[cursor]
+        in: query
+        description: Encrypted next-page cursor, valid for three days.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum number of orders returned.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the contact's orders.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrdersEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4a0-1c2d-7e3f-8a4b-5c6d7e8f9a01'
+                  financial_status: paid
+                  fulfillment_status: fulfilled
+                  number: '10482'
+                  relationship: credited
+                  status: completed
+                  placed_at: '2026-09-29T18:42:07.123456Z'
+                  currency: USD
+                  total: '89.95'
+                  volume:
+                    cv: '60.0'
+                    qv: '75.0'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered or expired cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry, which cannot read a contact's orders. A membership that is neither a rep nor a company admin (a customer or preferred customer) also gets 403.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No contact of the member's has this id.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter or invalid filter/page value, including filter[relationship] and filter[contact_id], which the path sets.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/contacts/{id}/subscriptions":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: Public id of one of the member's contacts.
+      schema:
+        type: string
+        format: uuid
+    get:
+      operationId: member_contacts_subscriptions_index
+      tags:
+      - subscriptions
+      x-fluid-audience: member
+      summary: List a contact's subscriptions
+      description: Product subscriptions tied to orders this contact placed, whether an order started the subscription or paid for one of its cycles, newest first, in the summary shape of GET /subscriptions. It never exposes the subscriber's items, addresses, payment method or discounts, and `next_total` is always null here. Another member's contact, a removed one and a missing one return 404. Responses are private and must be revalidated.
+      parameters:
+      - name: If-None-Match
+        in: header
+        required: false
+        description: ETag from a previous response.
+        schema:
+          type: string
+      - name: page[cursor]
+        in: query
+        description: Opaque next-page cursor from `meta.pagination.next_cursor`; a malformed, tampered or expired one (older than three days) returns 400.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum number of subscriptions returned.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the contact's subscriptions.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionsEnvelope"
+              example:
+                status: 200
+                data: []
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered or expired cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry, which cannot read a contact's subscriptions. A membership that is neither a rep nor a company admin (a customer or preferred customer) also gets 403.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No contact of the member's has this id.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter or invalid page value.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/subscriptions":
+    get:
+      operationId: member_subscriptions_index
+      tags:
+      - subscriptions
+      summary: List the signed-in member’s product subscriptions
+      description: Returns the member's own subscriptions, newest by creation time first,
+        with internal ID as the stable tie breaker. Optional filters preserve the member storefront
+        status buckets and literal product-title or plan-name search. No whole-history counts
+        are returned. Only page[cursor] and page[limit] pagination is supported; undeclared
+        query parameters are refused. next_total carries
+        the known pre-points renewal charge or null. Responses are private and must be
+        revalidated.
+      parameters:
+      - name: filter[status]
+        in: query
+        description: >-
+          Storefront bucket: active includes active, pending and past_due; inactive includes
+          paused and cancelled. paused and cancelled select only that exact status.
+          Omit to include every status.
+        schema:
+          type: string
+          enum: [active, inactive, paused, cancelled]
+      - name: filter[q]
+        in: query
+        description: >-
+          Case-insensitive literal substring of the product title or subscription plan name.
+          Percent, underscore and backslash are literal characters. The query must contain a
+          non-whitespace character; omit this filter for an unfiltered list. Only names
+          belonging to the member's company can match.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '^[^\u0000]*$'
+      - name: page[cursor]
+        in: query
+        description: Encrypted next-page cursor, valid for three days. Changing member
+          ownership restarts at the first page, including when filters change. Within the same
+          member scope, changing status or search filters invalidates the cursor; restart
+          without it. Search case changes preserve the cursor.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Maximum number of subscriptions returned.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the member's subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionsEnvelope"
+              example:
+                status: 200
+                data: []
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  pagination:
+                    next_cursor:
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered, expired or differently filtered cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported parameter or invalid filter or page value.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/next":
+    get:
+      operationId: member_subscriptions_next
+      tags:
+      - subscriptions
+      x-fluid-audience: member
+      summary: Read the next scheduled subscription summary
+      description: >-
+        Select the authenticated member's active subscription with the earliest non-null
+        billing timestamp, breaking ties by internal ID. Preserve storefront eligibility:
+        past billing dates and disabled active subscriptions are included. Return null
+        when none is scheduled. The response contains a public subscription UUID, plan
+        name, UTC billing timestamp and local calendar date; legacy-token deep links need a separate resolver.
+        No query parameters are accepted. Responses are private and reauthorized before 304.
+      responses:
+        '200':
+          description: The next scheduled subscription, or null.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionNextEnvelope"
+              examples:
+                scheduled:
+                  summary: Scheduled bill with its UTC timestamp and local calendar day
+                  value:
+                    status: 200
+                    data:
+                      id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                      plan_name: Monthly essentials
+                      next_billing_at: '2026-11-02T03:00:00Z'
+                      next_billing_date: '2026-11-01'
+                    meta:
+                      request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0df'
+                      timestamp: '2026-10-01T12:00:00Z'
+                empty:
+                  summary: No active subscription has a scheduled billing date
+                  value:
+                    status: 200
+                    data:
+                    meta:
+                      request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0df'
+                      timestamp: '2026-10-01T12:00:00Z'
+        '304':
+          description: The authenticated member's summary is unchanged.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Query parameters are not supported by this fixed selection.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/subscriptions/bundle":
+    post:
+      operationId: member_subscriptions_bundle
+      x-fluid-audience: member
+      tags:
+      - subscriptions
+      summary: Align selected product subscriptions atomically
+      description: >-
+        Requires a writable member credential; legacy URL-carried JWTs are read-only. All responses use
+        Cache-Control: private, no-store. Align two to one hundred distinct subscriptions owned by the authenticated member onto one bill date
+        and, for physical subscriptions, one owned address. The company must enable subscription bundling.
+        Existing currency, country, digital/physical, date-cap and billing-cycle rules apply. All selected
+        writes and audit notes roll back together on failure. Omitted rep selection preserves existing
+        attribution; subscriptions with mixed, unavailable or ambiguous reps are refused. Rep changes are
+        not supported by this endpoint. The selected subscriptions must already share a rep or all be unassigned.
+        A shared existing timezone takes precedence over the requested timezone, matching the bundle lifecycle.
+        The response confirms only the selected subscriptions; it is not a complete runtime bundle listing
+        and introduces no persisted bundle identifier. No other subscription is modified.
+        Alignment saves schedule fields and any requested address while preserving subscription status, matching the existing
+        bundle writer. A cancelled selection remains cancelled and cannot renew; this operation does not reactivate it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_ids
+              - next_bill_date
+              properties:
+                subscription_ids:
+                  type: array
+                  minItems: 2
+                  maxItems: 100
+                  uniqueItems: true
+                  description: Distinct public UUIDs of the member's selected subscriptions. UUID comparison ignores case.
+                  items:
+                    type: string
+                    format: uuid
+                next_bill_date:
+                  type: string
+                  format: date
+                  pattern: '^\d{4}-\d{2}-\d{2}$'
+                  description: Calendar bill date in the resolved bundle timezone; cannot be in the past.
+                address_id:
+                  type: string
+                  format: uuid
+                  description: Public UUID of an owned address. Required for physical subscriptions; omit for digital subscriptions.
+                timezone:
+                  type: string
+                  maxLength: 255
+                  description: IANA timezone used when the selected subscriptions do not already share one.
+                  example: America/Los_Angeles
+            example:
+              subscription_ids:
+              - '019a23a4-9211-71bf-8fa5-a5f31a82a0d1'
+              - '019a23a4-9211-71bf-8fa5-a5f31a82a0d2'
+              next_bill_date: '2026-10-15'
+              address_id: '019a23a4-9211-71bf-8fa5-a5f31a82a0d3'
+              timezone: America/Los_Angeles
+      responses:
+        '200':
+          description: Every selected subscription was aligned successfully. Only the selected subscriptions are returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, data, meta]
+                additionalProperties: false
+                properties:
+                  status:
+                    type: integer
+                    const: 200
+                    description: HTTP success status.
+                  data:
+                    type: array
+                    minItems: 2
+                    maxItems: 100
+                    description: Explicitly selected subscriptions and their persisted billing instants.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, next_billing_at]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                          description: Public subscription UUID.
+                        next_billing_at:
+                          type: string
+                          format: date-time
+                          description: Persisted billing instant, anchored to the chosen date in the bundle timezone.
+                  meta:
+                    "$ref": "#/components/schemas/ResponseMeta"
+              example:
+                status: 200
+                data:
+                - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0d1'
+                  next_billing_at: '2026-10-15T19:00:00Z'
+                - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0d2'
+                  next_billing_at: '2026-10-15T19:00:00Z'
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 401
+                error:
+                  message: A member credential is required
+                  details: {error: unauthorized}
+                meta: {request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de', timestamp: '2026-10-01T12:00:00Z'}
+        '403':
+          description: The member credential is read-only.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 403
+                error:
+                  message: This credential cannot make changes
+                  details: {error: forbidden}
+                meta: {request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de', timestamp: '2026-10-01T12:00:00Z'}
+        '404':
+          description: At least one selected subscription is missing or not owned by this member.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 404
+                error:
+                  message: The requested resource could not be found
+                  details: {error: not_found}
+                meta: {request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de', timestamp: '2026-10-01T12:00:00Z'}
+        '409':
+          description: A concurrent ownership or reference write prevents safe alignment. No selected subscription was changed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: Subscription reference ownership changed; try again
+                  details: {}
+                meta: {request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de', timestamp: '2026-10-01T12:00:00Z'}
+        '422':
+          description: Invalid fields, unavailable address, disabled bundling or a bundle policy refusal. No partial writes occur.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 422
+                error:
+                  message: Selected subscriptions must already share the same volume rep
+                  details: {subscription_ids: [Selected subscriptions must already share the same volume rep]}
+                meta: {request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de', timestamp: '2026-10-01T12:00:00Z'}
+  "/api/member/v2026-10/subscriptions/{id}":
+    get:
+      operationId: member_subscriptions_show
+      tags:
+      - subscriptions
+      summary: Show one of the member’s subscriptions
+      description: Returns one subscription the member owns, with its billed items, shipping
+        address, payment method, active discounts, and the sibling subscriptions it bills
+        with. next_order_preview carries the known pre-points renewal amounts or null;
+        authoritative saved line amounts are on items[]. The payment method and address
+        are fenced to the member and company. Authentication runs before conditional cache
+        handling. Responses are private with a zero-second freshness lifetime requiring revalidation. Each response
+        considers at most 100 sibling candidates using the existing grouping rules. Follow
+        meta.bundle_pagination.next_cursor as page[bundle_cursor] until null, including
+        responses without matching bundle entries. Every page repeats the root subscription
+        detail.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: External subscription UUID.
+        schema:
+          type: string
+          format: uuid
+      - name: page[bundle_cursor]
+        in: query
+        required: false
+        description: Opaque continuation returned by this subscription's meta.bundle_pagination.next_cursor.
+          Omit for the first candidate page. A different member, root subscription or
+          changed grouping facts invalidate the cursor with 400; restart explicitly without
+          it.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The accessible subscription and its detail.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  auto_apply_points: false
+                  next_order_preview:
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '304':
+          description: The authenticated member representation matches If-None-Match.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Malformed, tampered, expired or scope-invalidated bundle cursor.
+            Restart without the cursor after subscription grouping changes.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid or undeclared query parameter.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing subscription, malformed identifier, or subscription outside
+            the member and company scope.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+    patch:
+      operationId: member_subscriptions_update
+      tags:
+      - subscriptions
+      summary: Edit an owned product subscription
+      description: Apply safe edits through the shared subscription update domain. The
+        member credential fixes ownership; saved payment and address references are rechecked
+        under write locks. Subscription country is immutable. Dates use the subscription's
+        timezone and existing schedule limits. Bundle points changes are atomic; co-submitted
+        quantity and payment changes apply only to the target. This operation does not
+        quote, charge or dispatch a renewal. Return refreshed detail and public resolved/changed
+        subscription IDs, including an empty changed_ids array for no-op edits. Responses
+        are no-store and never return 304.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        description: One or more safe top-level subscription fields. Query parameters
+          and unknown fields are rejected.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionUpdate"
+            example:
+              quantity: 2
+              auto_apply_points: false
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Updated subscription detail and the public UUIDs covered and changed
+            by the edit.
+          headers:
+            Cache-Control:
+              description: Always no-store for subscription edits.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionUpdateEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 2
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 2
+                    unit_price: '20.0'
+                    total: '40.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+                  subscription_update:
+                    resolved_ids:
+                    - '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                    changed_ids:
+                    - '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only and cannot make changes.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing subscription, malformed identifier, or subscription outside
+            the member and company scope.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A concurrent ownership, saved-reference or renewal-bundle change
+            prevented the edit. Refresh and retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Unsupported fields, unavailable saved references, country change,
+            or another domain validation failure. No edit was applied.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '500':
+          description: The subscription update and its audit could not be saved. No edit was applied.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/pause":
+    post:
+      operationId: member_subscriptions_pause
+      tags:
+      - subscriptions
+      summary: Pause an owned subscription
+      description: Pause active billing indefinitely or until the selected local date
+        or order count. A repeated pause is refused. The bearer fixes the member and company.
+        State and ownership are rechecked under write locks. Responses are no-store, including
+        refusals, and never return 304. Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionPause"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: paused
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at:
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/resume":
+    post:
+      operationId: member_subscriptions_resume
+      tags:
+      - subscriptions
+      summary: Resume an owned subscription
+      description: Resume paused billing using the chosen local date or the plan default.
+        Exhausted dunning instead waives the failed cycle through the existing recovery
+        policy, without collecting a payment. Repeated ordinary resume is refused. The
+        bearer fixes the member and company. State and ownership are rechecked under write
+        locks. Responses are no-store, including refusals, and never return 304. Unknown
+        fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionResume"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/skip":
+    post:
+      operationId: member_subscriptions_skip
+      tags:
+      - subscriptions
+      summary: Skip the next subscription billing cycle
+      description: Skip an active subscription once. Spent skip allowance and an already
+        pending skip are distinct refusals. Duplicate concurrent requests must not advance
+        two cycles. The bearer fixes the member and company. State and ownership are rechecked
+        under write locks. Responses are no-store, including refusals, and never return
+        304. Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/cancel":
+    post:
+      operationId: member_subscriptions_cancel
+      tags:
+      - subscriptions
+      summary: Cancel an owned subscription
+      description: Cancel billing and clear dunning. An already cancelled subscription
+        is refused. Cancellation also removes applicable discount attachments. The bearer fixes
+        the member and company. State and ownership are rechecked under write locks. Responses
+        are no-store, including refusals, and never return 304. Unknown fields and query
+        parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: cancelled
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at:
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/reactivate":
+    post:
+      operationId: member_subscriptions_reactivate
+      tags:
+      - subscriptions
+      summary: Reactivate an owned subscription
+      description: Reactivate a cancelled subscription only with an active plan, available
+        variant and remaining billing-cycle allowance. An explicitly selected address
+        is authorized under locks and cannot change country. Reactivation restores eligible
+        discounts and schedules billing. The bearer fixes the member and company. State and ownership
+        are rechecked under write locks. Responses are no-store, including refusals, and
+        never return 304. Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionReactivate"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/retry":
+    post:
+      operationId: member_subscriptions_retry
+      tags:
+      - subscriptions
+      summary: Queue a subscription payment retry
+      description: Queue an eligible past-due subscription for the existing asynchronous
+        billing process. A fresh duplicate succeeds without another job. Non-past-due
+        or not-yet-due subscriptions succeed with queued false; stopped recurring payments
+        and exhausted cycle limits are refused. No gateway charge runs synchronously.
+        The bearer fixes the member and company. State and ownership are rechecked under
+        write locks. Responses are no-store, including refusals, and never return 304.
+        Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        description: Top-level transition fields; omit the body or send an empty object
+          when no fields are needed.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+            example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition, or a documented
+            retry no-op.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionRetryEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+                  subscription_retry:
+                    queued: false
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/discounts":
+    get:
+      operationId: member_subscription_discounts_index
+      summary: List owned subscription discount history
+      description: Read active and removed attachments in descending creation and internal-ID
+        order with bounded cursor pagination. Ownership comes only from the bearer. Responses
+        are private and must be revalidated; no state changes or customer provisioning
+        occur.
+      tags:
+      - subscriptions
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      - name: page[limit]
+        in: query
+        description: Maximum attachments returned, from 1 through 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      - name: page[cursor]
+        in: query
+        description: Encrypted continuation cursor from this member and subscription;
+          expires after three days.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Discount attachment history for the owned subscription.
+          headers:
+            Cache-Control:
+              description: Private response requiring revalidation.
+              schema:
+                type: string
+                const: max-age=0, private
+            ETag:
+              "$ref": "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionDiscountAttachmentsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  subscription_id: '019a23a4-9211-71bf-8fa5-a5f31a82a0df'
+                  currency: USD
+                  discount:
+                    id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e0'
+                    code: WELCOME10
+                  discount_version:
+                    version_number: 1
+                    code: WELCOME10
+                    price_discount_type: percentage
+                    flat_value:
+                    percentage_value: '10.0'
+                    apply_to_volume: false
+                  duration: forever
+                  duration_cycles:
+                  applied_cycles: 0
+                  starts_at: '2026-10-01T12:00:00Z'
+                  created_at: '2026-10-01T12:00:00Z'
+                  updated_at: '2026-10-01T12:00:00Z'
+                  removed_at:
+                  removed_reason:
+                  removed_detail:
+                  notes:
+                  attached_via: manual_member
+                  attached_by:
+                    kind: member
+                    id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e1'
+                    label: Riley Kim
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The member's history is unchanged; no response body.
+          headers:
+            Cache-Control:
+              description: Private response requiring revalidation.
+              schema:
+                type: string
+                const: max-age=0, private
+            ETag:
+              "$ref": "#/components/headers/ETag"
+        '400':
+          description: Invalid, expired or differently scoped cursor.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing, malformed or inaccessible subscription identifier.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid parameters, including any filter or other query key besides page[limit] and page[cursor], or the existing domain policy refused this operation.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+    post:
+      operationId: member_subscription_discounts_create
+      summary: Attach a subscription discount
+      description: Attach an eligible discount definition from the member's company. Capture
+        immutable pricing terms and attribute the change to the native member. Duplicate
+        active attachments and existing subscription eligibility rules are enforced. Responses
+        are no-store.
+      tags:
+      - subscriptions
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '201':
+          description: Discount attached.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionDiscountAttachmentEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  subscription_id: '019a23a4-9211-71bf-8fa5-a5f31a82a0df'
+                  currency: USD
+                  discount:
+                    id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e0'
+                    code: WELCOME10
+                  discount_version:
+                    version_number: 1
+                    code: WELCOME10
+                    price_discount_type: percentage
+                    flat_value:
+                    percentage_value: '10.0'
+                    apply_to_volume: false
+                  duration: once
+                  duration_cycles:
+                  applied_cycles: 0
+                  starts_at: '2026-10-01T12:00:00Z'
+                  created_at: '2026-10-01T12:00:00Z'
+                  updated_at: '2026-10-01T12:00:00Z'
+                  removed_at:
+                  removed_reason:
+                  removed_detail:
+                  notes:
+                  attached_via: manual_member
+                  attached_by:
+                    kind: member
+                    id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e1'
+                    label: Riley Kim
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing, malformed or inaccessible subscription or discount definition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A concurrent change prevented the write. Refresh and retry.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid parameters or the existing domain policy refused this operation.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      requestBody:
+        required: true
+        description: Top-level fields; undeclared fields and query parameters are rejected.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionDiscountCreate"
+            example:
+              discount_code: WELCOME10
+              duration: once
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/discounts/{attachment_id}":
+    delete:
+      operationId: member_subscription_discounts_destroy
+      summary: Remove a subscription discount attachment
+      description: Soft-remove an active attachment and retain its audit history. The
+        discount_id path parameter names the attachment UUID, not its discount definition.
+        Repeated removal returns 404. Responses are no-store.
+      tags:
+      - subscriptions
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      - name: attachment_id
+        in: path
+        required: true
+        description: Public attachment UUID returned by discount history or creation.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '204':
+          description: Attachment removed; no response body.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing, malformed, removed or inaccessible subscription or attachment.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A concurrent change prevented the write. Refresh and retry.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid parameters or the existing domain policy refused this operation.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      requestBody:
+        required: false
+        description: Top-level fields; undeclared fields and query parameters are rejected.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionDiscountRemove"
+            example: {}
+      x-fluid-audience: member
+      x-fluid-lint-exempt: Preserve the legacy member API's optional removed_detail audit
+        explanation in the DELETE body; ownership and removal semantics remain unchanged.
+  "/api/member/v2026-10/subscriptions/{id}/failed-cycle-waiver":
+    get:
+      operationId: member_subscription_waivers_show
+      summary: Preview a failed-cycle waiver
+      description: Read current eligibility and future billing and shipping dates without
+        changing the subscription, charging, provisioning a customer or reporting activation
+        telemetry. Ineligibility returns 200 with eligible false and null dates. Responses
+        are no-store and never return 304.
+      tags:
+      - subscriptions
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current failed-cycle waiver eligibility and proposed schedule.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionWaiverPreviewEnvelope"
+              example:
+                status: 200
+                data:
+                  eligible: false
+                  next_bill_date:
+                  next_ship_date:
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing, malformed or inaccessible subscription identifier.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid parameters or the existing domain policy refused this operation.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+    post:
+      operationId: member_subscription_waivers_create
+      summary: Accept a failed-cycle waiver
+      description: Waive an exhausted failed cycle using the existing recovery policy.
+        Recheck ownership and eligibility under locks, restore the future schedule and
+        add its audit note atomically. No immediate payment is charged. Return refreshed
+        subscription detail. Responses are no-store.
+      tags:
+      - subscriptions
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Failed cycle waived and the refreshed subscription returned.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing, malformed or inaccessible subscription identifier.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock or serialization conflict prevented the write.
+            Refresh and retry. Ordinary contention may wait for the other write.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid parameters or the existing domain policy refused this operation.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      requestBody:
+        required: false
+        description: Top-level fields; undeclared fields and query parameters are rejected.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionWaiverAccept"
+            example: {}
+      x-fluid-audience: member
+
+  "/api/member/v2026-10/carts":
+    get:
+      x-fluid-audience: member
+      operationId: member_carts_index
+      tags:
+      - carts
+      summary: List the member's carts
+      description: >-
+        The signed-in member's open carts in their company, most recently changed first. A member can hold several
+        carts, each with its own token; none is singled out as active and nothing is merged. Carts that have become
+        orders, and carts a rep is building for someone else, are not listed. A sandbox is its own company, so test
+        and production carts never mix. Responses must be revalidated with the ETag.
+      parameters:
+      - name: page[cursor]
+        in: query
+        description: Opaque cursor from `meta.pagination.next_cursor`. Malformed, tampered or expired (three days) cursors return 400.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        description: Page size.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: One page of carts.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 0192f4e0-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  token: ct_6d1f0c2a9b8e4f37
+                  state: start
+                  kind: regular
+                  currency: USD
+                  totals:
+                    subtotal: '89.97'
+                    discount: '10.0'
+                    shipping: '7.5'
+                    tax: '6.4'
+                    total: '93.87'
+                  created_at: '2026-09-29T16:02:11.402913Z'
+                  updated_at: '2026-09-30T08:41:55.118204Z'
+                meta:
+                  request_uuid: 0192f4e1-3c4d-7e5f-a6b7-c8d9e0f1a2b3
+                  timestamp: '2026-09-30T15:12:40Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The page has not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: Invalid, tampered or expired pagination cursor.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid or undeclared query parameter.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+
+
+  "/api/member/v2026-10/carts/{token}":
+    parameters:
+    - name: token
+      in: path
+      required: true
+      description: The cart's checkout token.
+      schema:
+        type: string
+    get:
+      x-fluid-audience: member
+      operationId: member_carts_show
+      tags:
+      - carts
+      summary: Show one of the member's carts
+      description: >-
+        One of the signed-in member's open carts, with its lines. A token for a cart in another company, another
+        member's cart, a guest cart not yet claimed, or a cart that has become an order returns 404.
+      responses:
+        '200':
+          description: The cart.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartEnvelope"
+              example:
+                status: 200
+                data:
+                  id: 0192f4e0-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  token: ct_6d1f0c2a9b8e4f37
+                  state: start
+                  kind: regular
+                  currency: USD
+                  totals:
+                    subtotal: '59.98'
+                    discount: '0.0'
+                    shipping: '7.5'
+                    tax: '4.8'
+                    total: '72.28'
+                  created_at: '2026-09-29T16:02:11.402913Z'
+                  updated_at: '2026-09-30T08:41:55.118204Z'
+                  items:
+                  - id: 0192f4e2-5d6e-7f80-91a2-b3c4d5e6f7a8
+                    title: Daily Greens
+                    variant_title: 30 servings
+                    sku: DG-30
+                    quantity: 2
+                    subscription: false
+                    unit_price: '29.99'
+                    total: '59.98'
+                    image_url: https://cdn.fluid.app/products/daily-greens-30.jpg
+                meta:
+                  request_uuid: 0192f520-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  timestamp: '2026-09-30T15:20:00Z'
+        '304':
+          description: The cart has not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No open cart of this member has this token.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+
+
+  "/api/member/v2026-10/carts/{token}/claim":
+    parameters:
+    - name: token
+      in: path
+      required: true
+      description: The guest cart's checkout token.
+      schema:
+        type: string
+    post:
+      x-fluid-audience: member
+      operationId: member_carts_claim
+      tags:
+      - carts
+      summary: Claim a guest cart
+      description: >-
+        Attach a guest cart in the member's company to the signed-in member and reprice it through checkout, which
+        applies member pricing. Idempotent: claiming a cart the member already holds returns it again. Concurrent
+        claims of one cart are serialized and only the first binds it. The member's other carts and their tokens are
+        untouched; nothing is merged or replaced. A cart that another member holds, or that is not in the member's
+        company, returns 404. Requires a writable member credential.
+      responses:
+        "400":
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: The claimed cart.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CartEnvelope"
+              example:
+                status: 200
+                data:
+                  id: 0192f4e0-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  token: ct_6d1f0c2a9b8e4f37
+                  state: start
+                  kind: regular
+                  currency: USD
+                  totals:
+                    subtotal: '59.98'
+                    discount: '0.0'
+                    shipping: '7.5'
+                    tax: '4.8'
+                    total: '72.28'
+                  created_at: '2026-09-29T16:02:11.402913Z'
+                  updated_at: '2026-09-30T08:41:55.118204Z'
+                  items:
+                  - id: 0192f4e2-5d6e-7f80-91a2-b3c4d5e6f7a8
+                    title: Daily Greens
+                    variant_title: 30 servings
+                    sku: DG-30
+                    quantity: 2
+                    subscription: false
+                    unit_price: '29.99'
+                    total: '59.98'
+                    image_url: https://cdn.fluid.app/products/daily-greens-30.jpg
+                meta:
+                  request_uuid: 0192f520-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  timestamp: '2026-09-30T15:20:00Z'
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential can only read.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No claimable cart with this token in the member's company, or another member holds it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: >-
+            The cart cannot be claimed now (it is mid-payment or has become an order, or pricing refused the claim), or
+            this membership has no commerce identity to hold carts.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
