@@ -2385,3 +2385,35 @@ through its token. Credit is the part that carries. `concepts/fair-share.mdx`,
 `platform-overview.mdx`, `concepts/we-commerce.mdx`, and `storefront/fairshare-sdk.mdx`
 (`sf-fairshare-081`) say so. The fingerprint's role in deciding credit is still unconfirmed by code;
 the docs keep the owner's wording ("cookies, browser fingerprint, and similar signals").
+
+## Checkout forms (2026-10-07)
+
+`guides/checkout-forms.mdx` is gated against `checkout-v2026-04` (prefix `checkout-forms`).
+`help/admin/forms.mdx` documents the admin's `/forms` screen and sits in a new Help Center
+**Content** group, mirroring the admin sidebar's **More** > **Content** section. Durable
+decisions, all verified against the implementation rather than the spec:
+
+- **Forms are enrollment-only and country-scoped.** An enrollment cart gets every active
+  Post Purchase form whose countries include the cart's country. Nothing links a form to an
+  enrollment pack, member type or product, and a regular cart never gets a form. So a
+  "How did you hear about us?" question on a regular checkout isn't possible with forms; the
+  pages point to a General form shared by link instead. Do not document per-pack or
+  per-member-type forms until the product ships them.
+- **After payment is the current behaviour, not a universal one.** New forms can only be
+  General or Post Purchase. Pre Purchase is retired for new and updated forms, but an existing
+  Pre Purchase form is still evaluated and asks before the order is placed. The pages say so.
+- **The order, not the form, makes the member.** The order is placed and the enrollment
+  member is created before the form appears; the form only decides whether the enrollment is
+  complete (reminders, the member-record copy of the answers, and the completion webhook).
+- **Upstream spec gap — update enrollment field answer.** The PATCH operation's path segment
+  is described as "Field ID", but the action resolves it as the saved answer's
+  `field_answer_id`. The guide states the implemented behaviour (claim
+  `checkout-forms-029`). Hosted checkout passes the field id there, which looks like a bug;
+  flagged in the PR, not hidden here.
+- **General forms can hold enrollments open.** Completion counts every active form for the
+  country, while hosted checkout renders only `post_purchase` fields. Documented as a gotcha;
+  revisit if the backend scopes completion to Post Purchase forms.
+- **The forms admin API stays undocumented.** `forms-v0` is not in
+  `.github/synced-api-references.json`, so no generated page exists to link. The pages say the
+  API Reference doesn't publish form management yet and do not hand-write `/api/forms` paths.
+  This does not change the 2026-09-28 decision to keep `/api/public/forms` removed.

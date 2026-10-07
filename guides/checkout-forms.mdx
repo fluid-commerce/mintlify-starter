@@ -1,0 +1,191 @@
+---
+title: "Collect Enrollment Details After Payment: Checkout Forms Guide"
+sidebarTitle: "Checkout Forms"
+description: "How Fluid's post-purchase forms tie into enrollment checkout: which carts get a form, when it appears, what happens if it isn't finished, and how to read and answer enrollment fields through the Checkout API."
+---
+
+A checkout form collects extra information from a shopper who is enrolling, such as a date of birth, a tax ID or a signed document. Fluid shows it **after** the payment is taken and the order is placed, so it never adds a step between the shopper and paying. This guide explains the model end to end, then shows how a custom checkout reads and answers the form through the Checkout API.
+
+<Info>
+  Merchants build forms in the admin. For the screen-by-screen steps, see
+  [Forms](/help/admin/forms) in the Help Center. This guide covers the model
+  and the API.
+</Info>
+
+## The model
+
+| Piece | What it is |
+| --- | --- |
+| **Form** | A set of fields you build in the admin, with a title, a form type, a list of countries and an **Active** switch |
+| **Form type** | **Post Purchase** forms appear at enrollment checkout. **General** forms are standalone forms shared by link or embed. **Pre Purchase** is retired and can't be chosen for new forms |
+| **Field** | One question, such as **Date of Birth** or **File Upload**, with a label and a **Required** switch |
+| **Countries** | The cart countries a form applies to |
+| **Enrollment** | Created for each enrollment cart. It carries the token that addresses its fields, and its state is complete or incomplete |
+| **Answer** | A shopper's saved response to one field, stored as text. A file answer is stored as a link to the uploaded file |
+
+### Which carts get a form
+
+Forms apply only to **enrollment carts**. A cart becomes one when the shopper adds an enrollment pack, or when it's flagged with [Flag a cart as enrollment eligible](/api-reference/carts/flag-a-cart-as-enrollment-eligible). A regular cart never gets a form.
+
+An enrollment cart gets every form that is **Post Purchase**, **Active**, and set to the cart's country. Forms aren't attached to enrollment packs, member types or products, so every enrollment in a country gets the same fields. When more than one form matches, checkout shows their fields together as one form.
+
+### When the form appears
+
+<Steps>
+  <Step title="Checkout places the order">
+    The shopper pays. Checkout captures the payment and places the order. Outstanding form fields never block this step.
+  </Step>
+  <Step title="The order confirmation page shows the form">
+    Fluid-hosted checkout renders the form at the top of the order confirmation page, above the order-details drop zones. It appears only when the order has an enrollment and the enrollment has outstanding Post Purchase fields.
+  </Step>
+  <Step title="The shopper submits">
+    Checkout saves each answer. File fields upload as soon as a file is dropped in.
+  </Step>
+  <Step title="The enrollment completes">
+    When every required field has an answer, the enrollment is complete. Fluid saves a copy of the answers with the new member's record and sends the enrollment completed webhook.
+  </Step>
+</Steps>
+
+### What the order and the form each decide
+
+The **order** decides the purchase and the membership. The shopper is charged, the order exists, and the shopper is enrolled as a member of the enrollment's member type as soon as checkout places the order, whether or not they ever open the form.
+
+The **form** decides only whether the enrollment is complete. An incomplete enrollment means:
+
+- The form keeps appearing on the order confirmation page, with saved answers filled in.
+- Fluid emails up to five reminders over about 25 days, each linking back to that page, while the company's enrollment completion reminder email is active.
+- The enrollment completed webhook hasn't fired yet.
+
+Only fields marked **Required** keep an enrollment open. A form whose fields are all optional doesn't.
+
+## Read and answer the form through the API
+
+Fluid-hosted checkout does all of this for you. Use these steps when you build your own order confirmation experience on the Checkout API, or when an agent or back-office tool collects the answers instead.
+
+<Steps>
+  <Step title="Get the enrollment token">
+    [Complete checkout](/api-reference/carts/complete-checkout) returns the new order. On an enrollment order, its `enrollment_token` addresses the enrollment. You can read it again later from [Show order](/api-reference/orders/show-order). On a regular order, it's null.
+  </Step>
+  <Step title="Read the fields">
+    Call [Show enrollment](/api-reference/enrollments/show-enrollment) with the token. It needs no Bearer token: the enrollment token is the credential, so treat it like a password. The response lists `enrollment_fields`, each with its type, order, placement, any saved answer, and its builder settings, plus the enrollment's `state`.
+
+    Render only fields whose `placement` is `post_purchase`. That's what Fluid-hosted checkout shows. The list can also carry fields from other active forms for the country.
+  </Step>
+  <Step title="Save each answer">
+    Send each answer with [Submit enrollment field answer](/api-reference/enrollments/submit-enrollment-field-answer). The answer is a string, so send a date as `1985-04-12` and a yes-or-no answer as text.
+
+    For a file field, send the file with [Upload file for enrollment field](/api-reference/enrollments/upload-file-for-enrollment-field). Fluid accepts JPEG, PNG, WebP, TIFF or PDF files up to 5 MB.
+  </Step>
+  <Step title="Change a saved answer">
+    Use [Update enrollment field answer](/api-reference/enrollments/update-enrollment-field-answer). The path segment that the reference names as the field ID takes the saved answer's `field_answer_id` from Show enrollment, not the field's `id`. Submitting a second answer for the same field creates another answer instead of replacing the first.
+  </Step>
+  <Step title="Check completion">
+    Read Show enrollment again. When `state` is `complete`, the enrollment is finished. After that, every write to the enrollment is refused with `422`.
+  </Step>
+</Steps>
+
+<Warning>
+  Checkout checks only that required fields are filled in. Fluid saves any
+  string as an answer, so validate formats, such as a tax ID's length, in your
+  own front end before you submit.
+</Warning>
+
+### Webhooks
+
+Subscribe to these with the [Webhooks guide](/api/guides/webhooks). Call [List webhook resources](/api-reference/webhooks-resources/list-webhook-resources) for the exact resource and event pairs your company can use.
+
+| Event | When it fires |
+| --- | --- |
+| `enrollment_started` | When Fluid creates the enrollment for an enrollment cart |
+| `form_submitted` | When an enrollment saves its first answer to a form. It doesn't mean the form is finished |
+| `enrollment_completed` | When every required field has an answer |
+
+To act on finished enrollments, such as sending a welcome kit or syncing to a compensation system, use `enrollment_completed`. Don't use `form_submitted` for that.
+
+### Managing forms
+
+Build and edit forms, and read or export all of a form's responses, in the admin. See [Forms](/help/admin/forms). The API Reference doesn't publish operations for managing forms or listing form responses yet. Through the Checkout API you can read and answer one enrollment's fields at a time, by its token.
+
+## Example: a rep enrollment form for the United States
+
+Dunder Mifflin enrolls paper sales reps in the United States. It needs each new rep's legal name, date of birth and a signed W-9 to pay commissions.
+
+| Field | Component | Required | Sensitive Info |
+| --- | --- | --- | --- |
+| Legal name | **Legal Name** | Yes | Off |
+| Date of birth | **Date of Birth** | Yes | On |
+| Blank W-9 | **File Download** | No | Off |
+| Signed W-9 | **File Upload** | Yes | On |
+| How did you hear about Dunder Mifflin? | **Multiple Choice** | No | Off |
+
+The form is `Enrollment - United States`, with **Form type** set to **Post Purchase**, **Countries** set to United States, and **Active** on.
+
+When Pam Beesly buys the Paper Sales Starter Kit from Dwight Schrute's link:
+
+1. She pays on one page with no extra fields. Her order is placed, Dwight gets credit for it, and Pam becomes a member of the enrollment pack's member type.
+2. The order confirmation page asks for her legal name, date of birth and signed W-9, and the optional survey question.
+3. She uploads her W-9 the next day from the reminder email's link. The enrollment completes, and the enrollment completed webhook tells the company's compensation system to start paying her commissions.
+
+For Canada, Dunder Mifflin adds a second Post Purchase form, `Enrollment - Canada`, set to Canada only. It asks for a SIN in a **Short Text Entry** field, with **Sensitive Info** on, instead of the W-9.
+
+## Example: "How did you hear about us?"
+
+To learn where new members come from, add one optional **Multiple Choice** field to each country's Post Purchase form:
+
+- **Label**: How did you hear about us?
+- **Options**: Social media, A friend or family member, A rep, Search, An event, Other
+- **Required**: off, so the question never holds an enrollment open
+
+Read the answers in the form's responses in the admin, or export them as CSV.
+
+A Post Purchase form reaches new members only, because regular checkouts never show forms. To survey every customer, use a **General** form and share its link, for example in a post-purchase email.
+
+## Recommended field sets
+
+### Enrollment
+
+| Need | Component | Required | Notes |
+| --- | --- | --- | --- |
+| Legal name | **Legal Name** | Yes | Match tax and payout records |
+| Date of birth | **Date of Birth** | Where you have an age minimum | Nothing checks the age for you |
+| Tax ID | **Short Text Entry**, or **Social Security Number** in the US | Where you pay commissions | Turn on **Sensitive Info** |
+| Tax or compliance document | **File Download** and **File Upload** | Where required | One field offers the blank document, the other collects the signed copy |
+| Business details | **Short Text Entry** | No | For members who enroll as a business |
+| Consent statement | **Checkbox** | Yes | Checkout shows only the label, so put the full statement in it |
+
+For terms and policies the shopper must accept before buying, use [Agreements](/help/admin/settings/agreements), not a form field. Agreements linked to an enrollment appear in checkout before the order is placed, and each acceptance is recorded.
+
+### Attribution and preferences
+
+| Need | Component | Required |
+| --- | --- | --- |
+| How did you hear about us? | **Multiple Choice** | No |
+| Product interests | **Multiple Choice** | No |
+| Contact preference | **Multiple Choice** | No |
+| Anything else? | **Long Text Entry** | No |
+
+## Gotchas
+
+- **Forms are country-scoped, not pack-scoped.** You can't show a different form for each enrollment pack or member type. Use one form per country when countries need different fields.
+- **A form must be Active and Post Purchase.** A draft, or a General form, never appears at checkout.
+- **General forms can hold enrollments open.** Completion counts the fields of every active form for the cart's country, but checkout shows only Post Purchase fields. Keep General forms out of the countries where you enroll members, or turn them off when you don't need them.
+- **Pre Purchase forms are retired.** An older form with that type still asks before payment. Change it to Post Purchase.
+- **A sponsor field doesn't set a sponsor.** Answers are stored as text. They don't change who gets credit for the order or the new member's sponsor.
+- **No conditional logic and no pattern checks.** Every field shows to every shopper who gets the form.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Forms in the admin" icon="clipboard-list" href="/help/admin/forms">
+    Build forms, set their countries, and view, export and follow up on responses.
+  </Card>
+  <Card title="Checkout" icon="cart-shopping" href="/concepts/checkout">
+    How Fluid Checkout works and how to extend it.
+  </Card>
+  <Card title="Headless commerce" icon="code" href="/api/guides/headless-commerce">
+    Run the cart-to-order flow on the Checkout API.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/api/guides/webhooks">
+    Subscribe to enrollment and form events.
+  </Card>
+</CardGroup>
