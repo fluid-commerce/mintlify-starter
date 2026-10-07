@@ -133,6 +133,10 @@ const OFFSET_PAGINATED_SECTIONS =
 // The Public SDK Drop Zones page is also exact by operation. It shares the verified
 // offset implementation used by Checkout's List drop zones operation. No other Public
 // SDK page inherits this exception.
+//
+// The four `forms-v0` list pages are genuine offset endpoints too, verified against
+// the Rails actions (integer `page` / `per_page`, `.page(...).per(...)`). Exact pages
+// only; no other Forms page is sanctioned.
 const OFFSET_PAGINATED_PAGES = new Set([
   "customer-addresses/list-customer-addresses",
   "customer-payment-methods/list-customer-payment-methods",
@@ -143,6 +147,10 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "subscriptions/list-subscriptions",
   "customer-orders/list-customer-orders",
   "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
+  "forms/list-forms",
+  "form-elements/list-form-elements",
+  "forms/list-form-respondents",
+  "forms/list-incomplete-enrollees",
 ]);
 
 // The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
