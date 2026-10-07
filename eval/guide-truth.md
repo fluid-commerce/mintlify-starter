@@ -310,6 +310,13 @@ eval-harness change; if a future guide genuinely needs mechanical claims across
 multiple specs, extend `guideSpecs` to accept an array and resolve each claim
 against the spec that holds its anchor.
 
+**`guideSpecs` arrays (2026-10-07).** A `guideSpecs` value may now be an array of
+specs. Each claim validates against the first listed spec whose `paths` defines its
+`anchor.path`, else the first spec listed, so a path no listed spec defines still
+fails. `guides/checkout-forms.mdx` maps to checkout, forms and settings, and
+`setup/open-a-country.mdx` to settings and forms. The self-test covers both the
+match and the fallback.
+
 ## Accepted omissions (deliberate — do not re-litigate without cause)
 
 Facts the omission sweep surfaced that the guides intentionally do **not** cover:
@@ -2441,3 +2448,32 @@ forms actions, models, and serializers and against the admin's form builder.
   parameters, and their `pagination` schema lists `next_page` / `prev_page`, which aren't returned. The
   statistics `id` parameter is marked required but ignored. Embed settings has no request body schema.
   The descriptions say how each actually behaves; the structural fixes need a contract change upstream.
+
+## Forms API walkthrough (2026-10-07)
+
+`guides/checkout-forms.mdx` gained **Build a form through the API**, and
+`setup/open-a-country.mdx` now says how to turn the atlas's enrollment fields into a form and what
+`--legacy-defaults` adds. This supersedes the "forms admin API stays undocumented" bullet above.
+Verified against the Rails forms actions and models, the admin form builder, hosted checkout's
+enrollment renderer, and the canonical country rows:
+
+- **Country IDs.** `country_ids` holds Fluid catalog country IDs (access countries), read from
+  each company country's `country.id`, never the company country's own `id`. Germany is `74`,
+  the United States `214`, Canada `35`. The open-a-country example used `81`, which is Guam; it
+  now uses `74`.
+- **Updates come from `form_components`, not List form elements.** Responses annotate each
+  component with its active element's `id`; List form elements also returns deactivated
+  elements and doesn't mark them. The guide says so instead of the "list elements" approach.
+- **`is_form_field` is load-bearing.** Enrollment fields are only elements with
+  `is_form_field: true`; the API doesn't default it. Every example sets it.
+- **The create body is shown nested under `form`,** which is what the API reads. No mechanical
+  `example` claim covers it, because the spec draws the create body flat (known gap above).
+- **`--legacy-defaults`** (`seed_legacy_defaults`) adds, for US, CA, MX, ES, DE, TR, AU, NZ and
+  PH only, the country's checkout and enrollment agreements (active, `<title> - <country>`) and
+  an active Post Purchase `<Country> Enrollment Form` with required fields; for Japan one
+  inactive email marketing consent agreement; otherwise nothing. Japan's overview-document
+  (gaiyo shomen) form is created whenever the country requires it, flag or not; not documented.
+- **Atlas component mapping** follows the admin builder's mapping, since the atlas `component`
+  names are the builder's component names.
+- **Not documented:** the separate, unreleased CLI command for country forms. Document it only
+  once its plugin version is published.

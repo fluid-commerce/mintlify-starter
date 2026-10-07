@@ -104,7 +104,208 @@ To act on finished enrollments, such as sending a welcome kit or syncing to a co
 
 ### Managing forms
 
-Build and edit forms, and read or export all of a form's responses, in the admin. See [Forms](/help/admin/forms). You can also manage forms through the API: [List forms](/api-reference/forms/list-forms), [Create a form](/api-reference/forms/create-a-form), [List form elements](/api-reference/form-elements/list-form-elements), [List form respondents](/api-reference/forms/list-form-respondents), [Export form responses as CSV](/api-reference/forms/export-form-responses-as-csv), [List incomplete enrollees](/api-reference/forms/list-incomplete-enrollees), and [Send manual enrollment reminders](/api-reference/forms/send-manual-enrollment-reminders). Through the Checkout API you can read and answer one enrollment's fields at a time, by its token.
+Build and edit forms, and read or export all of a form's responses, in the admin. See [Forms](/help/admin/forms). You can also manage forms through the API, as [Build a form through the API](#build-a-form-through-the-api) shows. Through the Checkout API you can read and answer one enrollment's fields at a time, by its token.
+
+## Build a form through the API
+
+Use the Forms API when a script or an agent sets up forms, for example while you [open a country](/setup/open-a-country). Every request takes a company Bearer token. Reading needs the forms view permission, and writing needs the forms update permission. The steps below build Dunder Mifflin's form for Germany. Each operation's reference page holds its full parameters and responses.
+
+### Find the country's ID
+
+A form's `country_ids` takes Fluid's ID for each country. Read it from [List company countries](/api-reference/countries/list-company-countries): use the entry's `country.id`, not the entry's own `id`, which identifies your company's settings for the country.
+
+```bash
+curl "https://api.fluid.app/api/settings/company_countries" \
+  -H "Authorization: Bearer <token>" \
+  | jq '.company_countries[] | select(.country.iso == "DE") | .country.id'
+```
+
+This prints `74`, Germany's ID. A country you haven't opened isn't in that list. Find it in [List countries](/api-reference/company-v0/countries/list-countries), which returns Fluid's whole country catalog.
+
+### Write the fields
+
+Each field is a component: an object with an `element_type` and its settings. [List form elements](/api-reference/form-elements/list-form-elements) describes every element type. Dunder Mifflin saves the German fields in `enrollment-germany.json`:
+
+```json enrollment-germany.json
+[
+  {
+    "element_type": "input",
+    "puck_type": "legal_name",
+    "label": "Full legal name",
+    "required": true,
+    "sensitive_info": false,
+    "is_form_field": true
+  },
+  {
+    "element_type": "short_text_entry",
+    "label": "Tax number (Steuernummer)",
+    "placeholder": "21/815/08150",
+    "required": true,
+    "sensitive_info": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "file_upload",
+    "label": "Trade registration (Gewerbeanmeldung)",
+    "required": true,
+    "sensitive_info": false,
+    "is_form_field": true
+  },
+  {
+    "element_type": "multiple_choice_entry",
+    "label": "How did you hear about us?",
+    "multiple_choice_options": [
+      { "label": "Social media" },
+      { "label": "A friend or family member" },
+      { "label": "A rep" },
+      { "label": "Search" },
+      { "label": "An event" },
+      { "label": "Other" }
+    ],
+    "required": false,
+    "sensitive_info": false,
+    "is_form_field": true
+  }
+]
+```
+
+- Set `is_form_field` to `true` on every component that collects an answer. Without it, the element isn't an enrollment field: checkout doesn't ask for it, and it never holds an enrollment open.
+- An identity field is an `input` whose `puck_type` names it, such as `legal_name`, `email` or `date_of_birth`.
+- Use `short_text_entry` for a tax ID outside the United States. Checkout formats the `ssn` identity field as a US Social Security number.
+- Fields appear in the order you list them.
+
+### Create the form as a draft
+
+`form_components` is a JSON-encoded string, not an array. Let `jq` encode the file into the request body:
+
+```bash
+jq -n --arg components "$(jq -c . enrollment-germany.json)" '{
+  form: {
+    title: "Enrollment - Germany",
+    form_type: "post_purchase",
+    status: "draft",
+    country_ids: [74],
+    form_components: $components
+  }
+}' > create-form.json
+
+curl -X POST "https://api.fluid.app/api/forms" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: enrollment-germany-2026-10" \
+  --data @create-form.json
+```
+
+In the body `jq` writes, the components are one escaped string:
+
+```json create-form.json
+{
+  "form": {
+    "title": "Enrollment - Germany",
+    "form_type": "post_purchase",
+    "status": "draft",
+    "country_ids": [74],
+    "form_components": "[{\"element_type\":\"input\",\"puck_type\":\"legal_name\",\"label\":\"Full legal name\",\"required\":true,\"sensitive_info\":false,\"is_form_field\":true},{\"element_type\":\"short_text_entry\",...}]"
+  }
+}
+```
+
+- Send the fields inside the `form` object. The API reads nothing outside it.
+- Set `form_type` to `post_purchase` for a form checkout shows. `general` makes a standalone form. `pre_purchase` is retired and returns `422`.
+- A new form is a `draft` unless you set `status`, so no enrollee sees it while you check it.
+- Marking a field `sensitive_info` needs the forms manage-sensitive permission. Without it, the request returns `422` and creates nothing.
+- The `Idempotency-Key` header makes a retry safe. The same request with the same key returns the form the first request created.
+
+The response returns the form with its `id`, here `5821`. Its `form_components` carry each element's `id`. Save the response as `form.json`; you need those IDs to change the fields later.
+
+### Activate it
+
+Send only what changes. A request without `form_components` leaves the fields as they are.
+
+```bash
+curl -X PUT "https://api.fluid.app/api/forms/5821" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"form": {"status": "active"}}'
+```
+
+Enrollment checkouts in Germany now show the form after payment.
+
+### One form per country, or one form for several
+
+Checkout shows every active Post Purchase form for the cart's country, combined into one form. Overlapping forms all show. Use this rule of thumb:
+
+- **Shared fields: one form across countries.** Questions every market asks the same way can live on one form whose `country_ids` lists each country.
+- **Country-specific legal or tax fields: one form per country.** A German tax number on a form shared with the United States would ask American enrollees for it too.
+- **Ask each question once.** If a shared form and a country's own form both ask how the enrollee heard about you, enrollees in that country see the question twice. The same goes for Fluid's generic enrollment form for a country, which opening the country can add. See [Open a country](/setup/open-a-country).
+
+To add a country to an existing form, send the whole list, because `country_ids` replaces the form's countries. Read the current ones from the form's `countries`. Dunder Mifflin's `Rep preferences` form asks for product interests and a contact preference in the United States (`214`) and Canada (`35`). This adds Germany:
+
+```bash
+curl -X PUT "https://api.fluid.app/api/forms/5790" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"form": {"country_ids": [214, 35, 74]}}'
+```
+
+### Change fields without dropping any
+
+`form_components` in an update is the form's whole new layout:
+
+- A component with the `id` of one of the form's elements updates that element in place, and its answers stay with it.
+- A component without an `id` adds a new element.
+- An element you leave out is deactivated. Its answers are kept, but checkout stops asking for it.
+
+Start from the form's current `form_components`, which carry their IDs. Every create and update response returns them, and so does [List forms](/api-reference/forms/list-forms). Don't rebuild them from [List form elements](/api-reference/form-elements/list-form-elements): it also lists elements that earlier edits deactivated.
+
+This adds a date of birth to the German form and keeps every existing field:
+
+```bash
+jq '.form.form_components | fromjson' form.json > current.json
+
+jq -n --arg components "$(jq -c '. + [{
+  "element_type": "input",
+  "puck_type": "date_of_birth",
+  "label": "Date of birth",
+  "required": true,
+  "sensitive_info": false,
+  "is_form_field": true
+}]' current.json)" '{form: {form_components: $components}}' > update-form.json
+
+curl -X PUT "https://api.fluid.app/api/forms/5821" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  --data @update-form.json
+```
+
+<Warning>
+  Never send only the new field. Every component you leave out is
+  deactivated, so the form would ask for nothing else. Sending an existing
+  sensitive field without its `id` also counts as marking a new field
+  sensitive, which needs the forms manage-sensitive permission.
+</Warning>
+
+### Follow up on responses
+
+```bash
+curl "https://api.fluid.app/api/forms/5821/incomplete_enrollees" \
+  -H "Authorization: Bearer <token>"
+
+curl -X POST "https://api.fluid.app/api/forms/5821/send_reminders" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"enrollment_ids": [90412, 90418]}'
+
+curl -X POST "https://api.fluid.app/api/forms/5821/export_csv?include_sensitive=true" \
+  -H "Authorization: Bearer <token>"
+```
+
+- [List form respondents](/api-reference/forms/list-form-respondents) returns each submission with its answers. Sensitive answers read `********` unless your token holds the forms view-sensitive permission.
+- [List incomplete enrollees](/api-reference/forms/list-incomplete-enrollees) lists who still owes this form, and whether a reminder would go to them now.
+- [Send manual enrollment reminders](/api-reference/forms/send-manual-enrollment-reminders) emails the eligible ones. Send `enrollment_ids` to remind only some. Each enrollee gets at most one manual reminder per 24 hours, counting automatic reminders.
+- [Export form responses as CSV](/api-reference/forms/export-form-responses-as-csv) returns a download URL. `include_sensitive=true` unmasks sensitive answers only for a token with the forms view-sensitive permission.
+
+Manual reminders are turned on per company. Without them, both reminder operations return `404`. Both return `422` for a form that isn't Post Purchase.
 
 ## Example: a rep enrollment form for the United States
 
@@ -128,6 +329,8 @@ When Pam Beesly buys the Paper Sales Starter Kit from Dwight Schrute's link:
 
 For Canada, Dunder Mifflin adds a second Post Purchase form, `Enrollment - Canada`, set to Canada only. It asks for a SIN in a **Short Text Entry** field, with **Sensitive Info** on, instead of the W-9.
 
+**Do it through the API:** [Build a form through the API](#build-a-form-through-the-api) creates the German form with the same requests. For these forms, change the title, the country's ID and the components.
+
 ## Example: "How did you hear about us?"
 
 To learn where new members come from, add one optional **Multiple Choice** field to each country's Post Purchase form:
@@ -137,6 +340,8 @@ To learn where new members come from, add one optional **Multiple Choice** field
 - **Required**: off, so the question never holds an enrollment open
 
 Read the answers in the form's responses in the admin, or export them as CSV.
+
+**Do it through the API:** the question is the last component in [Write the fields](#write-the-fields). To add it to a form that's already live, follow [Change fields without dropping any](#change-fields-without-dropping-any).
 
 A Post Purchase form reaches new members only, because regular checkouts never show forms. To survey every customer, use a **General** form and share its link, for example in a post-purchase email.
 
