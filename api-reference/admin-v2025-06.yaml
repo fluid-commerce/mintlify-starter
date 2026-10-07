@@ -667,6 +667,56 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BundlePriceItem'
+    BundlePricesWriteRequest:
+      type: object
+      description: >-
+        A whole-or-nothing batch of bundle price cells. Each cell names a
+        target (the bundle's master variant, one of its groups, or one of its
+        in-kit items), a price type and a currency, and carries the lock_token
+        it was read with (omitted or null for a cell that did not exist). An
+        omitted money field keeps the stored value; an explicit null clears it.
+      required: [cells]
+      additionalProperties: false
+      properties:
+        cells:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            required: [target_type, target_id, pricing_tier_id, currency_code]
+            additionalProperties: false
+            properties:
+              target_type:
+                type: string
+                enum: [bundle, group, item]
+              target_id:
+                type: integer
+                description: The master variant id (bundle), group id or in-kit item id, all of this product.
+              pricing_tier_id:
+                type: string
+                description: An active price type of the company (see price_types).
+              currency_code:
+                type: string
+                minLength: 3
+                maxLength: 3
+              lock_token:
+                type: [string, 'null']
+                description: The cell's lock_token as read; null or absent for a cell that does not exist yet.
+              price:
+                type: [number, string, 'null']
+                description: Decimal amount; cannot be cleared on a bundle or group cell.
+              compare_at_price:
+                type: [number, string, 'null']
+                description: Bundle cells only.
+              subscription_price:
+                type: [number, string, 'null']
+              cv:
+                type: [number, string, 'null']
+              qv:
+                type: [number, string, 'null']
+              creditable_points:
+                type: [integer, string, 'null']
     BundlePricesResponse:
       type: object
       description: >-
@@ -13888,6 +13938,123 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: The bundle_pricing capability is off for this company, or the product is not a bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    patch:
+      operationId: admin_v2025_06_products_bundle_prices_update
+      x-fluid-audience: company
+      summary: Write a batch of bundle price cells
+      description: >-
+        Writes cells of the bundle's price grid as one whole-or-nothing
+        batch. Retail and Wholesale cells write the catalog rows AND the
+        legacy bundle price JSON in one transaction; Preferred and custom
+        price types write rows only. A bundle-level cell is written to the
+        master variant's row in every market that takes part in its currency.
+        A cell whose lock_token is stale (or a cell with no token that now
+        exists) is a 409 and nothing is written. A target or price type
+        outside this bundle and company is a 422. Responds with the fresh
+        grid. Requires admin tier, products.update (a droplet installation
+        needs the products scope AND the permission through its role) and the
+        bundle_pricing capability.
+      tags: [products]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: product_id
+        in: path
+        required: true
+        description: The bundle product's id or slug.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BundlePricesWriteRequest'
+            example:
+              cells:
+              - target_type: group
+                target_id: 55
+                pricing_tier_id: 01900000-0000-7000-8000-0000000000a1
+                currency_code: USD
+                lock_token: 3f2c9d1ab07e
+                price: '45.00'
+                cv: '3.50'
+      responses:
+        '200':
+          description: Every cell written; the fresh grid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundlePricesResponse'
+              example:
+                product_id: 1001
+                pricing_enabled: false
+                price_types:
+                - id: 01900000-0000-7000-8000-0000000000a1
+                  name: Preferred
+                  system: true
+                  tier_level: 1
+                currency_codes: [USD]
+                bundle: null
+                groups:
+                - id: 55
+                  title: Wellness Essentials
+                  group_type: included
+                  pricing_type: fixed_price
+                  cells:
+                  - pricing_tier_id: 01900000-0000-7000-8000-0000000000a1
+                    currency_code: USD
+                    price: '45.00'
+                    subscription_price: null
+                    cv: '3.50'
+                    qv: null
+                    creditable_points: null
+                    lock_token: 3f2c9d1ab07e
+                  items: []
+                status: 200
+                meta:
+                  request_id: 00000000-0000-4000-8000-000000000001
+                  timestamp: '2026-10-06T12:00:00Z'
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not admin tier or lacks products.update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No product with this id belongs to the current company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            One or more cells are stale (error.details.error is stale; details.indices
+            lists them when known), or another writer of this bundle's prices held the
+            product's price lock past the wait limit (error.details.error is
+            bundle_price_busy). Re-read the grid and retry. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: >-
+            Invalid parameters, a cell the bundle cannot take (details.cells lists each
+            refused cell by index with an error code such as target_not_found,
+            price_type_invalid, field_invalid, price_required,
+            out_of_sync_requires_full_cell or legacy_json_unmappable -- a Retail or
+            Wholesale figure that has no exact legacy JSON home), the bundle_pricing
+            capability off, or the product is not a bundle. Nothing was written.
           content:
             application/json:
               schema:
@@ -42601,7 +42768,11 @@ paths:
       summary: Write a batch of price-grid cells
       description: >-
         Writes up to 500 (variant, market, currency, price type, purchase
-        type) cells as one whole-or-nothing batch. A cell naming a custom
+        type) cells as one whole-or-nothing batch. While the company is on the
+        bundle pricing gate, a cell naming a bundle product's MASTER variant is
+        refused for the whole request with 422 (error.details.error is
+        bundle_price_edit_in_grid): the bundle price grid is the only editor of
+        those prices. A cell naming a custom
         price type writes only the catalog (Retail::PriceListManager); one
         naming the system Retail or Wholesale tier also writes the legacy
         per-country columns through the phase 009 task 9 catalog-write path,
