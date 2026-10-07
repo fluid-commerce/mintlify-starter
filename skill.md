@@ -17,6 +17,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Task | Start here |
 | --- | --- |
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
+| Collect extra details at enrollment checkout (forms, after payment, per country) | https://docs.fluid.app/guides/checkout-forms, then https://docs.fluid.app/help/admin/forms |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
 | Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
 | Build a first integration | https://docs.fluid.app/quickstart |
