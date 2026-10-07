@@ -2,10 +2,14 @@ openapi: 3.1.0
 info:
   title: Fluid Member API v2026-10 — Content
   description: >-
-    The signed-in member's own media and playlists: list, read, write, and delete. The bearer credential
-    determines the member and company. Only rep-eligible memberships may use these endpoints; other
-    memberships receive 403. Foreign, deleted, and malformed identifiers return 404. Uploads, media
-    creation, and playlist items are separate operations outside this contract.
+    The signed-in member's own media and playlists: list, read, write, and delete, including direct
+    media uploads and media creation. The bearer credential determines the member and company; no path,
+    query or body parameter can change either. Only rep-eligible memberships may use these endpoints;
+    other memberships receive 403. Foreign, deleted, and malformed identifiers return 404. Playlist items
+    are separate operations outside this contract. Upload bytes never pass through this API:
+    `POST /media/uploads` signs a direct upload bound to one path in the member's own storage namespace,
+    the client posts the file to the returned URL with the returned fields, and `POST /media` then
+    verifies the stored object and creates the medium, consuming the upload once.
   contact:
     email: support@fluid.app
   license:
@@ -34,6 +38,9 @@ tags:
     x-fluid-section: Members
   - name: search
     description: Ranked search across the company's public storefront catalogue.
+    x-fluid-section: Members
+  - name: media-uploads
+    description: Signed direct uploads that become the member's media.
     x-fluid-section: Members
 components:
   securitySchemes:
@@ -146,6 +153,12 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     BadRequest:
       description: The JSON request body is malformed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UploadUnavailable:
+      description: Upload storage is unavailable or could not be asked; retry later. An upload is never consumed by this response.
       content:
         application/json:
           schema:
@@ -897,6 +910,51 @@ components:
         - status
         - data
         - meta
+    UploadEnvelope:
+      type: object
+      description: One signed upload.
+      properties:
+        status:
+          type: integer
+          description: HTTP response status.
+        data:
+          $ref: '#/components/schemas/Upload'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - data
+        - meta
+    Upload:
+      type: object
+      description: >-
+        A signed direct upload. POST the file as multipart form data to `url`, sending every entry of
+        `fields` unchanged plus the file as `file`, before `expires_at`. Then create the medium with
+        `upload_id`.
+      additionalProperties: false
+      properties:
+        upload_id:
+          type: string
+          format: uuid
+          description: Receipt id; send it to POST /media once the file is stored.
+        url:
+          type: string
+          format: uri
+          description: Where to post the file.
+        fields:
+          type: object
+          description: Signed form fields to post with the file, unchanged.
+          additionalProperties:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: When the signature expires. POST /media accepts the upload for one hour after this.
+      required:
+        - upload_id
+        - url
+        - fields
+        - expires_at
 paths:
   /api/member/v2026-10/media:
     get:
@@ -980,6 +1038,108 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '422':
           $ref: '#/components/responses/Invalid'
+      x-fluid-audience: member
+    post:
+      operationId: member_media_create
+      tags:
+        - media
+      summary: Create a medium from an upload
+      description: >-
+        Verifies the object stored for the upload (at exactly its signed path, of the signed kind, and
+        within the size limits) and creates the member's medium, consuming the upload. The kind is the
+        category and media kind of the signed type: an image signed as image/png accepts a stored
+        image/jpeg, while a video or a document in its place is refused. An upload is used once: a repeat
+        returns 409, and `error.details.media_id` names the medium the first use created while that medium
+        still exists (after it is deleted the details carry `upload_id` alone). Unknown, another member's,
+        expired and unverifiable uploads return 422 and stay unconsumed. Tags must be existing company
+        medium tags.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The upload to consume and the medium's details.
+              additionalProperties: false
+              required:
+                - upload_id
+                - title
+              properties:
+                upload_id:
+                  type: string
+                  format: uuid
+                  description: The upload_id from POST /media/uploads.
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  pattern: '^[^\u0000]*[^\u0000\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000][^\u0000]*$'
+                  description: Title containing at least one non-whitespace character.
+                description:
+                  type:
+                    - string
+                    - 'null'
+                  maxLength: 5000
+                  pattern: '^[^\u0000]*$'
+                  description: Plain-text description.
+                tags:
+                  type: array
+                  description: Names of existing company medium tags.
+                  items:
+                    type: string
+                    maxLength: 255
+                    pattern: '^[^\u0000]*$'
+            example:
+              upload_id: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
+              title: Morning routine
+              description: How I start my day with the wellness kit.
+              tags:
+                - wellness
+      responses:
+        '201':
+          description: The created medium.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediumEnvelope'
+              example:
+                status: 201
+                data:
+                  id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f60
+                  kind: video
+                  title: Morning routine
+                  description: How I start my day with the wellness kit.
+                  tags:
+                    - wellness
+                  url: >-
+                    https://ik.imagekit.io/fluid/companies/0199a1b2-0000-7000-8000-000000000001/members/0199a1b2-0000-7000-8000-000000000002/uploads/videos/Xk3p9QaB_morning-routine.mp4
+                  thumbnail_url: >-
+                    https://ik.imagekit.io/fluid/companies/0199a1b2-0000-7000-8000-000000000001/members/0199a1b2-0000-7000-8000-000000000002/uploads/videos/Xk3p9QaB_morning-routine.mp4/ik-thumbnail.jpg
+                  duration: null
+                  size_bytes: 48213000
+                  status: processing
+                  share_url: https://primex.fluid.app/riley-kim/media/morning-routine
+                  created_at: '2026-09-29T15:02:11.482913Z'
+                  updated_at: '2026-09-29T15:02:11.482913Z'
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The upload was already used; `error.details.media_id` names the medium it created when that medium still exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/UploadUnavailable'
       x-fluid-audience: member
   /api/member/v2026-10/media/{id}:
     parameters:
@@ -2068,4 +2228,84 @@ paths:
                 meta:
                   request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708193
                   timestamp: '2026-09-30T18:24:06Z'
+      x-fluid-audience: member
+  /api/member/v2026-10/media/uploads:
+    post:
+      operationId: member_media_uploads_create
+      tags:
+        - media-uploads
+      summary: Sign a direct upload
+      description: >-
+        Signs an upload of one image, video, PDF or presentation to a path in the member's own storage
+        namespace and records its receipt. The signature expires after 15 minutes. Declared sizes over the
+        type's limit (images 10 MB, videos 100 MB, documents 25 MB) are refused. Responses are never stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The file about to be uploaded.
+              additionalProperties: false
+              required:
+                - content_type
+                - filename
+              properties:
+                content_type:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  pattern: '^[^\u0000]*[^\u0000\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000][^\u0000]*$'
+                  description: MIME type of the file, containing at least one non-whitespace character and no NUL.
+                filename:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  pattern: '^[^\u0000]*[^\u0000\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000][^\u0000]*$'
+                  description: >-
+                    Original file name, containing at least one non-whitespace character and no NUL; it is sanitized and
+                    prefixed to keep paths unique.
+                byte_size:
+                  type: integer
+                  minimum: 1
+                  description: Size in bytes. When given, the stored file must match it exactly.
+            example:
+              content_type: video/mp4
+              filename: morning-routine.mp4
+              byte_size: 48213000
+      responses:
+        '201':
+          description: The signed upload.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadEnvelope'
+              example:
+                status: 201
+                data:
+                  upload_id: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
+                  url: https://upload.imagekit.io/api/v2/files/upload
+                  fields:
+                    token: eyJhbGciOiJIUzI1NiJ9.eyJmb2xkZXIiOiJjb21wYW5pZXMvLi4uIn0.signature
+                    fileName: Xk3p9QaB_morning-routine.mp4
+                    folder: companies/0199a1b2-0000-7000-8000-000000000001/members/0199a1b2-0000-7000-8000-000000000002/uploads/videos
+                    useUniqueFileName: 'false'
+                    overwriteFile: 'false'
+                  expires_at: '2026-09-30T18:39:05Z'
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/UploadUnavailable'
       x-fluid-audience: member

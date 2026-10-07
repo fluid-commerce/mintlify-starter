@@ -5,8 +5,9 @@ info:
   description: >-
     Order and product-subscription history for the authenticated member. The bearer credential determines member and
     company; query filters cannot change either. Uses the same member credentials as the People API. Money is
-    serialized as decimal strings in the enclosing currency. Order item counts and individual shipment statuses are
-    not exposed because maintained source fields do not yet exist. A subscription's next-charge total (next_total,
+    serialized as decimal strings in the enclosing currency. An order's items_count is its number of lines, not units.
+    Individual shipments carry no status: the order's fulfillment_status is the only fulfillment state members read.
+    A subscription's next-charge total (next_total,
     next_order_preview) carries the known pre-reward-points renewal charge when it can be stated from stored facts
     without pricing the renewal; it is null for current-rate, bundled, tax-inclusive, tax-exempt, audience-discount, expiring-discount
     or missing-fact subscriptions. Its subtotal is net of discounts. Authoritative saved per-line amounts are also
@@ -112,7 +113,7 @@ components:
       - next_cursor
     Order:
       type: object
-      description: Order summary. Item counts are not exposed until a maintained counter exists.
+      description: Order summary. Buyer identity is present for an own purchase, and for a credited order only when the company's Team contact-visibility policy lets the caller see contact details.
       additionalProperties: false
       properties:
         id:
@@ -182,9 +183,17 @@ components:
           description: Order total in major currency units.
           pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
           example: '45.98'
+        items_count:
+          type: integer
+          description: Number of order lines, as legacy order lists count them; it is not the sum of quantities. Zero for an order without lines.
+          minimum: 0
+          example: 2
         customer:
           type: object
-          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          description: >-
+            Stored purchaser reference and name. Present for an own purchase. On a credited order it is present only
+            when the company's Team contact-visibility policy lets the caller see contact details (a rep's or a root
+            admin's membership; a company admin credential is not a member credential and gets 401), and never for an email-link credential; it is omitted otherwise.
           additionalProperties: false
           properties:
             id:
@@ -233,6 +242,7 @@ components:
       - placed_at
       - currency
       - total
+      - items_count
     Address:
       type: object
       description: Normalized order address, with the historical JSON snapshot as fallback.
@@ -340,7 +350,9 @@ components:
       - image_url
     Shipment:
       type: object
-      description: Recorded tracking information; individual shipment status is not stored and is omitted.
+      description: >-
+        Recorded tracking information. A shipment has no status of its own: tracking rows store none and no legacy
+        member read exposes one, so use the order's fulfillment_status.
       additionalProperties: false
       properties:
         carrier:
@@ -365,7 +377,9 @@ components:
     OrderDetail:
       type: object
       description: >-
-        Accessible order detail. Credited-only orders omit buyer contact fields until a visibility policy is available.
+        Accessible order detail. On a credited order the buyer fields (customer, email, phone, shipping_address,
+        billing_address) appear only when the company's Team contact-visibility policy lets the caller see contact
+        details; otherwise they are omitted.
       additionalProperties: false
       properties:
         id:
@@ -435,9 +449,17 @@ components:
           description: Order total in major currency units.
           pattern: "^-?[0-9]+(?:\\.[0-9]+)?$"
           example: '45.98'
+        items_count:
+          type: integer
+          description: Number of order lines, as legacy order lists count them; it is not the sum of quantities. Zero for an order without lines.
+          minimum: 0
+          example: 2
         customer:
           type: object
-          description: Stored purchaser reference and name, omitted for credited-only orders until a company visibility policy permits disclosure.
+          description: >-
+            Stored purchaser reference and name. Present for an own purchase. On a credited order it is present only
+            when the company's Team contact-visibility policy lets the caller see contact details (a rep's or a root
+            admin's membership; a company admin credential is not a member credential and gets 401), and never for an email-link credential; it is omitted otherwise.
           additionalProperties: false
           properties:
             id:
@@ -485,19 +507,21 @@ components:
           type:
           - string
           - 'null'
-          description: Recorded purchaser email; present only for an own purchase.
+          description: Recorded purchaser email; present for an own purchase, and for a credited order only under the contact-visibility policy.
+          example: casey@primex.test
         phone:
           type:
           - string
           - 'null'
-          description: Recorded purchaser phone; present only for an own purchase.
+          description: Recorded purchaser phone; present for an own purchase, and for a credited order only under the contact-visibility policy.
+          example: "+15551234567"
         shipping_address:
-          description: Shipping address or null; omitted for credited-only orders.
+          description: Shipping address or null; present for an own purchase, and for a credited order only under the contact-visibility policy.
           oneOf:
           - "$ref": "#/components/schemas/Address"
           - type: 'null'
         billing_address:
-          description: Billing address or null; omitted for credited-only orders.
+          description: Billing address or null; present for an own purchase, and for a credited order only under the contact-visibility policy.
           oneOf:
           - "$ref": "#/components/schemas/Address"
           - type: 'null'
@@ -552,6 +576,7 @@ components:
       - placed_at
       - currency
       - total
+      - items_count
       - line_items
       - shipments
       - totals
@@ -1956,8 +1981,8 @@ paths:
         Returns own purchases and volume-credited orders, newest effective sale time first, with internal ID as
         the stable tie breaker. Orders merely bought on someone else’s behalf are excluded unless independently
         owned or credited. Filters apply before pagination. Only page[cursor] and page[limit] pagination is supported;
-        undeclared query parameters are refused. Keyword search requires filter[relationship]=placed, because buyer
-        details in credited-only orders remain private. Whole-history bucket counts are not returned.
+        undeclared query parameters are refused. Keyword search requires filter[relationship]=placed, because it
+        matches buyer names and emails, which are not searchable on credited orders. Whole-history bucket counts are not returned.
         Responses are private and must be revalidated.
       parameters:
       - name: filter[relationship]
@@ -2040,6 +2065,46 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/OrdersEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4a0-1c2d-7e3f-8a4b-5c6d7e8f9a01'
+                  number: '10482'
+                  relationship: credited
+                  status: completed
+                  financial_status: paid
+                  fulfillment_status: fulfilled
+                  placed_at: '2026-09-29T18:42:07.123456Z'
+                  currency: USD
+                  total: '89.95'
+                  items_count: 2
+                  customer:
+                    id: '0192f49b-7d4e-7a10-9c33-2e5f6a7b8c90'
+                    name: Casey Alvarez
+                  volume:
+                    cv: '60.0'
+                    qv: '75.0'
+                - id: '0192f4a0-0a1b-7c2d-8e3f-4a5b6c7d8e02'
+                  number: '10475'
+                  relationship: placed
+                  status: processing
+                  financial_status: paid
+                  fulfillment_status: unfulfilled
+                  placed_at: '2026-09-28T09:15:44.000000Z'
+                  currency: USD
+                  total: '45.98'
+                  items_count: 1
+                  customer:
+                    id: '0192f49b-1111-7a10-9c33-2e5f6a7b8c01'
+                    name: Riley Jones
+                  volume:
+                    cv: '30.0'
+                    qv: '30.0'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+                  pagination:
+                    next_cursor:
           headers:
             ETag:
               "$ref": "#/components/headers/ETag"
@@ -2077,9 +2142,13 @@ paths:
       - orders
       summary: Show one accessible order
       description: >-
-        Returns an own purchase or volume-credited order within the credential’s company. Credited-only orders omit
-        email, phone and billing/shipping addresses. Authentication runs before conditional cache handling. Responses
-        are private with a 30-second freshness lifetime.
+        Returns an own purchase or volume-credited order within the credential’s company. A credited order shows its buyer
+        (customer, email, phone, shipping and billing addresses) only when the company's Team contact-visibility
+        policy lets the caller see contact details, and never to an email-link credential; an own purchase always does.
+        The policy is applied on every read, on the primary, so a conditional request returns 200 when a
+        visibility change alters the response body. Authentication runs before conditional cache handling.
+        Responses are private. A credited order that shows its buyer has a zero-second freshness lifetime
+        and is revalidated on every reuse; any other order has a 30-second freshness lifetime.
       parameters:
       - name: id
         in: path
@@ -2095,6 +2164,67 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/OrderEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4a0-1c2d-7e3f-8a4b-5c6d7e8f9a01'
+                  number: '10482'
+                  relationship: credited
+                  status: completed
+                  financial_status: paid
+                  fulfillment_status: fulfilled
+                  placed_at: '2026-09-29T18:42:07.123456Z'
+                  currency: USD
+                  total: '89.95'
+                  items_count: 2
+                  customer:
+                    id: '0192f49b-7d4e-7a10-9c33-2e5f6a7b8c90'
+                    name: Casey Alvarez
+                  volume:
+                    cv: '60.0'
+                    qv: '75.0'
+                  line_items:
+                  - id: '0192f4a0-2e3f-7a4b-8c5d-6e7f8a9b0c11'
+                    title: Wellness Kit
+                    variant_title: Starter
+                    sku: WK-START
+                    quantity: 2
+                    unit_price: '39.99'
+                    total: '79.98'
+                    image_url: https://cdn.example.test/wellness-kit.jpg
+                  - id: '0192f4a0-2e3f-7a4b-8c5d-6e7f8a9b0c12'
+                    title: Sample Pack
+                    variant_title:
+                    sku:
+                    quantity: 1
+                    unit_price: '0.0'
+                    total: '0.0'
+                    image_url:
+                  email: casey@example.test
+                  phone: "+15551234567"
+                  shipping_address:
+                    name: Casey Alvarez
+                    address1: 12 Main Street
+                    address2:
+                    city: Austin
+                    state: TX
+                    postal_code: '78701'
+                    country_code: US
+                    phone: "+15551234567"
+                  billing_address:
+                  shipments:
+                  - carrier: ups
+                    tracking_number: 1Z999AA10123456784
+                    tracking_url: https://tracking.example.test/1Z999AA10123456784
+                  totals:
+                    subtotal: '79.98'
+                    shipping: '6.99'
+                    tax: '2.98'
+                    discount: '0.0'
+                    total: '89.95'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
           headers:
             ETag:
               "$ref": "#/components/headers/ETag"
@@ -2204,6 +2334,7 @@ paths:
                   placed_at: '2026-09-29T18:42:07.123456Z'
                   currency: USD
                   total: '89.95'
+                  items_count: 2
                   volume:
                     cv: '60.0'
                     qv: '75.0'
