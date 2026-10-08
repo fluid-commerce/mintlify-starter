@@ -1656,6 +1656,14 @@ components:
           type: [string, "null"]
           description: Public biography; null clears it.
           example: A new biography.
+        photo_upload_id:
+          type: string
+          format: uuid
+          description: |
+            The `upload_id` of an image uploaded through `POST /media/uploads`
+            and stored. It becomes the shared public photo and is consumed.
+            The same image is the avatar `GET /me` returns.
+          example: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
     ProfileEnvelope:
       type: object
       properties:
@@ -1785,8 +1793,7 @@ components:
       description: |
         The fields of the signed-in member to change. At least one is required.
         `display_name` is derived from `first_name` and `last_name` and is
-        refused with 422; `avatar_upload_id` is not accepted because this
-        endpoint does not yet support avatar upload receipts.
+        refused with 422.
       additionalProperties: false
       minProperties: 1
       properties:
@@ -1819,6 +1826,13 @@ components:
           minLength: 1
           description: IANA time zone identifier. Rails display names ("Eastern Time (US & Canada)") and `UTC` are refused; use `Etc/UTC`.
           example: Europe/Paris
+        avatar_upload_id:
+          type: string
+          format: uuid
+          description: |
+            The `upload_id` of an image uploaded through `POST /media/uploads`
+            and stored. It becomes the avatar and is consumed.
+          example: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
     MembershipCompany:
       type: object
       description: The company a membership belongs to, with what a switcher needs to render it.
@@ -2453,15 +2467,27 @@ paths:
     patch:
       summary: Update the signed-in member's public profile
       description: |
-        Changes display_name and/or bio through the existing profile writer.
-        These values are shared across the user's memberships. Membership
-        identity fields remain unchanged. A name change is refused when any
-        company the user belongs to locks shared name edits. An unchanged
-        value is a no-op. Changed fields publish profiles.updated after commit.
+        Changes display_name, bio and/or the photo through the existing
+        profile writers. These values are shared across the user's memberships.
+        Membership identity fields remain unchanged. A name change is refused
+        when any company the user belongs to locks shared name edits. An
+        unchanged value is a no-op. Changed fields publish profiles.updated
+        after commit, attributed to the company of the credential.
+
+        `photo_upload_id` takes the receipt of an image uploaded through
+        `POST /media/uploads` (a membership that may share content) and sets
+        the shared photo, which `GET /me` also returns as `avatar_url`. The
+        receipt must be the member's own, unused and an image whose stored file
+        matches what was signed, and it can be claimed until one hour after the
+        `expires_at` that `POST /media/uploads` returned. It is consumed once:
+        a repeat, an unknown or another member's receipt, one claimed after
+        that hour and a non-image one return 422 and change nothing. The fields and the photo are
+        written together or not at all, and a refused photo leaves the receipt
+        unused. Every membership of the user sees the new photo.
 
         At least one field is required. Unknown and read-only fields are
-        refused with 422 before any changes are made. Uploads and other
-        catalogue fields need separate storage/resource work. Only a writable
+        refused with 422 before any changes are made. Other catalogue fields
+        need separate storage/resource work. Only a writable
         member token can update; existing member and portal JWTs return 403.
         Returns the same profile shape as GET, without its cache policy.
       operationId: member_profile_update
@@ -2475,6 +2501,7 @@ paths:
             example:
               display_name: Rae Kim
               bio: Helping people build healthier habits.
+              photo_upload_id: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
       responses:
         "200":
           description: The updated public profile.
@@ -2501,7 +2528,18 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         "422":
-          description: Invalid, unknown or read-only field, empty body, or shared name-edit lock.
+          description: |
+            Invalid, unknown or read-only field, empty body, shared name-edit
+            lock, or a `photo_upload_id` that is unknown, another member's,
+            claimed more than an hour after its `expires_at`, already used,
+            not an image or not verifiable (keyed
+            `photo_upload_id` in `error.details`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Upload storage could not confirm the `photo_upload_id` file. Nothing changed; retry.
           content:
             application/json:
               schema:
@@ -2584,6 +2622,17 @@ paths:
         when any company the user belongs to has locked name changes. Sending
         the current value back is not a change.
 
+        `avatar_upload_id` takes the receipt of an image uploaded through
+        `POST /media/uploads` (a membership that may share content). The
+        avatar is the user's one image, so it is also the photo `GET /profile`
+        returns, in every company the user belongs to. The receipt must be
+        the member's own, unused and an image whose stored file matches what
+        was signed, and it can be claimed until one hour after the
+        `expires_at` that `POST /media/uploads` returned. It is consumed once:
+        a repeat, an unknown or another member's receipt, one claimed after
+        that hour and a non-image one return 422 and change nothing. The fields and the avatar are written together
+        or not at all, and a refused field leaves the receipt unused.
+
         An opaque member token or a verified One Auth identity access token
         for a non-impersonated rep or shopper can write.
         A legacy member session JWT and a portal JWT
@@ -2602,6 +2651,7 @@ paths:
             example:
               language: fr
               time_zone: Europe/Paris
+              avatar_upload_id: 0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f
       responses:
         "200":
           description: The member after the change.
@@ -2659,9 +2709,17 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         "422":
           description: |
-            A field is invalid, unknown or null, the body is empty, or a name
-            change is refused by a name lock. `error.details` is keyed by
-            field, or by `base` for an empty body.
+            A field is invalid, unknown or null, the body is empty, a name
+            change is refused by a name lock, or `avatar_upload_id` is
+            unknown, another member's, claimed more than an hour after its
+            `expires_at`, already used, not an image or not verifiable. `error.details` is keyed by field, or by `base`
+            for an empty body.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Upload storage could not confirm the `avatar_upload_id` file. Nothing changed; retry.
           content:
             application/json:
               schema:
