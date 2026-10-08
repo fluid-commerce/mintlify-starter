@@ -36,6 +36,15 @@ tags:
     per-subscription table is not served here; it is a paginated list
     on `GET /api/subscriptions`, which already accepts `next_bill_date`
     and `last_failed_at` range filters.
+- name: analytics_payments
+  x-fluid-section: Payments
+  description: |
+    Payments > Performance page: approval rates, decline reasons and
+    breakdowns over a date range. Same `reports.view` gate and country
+    scoping as the Home dashboard cards. An attempt is one charge a
+    shopper's money rode on, counted once: voids, refunds, the capture
+    half of an authorize and capture, webhook echoes and card checks
+    are not attempts.
 components:
   securitySchemes:
     bearer_auth:
@@ -239,6 +248,73 @@ components:
       schema:
         type: string
         example: failed,at_risk
+    PaymentRangeFromQueryParam:
+      name: from
+      in: query
+      required: false
+      description: |
+        First day of the range, inclusive, as `YYYY-MM-DD` in the `tz`
+        zone. Defaults to 29 days before `to`, so the default range is
+        thirty days. A value that is not this exact shape returns `400`.
+      schema:
+        type: string
+        format: date
+        example: '2026-09-08'
+    PaymentRangeToQueryParam:
+      name: to
+      in: query
+      required: false
+      description: |
+        Last day of the range, inclusive, as `YYYY-MM-DD` in the `tz`
+        zone. Defaults to today, or to 29 days after `from` when only
+        `from` is sent. A range longer than 92 days, or one that ends
+        before it starts, returns `400`.
+      schema:
+        type: string
+        format: date
+        example: '2026-10-07'
+    PaymentModeQueryParam:
+      name: mode
+      in: query
+      required: false
+      description: |
+        Which payments to report on. `live` (the default) is real money
+        through a live account at a real gateway. `test` is every test
+        or sandbox account and the Bogus gateway, so a merchant who is
+        still integrating can watch their own test traffic.
+      schema:
+        type: string
+        enum:
+        - live
+        - test
+        example: live
+    PaymentFlowQueryParam:
+      name: flow
+      in: query
+      required: false
+      description: |
+        Narrow every figure to one flow. `checkout` is an attempt with a
+        cart; `renewal` is a subscription renewal with no cart. `all`,
+        the default, keeps both.
+      schema:
+        type: string
+        enum:
+        - all
+        - checkout
+        - renewal
+        example: all
+    PaymentAccountQueryParam:
+      name: payment_account_id
+      in: query
+      required: false
+      description: |
+        Narrow every figure to one of the company's payment accounts, by
+        the `id` listed in `payment_accounts`. An id that is not one of
+        the company's accounts returns `400`.
+      schema:
+        type: string
+        pattern: "^[0-9]+$"
+        example: '524'
   schemas:
     Meta:
       type: object
@@ -2749,6 +2825,446 @@ components:
       - recovered_count
       - retry_scheduled_at
       - active_subscription_count
+    NullablePercentage:
+      type:
+      - string
+      - 'null'
+      description: |
+        A percentage as a decimal string rounded to one decimal place,
+        or `null` when the divisor was zero. Null and `"0.0"` differ:
+        null means nothing was attempted, `"0.0"` means every attempt
+        failed.
+      example: "86.4"
+    PaymentDeclineCategory:
+      type: string
+      description: |
+        The `Commerce::Payments::DeclineClassifier` class of a decline,
+        the same classes renewal dunning acts on. `balance`: funds or a
+        spending limit. `soft_issuer`: a transient issuer refusal such
+        as Do Not Honor. `card_activation`: the card was never
+        activated. `card_gone`: closed, expired or reported lost.
+        `never_retry`: wrong card number or security code.
+        `stop_requested`: the cardholder revoked recurring payments.
+        `integration`: a platform or gateway failure, not the
+        shopper's card. `unknown`: no reason was recorded.
+        `unrecognized`: a reason with no pattern yet.
+      enum:
+      - balance
+      - soft_issuer
+      - card_activation
+      - card_gone
+      - integration
+      - never_retry
+      - stop_requested
+      - unknown
+      - unrecognized
+      example: balance
+    PaymentPerformanceSummary:
+      type: object
+      description: |
+        Counts for one range. Pending attempts are counted in
+        `attempt_count` but are in no rate's denominator.
+      properties:
+        attempt_count:
+          type: integer
+          minimum: 0
+          description: Every attempt, pending included.
+        approved_count:
+          type: integer
+          minimum: 0
+        declined_count:
+          type: integer
+          minimum: 0
+        pending_count:
+          type: integer
+          minimum: 0
+          description: Attempts with no answer yet.
+        approved_amount:
+          "$ref": "#/components/schemas/Money"
+        checkout_attempt_count:
+          type: integer
+          minimum: 0
+          description: Approved plus declined checkout attempts.
+        checkout_approved_count:
+          type: integer
+          minimum: 0
+        renewal_attempt_count:
+          type: integer
+          minimum: 0
+          description: Approved plus declined renewal attempts.
+        renewal_approved_count:
+          type: integer
+          minimum: 0
+        checkout_count:
+          type: integer
+          minimum: 0
+          description: |
+            Checkouts (carts) with at least one answered attempt, each
+            counted once however many times it retried.
+        successful_checkout_count:
+          type: integer
+          minimum: 0
+          description: |
+            Checkouts with an approved attempt. An authorization counts
+            when the issuer approves it, before any capture.
+        recovered_checkout_count:
+          type: integer
+          minimum: 0
+          description: Successful checkouts that were declined at least once first.
+        recovered_amount:
+          "$ref": "#/components/schemas/Money"
+        unrecovered_checkout_count:
+          type: integer
+          minimum: 0
+          description: |
+            Declined checkouts with no approval. The shopper may still
+            have bought through a different cart.
+        unrecovered_amount:
+          "$ref": "#/components/schemas/Money"
+        multi_card_checkout_count:
+          type: integer
+          minimum: 0
+          description: Checkouts that tried three or more different cards.
+        card_count:
+          type: integer
+          minimum: 0
+          description: |
+            Distinct checkout cards with an answered attempt. Renewals are
+            not counted: no record names the card a renewal charged.
+        approved_card_count:
+          type: integer
+          minimum: 0
+        unidentified_card_decline_count:
+          type: integer
+          minimum: 0
+          description: |
+            Checkout card declines whose card was never stored, usually a
+            failed card add, so the card cannot be counted.
+        approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        checkout_success_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        checkout_approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        renewal_approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        card_approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+      required:
+      - attempt_count
+      - approved_count
+      - declined_count
+      - pending_count
+      - approved_amount
+      - checkout_attempt_count
+      - checkout_approved_count
+      - renewal_attempt_count
+      - renewal_approved_count
+      - checkout_count
+      - successful_checkout_count
+      - recovered_checkout_count
+      - recovered_amount
+      - unrecovered_checkout_count
+      - unrecovered_amount
+      - multi_card_checkout_count
+      - card_count
+      - approved_card_count
+      - unidentified_card_decline_count
+      - approval_rate
+      - checkout_success_rate
+      - checkout_approval_rate
+      - renewal_approval_rate
+      - card_approval_rate
+    PaymentPerformanceDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        attempt_count:
+          type: integer
+          minimum: 0
+        approved_count:
+          type: integer
+          minimum: 0
+        declined_count:
+          type: integer
+          minimum: 0
+        approved_amount:
+          "$ref": "#/components/schemas/Money"
+        checkout_count:
+          type: integer
+          minimum: 0
+          description: Checkouts whose first attempt in the range fell on this date.
+        successful_checkout_count:
+          type: integer
+          minimum: 0
+        approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        checkout_success_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+      required:
+      - date
+      - attempt_count
+      - approved_count
+      - declined_count
+      - approved_amount
+      - checkout_count
+      - successful_checkout_count
+      - approval_rate
+      - checkout_success_rate
+    PaymentDeclineMessage:
+      type: object
+      properties:
+        text:
+          type: string
+          description: The gateway's own wording, trimmed to 160 characters.
+        count:
+          type: integer
+          minimum: 1
+      required:
+      - text
+      - count
+    PaymentDeclineReason:
+      type: object
+      properties:
+        category:
+          "$ref": "#/components/schemas/PaymentDeclineCategory"
+        declined_count:
+          type: integer
+          minimum: 1
+        checkout_count:
+          type: integer
+          minimum: 0
+        renewal_count:
+          type: integer
+          minimum: 0
+        share:
+          "$ref": "#/components/schemas/Percentage"
+        retriable:
+          type: boolean
+          description: Whether renewal dunning keeps retrying a decline of this class.
+        customer_caused:
+          type: boolean
+          description: False for `integration` and `unknown`, which are not the shopper's card.
+        messages:
+          type: array
+          maxItems: 3
+          description: |
+            The most frequent gateway texts, most frequent first. Empty
+            for `integration`, whose texts describe platform internals
+            rather than the shopper's card, and for `unknown`.
+          items:
+            "$ref": "#/components/schemas/PaymentDeclineMessage"
+      required:
+      - category
+      - declined_count
+      - checkout_count
+      - renewal_count
+      - share
+      - retriable
+      - customer_caused
+      - messages
+    PaymentBreakdownRow:
+      type: object
+      properties:
+        key:
+          type:
+          - string
+          - 'null'
+          description: |
+            The dimension value: a flow, canonical card brand, payment
+            account id, integration class or ISO country code. `other`
+            for the folded tail; null when the value was not recorded.
+        label:
+          type: string
+        detail:
+          type:
+          - string
+          - 'null'
+          description: Secondary label, such as a payment account's gateway.
+        attempt_count:
+          type: integer
+          minimum: 0
+        approved_count:
+          type: integer
+          minimum: 0
+        declined_count:
+          type: integer
+          minimum: 0
+        approved_amount:
+          "$ref": "#/components/schemas/Money"
+        approval_rate:
+          "$ref": "#/components/schemas/NullablePercentage"
+        top_decline_category:
+          oneOf:
+          - "$ref": "#/components/schemas/PaymentDeclineCategory"
+          - type: 'null'
+          description: The most frequent decline class, or null with no declines.
+      required:
+      - key
+      - label
+      - detail
+      - attempt_count
+      - approved_count
+      - declined_count
+      - approved_amount
+      - approval_rate
+      - top_decline_category
+    PaymentBreakdowns:
+      type: object
+      description: |
+        Each dimension's rows, most attempts first. After eight rows
+        the rest fold into one `other` row. Card brand counts card
+        payments only.
+      properties:
+        flow:
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentBreakdownRow"
+        card_brand:
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentBreakdownRow"
+        payment_account:
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentBreakdownRow"
+        payment_method:
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentBreakdownRow"
+        country:
+          type: array
+          items:
+            "$ref": "#/components/schemas/PaymentBreakdownRow"
+      required:
+      - flow
+      - card_brand
+      - payment_account
+      - payment_method
+      - country
+    PaymentMultiCardCheckout:
+      type: object
+      description: |
+        No cart token is returned: it is the bearer credential the public
+        cart routes accept.
+      properties:
+        email:
+          type:
+          - string
+          - 'null'
+        card_count:
+          type: integer
+          minimum: 3
+        attempt_count:
+          type: integer
+          minimum: 1
+        declined_count:
+          type: integer
+          minimum: 0
+        approved:
+          type: boolean
+          description: Whether any of the checkout's attempts was approved.
+        last_attempt_at:
+          type: string
+          format: date-time
+      required:
+      - email
+      - card_count
+      - attempt_count
+      - declined_count
+      - approved
+      - last_attempt_at
+    PaymentAccountOption:
+      type: object
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        detail:
+          type:
+          - string
+          - 'null'
+          description: The account's gateway or provider.
+      required:
+      - id
+      - label
+      - detail
+    PaymentPerformanceResponse:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        previous_from:
+          type: string
+          format: date
+          description: First day of the range of equal length just before.
+        previous_to:
+          type: string
+          format: date
+        time_zone:
+          type: string
+          description: IANA name of the zone the dates are cut in.
+        currency:
+          "$ref": "#/components/schemas/Currency"
+        mode:
+          type: string
+          enum:
+          - live
+          - test
+        summary:
+          "$ref": "#/components/schemas/PaymentPerformanceSummary"
+        previous_summary:
+          "$ref": "#/components/schemas/PaymentPerformanceSummary"
+        days:
+          type: array
+          description: One entry per date of the range, zero-filled.
+          items:
+            "$ref": "#/components/schemas/PaymentPerformanceDay"
+        decline_reasons:
+          type: array
+          description: Most declines first.
+          items:
+            "$ref": "#/components/schemas/PaymentDeclineReason"
+        breakdowns:
+          "$ref": "#/components/schemas/PaymentBreakdowns"
+        multi_card_checkouts:
+          type: array
+          maxItems: 10
+          description: |
+            Checkouts that tried three or more different cards, most
+            cards first. Many cards on one cart is how a stolen-card run
+            looks from the merchant's side.
+          items:
+            "$ref": "#/components/schemas/PaymentMultiCardCheckout"
+        payment_accounts:
+          type: array
+          description: The company's kept accounts in this mode, for the filter.
+          items:
+            "$ref": "#/components/schemas/PaymentAccountOption"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - from
+      - to
+      - previous_from
+      - previous_to
+      - time_zone
+      - currency
+      - mode
+      - summary
+      - previous_summary
+      - days
+      - decline_reasons
+      - breakdowns
+      - multi_card_checkouts
+      - payment_accounts
 security:
 - bearer_auth: []
 paths:
@@ -5756,6 +6272,214 @@ paths:
                   timestamp: '2026-09-10T15:42:07Z'
         '400':
           "$ref": "#/components/responses/InvalidCountry"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '422':
+          "$ref": "#/components/responses/Unprocessable"
+  "/api/v202604/analytics/payments/overview":
+    get:
+      operationId: getAnalyticsPaymentsOverview
+      x-fluid-audience: company
+      tags:
+      - analytics_payments
+      summary: Payment performance over a date range
+      description: |
+        Returns the Payments > Performance page in one payload: three
+        rates, the trend, decline reasons, breakdowns and checkouts that
+        tried many cards, for the range and for the range of equal
+        length just before it.
+
+        The three rates answer different questions.
+        `checkout_success_rate` is the share of checkouts with an
+        approved attempt, counting a checkout once however often it
+        retried. `approval_rate` is approved over answered attempts,
+        which retries pull down. `card_approval_rate` is distinct
+        checkout cards approved over distinct checkout cards tried,
+        which a stolen-card run moves most. Approval is the issuer's
+        answer: an authorization counts when approved, before capture.
+
+        Decline reasons use `Commerce::Payments::DeclineClassifier`, the
+        classes renewal dunning acts on. Money is in the company's
+        currency, or the selected country's.
+      parameters:
+      - "$ref": "#/components/parameters/PaymentRangeFromQueryParam"
+      - "$ref": "#/components/parameters/PaymentRangeToQueryParam"
+      - "$ref": "#/components/parameters/TimeZoneQueryParam"
+      - "$ref": "#/components/parameters/CountryQueryParam"
+      - "$ref": "#/components/parameters/PaymentModeQueryParam"
+      - "$ref": "#/components/parameters/PaymentFlowQueryParam"
+      - "$ref": "#/components/parameters/PaymentAccountQueryParam"
+      responses:
+        '200':
+          description: Payment performance payload
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentPerformanceResponse"
+              example:
+                from: '2026-10-06'
+                to: '2026-10-07'
+                previous_from: '2026-10-04'
+                previous_to: '2026-10-05'
+                time_zone: America/Denver
+                currency: USD
+                mode: live
+                summary:
+                  attempt_count: 120
+                  approved_count: 104
+                  declined_count: 16
+                  pending_count: 0
+                  approved_amount: '12480.0'
+                  checkout_attempt_count: 98
+                  checkout_approved_count: 90
+                  renewal_attempt_count: 22
+                  renewal_approved_count: 14
+                  checkout_count: 92
+                  successful_checkout_count: 90
+                  recovered_checkout_count: 5
+                  recovered_amount: '640.0'
+                  unrecovered_checkout_count: 2
+                  unrecovered_amount: '210.0'
+                  multi_card_checkout_count: 1
+                  card_count: 101
+                  approved_card_count: 96
+                  unidentified_card_decline_count: 1
+                  approval_rate: '86.7'
+                  checkout_success_rate: '97.8'
+                  checkout_approval_rate: '91.8'
+                  renewal_approval_rate: '63.6'
+                  card_approval_rate: '95.0'
+                previous_summary:
+                  attempt_count: 0
+                  approved_count: 0
+                  declined_count: 0
+                  pending_count: 0
+                  approved_amount: '0.0'
+                  checkout_attempt_count: 0
+                  checkout_approved_count: 0
+                  renewal_attempt_count: 0
+                  renewal_approved_count: 0
+                  checkout_count: 0
+                  successful_checkout_count: 0
+                  recovered_checkout_count: 0
+                  recovered_amount: '0.0'
+                  unrecovered_checkout_count: 0
+                  unrecovered_amount: '0.0'
+                  multi_card_checkout_count: 0
+                  card_count: 0
+                  approved_card_count: 0
+                  unidentified_card_decline_count: 0
+                  approval_rate: null
+                  checkout_success_rate: null
+                  checkout_approval_rate: null
+                  renewal_approval_rate: null
+                  card_approval_rate: null
+                days:
+                - date: '2026-10-06'
+                  attempt_count: 64
+                  approved_count: 55
+                  declined_count: 9
+                  approved_amount: '6620.0'
+                  checkout_count: 49
+                  successful_checkout_count: 48
+                  approval_rate: '85.9'
+                  checkout_success_rate: '98.0'
+                - date: '2026-10-07'
+                  attempt_count: 56
+                  approved_count: 49
+                  declined_count: 7
+                  approved_amount: '5860.0'
+                  checkout_count: 43
+                  successful_checkout_count: 42
+                  approval_rate: '87.5'
+                  checkout_success_rate: '97.7'
+                decline_reasons:
+                - category: balance
+                  declined_count: 9
+                  checkout_count: 4
+                  renewal_count: 5
+                  share: '56.3'
+                  retriable: true
+                  customer_caused: true
+                  messages:
+                  - text: Insufficient funds
+                    count: 8
+                  - text: Exceeds withdrawal limit
+                    count: 1
+                - category: integration
+                  declined_count: 2
+                  checkout_count: 2
+                  renewal_count: 0
+                  share: '12.5'
+                  retriable: true
+                  customer_caused: false
+                  messages: []
+                breakdowns:
+                  flow:
+                  - key: checkout
+                    label: Checkout
+                    detail: null
+                    attempt_count: 98
+                    approved_count: 90
+                    declined_count: 8
+                    approved_amount: '11020.0'
+                    approval_rate: '91.8'
+                    top_decline_category: soft_issuer
+                  card_brand:
+                  - key: visa
+                    label: Visa
+                    detail: null
+                    attempt_count: 80
+                    approved_count: 70
+                    declined_count: 10
+                    approved_amount: '8400.0'
+                    approval_rate: '87.5'
+                    top_decline_category: balance
+                  payment_account:
+                  - key: '524'
+                    label: Stripe US
+                    detail: Stripe
+                    attempt_count: 120
+                    approved_count: 104
+                    declined_count: 16
+                    approved_amount: '12480.0'
+                    approval_rate: '86.7'
+                    top_decline_category: balance
+                  payment_method:
+                  - key: CreditCard
+                    label: Card
+                    detail: null
+                    attempt_count: 120
+                    approved_count: 104
+                    declined_count: 16
+                    approved_amount: '12480.0'
+                    approval_rate: '86.7'
+                    top_decline_category: balance
+                  country:
+                  - key: US
+                    label: United States
+                    detail: null
+                    attempt_count: 120
+                    approved_count: 104
+                    declined_count: 16
+                    approved_amount: '12480.0'
+                    approval_rate: '86.7'
+                    top_decline_category: balance
+                multi_card_checkouts:
+                - email: shopper@example.com
+                  card_count: 3
+                  attempt_count: 4
+                  declined_count: 3
+                  approved: true
+                  last_attempt_at: '2026-10-07T02:18:23Z'
+                payment_accounts:
+                - id: 524
+                  label: Stripe US
+                  detail: Stripe
+        '400':
+          "$ref": "#/components/responses/InvalidRequest"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
