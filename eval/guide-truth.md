@@ -2183,7 +2183,8 @@ stay hand-edited.
   A file-prefixed reference would drop the prefix.
 - **Placement rules.** Every `/api/checkout/` endpoint goes in Checkout, including the
   shopper's own account, subscriptions, and directory. Members holds only the
-  member-called `/api/member/` routes (identity, memberships, team). Company-side member
+  member-called `/api/member/` routes (identity, memberships, team; every member area
+  since 2026-10-07, see **Member API overview covers every member area** below). Company-side member
   administration — member management, member types, genealogy trees, and the legacy rep
   endpoints — goes in People, under "Members". Say "members", not "reps", in section and
   group names.
@@ -2246,7 +2247,8 @@ same Fluid branch:
     path, so it isn't published.
   - `internal/member-storefront-messaging-v0` is internal, cookie-authenticated, and
     doesn't parse.
-  - Member messaging waits for a member-API messaging resource.
+  - Member messaging waits for a member-API messaging resource. (Superseded: member
+    messaging is `member-messaging-v2026-10`, under Member API → Messaging since 2026-10-07.)
 - **Events.** The calendar events CRUD (`/api/company/events`) is documented in
   `webhooks-v0` under the `company-events` tag. It is placed under Content and tools →
   Events, not Settings. Moving it to a content spec upstream would be cleaner.
@@ -2545,3 +2547,56 @@ Durable decisions:
 - **Pages a theme can't style** (billing pause, unreachable origin, rate limiting,
   blocked IPs, unknown host) are listed without internals. The billing pause links to the
   Help Center Billing **Status** card. There is no maintenance or password mode.
+
+## Member API overview covers every member area (2026-10-08)
+
+ENG-2067. `api/member-apis.mdx` said the member API covered only identity, memberships, and team. That
+went stale when fluid#24515 added contacts (merged 2026-10-06) and the ten other member specs
+were synced on 2026-10-07. The page now maps every Member API sidebar group, and links each
+operation's generated page. `api/company-and-member-apis.mdx` lost the same "profile,
+memberships, and team" scope and its "the member's JWT" wording, since a member token isn't a
+JWT. Neither page is in the claims registry. Verified against `origin/main` of the Rails
+monorepo (the member routes, the member API base controller, the credential resolver and its
+strategies, and the access concerns) and the eleven `member-*-v2026-10` specs:
+
+- **Credentials.** The page names member session JWTs, portal JWTs, and member tokens, and
+  says the list isn't exhaustive. Identity-service access tokens also resolve, but only where
+  an environment setting turns the identity service on, so the page doesn't name them, and it
+  never names the identity service. Member session JWTs and portal JWTs are read-only, so the
+  page tells readers to write with a member token.
+- **Email-link JWT.** The member session JWT travels in order and subscription email links.
+  Contacts (with their imports, activities, notes, tasks, orders, and subscriptions), groups,
+  notes, tasks, messaging, AI conversations, the statistics reads, My Site statistics, push
+  devices, and the team list refuse it with `403`. Orders, subscriptions, and the activity feed
+  accept it.
+- **Eligibility differs by area, so the page states it per section, not as one rule.**
+  - The rep member type, or an admin: contacts, groups, notes, tasks, and the team list.
+  - The member type's **Can act as rep** switch (`rep_eligible`): media, uploads, playlists,
+    shares, asset statistics, the AI assistant, and My Site.
+  - Messaging has its own participant rule. Customer and preferred-customer memberships get `403`.
+  - Every membership can use catalogue search, the dashboard, and the activity feed.
+- **Team routes authenticate differently.** The seat, tree, and move routes use the older
+  token path for reads. They then check writes against the member credential policy, so a
+  session or portal JWT gets `403` on a move, and an admin's credential `401`. Because the
+  reads use the older path, an admin's own user token or portal JWT reads the team as that
+  admin's own membership. Company tokens set no membership and get `401`. The member's own seat
+  can't be moved (the policy needs a positive distance from it), and requesting a move needs
+  **Can act as rep**.
+- **fluid-commerce/mintlify-starter#86 (draft, 2026-09-30) checked against main on
+  2026-10-09.** Taken from it: the team-read admin exception, the own-seat rule, and refusing
+  impersonation credentials. Left out, because main changed after it: moves with a session or
+  portal JWT (now `403`), and credited orders always hiding the buyer. Buyer details now show
+  when the company's contact-visibility policy allows, and never to the email-link JWT. Its
+  `team` / `team-moves` URLs depend on fluid#24340, which is still open, and are 404 on the live
+  site. Its AGENTS.md surface-first rule and its `pageSlug()` fix stay with that PR.
+- **Curly apostrophes stay in slugs.** Mintlify keeps `’` in a page slug, but
+  `eval/generate-api-nav.mjs` `pageSlug()` drops it. Three member operations are affected:
+  `orders/list-the-signed-in-member’s-orders`,
+  `subscriptions/list-the-signed-in-member’s-product-subscriptions`, and
+  `subscriptions/show-one-of-the-member’s-subscriptions`. Links to them use the curly form,
+  checked on the live site. The generator fix is in fluid-commerce/mintlify-starter#86.
+- **One more duplicate summary.** The member `GET …/subscriptions/{id}/failed-cycle-waiver`
+  ("Preview a failed-cycle waiver") shares its tag and summary with Checkout's. The generator
+  leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
+  Checkout's operation. The page doesn't link it. It needs a unique summary upstream
+  (ENG-2068).
