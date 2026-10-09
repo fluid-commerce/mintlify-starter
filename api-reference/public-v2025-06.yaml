@@ -1647,6 +1647,41 @@ components:
                 - 'null'
                 format: decimal
                 description: New price for the cart item
+        price_authority:
+          type:
+          - object
+          - 'null'
+          description: Whether the caller is taking control of these prices, or
+            handing control back. Omit it (or send null) to override prices
+            without recording a hold, which is how this endpoint has always
+            behaved. An empty object claims the prices for the caller. The
+            holder is derived from the authenticated credential and is never
+            accepted from the request body, so a caller cannot present itself as
+            a different holder. Holds are not exclusive. A hold records whoever
+            last set the price, so a later override or claim by another holder
+            moves it, which is how admin tooling overrides an integration's
+            price. What is protected is handing a hold back, which only ever
+            affects the calling holder's own items. A credential that resolves
+            to no holder (a customer or portal-member token) is rejected with
+            422.
+          properties:
+            reason:
+              type:
+              - string
+              - 'null'
+              description: Why the caller is taking control of these prices
+            release:
+              type:
+              - boolean
+              - 'null'
+              description: Hand control back rather than take it. Clears the
+                calling holder's hold from every item on the cart, returning
+                those items to automatic pricing on the next full pricing run,
+                and leaves other holders' items untouched. Send with an empty
+                cart_items when only the hold needs clearing and the prices are
+                already correct. Rejected with 422 if cart_items names an item
+                held by a different holder.
+          additionalProperties: false
     AffiliateLookupResponse201ApplicationJsonSchema:
       type: object
       properties:
@@ -4285,6 +4320,33 @@ components:
               - string
               - 'null'
               format: date-time
+            price_authority:
+              type:
+              - object
+              - 'null'
+              description: Caller-relative view of who holds these prices.
+                Carried in meta rather than on the cart, because the rendered
+                cart is also served to unauthenticated readers and broadcast to
+                every subscriber on the cart channel, while meta is rendered for
+                one known caller.
+              properties:
+                held_by_caller:
+                  type:
+                  - array
+                  - 'null'
+                  description: Ids of the cart's items currently held by the
+                    calling holder. Empty when the caller holds none, or when
+                    the credential resolves to no holder.
+                  items:
+                    type: integer
+                released_count:
+                  type:
+                  - integer
+                  - 'null'
+                  description: How many holds this request handed back. Zero
+                    when the request did not ask to release, and zero on a
+                    release that found nothing left to hand back.
+              additionalProperties: false
           additionalProperties: false
       additionalProperties: false
     PaypalAuthorizeOrderRequestBodyApplicationJsonSchema:
@@ -7726,6 +7788,22 @@ paths:
                   timestamp: '2026-09-14T15:32:08Z'
         '401':
           description: Unauthorized
+        '422':
+          description: |-
+            The request was understood but refused. Distinguish the cases by
+            error_message:
+
+            * the cart's items are immutable and cannot be repriced;
+            * `price_authority` was sent by a credential that resolves to no
+              holder, which means the record behind it has gone missing;
+            * a release named an item the caller does not hold, either because
+              another holder controls it or because it carries a legacy pin with
+              no holder at all. `errors.cart_items` then lists the offending
+              item ids and no price in the batch was written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       requestBody:
         required: true
         content:
