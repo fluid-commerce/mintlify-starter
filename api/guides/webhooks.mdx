@@ -1,6 +1,6 @@
 ---
 title: "Register and handle webhooks"
-description: "Subscribe to Fluid events over HTTPS, verify deliveries with a shared secret, handle the delivery envelope, and inspect the most recent delivered event for a resource."
+description: "Subscribe to Fluid events over HTTPS, verify deliveries with a shared secret, handle the delivery body, and inspect the most recent delivered event for a resource."
 ---
 
 Webhooks push events to your server as they happen in Fluid — an order is placed, a cart changes, a member is created — so you never have to poll for updates. You register an HTTPS endpoint once, and Fluid delivers a JSON payload to it every time a matching event fires. This guide covers registering a webhook, managing it, verifying and handling deliveries, and inspecting the most recent delivered event for a resource.
@@ -73,50 +73,24 @@ curl -X DELETE "https://api.fluid.app/api/company/webhooks/8123" \
   -H "Authorization: Bearer <your_token>"
 ```
 
-## The delivery envelope
+## What a delivery contains
 
-Every delivery is a JSON envelope with a small, stable outer shape. The event data rides inside `payload`.
+Fluid posts the event data itself as the JSON request body. There is no outer envelope around it.
 
-<ResponseField name="id" type="integer">
-  The delivery's identifier — a number, not a prefixed string.
-</ResponseField>
-
-<ResponseField name="identifier" type="string">
-  A generated token for this specific delivery.
-</ResponseField>
-
-<ResponseField name="name" type="string">
-  The event identifier, matching what you registered.
-</ResponseField>
-
-<ResponseField name="timestamp" type="string">
-  An ISO 8601 timestamp for when the event occurred.
-</ResponseField>
-
-<ResponseField name="payload" type="object">
-  The event data, keyed by the resource's name, plus metadata about the event.
-</ResponseField>
-
-Inside `payload`, the event data is keyed by the resource's own name — an order delivery carries an `order` object, a cart delivery a `cart` object, a member delivery a `member` object. There is no generic `data` wrapper. Alongside the resource, `payload` carries metadata about the event: `event_name`, `schema_version`, `schema_hash`, `company_id`, `resource_name`, `resource`, and `event`.
+In the body, the event data is keyed by the resource's own name — an order delivery carries an `order` object, a cart delivery a `cart` object, a member delivery a `member` object. There is no generic `data` wrapper. Alongside the resource, the body carries metadata about the event: `event_name`, `schema_version`, `schema_hash`, `company_id`, `resource_name`, `resource`, and `event`.
 
 ```json
 {
-  "id": 90784,
-  "identifier": "evt_9Yb2Kd7Qm1",
-  "name": "order_created",
-  "timestamp": "2026-07-15T12:34:56Z",
-  "payload": {
-    "event_name": "order_created",
-    "schema_version": "1",
-    "schema_hash": "9f3c2a90b1c2d4e5",
-    "company_id": 4821,
-    "resource": "order",
-    "event": "created",
-    "order": {
-      "id": 55210,
-      "status": "placed",
-      "total": "129.99"
-    }
+  "event_name": "order_created",
+  "schema_version": "1",
+  "schema_hash": "9f3c2a90b1c2d4e5",
+  "company_id": 4821,
+  "resource": "order",
+  "event": "created",
+  "order": {
+    "id": 55210,
+    "status": "placed",
+    "total": "129.99"
   }
 }
 ```
@@ -127,12 +101,13 @@ Inside `payload`, the event data is keyed by the resource's own name — an orde
 
 ## Verify a delivery
 
-Set `auth_token` to a long, random secret when you register a webhook. Fluid uses it to sign every delivery. Each delivery carries these headers:
+Set `auth_token` to a long, random secret when you register a webhook. Fluid uses it to sign every delivery. Every delivery carries `X-Fluid-Shop`, your shop identifier. When the webhook has an `auth_token`, each delivery also carries these headers:
 
 - `X-Fluid-Signature` — a hex HMAC-SHA256 of the request, keyed with your `auth_token`.
 - `X-Fluid-Timestamp` — the Unix time in seconds when Fluid signed the request.
 - `X-Fluid-Token` and `AUTH_TOKEN` — your raw `auth_token`.
-- `X-Fluid-Shop` — your shop identifier.
+
+Without an `auth_token`, a delivery is unsigned and you have nothing to verify it against, so always set one.
 
 Verify the signature: recompute a hex HMAC-SHA256, keyed with your `auth_token`, over the string `<X-Fluid-Timestamp>.<raw_request_body>`, then constant-time compare it to `X-Fluid-Signature`. Sign over the raw request body exactly as received; if you re-serialize the parsed JSON the bytes can change and the signature will not match.
 
@@ -167,26 +142,48 @@ Use at least 32 random characters for the secret, and rotate it periodically —
 
 ## Handle and respond
 
-Acknowledge every delivery quickly with a `2xx` status. Parse the envelope, enqueue the work, and return `200` right away rather than doing slow processing inline:
+Acknowledge every delivery quickly with a `2xx` status. Parse the body, enqueue the work, and return `200` right away rather than doing slow processing inline:
 
 ```javascript
 app.post("/fluid/orders", (req, res) => {
-  const { name, payload } = req.body;
-  queue.add(name, payload); // process out of band
+  const event = req.body;
+  queue.add(event.event_name, event); // process out of band
   res.sendStatus(200);
 });
 ```
 
-Make your handler idempotent: key on the envelope's integer `id` so that reprocessing the same event is a safe no-op.
+Fluid makes one delivery attempt. It waits up to 5 seconds to connect and 15 seconds for your response, and it does not retry a delivery that times out or returns a non-`2xx` status. Fluid records the response status it got, but a delivery your endpoint missed is not sent again on its own.
+
+Make your handler idempotent. A delivery carries no delivery id in its body or headers, so key on the content: store a hash of the raw body, and skip a body you have already processed.
 
 ## Inspect the most recent delivery
 
-To confirm what Fluid last sent for a resource, call `GET /api/company/webhooks/resources/{resource_name}`. It returns the most recent delivered event for that resource as the same envelope you receive at your endpoint:
+To confirm what Fluid last sent for a resource, call `GET /api/company/webhooks/resources/{resource_name}`. It returns the most recent delivered event for that resource as Fluid stored it: an envelope around the body your endpoint received.
 
 ```bash
 curl "https://api.fluid.app/api/company/webhooks/resources/order" \
   -H "Authorization: Bearer <your_token>"
 ```
+
+<ResponseField name="id" type="integer">
+  The stored event's identifier — a number, not a prefixed string. It is not sent with the delivery.
+</ResponseField>
+
+<ResponseField name="identifier" type="string">
+  A generated token for this stored event.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The event identifier, matching what you registered.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string">
+  An ISO 8601 timestamp for when Fluid recorded the event.
+</ResponseField>
+
+<ResponseField name="payload" type="object">
+  The body Fluid delivered: the event data, keyed by the resource's name, plus metadata about the event.
+</ResponseField>
 
 <Warning>
   Pass a resource that your company has actually registered. An unregistered or unknown `resource_name` returns `404` with a `{ "message": ..., "status": ... }` body, not an empty response.
