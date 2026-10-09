@@ -466,7 +466,7 @@ components:
       type: object
       additionalProperties: false
       description: A credit-billed company's debt and the way out of it.
-      required: [cutover_at, debt_cents, last_failed_charge, automatic_charges_blocked, pay_now, upcoming_estimate]
+      required: [cutover_at, debt_cents, last_failed_charge, automatic_charges_blocked, collection_not_set_up, pay_now, upcoming_estimate]
       properties:
         cutover_at: { type: string, format: date-time, description: "The billing start date: from this instant the company's billing is paid from credits." }
         debt_cents: { type: integer, minimum: 0, description: "What the credits are overdrawn by, in cents: minus the sum of the overdrawn parts of the credit movements (usage that found too few credits). Zero when nothing is overdrawn. Pay now charges at least this." }
@@ -476,6 +476,7 @@ components:
           - { type: "null" }
           description: The latest automatic or Pay now charge that failed or was returned. Null when the debt is zero or no such charge failed.
         automatic_charges_blocked: { type: boolean, description: "Whether Fluid has stopped charging the saved payment method by itself after a failed charge. Pay now still works. The block lifts on a new payment method, a successful Pay now, or a successful retry." }
+        collection_not_set_up: { type: boolean, description: "Whether the company's collection was never set up. Nothing charges the saved payment method, with or without a debt, so the merchant pays a debt by buying credits." }
         pay_now: { "$ref": "#/components/schemas/BillingCreditPayNow" }
         upcoming_estimate: { "$ref": "#/components/schemas/BillingCreditUpcomingEstimate" }
     BillingCreditFailedCharge:
@@ -506,9 +507,10 @@ components:
         available: { type: boolean, description: "Whether POST /api/settings/billing/credits/pay-now would charge now." }
         reason:
           type: [string, "null"]
-          enum: [no_debt, below_minimum, in_flight, no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch, null]
+          enum: [no_debt, below_minimum, in_flight, no_profile, not_active, not_auto_debit, collection_not_set_up, no_instrument, no_mandate, instrument_mode_mismatch, null]
           description: >-
-            Why it cannot, when available is false; null when it can. below_minimum means the debt is under the
+            Why it cannot, when available is false; null when it can. collection_not_set_up means the company
+            never set up how Fluid collects, so it pays what it owes by buying credits. below_minimum means the debt is under the
             smallest charge, $0.50 on any rail. Pay now charges the debt alone, so it needs a debt of at least $0.50;
             nothing is charged now. The automatic charge can be sent sooner when a consented auto-reload top-up
             lifts the total over $0.50.
@@ -1727,6 +1729,25 @@ components:
                 class, a US or CA country, and an active production Avalara slot
                 carrying a company code; the sandbox environment cannot file
                 documents.
+            avalara_company_code:
+              type:
+              - string
+              - 'null'
+              maxLength: 25
+              description: With the Avalara tax class, the Avalara company code
+                that overrides the account's company code for orders shipping to
+                this country, for both tax quotes and committed documents. Blank
+                or null uses the account company code. Also satisfies the company
+                code requirement of avalara_commit_enabled. A droplet token cannot
+                set it (403); clearing it is refused (422) while commits are enabled
+                and the account has no company code.
+            avalara_send_product_tax_code:
+              type: boolean
+              description: With the Avalara tax class, whether Fluid's product
+                tax codes are sent to Avalara as taxCode for orders shipping to
+                this country. When false no taxCode is sent and Avalara rates the
+                line by its own item mapping. Defaults to true. A droplet token
+                cannot set it (403).
     BulkUpdateCompanyCountriesRequestBodyApplicationJsonSchema:
       type: object
       required:
@@ -2154,6 +2175,81 @@ components:
               type: boolean
               description: true makes this slot the active environment and deactivates the other; the switch is allowed while "avalara" is the selected tax class, because moving from the sandbox host to the production host is how a proven integration goes live, but is refused while any country has Avalara document commits enabled, since committed documents can only be voided on the host that filed them. Selecting avalara requires some slot to be active, either environment. false is refused, because a company with slots always has exactly one active slot; deactivate a slot by activating the other environment.
           additionalProperties: false
+      additionalProperties: false
+    TestAvalaraConnectionRequest:
+      type: object
+      required:
+      - avalara_account
+      properties:
+        avalara_account:
+          type: object
+          description: The credential set to test. An omitted credential falls back to the stored slot for the environment.
+          required:
+          - environment
+          properties:
+            environment:
+              type: string
+              description: The AvaTax environment to call, which also picks the host.
+              enum:
+              - sandbox
+              - production
+            username:
+              type: string
+              minLength: 1
+              description: Avalara account ID to test. Omit, or send the obfuscation marker, to use the stored one.
+            password:
+              type: string
+              minLength: 1
+              description: Avalara license key to test. Omit, or send the obfuscation marker, to use the stored one.
+            company_code:
+              type:
+              - string
+              - 'null'
+              description: AvaTax companyCode to look up in the account. Omit to use the stored one; null or blank skips the lookup.
+          additionalProperties: false
+      additionalProperties: false
+    AvalaraConnectionTestResponse:
+      type: object
+      required:
+      - authenticated
+      - environment
+      - company_code
+      - message
+      - status
+      - meta
+      properties:
+        authenticated:
+          type: boolean
+          description: true only when Avalara's ping reported `authenticated` true. false for rejected credentials and when Avalara could not be reached; the message says which.
+        environment:
+          type: string
+          description: The AvaTax environment that was called.
+          enum:
+          - sandbox
+          - production
+        company_code:
+          type: object
+          description: The outcome of the company code lookup.
+          required:
+          - checked
+          - found
+          properties:
+            checked:
+              type: boolean
+              description: Whether the lookup completed. false when the credentials were rejected, no company code was entered, or the lookup itself failed.
+            found:
+              type: boolean
+              description: Whether the company code exists in the Avalara account. Always false when checked is false.
+          additionalProperties: false
+        message:
+          type: string
+          description: A merchant-facing explanation of the outcome. Never contains credentials.
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          "$ref": "#/components/schemas/Meta"
       additionalProperties: false
     AppendMetadataFieldRequestBodyApplicationJsonSchema:
       type:
@@ -3386,6 +3482,20 @@ components:
           - 'null'
           description: Whether paid orders shipping to this country are committed
             to the merchant's Avalara account as SalesInvoice documents
+        avalara_company_code:
+          type:
+          - string
+          - 'null'
+          description: With the Avalara tax class, the Avalara company code that
+            overrides the account's company code for orders shipping to this country.
+            Null uses the account company code. Returned to company admins only.
+        avalara_send_product_tax_code:
+          type:
+          - boolean
+          - 'null'
+          description: With the Avalara tax class, whether Fluid's product tax codes
+            are sent to Avalara for this country. When false no taxCode is sent.
+            Returned to company admins only.
         tax_setup_risks:
           type: array
           description: Reasons this country's built-in Avalara settings may conflict
@@ -3393,7 +3503,7 @@ components:
             for company admin users; never returned to droplet installation tokens.
           items:
             type: string
-            enum: [tax_droplet_registered, commit_disabled, no_production_credentials]
+            enum: [tax_droplet_registered, commit_disabled, no_production_credentials, avalara_droplet_filing]
           example: [tax_droplet_registered]
         tax_callback_registration_id:
           type:
@@ -6116,6 +6226,64 @@ paths:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: Missing or invalid environment, or the slot is active while Avalara is the selected tax provider
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/avalara_account/test_connection":
+    post:
+      x-fluid-lint-exempt: "Sub-route of the shipped settings-v0 /api/settings/avalara_account resource that the fluid-admin Avalara form already calls; a dated path would split one settings resource across two versions. Its snake_case segments follow that resource."
+      summary: Test a merchant Avalara connection
+      description: Calls Avalara with the submitted credentials (an unsaved edit), falling back to the stored slot for any credential that is omitted or still masked, and reports what Avalara returned. The AvaTax ping answers HTTP 200 even for bad credentials, so only `authenticated` true in the ping body counts as a pass. When the credentials authenticate and a company code is present, the code is looked up in the account. Rejected credentials, a missing company code and an unreachable Avalara are all 200 responses with the verdict in the body. The host comes from `environment` alone; a sandbox environment (a sandbox twin) can only test `sandbox`. Nothing is saved. Requires the companies.update permission.
+      tags:
+      - taxes
+      operationId: settings_v0_test_avalara_account_connection
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TestAvalaraConnectionRequest"
+            example:
+              avalara_account:
+                environment: sandbox
+                username: accounting@dundermifflin.com
+                password: Scr4nton-Paper-2026
+                company_code: DUNDERMIFFLIN-SBX
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AvalaraConnectionTestResponse"
+              example:
+                authenticated: true
+                environment: sandbox
+                company_code:
+                  checked: true
+                  found: true
+                message: Authenticated with Avalara sandbox; company code verified.
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing companies.update permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid environment, no credentials to test, stored credentials that cannot be read, or a sandbox environment asking to test production
           content:
             application/json:
               schema:
