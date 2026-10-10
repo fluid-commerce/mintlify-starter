@@ -45,7 +45,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
-| Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...` |
+| Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
 
