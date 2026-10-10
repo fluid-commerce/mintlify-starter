@@ -1333,6 +1333,14 @@ binding warning: do not mix the surfaces within one cart lifecycle, because unsu
 line reprices bundle children and releases the derived price lock on the Public SDK API while the
 Checkout API only clears the subscription fields.
 
+Amended 2026-10-10: the Checkout API gained dedicated `POST`/`DELETE
+/api/checkout/v2026-04/carts/{cart_token}/items/{item_id}/subscription` operations
+(`checkout_v2026_04_subscribe_cart_item`, `checkout_v2026_04_unsubscribe_cart_item`), which run
+the same subscribe/unsubscribe path as the Public SDK API, including bundle repricing on
+unsubscribe. The equivalence map now points the "Subscribe or unsubscribe a line" row at them.
+The warning stays, narrowed: clearing subscription fields through `PATCH items/{id}` still does
+not reprice bundle children, so the page steers readers to the dedicated operations.
+
 Both OpenAPI `info.description` blocks state audience, unique capability, authentication model, and
 the reciprocal boundary. The shared choosing page is their stable cross-link because an OpenAPI nav
 group has no landing page.
