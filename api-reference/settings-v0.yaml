@@ -223,6 +223,7 @@ components:
           enum: [card, ach, null]
           description: Which fee the payment method on file pays; null when it pays none.
         applies: { type: boolean, description: Whether a charge to the payment method on file carries the fee. }
+        funding_pending: { type: boolean, description: "On the credits response only: true while the saved payment method is a card whose funding is not known yet, so whether it carries the fee is not known. A plan cannot be chosen until it is (409 card_funding_pending)." }
         auto_reload_applies:
           type: boolean
           description: >-
@@ -374,7 +375,7 @@ components:
         The company's credits: its plan, what its usage has drawn this month,
         and what more cost. One credit is one dollar, and every kind of usage
         draws on one balance. Priced but not billed or for sale yet.
-      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms, card_surcharge]
+      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, catalog_plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms, card_surcharge]
       properties:
         balance_cents: { type: integer, description: "The credit balance, in cents: the sum of every credit movement. Below zero only when usage overdraws it." }
         spendable_cents: { type: integer, description: "What new usage may draw on, in cents: the balance less expired_cents and held_cents." }
@@ -435,6 +436,10 @@ components:
           type: array
           description: The monthly minimum tiers a plan can be priced at, smallest first; empty when platform billing does not invoice the company.
           items: { "$ref": "#/components/schemas/BillingCatalogPlan" }
+        catalog_plans:
+          type: array
+          description: Every catalog plan, smallest first, at the price choosing its plan_key alone would give it, billed monthly, so a choice by key can be priced before it is made; empty when platform billing does not invoice the company.
+          items: { "$ref": "#/components/schemas/BillingCatalogKeyPlan" }
         credit_bonus_mode:
           type: string
           enum: [always, auto_reload, "off"]
@@ -757,6 +762,19 @@ components:
         monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method, monthly_price_cents plus monthly_surcharge_cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100, description: "The tier's discount, as the percent of usage added on top of what is paid ($100 at 10% buys 110 credits)." }
         included_credits: { type: integer, minimum: 0, description: The usage it buys each month, bonus included; one credit is one dollar. }
+    BillingCatalogKeyPlan:
+      type: object
+      description: >-
+        One catalog plan at the price choosing it by key alone gives it under
+        the company's monthly minimum tiers, billed monthly. An annual choice
+        takes annual_discount_percent off monthly_price_cents.
+      required: [key, name, monthly_price_cents, monthly_surcharge_cents, monthly_total_cents]
+      properties:
+        key: { type: string, description: The plan's key, as plan_key takes it. }
+        name: { type: string, description: The plan's name. }
+        monthly_price_cents: { type: integer, minimum: 0, description: What the plan costs each month, in cents, before any annual discount. }
+        monthly_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_price_cents, billed monthly; 0 when none. }
+        monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method billed monthly, monthly_price_cents plus monthly_surcharge_cents. }
     BillingUsageControls:
       type: object
       description: >-
@@ -4477,7 +4495,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update or billing.view permission, or a Droplet token
+          description: Missing billing.update or billing.view permission, not an admin, a Droplet token, or a company or partner token (a change needs a signed-in user to record)
           content:
             application/json:
               schema:
@@ -4603,6 +4621,11 @@ paths:
                     included_credits: 65000
                     monthly_surcharge_cents: 0
                     monthly_total_cents: 5000000
+                  catalog_plans:
+                  - { key: launch, name: Launch, monthly_price_cents: 250000, monthly_surcharge_cents: 0, monthly_total_cents: 250000 }
+                  - { key: growth, name: Growth, monthly_price_cents: 1500000, monthly_surcharge_cents: 0, monthly_total_cents: 1500000 }
+                  - { key: scale, name: Scale, monthly_price_cents: 5000000, monthly_surcharge_cents: 0, monthly_total_cents: 5000000 }
+                  - { key: enterprise, name: Enterprise, monthly_price_cents: 15000000, monthly_surcharge_cents: 0, monthly_total_cents: 15000000 }
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4678,6 +4701,8 @@ paths:
                 billing_interval: { type: string, enum: [monthly, annual], description: How the plan is paid for. }
                 monthly_price_cents: { type: [integer, "null"], minimum: 1, description: "What the plan costs each month, sized between the catalog's; it buys that much usage plus its tier's bonus. Null is the plan's own price." }
                 keep_current_plan: { type: boolean, description: "True stays on the plan in force and drops the plan chosen for next month, whatever its key, price or interval. The other fields are then ignored." }
+                expected_monthly_charge_cents: { type: integer, minimum: 0, description: "The monthly charge, after any annual discount and before the credit card fee, the merchant was shown. When the choice, laid over the plan waiting or in force now, would charge anything else, nothing is saved and the answer is 409 plan_charge_changed with the charge it would be in details.monthly_charge_cents." }
+                expected_monthly_total_cents: { type: integer, minimum: 0, description: "The monthly total, the credit card fee on the saved payment method included, the merchant was shown. When the choice would now total anything else, as after a switch to a card, nothing is saved and the answer is 409 plan_charge_changed with the total it would be in details.monthly_total_cents." }
             example:
               plan_key: growth
               billing_interval: annual
@@ -4777,6 +4802,11 @@ paths:
                     included_credits: 65000
                     monthly_surcharge_cents: 0
                     monthly_total_cents: 5000000
+                  catalog_plans:
+                  - { key: launch, name: Launch, monthly_price_cents: 250000, monthly_surcharge_cents: 0, monthly_total_cents: 250000 }
+                  - { key: growth, name: Growth, monthly_price_cents: 1500000, monthly_surcharge_cents: 0, monthly_total_cents: 1500000 }
+                  - { key: scale, name: Scale, monthly_price_cents: 5000000, monthly_surcharge_cents: 0, monthly_total_cents: 5000000 }
+                  - { key: enterprise, name: Enterprise, monthly_price_cents: 15000000, monthly_surcharge_cents: 0, monthly_total_cents: 15000000 }
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4819,13 +4849,19 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (a plan change needs a signed-in user to record)
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '404':
           description: Platform billing does not invoice this company, so it has no plan to change
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The choice would charge other than expected_monthly_charge_cents, or total other than expected_monthly_total_cents (plan_charge_changed); details.monthly_charge_cents and details.monthly_total_cents are what it would be now. Or the saved payment method changed while the total was checked (payment_method_changed); check again and retry. Or the saved card's funding is not known yet, so its fee is not either (card_funding_pending, card_surcharge.funding_pending on GET); try again shortly. Nothing was saved.
           content:
             application/json:
               schema:
@@ -5208,7 +5244,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, not an admin, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (a purchase needs a signed-in user to record)
           content:
             application/json:
               schema:
@@ -5368,7 +5404,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, not an admin, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (the charge needs a signed-in user to record)
           content:
             application/json:
               schema:

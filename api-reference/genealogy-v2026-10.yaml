@@ -26,8 +26,10 @@ tags:
   description: Preview and request current-time genealogy moves.
 - name: Genealogy reads
   description: Read current relationships from existing company-owned nodes.
+  x-fluid-section: Members
 - name: Genealogy placement
   description: Place members in binary and matrix trees and manage their holding tank.
+  x-fluid-section: Members
 security:
 - bearerAuth: []
 paths:
@@ -184,7 +186,12 @@ paths:
                 "$ref": "#/components/schemas/AuthError"
         '422':
           description: Invalid input or a required ownership, volume or role rule
-            was violated.
+            was violated, or default_placement_rule is one the tree's kind cannot
+            place by (error.details.type unsupported_placement_rule,
+            rule_not_confirmed, volume_not_available or preference_not_available).
+            Binary and matrix trees accept exact, first_empty, left, right and defer;
+            unilevel trees accept exact, under_enroller and mirror_enrollment; replica
+            trees record their back office's rule unchecked.
           content:
             application/json:
               schema:
@@ -227,6 +234,58 @@ paths:
             -H 'Authorization: Bearer <company-token>' \
             -H 'Content-Type: application/json' \
             --data \{\"tree\":\{\"key\":\"service-team\",\"name\":\"Service\ Team\",\"kind\":\"unilevel\",\"authority\":\"unconfigured\"\}\}
+  "/api/company/v2026-10/genealogy/tree-keys":
+    get:
+      x-fluid-audience: company
+      tags:
+      - Genealogy reads
+      summary: List tree keys
+      description: Company admin tier and members.view (or users.view) permission
+        are required. Droplet installation tokens are not supported. Lists only
+        each tree's id, key and name, ordered by key, so a member reader or placer
+        can turn a tree key such as placement into the tree UUID that tree paths
+        take. Tree configuration is not included; the full definitions stay on
+        the tree registry, which requires developer.view. The example uses
+        illustrative fixture IDs.
+      operationId: listCompanyGenealogyTreeKeys
+      responses:
+        '200':
+          description: The company's tree identifiers.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TreeKeyList"
+              example:
+                status: 200
+                trees:
+                - id: 9b7310f6-6dac-5a77-9726-21c9fade457a
+                  key: enrollment
+                  name: Enrollment
+                - id: 7096ad49-7117-53f6-8f7f-4805473d14c5
+                  key: placement
+                  name: Placement
+                meta:
+                  request_uuid:
+                  timestamp: '2026-10-03T00:00:00Z'
+        '401':
+          description: Credentials are missing or invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '403':
+          description: Company admin tier or member read permission is missing, or
+            a droplet installation token was supplied.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+      x-codeSamples:
+      - lang: Shell
+        label: List tree keys
+        source: |-
+          curl 'https://api.fluid.app/api/company/v2026-10/genealogy/tree-keys' \
+            -H 'Authorization: Bearer <company-token>'
   "/api/company/v2026-10/genealogy/trees/{id}":
     patch:
       tags:
@@ -291,7 +350,12 @@ paths:
                 "$ref": "#/components/schemas/AuthError"
         '422':
           description: Invalid input or a required ownership, volume or role rule
-            was violated.
+            was violated, or default_placement_rule is one the tree's kind cannot
+            place by (error.details.type unsupported_placement_rule,
+            rule_not_confirmed, volume_not_available or preference_not_available).
+            Binary and matrix trees accept exact, first_empty, left, right and defer;
+            unilevel trees accept exact, under_enroller and mirror_enrollment; replica
+            trees record their back office's rule unchecked.
           content:
             application/json:
               schema:
@@ -494,7 +558,9 @@ paths:
         first_empty, left and right are supported; inside, outside and balanced
         fail with rule_not_confirmed, enroller_preference with
         preference_not_available, and weak_leg and strong_leg with
-        volume_not_available. Rule searches never place below a discarded
+        volume_not_available. A request with parent_node_id and neither leg nor
+        rule follows the tree's default_placement_rule (unless it is exact,
+        which still needs a leg, or defer, refused as rule_not_supported). Rule searches never place below a discarded
         member's seat: first_empty skips it, and left or right stop above it
         (no_open_leg). The rule defer takes no parent and places the member in
         the tree's holding tank, returning the held seat with held_until. The
@@ -670,6 +736,354 @@ paths:
         label: List the holding tank
         source: |-
           curl 'https://api.fluid.app/api/company/v2026-10/genealogy/trees/7096ad49-7117-53f6-8f7f-4805473d14c5/holding-tank?limit=25' \
+            -H 'Authorization: Bearer <company-token>'
+  "/api/company/v2026-10/genealogy/trees/{tree_id}/mirror-enrollment":
+    post:
+      x-fluid-audience: company
+      tags: [Genealogy placement]
+      summary: Mirror the enrollment tree into the placement tree
+      description: >-
+        Requires a persisted company admin identity and members.manage (or
+        users.update); droplet tokens are not supported. The path names the
+        company's placement (sponsor-role) tree. For a company whose placement
+        tree uses mirror_enrollment and that has no legacy placement tree, it
+        seats every enrolled member who has no placement seat under their
+        enroller's placement seat (a root mirrors a root), roots first, and
+        re-parents an unpinned seat whose parent no longer matches; pinned
+        seats are left alone. Member writes keep the trees mirrored from then
+        on; this request backfills members seated before. It is idempotent:
+        a second run reports every member unchanged. With dry_run false the
+        mirror runs in the background: the response is 202 with a mirror run
+        (queued), read back from GET mirror-runs/{id} until it is succeeded,
+        failed or halted. A company has one active run at a time: a request
+        while one is queued or running answers that run with started false.
+        A run works in batches of
+        up to 100 members, each in its own short tree lock that reads both
+        tree definitions again. The enrollment tree is listed once per pass,
+        outside the lock; each later pass takes only members enrolled or moved
+        since, so a member enrolled during the run is mirrored. While
+        the placement tree is still empty, a batch first checks that its
+        max_depth covers the deepest enrollment chain (placement_too_shallow)
+        and seats nothing otherwise. Once a batch seats a member the placement
+        tree's definition is frozen, so a member the placement engine refuses
+        later (an enrollment chain deeper than the placement tree holds is
+        refused max_depth_exceeded) is counted under failed and listed in
+        failures, the batches already written stand, and the run ends halted
+        (mirror_members_refused) rather than succeeded; a rerun finishes the
+        mirror. A member a live
+        enrollment write moved during the run is mirrored again. A run halts
+        (mirror_window_limit) after twice the lock windows the enrollment seats
+        at its start needed, so seats that keep arriving cannot keep it going.
+        With dry_run true nothing is written and the counts say at once what
+        would change, including members the run would refuse (counted under
+        failed and listed in failures); a preview covers at most 5,000 enrollment seats
+        (preview_too_large), and a real run has no seat limit. The company needs
+        GENEALOGY_TREE_WRITES with both default trees authoritative
+        (tree_writes_not_enabled otherwise); the rule must be mirror_enrollment
+        (placement_not_mirrored), the company must not place from a legacy
+        placement tree (legacy_placement_tree), the placement tree's max_depth
+        must be at least the enrollment tree's and its deepest chain (placement_too_shallow).
+        These are checked before a run is queued and again by the run. The example uses illustrative IDs.
+      operationId: mirrorCompanyGenealogyEnrollment
+      parameters:
+      - in: path
+        name: tree_id
+        required: true
+        description: UUID of the company's placement (sponsor-role) tree.
+        schema: {type: string, format: uuid}
+        example: 7096ad49-7117-53f6-8f7f-4805473d14c5
+      requestBody:
+        required: true
+        description: Whether to preview or apply the mirror.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mirror]
+              properties:
+                mirror:
+                  type: object
+                  additionalProperties: false
+                  required: [dry_run]
+                  properties:
+                    dry_run:
+                      type: boolean
+                      description: True to report at once what would change and write
+                        nothing; false to queue a background run that applies it.
+            example:
+              mirror: {dry_run: true}
+      responses:
+        '202':
+          description: A background run applying the mirror (dry_run false). started
+            is true for a run this request queued and false for the run already
+            active for the company.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror_run, started, status, meta]
+                properties:
+                  status: {type: integer}
+                  meta: {type: object}
+                  started: {type: boolean}
+                  mirror_run: {"$ref": "#/components/schemas/MirrorRun"}
+              example:
+                status: 202
+                started: true
+                mirror_run:
+                  id: 01a08944-f646-7385-b8c7-a71782556f1a
+                  tree_id: 7096ad49-7117-53f6-8f7f-4805473d14c5
+                  status: queued
+                  counts: {seated: 0, followed: 0, unchanged: 0, pinned: 0, parent_unseated: 0, failed: 0}
+                  failures: []
+                  failure_type: null
+                  failure_description: null
+                  windows: 0
+                  attempts: 0
+                  requested_by_id: c0dd6812-0ba6-56d2-879c-a36112f813c2
+                  created_at: '2026-10-07T00:00:00.000000Z'
+                  started_at: null
+                  finished_at: null
+                meta:
+                  request_uuid: null
+                  timestamp: '2026-10-07T00:00:00Z'
+        '200':
+          description: The tally of the preview (dry_run true).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror, status, meta]
+                properties:
+                  status: {type: integer}
+                  meta: {type: object}
+                  mirror:
+                    type: object
+                    required: [tree_id, dry_run, counts, failures]
+                    properties:
+                      tree_id: {type: string, format: uuid}
+                      dry_run: {type: boolean}
+                      counts:
+                        type: object
+                        description: Members per outcome.
+                        required: [seated, followed, unchanged, pinned, parent_unseated, failed]
+                        properties:
+                          seated: {type: integer}
+                          followed: {type: integer}
+                          unchanged: {type: integer}
+                          pinned: {type: integer}
+                          parent_unseated: {type: integer}
+                          failed: {type: integer}
+                      failures:
+                        type: array
+                        description: The first 50 members the placement engine refused; seats written for other members stand.
+                        items:
+                          type: object
+                          required: [member_id, type, description]
+                          properties:
+                            member_id: {type: string, format: uuid}
+                            type: {type: string}
+                            description: {type: string}
+              example:
+                status: 200
+                mirror:
+                  tree_id: 7096ad49-7117-53f6-8f7f-4805473d14c5
+                  dry_run: true
+                  counts: {seated: 50, followed: 0, unchanged: 2, pinned: 0, parent_unseated: 0, failed: 0}
+                  failures: []
+                meta:
+                  request_uuid: null
+                  timestamp: '2026-10-04T00:00:00Z'
+        '401':
+          description: Credentials are missing or invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '403':
+          description: A company admin identity or members.manage is required.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '404':
+          description: The tree is unavailable in this company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+        '422':
+          description: Invalid parameters, a tree that is not the placement tree
+            (not_placement_tree), or a company that does not mirror its placement
+            tree (tree_writes_not_enabled, placement_not_mirrored,
+            legacy_placement_tree, placement_too_shallow when the placement tree's
+            max_depth is below the enrollment tree's or its deepest chain), or a
+            preview of more than 5,000 enrollment seats (preview_too_large).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+      x-codeSamples:
+      - lang: Shell
+        label: Preview the placement mirror
+        source: |-
+          curl -X POST 'https://api.fluid.app/api/company/v2026-10/genealogy/trees/7096ad49-7117-53f6-8f7f-4805473d14c5/mirror-enrollment' \
+            -H 'Authorization: Bearer <company-token>' \
+            -H 'Content-Type: application/json' \
+            --data '{"mirror":{"dry_run":true}}'
+  "/api/company/v2026-10/genealogy/mirror-runs":
+    get:
+      x-fluid-audience: company
+      tags: [Genealogy placement]
+      summary: List placement mirror runs
+      description: >-
+        The company's most recent background placement mirror runs, newest
+        first. Requires a persisted company admin identity and members.manage
+        (or users.update), as starting a run does; droplet tokens are not
+        supported. Read from the primary, so progress is current.
+      operationId: listCompanyGenealogyMirrorRuns
+      parameters:
+      - in: query
+        name: status
+        required: false
+        description: Only runs in this status.
+        schema: {type: string, enum: [queued, running, succeeded, failed, halted]}
+      - in: query
+        name: limit
+        required: false
+        description: How many runs to return, 1 to 100 (default 25).
+        schema: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        '200':
+          description: The most recent runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror_runs, status, meta]
+                properties:
+                  status: {type: integer}
+                  meta: {type: object}
+                  mirror_runs:
+                    type: array
+                    items: {"$ref": "#/components/schemas/MirrorRun"}
+              example:
+                status: 200
+                mirror_runs:
+                - id: 01a08944-f646-7385-b8c7-a71782556f1a
+                  tree_id: 7096ad49-7117-53f6-8f7f-4805473d14c5
+                  status: succeeded
+                  counts: {seated: 50, followed: 0, unchanged: 2, pinned: 0, parent_unseated: 0, failed: 0}
+                  failures: []
+                  failure_type: null
+                  failure_description: null
+                  windows: 2
+                  attempts: 1
+                  requested_by_id: c0dd6812-0ba6-56d2-879c-a36112f813c2
+                  created_at: '2026-10-07T00:00:00.000000Z'
+                  started_at: '2026-10-07T00:00:01.000000Z'
+                  finished_at: '2026-10-07T00:00:03.000000Z'
+                meta:
+                  request_uuid: null
+                  timestamp: '2026-10-07T00:00:05Z'
+        '401':
+          description: Credentials are missing or invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '403':
+          description: A company admin identity or members.manage is required.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '422':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+      x-codeSamples:
+      - lang: Shell
+        label: List placement mirror runs
+        source: |-
+          curl -X GET 'https://api.fluid.app/api/company/v2026-10/genealogy/mirror-runs?limit=5' \
+            -H 'Authorization: Bearer <company-token>'
+  "/api/company/v2026-10/genealogy/mirror-runs/{id}":
+    get:
+      x-fluid-audience: company
+      tags: [Genealogy placement]
+      summary: Read a placement mirror run
+      description: >-
+        One background placement mirror run and its progress: counts and
+        windows are written after every lock window while it runs. Requires
+        a persisted company admin identity and members.manage (or
+        users.update); droplet tokens are not supported. A run of another
+        company is not found.
+      operationId: getCompanyGenealogyMirrorRun
+      parameters:
+      - in: path
+        name: id
+        required: true
+        description: Mirror run UUID.
+        schema: {type: string, format: uuid}
+        example: 01a08944-f646-7385-b8c7-a71782556f1a
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror_run, status, meta]
+                properties:
+                  status: {type: integer}
+                  meta: {type: object}
+                  mirror_run: {"$ref": "#/components/schemas/MirrorRun"}
+              example:
+                status: 200
+                mirror_run:
+                  id: 01a08944-f646-7385-b8c7-a71782556f1a
+                  tree_id: 7096ad49-7117-53f6-8f7f-4805473d14c5
+                  status: running
+                  counts: {seated: 100, followed: 0, unchanged: 0, pinned: 0, parent_unseated: 0, failed: 0}
+                  failures: []
+                  failure_type: null
+                  failure_description: null
+                  windows: 1
+                  attempts: 1
+                  requested_by_id: c0dd6812-0ba6-56d2-879c-a36112f813c2
+                  created_at: '2026-10-07T00:00:00.000000Z'
+                  started_at: '2026-10-07T00:00:01.000000Z'
+                  finished_at: null
+                meta:
+                  request_uuid: null
+                  timestamp: '2026-10-07T00:00:02Z'
+        '401':
+          description: Credentials are missing or invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '403':
+          description: A company admin identity or members.manage is required.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AuthError"
+        '404':
+          description: The run is unavailable in this company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+      x-codeSamples:
+      - lang: Shell
+        label: Read a placement mirror run
+        source: |-
+          curl -X GET 'https://api.fluid.app/api/company/v2026-10/genealogy/mirror-runs/01a08944-f646-7385-b8c7-a71782556f1a' \
             -H 'Authorization: Bearer <company-token>'
   "/api/company/v2026-10/genealogy/nodes/{id}":
     get:
@@ -1066,7 +1480,8 @@ paths:
               schema:
                 "$ref": "#/components/schemas/AuthError"
         '404':
-          description: The subject is not available in this company.
+          description: The subject is not available in this company (error.details.type record_missing),
+            or its member has no seat in the placement tree (error.details.type no_seat_in_tree).
           content:
             application/json:
               schema:
@@ -1131,7 +1546,8 @@ paths:
               schema:
                 "$ref": "#/components/schemas/AuthError"
         '404':
-          description: The subject is not available in this company.
+          description: The subject is not available in this company (error.details.type record_missing),
+            or its member has no seat in the enrollment tree (error.details.type no_seat_in_tree).
           content:
             application/json:
               schema:
@@ -1872,6 +2288,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/AuthError"
+        '503':
+          description: Move admission has not been enabled for this company. The preview is refused exactly as the move would be.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
       x-codeSamples:
       - lang: Shell
         label: Preview a company genealogy move
@@ -2168,6 +2590,12 @@ paths:
                 "$ref": "#/components/schemas/Error"
         '429':
           "$ref": "#/components/responses/RateLimited"
+        '503':
+          description: Move admission has not been enabled for this company. The preview is refused exactly as the move would be.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
       x-codeSamples:
       - lang: Shell
         label: Preview a member genealogy move
@@ -4413,7 +4841,8 @@ paths:
               schema:
                 "$ref": "#/components/schemas/AuthError"
         '404':
-          description: The anchor is unavailable; error.details.type is record_missing.
+          description: The anchor is unavailable (error.details.type record_missing),
+            or its member has no seat in the placement tree (error.details.type no_seat_in_tree).
           content:
             application/json:
               schema:
@@ -4509,7 +4938,8 @@ paths:
               schema:
                 "$ref": "#/components/schemas/AuthError"
         '404':
-          description: The anchor is unavailable; error.details.type is record_missing.
+          description: The anchor is unavailable (error.details.type record_missing),
+            or its member has no seat in the enrollment tree (error.details.type no_seat_in_tree).
           content:
             application/json:
               schema:
@@ -5375,6 +5805,40 @@ components:
       - status
       - trees
       - meta
+    TreeKeyList:
+      type: object
+      properties:
+        status:
+          type: integer
+        trees:
+          type: array
+          items:
+            "$ref": "#/components/schemas/TreeKey"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      required:
+      - status
+      - trees
+      - meta
+    TreeKey:
+      type: object
+      description: A tree's identifiers, without its configuration.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Tree identifier.
+          format: uuid
+        key:
+          type: string
+          description: Case-insensitive key unique within the company.
+        name:
+          type: string
+          description: Display name.
+      required:
+      - id
+      - key
+      - name
     CurrentRelationship:
       type: object
       properties:
@@ -6007,6 +6471,67 @@ components:
       - expires_at
       - decided_at
       additionalProperties: false
+    MirrorRun:
+      type: object
+      additionalProperties: false
+      description: A background backfill of the placement tree from the enrollment
+        tree. A run that resumed after its worker stopped starts its tally again;
+        members the earlier attempt mirrored count as unchanged.
+      required: [id, tree_id, status, counts, failures, failure_type, failure_description,
+        windows, attempts, requested_by_id, created_at, started_at, finished_at]
+      properties:
+        id: {type: string, format: uuid}
+        tree_id:
+          type: string
+          format: uuid
+          description: The placement (sponsor-role) tree.
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, halted]
+          description: failed when a refusal or error stopped the run before it mirrored
+            anyone; halted when a refusal or the window bound stopped it after
+            batches were written, which stand (rerun to finish).
+        counts:
+          type: object
+          additionalProperties: false
+          description: Members per outcome so far.
+          required: [seated, followed, unchanged, pinned, parent_unseated, failed]
+          properties:
+            seated: {type: integer}
+            followed: {type: integer}
+            unchanged: {type: integer}
+            pinned: {type: integer}
+            parent_unseated: {type: integer}
+            failed: {type: integer}
+        failures:
+          type: array
+          description: The first 50 members the placement engine refused.
+          items:
+            type: object
+            required: [member_id, type, description]
+            properties:
+              member_id: {type: string, format: uuid}
+              type: {type: string}
+              description: {type: string}
+        failure_type:
+          type: [string, 'null']
+          description: Why a failed or halted run stopped (for example
+            placement_too_shallow, mirror_members_refused, mirror_window_limit,
+            mirror_run_error).
+        failure_description: {type: [string, 'null']}
+        windows:
+          type: integer
+          description: Lock windows opened so far; each mirrors up to 100 members.
+        attempts:
+          type: integer
+          description: Times a worker claimed the run; above 1 after a resume.
+        requested_by_id:
+          type: string
+          format: uuid
+          description: The company admin who started the run.
+        created_at: {type: string, format: date-time}
+        started_at: {type: [string, 'null'], format: date-time}
+        finished_at: {type: [string, 'null'], format: date-time}
     MoveJob:
       type: object
       properties:
