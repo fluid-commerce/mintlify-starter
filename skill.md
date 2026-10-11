@@ -95,7 +95,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
 - **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
-- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist push`, `fluid mist logs`, `fluid mist env set`, `fluid mist attach`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
 
 ## Admin portal help
 
