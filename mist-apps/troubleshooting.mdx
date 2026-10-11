@@ -1,0 +1,145 @@
+---
+title: "Troubleshoot a Mist app"
+sidebarTitle: "Troubleshooting"
+description: "Fix the common Mist app problems: a create or publish that fails, an app that crashes, database and environment variable errors, rejected webhooks, embeds that won't load, and restoring a deleted app."
+---
+
+import ContactSupport from "/snippets/contact-support.mdx";
+
+Start with the logs. Most problems show up there first.
+
+- **Mist desktop app**: click **Logs**. The **Production** tab shows the live app. The **Local** tab shows your computer.
+- **CLI**: `fluid mist logs --tail` streams the live app's build and runtime logs.
+
+You can also ask Mist, for example "Why did my app crash?". Mist reads the logs and tells you what it finds.
+
+## Creating the app fails
+
+| What you see | What to do |
+| --- | --- |
+| "We couldn't finish creating your Mist right now." | This is usually temporary. Fluid has already undone the partial setup, so try again in a moment. |
+| A `402` status with `credits_exhausted` | Your company is out of usage credits. Buy more on [Billing](/help/admin/settings/billing), then try again. |
+| A `409` status with `duplicate_recent_create` | You created an app with the same name in the last few minutes. Use the app you already have, or wait 10 minutes. |
+| A `503` status with `admission_unavailable` | Nothing was created. Try again. |
+| No **Create Mist** button, or a `403` status | Your role needs the Mist permission that starts with **Create new Mist hostings**. See [Roles](/help/admin/settings/roles). |
+
+If an app shows **Failed**, it was rolled back. Create a new one.
+
+## The app stays in provisioning
+
+An app moves to `live` once its first deployment starts. Check its state with `fluid mist show`. If it stays in `provisioning` for more than a few minutes, run `fluid mist deployments` to see whether the first deployment failed.
+
+## A publish or build fails
+
+<Steps>
+  <Step title="Read the build log">
+    Open **Publish output** in Mist, or run `fluid mist logs --deployment <id>` with the ID from `fluid mist deployments`. Look for the first error.
+  </Step>
+  <Step title="Reproduce it locally">
+    Run the same checks the build depends on:
+
+    ```bash
+    npm run typecheck
+    npm run lint
+    npm run build
+    ```
+  </Step>
+  <Step title="Fix and publish again">
+    Fix the error, then publish again.
+  </Step>
+</Steps>
+
+Mist tries one fix on its own when a publish fails. For each reason Mist reports, see [If a publish fails](/help/mist/run-and-publish#if-a-publish-fails).
+
+To go back to the last version that worked, see [Roll back](/help/mist/run-and-publish#roll-back).
+
+## The live app crashes or returns errors
+
+Open the **Production** logs, then load the failing page again. The request's error shows up as it happens. Errors your code logs with `console.error` show up there too.
+
+If a change works locally but not live, check what differs in production:
+
+- **Data.** Production has its own database. Rows you created locally aren't there.
+- **Environment variables.** A variable in your `.env.local` must also be set on the app. See [Add your own environment variables](/mist-apps/hosting#add-your-own-environment-variables).
+- **Embedding.** A page that works on its own can still be blocked inside Fluid. See [The embed won't load](#the-embed-wont-load).
+
+If the first request after a quiet period is slow, check the app's **Compute** setting. **Standard serverless** sleeps between requests, so the first request waits for the app to start. **Fluid Compute** keeps it warm. See [Compute](/mist-apps/hosting#compute).
+
+## Database errors
+
+Open `/api/health` on the app. It returns `{"db":"ok"}` when the database answers, or a `503` with the error.
+
+| Error | Cause and fix |
+| --- | --- |
+| `DATABASE_URL is not set` | The app ran in production mode outside Mist hosting, for example with `npm start` on your computer. Use `npm run dev` locally. |
+| `relation "…" does not exist` | The table hasn't been created yet. Add it to `ensureSchema()` and call it before the query. See [Add a table](/mist-apps/starter-template#add-a-table). |
+
+To start your local database over, stop the app and delete the `local.db` folder. It's created again on the next `npm run dev`.
+
+You can browse the app's local and production data in Mist, read-only. See [Databases](/help/mist/databases).
+
+## Environment variable problems
+
+| Problem | Fix |
+| --- | --- |
+| A new value doesn't take effect | Variables apply on the next deployment. Publish again, or run `fluid mist push`. |
+| "…is managed by Fluid" or "…is managed by Mist" | Fluid sets that variable for you. Use a different name for your own. See [Environment variables Fluid sets](/mist-apps/hosting#environment-variables-fluid-sets). |
+| A droplet variable, such as `FLUID_DROPLET_UUID`, is missing | The app has no droplet. [Add a droplet integration point](/mist-apps/integration-points#add-an-integration-point). |
+| A value is missing locally | Fluid doesn't send encrypted values back. Add it to `.env.local` yourself. |
+
+## Webhooks are rejected
+
+The template's webhook route returns these errors. Find the message in the production logs.
+
+| Status and message | Cause and fix |
+| --- | --- |
+| `500` "Webhook authentication not configured" | The app has no `FLUID_WEBHOOK_AUTH_TOKEN`, so it can't check lifecycle webhooks. Add a droplet integration point, which sets it. |
+| `401` "Missing X-Fluid-Signature header" | The request wasn't signed. Fluid signs every webhook, so the request didn't come from Fluid. |
+| `401` "Webhook timestamp too old" | The webhook is more than five minutes old, or it was replayed. Check that your server's clock is correct. |
+| `401` "Invalid signature" | Your code changed the body before the check, or used the wrong secret. Verify the raw body, exactly as received. |
+| `401` "No active company for fluid_shop" | The company hasn't installed the droplet, or the install didn't finish. Check that `droplet.installed` reached the app. |
+| `202` with `"handled": false` | The webhook was accepted, but no handler is registered for it. Register one in `lib/handlers/index.ts`. |
+
+If installs never reach the app, run `fluid mist droplet repair`. It fixes the droplet's embed and lifecycle webhook URLs when they don't match the app.
+
+Every webhook the app receives is saved in its `webhooks` table, with any error. Query it in [Databases](/help/mist/databases) to see what arrived.
+
+## The embed won't load
+
+| What you see | Cause and fix |
+| --- | --- |
+| The frame is blank, and the browser console mentions `frame-ancestors` | The page that frames your app isn't on `fluid.app`. Add its domain to `FLUID_FRAME_ANCESTORS` in `proxy.ts`. See [Frame the app inside Fluid](/mist-apps/integration-points#frame-the-app-inside-fluid). |
+| "Open this in Fluid" | The page is wrapped in `<EmbedGuard>` and was opened directly. Open it from Fluid. |
+| "Fluid installation context not found" | The request had no valid installation reference, or the installation isn't active. Make sure your client code sends it with `fluidInstallationFetch()`. |
+| "Viewer identity unavailable. Reload this page from Fluid." | The session token was missing, expired or couldn't be checked. Reload the page from Fluid. Locally this is expected, because the session-token variables exist only in production. |
+| "This Mist has no public URL yet" | The app is still being set up. Wait until it's live, then add the integration point. |
+
+Verifying a viewer also needs the `settings` scope on the droplet installation. Without it, the store lookup is refused and the page returns `401`.
+
+## A custom domain doesn't work
+
+See [Connect a custom domain](/mist-apps/domains#troubleshooting).
+
+## Restore a deleted app
+
+A deleted app is kept for 15 days. Until then, you can restore it with its code, database and settings intact.
+
+```bash
+fluid mist restore 3bed85
+```
+
+You can also use [Cancel a pending teardown](/api-reference/mists/cancel-a-pending-teardown-within-the-15-day-grace-window) in the API. The Mist desktop app doesn't have a restore button yet.
+
+After 15 days, Fluid permanently deletes the app's repository, database and hosting. It can't be restored.
+
+## Get help
+
+If you're still stuck, contact Fluid support. Include the app's slug, what you did and the error from the logs.
+
+<ContactSupport />
+
+## Related pages
+
+- [Run and publish](/help/mist/run-and-publish) in the Help Center
+- [Hosting, database and environment variables](/mist-apps/hosting)
+- [Authentication](/mist-apps/authentication)
