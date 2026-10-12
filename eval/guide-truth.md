@@ -1333,6 +1333,14 @@ binding warning: do not mix the surfaces within one cart lifecycle, because unsu
 line reprices bundle children and releases the derived price lock on the Public SDK API while the
 Checkout API only clears the subscription fields.
 
+Amended 2026-10-10: the Checkout API gained dedicated `POST`/`DELETE
+/api/checkout/v2026-04/carts/{cart_token}/items/{item_id}/subscription` operations
+(`checkout_v2026_04_subscribe_cart_item`, `checkout_v2026_04_unsubscribe_cart_item`), which run
+the same subscribe/unsubscribe path as the Public SDK API, including bundle repricing on
+unsubscribe. The equivalence map now points the "Subscribe or unsubscribe a line" row at them.
+The warning stays, narrowed: clearing subscription fields through `PATCH items/{id}` still does
+not reprice bundle children, so the page steers readers to the dedicated operations.
+
 Both OpenAPI `info.description` blocks state audience, unique capability, authentication model, and
 the reciprocal boundary. The shared choosing page is their stable cross-link because an OpenAPI nav
 group has no landing page.
@@ -2548,55 +2556,63 @@ Durable decisions:
   blocked IPs, unknown host) are listed without internals. The billing pause links to the
   Help Center Billing **Status** card. There is no maintenance or password mode.
 
-## Member API overview covers every member area (2026-10-08)
+## Member API overview covers every member area (2026-10-08, revised 2026-10-12)
 
 ENG-2067. `api/member-apis.mdx` said the member API covered only identity, memberships, and team. That
 went stale when fluid#24515 added contacts (merged 2026-10-06) and the ten other member specs
-were synced on 2026-10-07. The page now maps every Member API sidebar group, and links each
-operation's generated page. `api/company-and-member-apis.mdx` lost the same "profile,
-memberships, and team" scope and its "the member's JWT" wording, since a member token isn't a
-JWT. Neither page is in the claims registry. Verified against `origin/main` of the Rails
-monorepo (the member routes, the member API base controller, the credential resolver and its
-strategies, and the access concerns) and the eleven `member-*-v2026-10` specs:
+were synced on 2026-10-07. Mike's 516c2c9 and 8cee87e (2026-10-09) replaced the Note with an
+"Everything else" table, one row and one starting link per area, and dropped One Auth tokens
+until they're public. ENG-2067 builds on that table rather than replacing it. It adds a detailed
+**Contacts** section, the per-area eligibility rules, the full email-link JWT list, and the team
+rules after fluid#25535. `api/company-and-member-apis.mdx` lost the same "profile, memberships,
+and team" scope and its "the member's JWT" wording, since a member token isn't a JWT. Neither page
+is in the claims registry. Verified against `origin/main` of the Rails monorepo (the member routes,
+the member API and team controllers, the credential resolver and its strategies, the access
+concerns, the messaging participant rule, and the member move policy) and the eleven
+`member-*-v2026-10` specs:
 
-- **Credentials.** The page names member session JWTs, portal JWTs, and member tokens, and
-  says the list isn't exhaustive. Identity-service access tokens also resolve, but only where
-  an environment setting turns the identity service on, so the page doesn't name them, and it
-  never names the identity service. Member session JWTs and portal JWTs are read-only, so the
-  page tells readers to write with a member token.
+- **Credentials.** The page lists member tokens, member session JWTs, and portal JWTs. It doesn't
+  name the identity service's access tokens until they're public (Mike, 2026-10-09). They resolve
+  only where an environment setting turns the identity service on. Member session JWTs and portal
+  JWTs are read-only. Admin and impersonation credentials get `401`.
 - **Email-link JWT.** The member session JWT travels in order and subscription email links.
   Contacts (with their imports, activities, notes, tasks, orders, and subscriptions), groups,
   notes, tasks, messaging, AI conversations, the statistics reads, My Site statistics, push
   devices, and the team list refuse it with `403`. Orders, subscriptions, and the activity feed
   accept it.
-- **Eligibility differs by area, so the page states it per section, not as one rule.**
-  - The rep member type, or an admin: contacts, groups, notes, tasks, and the team list.
+- **Eligibility is an allow-list per area, so the page names who is let in, not only who is
+  refused** (Otto review on #131, 2026-10-09):
+  - The rep member type (or an admin row): contacts, groups, notes, tasks, the team list, and
+    messaging, which also needs a messaging identity. A company's own member types are refused.
+    For messaging, **Can act as rep** doesn't qualify a type.
   - The member type's **Can act as rep** switch (`rep_eligible`): media, uploads, playlists,
     shares, asset statistics, the AI assistant, and My Site.
-  - Messaging has its own participant rule. Customer and preferred-customer memberships get `403`.
   - Every membership can use catalogue search, the dashboard, and the activity feed.
-- **Team routes authenticate differently.** The seat, tree, and move routes use the older
-  token path for reads. They then check writes against the member credential policy, so a
-  session or portal JWT gets `403` on a move, and an admin's credential `401`. Because the
-  reads use the older path, an admin's own user token or portal JWT reads the team as that
-  admin's own membership. Company tokens set no membership and get `401`. The member's own seat
-  can't be moved (the policy needs a positive distance from it), and requesting a move needs
-  **Can act as rep**.
-- **fluid-commerce/mintlify-starter#86 (draft, 2026-09-30) checked against main on
-  2026-10-09.** Taken from it: the team-read admin exception, the own-seat rule, and refusing
-  impersonation credentials. Left out, because main changed after it: moves with a session or
-  portal JWT (now `403`), and credited orders always hiding the buyer. Buyer details now show
-  when the company's contact-visibility policy allows, and never to the email-link JWT. Its
-  `team` / `team-moves` URLs depend on fluid#24340, which is still open, and are 404 on the live
-  site. Its AGENTS.md surface-first rule and its `pageSlug()` fix stay with that PR.
+- **Team routes use the member credential resolver for reads too (fluid#25535, merged
+  2026-10-09).** Before that, reads went through the older token path alone, and an admin's
+  portal JWT or an impersonation JWT could read the team. The 2026-10-08 draft of this entry
+  recorded that older behaviour, and so did the draft PR fluid-commerce/mintlify-starter#86. Now
+  every team route refuses what the rest of the member API refuses. The one exception is reads by
+  a member whose user is also an admin of the company (an owner who is also a rep), with that
+  member's own opaque token (`own_token_of_admin_member`). Writes still refuse read-only JWTs with
+  `403`. The member's own seat can't be moved, because the move policy needs a positive distance
+  from it. Requesting a move needs **Can act as rep**.
+- **From #86, still true:** the own-seat rule and the refusal of impersonation credentials.
+  **No longer true:**
+  - moves with a session or portal JWT (now `403`);
+  - admin team reads (refused since #25535);
+  - credited orders always hiding the buyer. Buyer details now show when the company's
+    contact-visibility policy allows it, and never to the email-link JWT.
+
+  Its `team` / `team-moves` URLs depend on fluid#24340, which is still open. Its AGENTS.md
+  surface-first rule and its `pageSlug()` fix stay with that PR.
 - **Curly apostrophes stay in slugs.** Mintlify keeps `’` in a page slug, but
-  `eval/generate-api-nav.mjs` `pageSlug()` drops it. Three member operations are affected:
+  `eval/generate-api-nav.mjs` `pageSlug()` drops it. It affects three member operations:
   `orders/list-the-signed-in-member’s-orders`,
   `subscriptions/list-the-signed-in-member’s-product-subscriptions`, and
-  `subscriptions/show-one-of-the-member’s-subscriptions`. Links to them use the curly form,
-  checked on the live site. The generator fix is in fluid-commerce/mintlify-starter#86.
-- **One more duplicate summary.** The member `GET …/subscriptions/{id}/failed-cycle-waiver`
+  `subscriptions/show-one-of-the-member’s-subscriptions`. A hand-written link to one must use the
+  curly form. The generator fix is in #86.
+- **One more duplicate summary (ENG-2068).** The member `GET …/subscriptions/{id}/failed-cycle-waiver`
   ("Preview a failed-cycle waiver") shares its tag and summary with Checkout's. The generator
   leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
-  Checkout's operation. The page doesn't link it. It needs a unique summary upstream
-  (ENG-2068).
+  Checkout's operation. It needs a unique summary upstream.

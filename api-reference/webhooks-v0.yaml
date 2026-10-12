@@ -2,8 +2,16 @@
 openapi: 3.1.0
 info:
   title: Fluid Webhooks API
-  description: Webhook subscriptions, callback registrations, webhook/callback schemas,
-    and company events.
+  description: |
+    Webhook subscriptions, callback registrations, webhook/callback schemas, and company events. Product-created and product-updated deliveries using the product webhook serializer include the optional per-tier bundle_prices field documented by ProductWebhookPayload. The schema registry describes its existing stored schema; it does not recursively enumerate these nested product fields.
+
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation in this API that resolves the company from the request's
+    credential refuses a credential for it with `403` and the body
+    `{"error": "<message>"}`, before the operation runs. The refusal is
+    documented here once rather than on each operation.
   version: v0
   contact:
     email: support@fluid.app
@@ -38,6 +46,110 @@ components:
       scheme: bearer
       description: Bearer token authentication
   schemas:
+    ProductWebhookBundlePrice:
+      type: object
+      additionalProperties: false
+      description: >-
+        One active pricing tier for the webhook's existing country context
+        (first product access country, otherwise company default), using that
+        country's first regional currency. Rows are present only for bundles on
+        the bundle row gate. Prices unavailable from that tier remain null;
+        configured one-time zero is data. No JSON or cached price is substituted.
+      required: [pricing_tier_id, tier_key, currency, price, subscription_price, cv, qv, points]
+      properties:
+        pricing_tier_id:
+          type: string
+          format: uuid
+          description: Stable company-owned pricing tier identity.
+          example: 0196f74d-620a-7000-8000-000000000001
+        tier_key:
+          type: string
+          description: Tier display name normalized to a lowercase underscore key; use pricing_tier_id for stable identity.
+          example: preferred
+        currency:
+          type: [string, 'null']
+          description: Regional ISO 4217 currency, or null when destination context is unavailable.
+          example: USD
+        price:
+          type: [string, 'null']
+          description: One-time minimum selection price as a decimal string, or null when unavailable.
+          example: '40.0'
+        subscription_price:
+          type: [string, 'null']
+          description: >-
+            Always null for bundles on the bundle row gate: bundle subscriptions
+            are refused at checkout, so no recurring offer is exported.
+          example: null
+        cv:
+          type: [string, 'null']
+          description: >-
+            Commission volume as an exact decimal string, independent of price
+            availability. No dynamic children are selected in this product preview.
+            Missing volume contributes zero. Null when the destination country, tier or regional currency is unresolved, the bundle has no master variant, or a bundle component is unavailable (foreign or discarded), because components are never read for volumes in that case.
+          example: '3.25'
+        qv:
+          type: [string, 'null']
+          description: Qualifying volume with the same availability and preview rules as cv.
+          example: '2.0'
+        points:
+          type: [integer, 'null']
+          description: >-
+            Parent bundle points at this price tier, independent of price availability;
+            a configured zero is data. Null when the destination country, tier or
+            regional currency is unresolved, or the tier has no points row, so
+            checkout would not credit points either.
+          example: 7
+    ProductWebhookPayload:
+      type: object
+      description: >-
+        The product object inside product-created and product-updated webhook
+        deliveries using Ams::ProductWebhookBlueprint. Existing product fields
+        remain present. The optional bundle_prices array is additive and omitted
+        for non-bundles and companies outside the bundle row gate. Legacy bundle
+        fields remain Retail and Wholesale. Discarded-product delivery producers
+        using the base serializer retain their existing payload shape.
+      properties:
+        is_bundle:
+          type: boolean
+          description: True for bundle products and false otherwise, for every company.
+          example: true
+        bundle_prices:
+          type: array
+          description: Active company tiers ordered by tier level and identity, in the webhook country's regional currency.
+          items:
+            $ref: '#/components/schemas/ProductWebhookBundlePrice'
+        bundle_price:
+          type: [string, 'null']
+          description: Retail one-time bundle price, in the country's own currency, or null when unavailable. Null as well when the destination's regional pricing currency differs from the country's own currency, and the amount is then only in bundle_prices, with its explicit currency.
+          example: '40.0'
+        bundle_wholesale_price:
+          type: [string, 'null']
+          description: Wholesale one-time bundle price, in the country's own currency, or null when unavailable. Null as well when the destination's regional pricing currency differs from the country's own currency, and the amount is then only in bundle_prices, with its explicit currency.
+          example: '32.0'
+        bundle_subscription_price:
+          type: [string, 'null']
+          description: Retail recurring offer; null for bundles on the bundle row gate.
+          example: '36.0'
+        bundle_wholesale_subscription_price:
+          type: [string, 'null']
+          description: Wholesale recurring offer; null for bundles on the bundle row gate.
+          example: '28.8'
+        bundle_cv:
+          type: [string, 'null']
+          description: Retail bundle commission volume as an exact decimal string.
+          example: '3.25'
+        bundle_qv:
+          type: [string, 'null']
+          description: Retail bundle qualifying volume as an exact decimal string.
+          example: '2.0'
+        bundle_wholesale_cv:
+          type: [string, 'null']
+          description: Wholesale bundle commission volume as an exact decimal string.
+          example: '7.0'
+        bundle_wholesale_qv:
+          type: [string, 'null']
+          description: Wholesale bundle qualifying volume as an exact decimal string.
+          example: '6.0'
     Meta:
       type: object
       properties:
@@ -112,6 +224,8 @@ components:
           description: |
             HTTPS endpoint Fluid delivers matching events to. In production it must be
             publicly reachable — Fluid does not deliver to internal or private hosts.
+            On a sandbox test store, a droplet or OAuth token receives only the URL's
+            origin (scheme, host and port); deliveries still use the full URL.
         active:
           type: boolean
           description: |
@@ -153,7 +267,8 @@ components:
           - 'null'
           description: |
             Shared secret Fluid signs each delivery with; `null` when none is set.
-            Rotate it by sending a new value to the update endpoint.
+            Rotate it by sending a new value to the update endpoint. Omitted on a
+            sandbox test store when the caller is a droplet or OAuth token.
         created_at:
           type: string
           format: date-time
@@ -883,7 +998,12 @@ components:
                 event, as `{id, slug, name}`. `null` when the member had no
                 type before (e.g. a new member). The key is absent entirely
                 when the firing site could not capture the previous type --
-                consumers must treat an absent key as unknown, never infer
+                a checkout enrollment whose frozen evidence predates
+                per-assignment type capture (schema-1), disagrees with the
+                member's recorded role transition, or is missing; a legacy
+                (protocol 2) checkout enrollment; or a member-type change made
+                outside a checkout enrollment.
+                Consumers must treat an absent key as unknown, never infer
                 "no previous type" from it. Absent on every other event.
               type:
               - object

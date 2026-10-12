@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.2"
+  version: "1.3"
 ---
 
 # Fluid
@@ -28,6 +28,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
+| Build, host or troubleshoot a Mist app: hosting, database, env vars, integration points, domains, billing | https://docs.fluid.app/mist-apps/overview |
 | Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
 | Decide between a Fluid theme and a headless front end | https://docs.fluid.app/themes/why-fluid-themes |
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
@@ -45,7 +46,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
-| Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...` |
+| Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
 
@@ -94,6 +95,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
 - **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
 
 ## Admin portal help
 

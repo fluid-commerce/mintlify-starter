@@ -2,6 +2,14 @@
 openapi: 3.1.0
 info:
   title: Fluid Settings API
+  description: |
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation in this API that resolves the company from the request's
+    credential refuses a credential for it with `403` and the body
+    `{"error": "<message>"}`, before the operation runs. The refusal is
+    documented here once rather than on each operation.
   version: v0
   contact:
     email: support@fluid.app
@@ -223,6 +231,7 @@ components:
           enum: [card, ach, null]
           description: Which fee the payment method on file pays; null when it pays none.
         applies: { type: boolean, description: Whether a charge to the payment method on file carries the fee. }
+        funding_pending: { type: boolean, description: "On the credits response only: true while the saved payment method is a card whose funding is not known yet, so whether it carries the fee is not known. A plan cannot be chosen until it is (409 card_funding_pending)." }
         auto_reload_applies:
           type: boolean
           description: >-
@@ -374,7 +383,7 @@ components:
         The company's credits: its plan, what its usage has drawn this month,
         and what more cost. One credit is one dollar, and every kind of usage
         draws on one balance. Priced but not billed or for sale yet.
-      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms, card_surcharge]
+      required: [balance_cents, spendable_cents, expired_cents, held_cents, next_expiry, low_balance_cents, funded_categories, credit_billing, pending, drawn_cents, pace, month_statement, expiries, plan, next_plan, plans, catalog_plans, credit_bonus_mode, usage, orders_percent, rollover_months, annual_discount_percent, top_up_cents, min_purchase_cents, max_purchase_cents, discounts, purchasable, purchase_terms, card_surcharge]
       properties:
         balance_cents: { type: integer, description: "The credit balance, in cents: the sum of every credit movement. Below zero only when usage overdraws it." }
         spendable_cents: { type: integer, description: "What new usage may draw on, in cents: the balance less expired_cents and held_cents." }
@@ -435,6 +444,10 @@ components:
           type: array
           description: The monthly minimum tiers a plan can be priced at, smallest first; empty when platform billing does not invoice the company.
           items: { "$ref": "#/components/schemas/BillingCatalogPlan" }
+        catalog_plans:
+          type: array
+          description: Every catalog plan, smallest first, at the price choosing its plan_key alone would give it, billed monthly, so a choice by key can be priced before it is made; empty when platform billing does not invoice the company.
+          items: { "$ref": "#/components/schemas/BillingCatalogKeyPlan" }
         credit_bonus_mode:
           type: string
           enum: [always, auto_reload, "off"]
@@ -466,7 +479,7 @@ components:
       type: object
       additionalProperties: false
       description: A credit-billed company's debt and the way out of it.
-      required: [cutover_at, debt_cents, last_failed_charge, automatic_charges_blocked, pay_now, upcoming_estimate]
+      required: [cutover_at, debt_cents, last_failed_charge, automatic_charges_blocked, collection_not_set_up, pay_now, upcoming_estimate]
       properties:
         cutover_at: { type: string, format: date-time, description: "The billing start date: from this instant the company's billing is paid from credits." }
         debt_cents: { type: integer, minimum: 0, description: "What the credits are overdrawn by, in cents: minus the sum of the overdrawn parts of the credit movements (usage that found too few credits). Zero when nothing is overdrawn. Pay now charges at least this." }
@@ -476,6 +489,7 @@ components:
           - { type: "null" }
           description: The latest automatic or Pay now charge that failed or was returned. Null when the debt is zero or no such charge failed.
         automatic_charges_blocked: { type: boolean, description: "Whether Fluid has stopped charging the saved payment method by itself after a failed charge. Pay now still works. The block lifts on a new payment method, a successful Pay now, or a successful retry." }
+        collection_not_set_up: { type: boolean, description: "Whether the company's collection was never set up. Nothing charges the saved payment method, with or without a debt, so the merchant pays a debt by buying credits." }
         pay_now: { "$ref": "#/components/schemas/BillingCreditPayNow" }
         upcoming_estimate: { "$ref": "#/components/schemas/BillingCreditUpcomingEstimate" }
     BillingCreditFailedCharge:
@@ -506,9 +520,10 @@ components:
         available: { type: boolean, description: "Whether POST /api/settings/billing/credits/pay-now would charge now." }
         reason:
           type: [string, "null"]
-          enum: [no_debt, below_minimum, in_flight, no_profile, not_active, not_auto_debit, no_instrument, no_mandate, instrument_mode_mismatch, null]
+          enum: [no_debt, below_minimum, in_flight, no_profile, not_active, not_auto_debit, collection_not_set_up, no_instrument, no_mandate, instrument_mode_mismatch, null]
           description: >-
-            Why it cannot, when available is false; null when it can. below_minimum means the debt is under the
+            Why it cannot, when available is false; null when it can. collection_not_set_up means the company
+            never set up how Fluid collects, so it pays what it owes by buying credits. below_minimum means the debt is under the
             smallest charge, $0.50 on any rail. Pay now charges the debt alone, so it needs a debt of at least $0.50;
             nothing is charged now. The automatic charge can be sent sooner when a consented auto-reload top-up
             lifts the total over $0.50.
@@ -755,6 +770,19 @@ components:
         monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method, monthly_price_cents plus monthly_surcharge_cents. }
         bonus_percent: { type: integer, minimum: 0, maximum: 100, description: "The tier's discount, as the percent of usage added on top of what is paid ($100 at 10% buys 110 credits)." }
         included_credits: { type: integer, minimum: 0, description: The usage it buys each month, bonus included; one credit is one dollar. }
+    BillingCatalogKeyPlan:
+      type: object
+      description: >-
+        One catalog plan at the price choosing it by key alone gives it under
+        the company's monthly minimum tiers, billed monthly. An annual choice
+        takes annual_discount_percent off monthly_price_cents.
+      required: [key, name, monthly_price_cents, monthly_surcharge_cents, monthly_total_cents]
+      properties:
+        key: { type: string, description: The plan's key, as plan_key takes it. }
+        name: { type: string, description: The plan's name. }
+        monthly_price_cents: { type: integer, minimum: 0, description: What the plan costs each month, in cents, before any annual discount. }
+        monthly_surcharge_cents: { type: integer, minimum: 0, description: The credit card fee on monthly_price_cents, billed monthly; 0 when none. }
+        monthly_total_cents: { type: integer, minimum: 0, description: What each month's charge would take from the payment method billed monthly, monthly_price_cents plus monthly_surcharge_cents. }
     BillingUsageControls:
       type: object
       description: >-
@@ -1727,6 +1755,25 @@ components:
                 class, a US or CA country, and an active production Avalara slot
                 carrying a company code; the sandbox environment cannot file
                 documents.
+            avalara_company_code:
+              type:
+              - string
+              - 'null'
+              maxLength: 25
+              description: With the Avalara tax class, the Avalara company code
+                that overrides the account's company code for orders shipping to
+                this country, for both tax quotes and committed documents. Blank
+                or null uses the account company code. Also satisfies the company
+                code requirement of avalara_commit_enabled. A droplet token cannot
+                set it (403); clearing it is refused (422) while commits are enabled
+                and the account has no company code.
+            avalara_send_product_tax_code:
+              type: boolean
+              description: With the Avalara tax class, whether Fluid's product
+                tax codes are sent to Avalara as taxCode for orders shipping to
+                this country. When false no taxCode is sent and Avalara rates the
+                line by its own item mapping. Defaults to true. A droplet token
+                cannot set it (403).
     BulkUpdateCompanyCountriesRequestBodyApplicationJsonSchema:
       type: object
       required:
@@ -2153,6 +2200,157 @@ components:
             active:
               type: boolean
               description: true makes this slot the active environment and deactivates the other; the switch is allowed while "avalara" is the selected tax class, because moving from the sandbox host to the production host is how a proven integration goes live, but is refused while any country has Avalara document commits enabled, since committed documents can only be voided on the host that filed them. Selecting avalara requires some slot to be active, either environment. false is refused, because a company with slots always has exactly one active slot; deactivate a slot by activating the other environment.
+          additionalProperties: false
+      additionalProperties: false
+    TestAvalaraConnectionRequest:
+      type: object
+      required:
+      - avalara_account
+      properties:
+        avalara_account:
+          type: object
+          description: The credential set to test. An omitted credential falls back to the stored slot for the environment.
+          required:
+          - environment
+          properties:
+            environment:
+              type: string
+              description: The AvaTax environment to call, which also picks the host.
+              enum:
+              - sandbox
+              - production
+            username:
+              type: string
+              minLength: 1
+              description: Avalara account ID to test. Omit, or send the obfuscation marker, to use the stored one.
+            password:
+              type: string
+              minLength: 1
+              description: Avalara license key to test. Omit, or send the obfuscation marker, to use the stored one.
+            company_code:
+              type:
+              - string
+              - 'null'
+              description: AvaTax companyCode to look up in the account. Omit to use the stored one; null or blank skips the lookup.
+          additionalProperties: false
+      additionalProperties: false
+    AvalaraConnectionTestResponse:
+      type: object
+      required:
+      - authenticated
+      - environment
+      - company_code
+      - message
+      - status
+      - meta
+      properties:
+        authenticated:
+          type: boolean
+          description: true only when Avalara's ping reported `authenticated` true. false for rejected credentials and when Avalara could not be reached; the message says which.
+        environment:
+          type: string
+          description: The AvaTax environment that was called.
+          enum:
+          - sandbox
+          - production
+        company_code:
+          type: object
+          description: The outcome of the company code lookup.
+          required:
+          - checked
+          - found
+          properties:
+            checked:
+              type: boolean
+              description: Whether the lookup completed. false when the credentials were rejected, no company code was entered, or the lookup itself failed.
+            found:
+              type: boolean
+              description: Whether the company code exists in the Avalara account. Always false when checked is false.
+          additionalProperties: false
+        message:
+          type: string
+          description: A merchant-facing explanation of the outcome. Never contains credentials.
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      additionalProperties: false
+    AvalaraSettingExcludedProduct:
+      type: object
+      description: One product excluded from Avalara tax.
+      required:
+      - id
+      - title
+      properties:
+        id:
+          type: integer
+          description: The product id.
+        title:
+          type:
+          - string
+          - 'null'
+          description: The product title, or null when the product no longer exists (the id can still be removed from the list).
+      additionalProperties: false
+    AvalaraSetting:
+      type: object
+      description: The merchant's Avalara tax settings beyond credentials. A company that never saved them reads the defaults.
+      required:
+      - shipping_tax_code
+      - excluded_product_ids
+      - excluded_products
+      properties:
+        shipping_tax_code:
+          type: string
+          description: The AvaTax tax code filed on the shipping line of a committed document. Defaults to FR030000.
+          example: FR030000
+        excluded_product_ids:
+          type: array
+          description: Ids of products whose lines are sent to Avalara with no tax. Empty by default.
+          items:
+            type: integer
+        excluded_products:
+          type: array
+          description: The excluded products with their titles, in the same order as excluded_product_ids.
+          items:
+            "$ref": "#/components/schemas/AvalaraSettingExcludedProduct"
+      additionalProperties: false
+    AvalaraSettingResponse:
+      type: object
+      required:
+      - avalara_setting
+      - status
+      - meta
+      properties:
+        avalara_setting:
+          "$ref": "#/components/schemas/AvalaraSetting"
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          "$ref": "#/components/schemas/Meta"
+      additionalProperties: false
+    UpdateAvalaraSettingRequest:
+      type: object
+      required:
+      - avalara_setting
+      properties:
+        avalara_setting:
+          type: object
+          description: Omitted fields keep their stored values. The first save creates the settings row.
+          properties:
+            shipping_tax_code:
+              type: string
+              minLength: 1
+              maxLength: 25
+              description: The AvaTax tax code for the shipping line. Letters and digits only; stored upper-case.
+            excluded_product_ids:
+              type: array
+              description: Replaces the stored list. Every id must be a product of the authenticated company; an empty array clears the list.
+              items:
+                type: integer
           additionalProperties: false
       additionalProperties: false
     AppendMetadataFieldRequestBodyApplicationJsonSchema:
@@ -3386,6 +3584,20 @@ components:
           - 'null'
           description: Whether paid orders shipping to this country are committed
             to the merchant's Avalara account as SalesInvoice documents
+        avalara_company_code:
+          type:
+          - string
+          - 'null'
+          description: With the Avalara tax class, the Avalara company code that
+            overrides the account's company code for orders shipping to this country.
+            Null uses the account company code. Returned to company admins only.
+        avalara_send_product_tax_code:
+          type:
+          - boolean
+          - 'null'
+          description: With the Avalara tax class, whether Fluid's product tax codes
+            are sent to Avalara for this country. When false no taxCode is sent.
+            Returned to company admins only.
         tax_setup_risks:
           type: array
           description: Reasons this country's built-in Avalara settings may conflict
@@ -3393,7 +3605,7 @@ components:
             for company admin users; never returned to droplet installation tokens.
           items:
             type: string
-            enum: [tax_droplet_registered, commit_disabled, no_production_credentials]
+            enum: [tax_droplet_registered, commit_disabled, no_production_credentials, avalara_droplet_filing]
           example: [tax_droplet_registered]
         tax_callback_registration_id:
           type:
@@ -4291,7 +4503,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update or billing.view permission, or a Droplet token
+          description: Missing billing.update or billing.view permission, not an admin, a Droplet token, or a company or partner token (a change needs a signed-in user to record)
           content:
             application/json:
               schema:
@@ -4417,6 +4629,11 @@ paths:
                     included_credits: 65000
                     monthly_surcharge_cents: 0
                     monthly_total_cents: 5000000
+                  catalog_plans:
+                  - { key: launch, name: Launch, monthly_price_cents: 250000, monthly_surcharge_cents: 0, monthly_total_cents: 250000 }
+                  - { key: growth, name: Growth, monthly_price_cents: 1500000, monthly_surcharge_cents: 0, monthly_total_cents: 1500000 }
+                  - { key: scale, name: Scale, monthly_price_cents: 5000000, monthly_surcharge_cents: 0, monthly_total_cents: 5000000 }
+                  - { key: enterprise, name: Enterprise, monthly_price_cents: 15000000, monthly_surcharge_cents: 0, monthly_total_cents: 15000000 }
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4492,6 +4709,8 @@ paths:
                 billing_interval: { type: string, enum: [monthly, annual], description: How the plan is paid for. }
                 monthly_price_cents: { type: [integer, "null"], minimum: 1, description: "What the plan costs each month, sized between the catalog's; it buys that much usage plus its tier's bonus. Null is the plan's own price." }
                 keep_current_plan: { type: boolean, description: "True stays on the plan in force and drops the plan chosen for next month, whatever its key, price or interval. The other fields are then ignored." }
+                expected_monthly_charge_cents: { type: integer, minimum: 0, description: "The monthly charge, after any annual discount and before the credit card fee, the merchant was shown. When the choice, laid over the plan waiting or in force now, would charge anything else, nothing is saved and the answer is 409 plan_charge_changed with the charge it would be in details.monthly_charge_cents." }
+                expected_monthly_total_cents: { type: integer, minimum: 0, description: "The monthly total, the credit card fee on the saved payment method included, the merchant was shown. When the choice would now total anything else, as after a switch to a card, nothing is saved and the answer is 409 plan_charge_changed with the total it would be in details.monthly_total_cents." }
             example:
               plan_key: growth
               billing_interval: annual
@@ -4591,6 +4810,11 @@ paths:
                     included_credits: 65000
                     monthly_surcharge_cents: 0
                     monthly_total_cents: 5000000
+                  catalog_plans:
+                  - { key: launch, name: Launch, monthly_price_cents: 250000, monthly_surcharge_cents: 0, monthly_total_cents: 250000 }
+                  - { key: growth, name: Growth, monthly_price_cents: 1500000, monthly_surcharge_cents: 0, monthly_total_cents: 1500000 }
+                  - { key: scale, name: Scale, monthly_price_cents: 5000000, monthly_surcharge_cents: 0, monthly_total_cents: 5000000 }
+                  - { key: enterprise, name: Enterprise, monthly_price_cents: 15000000, monthly_surcharge_cents: 0, monthly_total_cents: 15000000 }
                   credit_bonus_mode: always
                   usage:
                     period_start: '2026-09-01T00:00:00Z'
@@ -4633,13 +4857,19 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (a plan change needs a signed-in user to record)
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '404':
           description: Platform billing does not invoice this company, so it has no plan to change
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The choice would charge other than expected_monthly_charge_cents, or total other than expected_monthly_total_cents (plan_charge_changed); details.monthly_charge_cents and details.monthly_total_cents are what it would be now. Or the saved payment method changed while the total was checked (payment_method_changed); check again and retry. Or the saved card's funding is not known yet, so its fee is not either (card_funding_pending, card_surcharge.funding_pending on GET); try again shortly. Nothing was saved.
           content:
             application/json:
               schema:
@@ -5022,7 +5252,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, not an admin, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (a purchase needs a signed-in user to record)
           content:
             application/json:
               schema:
@@ -5182,7 +5412,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
         '403':
-          description: Missing billing.update permission, not an admin, or a Droplet token
+          description: Missing billing.update permission, not an admin, a Droplet token, or a company or partner token (the charge needs a signed-in user to record)
           content:
             application/json:
               schema:
@@ -6116,6 +6346,166 @@ paths:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: Missing or invalid environment, or the slot is active while Avalara is the selected tax provider
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/avalara_account/test_connection":
+    post:
+      x-fluid-lint-exempt: "Sub-route of the shipped settings-v0 /api/settings/avalara_account resource that the fluid-admin Avalara form already calls; a dated path would split one settings resource across two versions. Its snake_case segments follow that resource."
+      summary: Test a merchant Avalara connection
+      description: Calls Avalara with the submitted credentials (an unsaved edit), falling back to the stored slot for any credential that is omitted or still masked, and reports what Avalara returned. The AvaTax ping answers HTTP 200 even for bad credentials, so only `authenticated` true in the ping body counts as a pass. When the credentials authenticate and a company code is present, the code is looked up in the account. Rejected credentials, a missing company code and an unreachable Avalara are all 200 responses with the verdict in the body. The host comes from `environment` alone; a sandbox environment (a sandbox twin) can only test `sandbox`. Nothing is saved. Requires the companies.update permission.
+      tags:
+      - taxes
+      operationId: settings_v0_test_avalara_account_connection
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TestAvalaraConnectionRequest"
+            example:
+              avalara_account:
+                environment: sandbox
+                username: accounting@dundermifflin.com
+                password: Scr4nton-Paper-2026
+                company_code: DUNDERMIFFLIN-SBX
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AvalaraConnectionTestResponse"
+              example:
+                authenticated: true
+                environment: sandbox
+                company_code:
+                  checked: true
+                  found: true
+                message: Authenticated with Avalara sandbox; company code verified.
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing companies.update permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid environment, no credentials to test, stored credentials that cannot be read, or a sandbox environment asking to test production
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/settings/avalara_setting":
+    get:
+      summary: Show the merchant Avalara tax settings
+      description: Returns the authenticated company's Avalara shipping tax code and the products excluded from Avalara tax. The settings apply only where the "avalara" tax class (the merchant's own Avalara account) is in effect, either company-wide or for a country set to Avalara under per-country tax. A company that never saved them reads the defaults, shipping tax code FR030000 and no excluded products.
+      tags:
+      - taxes
+      operationId: settings_v0_get_avalara_setting
+      x-fluid-lint-exempt: "Joins the shipped unversioned settings routes (avalara_account) that fluid-admin already calls for the same Avalara tax setup; a dated, kebab-case path would split one admin surface across two versions."
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AvalaraSettingResponse"
+              example:
+                avalara_setting:
+                  shipping_tax_code: FR030000
+                  excluded_product_ids:
+                  - 48935
+                  excluded_products:
+                  - id: 48935
+                    title: Thermomix TM6
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing companies.view permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    put:
+      summary: Update the merchant Avalara tax settings
+      description: Sets the Avalara shipping tax code and the products excluded from Avalara tax. Excluded products are left out of the Avalara quote request and quoted with tax 0; a quote of only excluded products asserts zero tax without calling Avalara. The shipping tax code is used for the shipping line of committed documents. Omitted fields keep their stored values. Changes are recorded in the tax audit events.
+      tags:
+      - taxes
+      operationId: settings_v0_update_avalara_setting
+      x-fluid-lint-exempt: "Joins the shipped unversioned settings routes (avalara_account) that fluid-admin already calls for the same Avalara tax setup; a dated, kebab-case path would split one admin surface across two versions."
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/UpdateAvalaraSettingRequest"
+            example:
+              avalara_setting:
+                shipping_tax_code: FR020100
+                excluded_product_ids:
+                - 48935
+                - 73085
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AvalaraSettingResponse"
+              example:
+                avalara_setting:
+                  shipping_tax_code: FR020100
+                  excluded_product_ids:
+                  - 48935
+                  - 73085
+                  excluded_products:
+                  - id: 48935
+                    title: Thermomix TM6
+                  - id: 73085
+                    title: Thermomix Cutter
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Missing companies.update permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid shipping tax code, or an excluded product id that does not belong to the company
           content:
             application/json:
               schema:
