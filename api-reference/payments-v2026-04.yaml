@@ -3,18 +3,21 @@ openapi: 3.1.0
 info:
   title: Fluid Cart Payments API
   version: v2026-04
-  description: Consumer-agnostic, cart-scoped payment endpoints under
-    /api/payments/v2026-04/carts/{cart_token}. The same endpoints serve checkout,
-    admin, and portal identically. Authentication is cart-token based (the token
-    in the path); no JWT or API key is required. The one exception is paying
-    with a saved payment method on the set-payment-method endpoint, which
-    requires a customer/user JWT (in the body, an Authorization header, or the
-    session) and fails with 422 without one. Unknown request keys are stripped server-side
-    rather than rejected, so the server accepts payloads that the strict
-    request schemas in this document would flag. This spec is the source of
-    truth for generated payment API clients and is intentionally separate from
-    payment-v2026-04.yaml, which documents the bearer-authenticated
-    gateway/transaction admin surface at /api/payment/v2026-04.
+  description: |
+    Consumer-agnostic, cart-scoped payment endpoints under /api/payments/v2026-04/carts/{cart_token}. The same endpoints serve checkout, admin, and portal identically. Authentication is cart-token based (the token in the path); no JWT or API key is required. The one exception is paying with a saved payment method on the set-payment-method endpoint, which requires a customer/user JWT (in the body, an Authorization header, or the session) and fails with 422 without one. Unknown request keys are stripped server-side rather than rejected, so the server accepts payloads that the strict request schemas in this document would flag. This spec is the source of truth for generated payment API clients and is intentionally separate from payment-v2026-04.yaml, which documents the bearer-authenticated gateway/transaction admin surface at /api/payment/v2026-04.
+
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted:
+
+    - a cart token for one of its carts answers exactly as a token no cart
+      holds, with the operation's documented `404` (cart not found), so the
+      response does not reveal that the cart exists;
+    - an operation that resolves the company from a bearer credential refuses
+      that credential with `403` and the body `{"error": "<message>"}`,
+      before the operation runs.
+
+    These refusals are documented here once rather than on each operation.
   contact:
     email: support@fluid.app
   license:
@@ -63,6 +66,61 @@ components:
         type: string
       example: '00000000-0000-4000-8000-000000000011'
   schemas:
+    PaymentInProgressErrorResponse:
+      description: Returned with 409 Conflict by the cart payment endpoints while a
+        redirect payment (PPRO, dLocal, Citcon) is open at the provider, so no second
+        payment can start until that charge resolves (CURRENT-3992).
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+          description: Human-readable message stating that the cart has a payment in
+            progress and cannot be modified.
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          type: object
+          additionalProperties: false
+          description: Meta for the payment-in-progress refusal. Carries the refusal code,
+            the shop URL and the cart as it stands.
+          required:
+          - request_id
+          - timestamp
+          - code
+          - shop_url
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+              description: Server-assigned id for this request, echoed for log correlation;
+                `null` when none was assigned.
+            timestamp:
+              type: string
+              format: date-time
+              description: ISO 8601 timestamp (UTC) marking when the response was generated.
+            code:
+              type: string
+              enum:
+              - payment_in_progress
+              description: Machine-readable refusal code; always `payment_in_progress`.
+            shop_url:
+              type:
+              - string
+              - 'null'
+              description: Storefront URL of the shop that owns the cart; `null` when it
+                cannot be resolved.
+            cart:
+              type: object
+              description: The cart as it stands, so the client can show the pending
+                payment without a second fetch. Its fully-typed shape is documented in
+                the checkout API.
     Meta:
       description: Standard response metadata included on every response.
       type: object
@@ -120,6 +178,36 @@ components:
         additionalProperties:
           "$ref": "#/components/schemas/ErrorValue"
       - type: 'null'
+    CheckoutErrorDetail:
+      description: One refusal reason, in the same vocabulary as `checkout_blockers`, with where to send the shopper and what happened to the payment.
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - field
+      - payment
+      - message
+      properties:
+        code:
+          type: string
+          description: Stable refusal code. Codes reuse the `checkout_blockers` codes.
+        field:
+          type:
+          - string
+          - 'null'
+          description: The cart API path to send the shopper to, for example `shipping_address.postal_code` or `items[123]`, or null.
+        payment:
+          type: string
+          enum:
+          - not_attempted
+          - declined
+          - unknown
+          description: >-
+            `not_attempted`: fix the cause and resubmit. `declined`: the payment was refused; resubmit with another method. `declined` reflects the stored payment status; for some gateways an unconfirmed failure is still reported as `declined`.
+            `unknown`: money may have moved; check the order before charging again.
+        message:
+          type: string
+          description: The English message for this entry. Not translated.
     ErrorResponse:
       description: Standard error envelope — a human-readable error_message, a
         structured errors object, and response meta.
@@ -180,6 +268,109 @@ components:
             code:
               type: string
               const: payer_details_sync_failed
+    StrictTierLineRefusedResponse:
+      description: |
+        A line in the cart cannot be priced for the buyer's member-type pricing
+        tier (the tier has no price configured for it, or does not support
+        bundles), so the hold or capture was refused before any request left
+        for the payment provider. Nothing is held and no payment exists.
+        `meta.cart_item_id` names the line to remove or reprice.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - cart_item
+          properties:
+            cart_item:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - cart_item_id
+          - variant_id
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - strict_tier_line_refused
+              description: Machine-readable refusal code; always `strict_tier_line_refused`.
+            cart_item_id:
+              type:
+              - integer
+              - string
+              description: Id of the cart line that cannot be priced.
+            variant_id:
+              type:
+              - integer
+              - string
+              description: Variant id of that line.
+    EnrollmentPricingStaleResponse:
+      description: |
+        An enrollment cart's line prices were set under a different member-type
+        pricing tier than its current target, so the hold or capture was refused
+        before any request left for the provider. Nothing is held. The refusal
+        is about the cart, not one line: the buyer selects the target again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - cart
+          properties:
+            cart:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - enrollment_pricing_stale
+              description: Machine-readable refusal code; always `enrollment_pricing_stale`.
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the shopper agreed to, so nothing
@@ -228,6 +419,12 @@ components:
             code:
               type: string
               const: cart_total_changed
+            error_details:
+              type: array
+              minItems: 1
+              description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
+              items:
+                "$ref": "#/components/schemas/CheckoutErrorDetail"
             cart:
               type: object
               additionalProperties: false
@@ -724,6 +921,11 @@ paths:
         customer/user JWT (body `jwt`, `Authorization` header, or session) and
         fails with `422` without one. Returns `400` when a type-specific
         required key is absent.
+
+        While a redirect payment (PPRO, dLocal, Citcon) is open at the provider,
+        the switch first voids that charge at the provider. It goes ahead once a
+        status read confirms the charge can no longer be paid, and answers `409`
+        (`meta.code` = `payment_in_progress`) while it may still be paid.
       tags:
       - payments
       operationId: payments_v2026_04_set_payment_method
@@ -787,6 +989,12 @@ paths:
                       type: string
                     country_code:
                       type: string
+                    phone:
+                      type:
+                      - string
+                      - 'null'
+                      description: Written only when sent, so omitting it keeps
+                        a saved billing address's phone.
                 payment_account:
                   type:
                   - string
@@ -856,6 +1064,16 @@ paths:
                   payment_method_id: 4412
                   use_customer_payment_method: true
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '201':
           description: Payment method set
           content:
@@ -901,13 +1119,18 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: Unprocessable entity
+          description: Unprocessable entity, or (Apple Pay, Bread and Affirm) a
+            line that cannot be priced for the buyer's member-type pricing tier
+            (`meta.code` = `strict_tier_line_refused`), or an enrollment cart whose line
+            prices are stale (`meta.code` = `enrollment_pricing_stale`); nothing was held.
           content:
             application/json:
               schema:
                 oneOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/BareErrorResponse"
+                - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/tokenize":
     post:
@@ -940,6 +1163,16 @@ paths:
         schema:
           type: string
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: Vault credentials
           content:
@@ -1027,6 +1260,16 @@ paths:
                 value:
                   vgs_card_id: card_9f8e7d6c
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: 3DS initialized
           content:
@@ -1196,6 +1439,16 @@ paths:
                   is_pay_later: false
                   payment_token_id: tok_9f8e7d6c
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '201':
           description: Order created
           content:
@@ -1224,12 +1477,17 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: Invalid parameters, zero-amount cart, or unsupported
-            recurring Apple Pay
+          description: Invalid parameters, zero-amount cart, unsupported
+            recurring Apple Pay, or a line that cannot be priced for the buyer's
+            member-type pricing tier (`meta.code` = `strict_tier_line_refused`);
+            no PayPal order was opened or captured.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/paypal/authorize":
     post:
@@ -1356,10 +1614,13 @@ paths:
             because the approved order's own amount is checked when the pair is
             absent. `meta.cart` carries the current total; refetch the cart,
             show the shopper the new total, and authorize again with it.
+            Or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`).
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
+                anyOf:
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '410':
           description: Cart already processed or holds an authorized enrollment
           content:
@@ -1367,11 +1628,17 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: Invalid parameters or zero-amount cart
+          description: Invalid parameters, zero-amount cart, or a line that cannot
+            be priced for the buyer's member-type pricing tier (`meta.code` =
+            `strict_tier_line_refused`), checked after PayPal's payer details are
+            applied; nothing was authorized.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
         '502':
           description: |
             The payer details PayPal holds for the approved order could not be
@@ -1441,6 +1708,16 @@ paths:
                     postal_code: '78701'
                     country_code: US
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: Shipping change applied
           content:
@@ -1587,8 +1864,11 @@ paths:
                   description: Braintree Data Collector fraud fingerprint.
                 payment_type:
                   type: string
-                  description: Payment type override (e.g. venmo,
-                    braintree_paypal).
+                  description: The only value ever honored is
+                    braintree_paypal_pay_later, and only when the authorization
+                    is a PayPal account with no subscription in the cart; any
+                    other value is ignored and the type is taken from gateway
+                    detection instead.
                 payer_email:
                   type: string
                 shipping_address:
@@ -1619,6 +1899,16 @@ paths:
                   payment_account_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
                   device_data: '{"correlation_id":"abc123"}'
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '201':
           description: Transaction authorized
           content:
@@ -1649,11 +1939,17 @@ paths:
         '422':
           description: Invalid parameters, zero-amount cart, duplicate
             authorization, a payment account that does not belong to the cart's
-            company, or gateway failure
+            company, gateway failure, or a line that cannot be priced for the
+            buyer's member-type pricing tier (`meta.code` =
+            `strict_tier_line_refused`); no Braintree customer, vaulted method
+            or authorization was created.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/klarna/sessions":
     post:
@@ -1699,6 +1995,16 @@ paths:
                 summary: Create a Klarna session
                 value: {}
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '201':
           description: Session created
           content:
@@ -1780,6 +2086,16 @@ paths:
                 value:
                   session_id: klarna_sess_9f8e7d6c
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: Session updated
           content:
@@ -1873,7 +2189,10 @@ paths:
                   type: string
                   format: uri
                   description: Apple Pay startSession endpoint URL provided by
-                    the Apple Pay JS onvalidatemerchant event.
+                    the Apple Pay JS onvalidatemerchant event. Must be an HTTPS
+                    URL on an Apple Pay gateway host (`apple-pay-gateway*.apple.com`
+                    or `cn-apple-pay-gateway*.apple.com`); any other URL is
+                    rejected with `422` before Apple is contacted.
             examples:
               validate:
                 summary: Validate an Apple Pay merchant session
@@ -1882,6 +2201,16 @@ paths:
                   country_id: 233
                   apple_session_url: https://apple-pay-gateway.apple.com/paymentservices/startSession
       responses:
+        '409':
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
+            cart refuses writes until the charge resolves (`meta.code` =
+            `payment_in_progress`). The provider collects the amount the charge
+            opened with, and the order is built from this cart when it does.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '200':
           description: Merchant session
           content:

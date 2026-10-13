@@ -310,6 +310,13 @@ eval-harness change; if a future guide genuinely needs mechanical claims across
 multiple specs, extend `guideSpecs` to accept an array and resolve each claim
 against the spec that holds its anchor.
 
+**`guideSpecs` arrays (2026-10-07).** A `guideSpecs` value may now be an array of
+specs. Each claim validates against the first listed spec whose `paths` defines its
+`anchor.path`, else the first spec listed, so a path no listed spec defines still
+fails. `guides/checkout-forms.mdx` maps to checkout, forms and settings, and
+`setup/open-a-country.mdx` to settings and forms. The self-test covers both the
+match and the fallback.
+
 ## Accepted omissions (deliberate — do not re-litigate without cause)
 
 Facts the omission sweep surfaced that the guides intentionally do **not** cover:
@@ -511,6 +518,39 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
     but only the implementation settles behaviour, and a single layer read in isolation
     produces confident wrong conclusions. The Kaminari reasoning was correct about code
     that never executes.
+13. **`webhooks-v0` doesn't enumerate subscribable events.** The spec describes
+    registration, the envelope and the schema endpoints, but not which `resource` and
+    `event` pairs exist. That's why the webhooks guide sends readers to
+    `GET /api/company/webhooks/resources` rather than listing them. The order `edited`
+    event (webhooks-050 to webhooks-054) is therefore registered as semantic claims,
+    verified on 2026-09-30 against the backend and the synced commerce spec:
+    `Webhook::TopicRegistry` lists `edited` among the order events; a webhook's
+    `event_identifier` joins the resource and event with an underscore, giving
+    `order_edited`; and the `commerce-v2026-04` description of
+    `POST /api/v202604/orders/{order_id}/edits` says a successful edit fires the
+    `order_edited` lifecycle event with the post-edit payload, while the dry-run preview
+    does not. If `webhooks-v0` starts enumerating events, move these claims to
+    mechanical anchors.
+14. **`company-v0` leaves `providers.psps` items unmodelled on the payments status
+    response.** `GET /api/companies/{id}/payments_status` models every field of a
+    `providers.apms` item, including `onboarding_status`, but gives `providers.psps`
+    items an empty schema, although its own example and the response share one provider
+    shape. The payments onboarding guided setup's claim that card processors carry
+    `onboarding_status` (payments-onboarding-013) is therefore semantic. Make it
+    mechanical once the psps item schema is filled in. The onboarding form's own
+    operations (onboarding info, legal entities, bank accounts, people, and document
+    upload) aren't in any synced spec yet, so that guide sends readers to the CLI for
+    them and asserts nothing about their contracts.
+15. **`checkout-v2026-04` misnames the currency of `amount_in_base`.** Its order schema
+    describes `amount_in_base` as the "Order total expressed in the company's base
+    currency". It's in the platform base currency, US dollars, for every company: Rails
+    sets `MoneyRails.default_currency` to `:usd`, and the `_in_base` columns divide the
+    order amount by the order's `base_to_currency_rate`. `analytics-v0` gets this right
+    ("the platform base currency") but doesn't name USD. The other specs that carry
+    `_in_base` fields (`admin-v2025-06`, `company-v0`, `members-v2025-06`,
+    `commerce-v2026-04`, `public-v2025-06`) leave them undescribed. `concepts/order-currency.mdx`
+    follows the implementation, and carries a note about the wrong wording until the
+    specs are corrected. When they are, drop that note.
 
 ## Phase 9.5b — remaining-specs description enrichment (CURRENT-2635)
 
@@ -1216,9 +1256,9 @@ The same triage (ENG-1091) kept three older guides redirected rather than 404:
   page, which documents the route the guide described.
 - `guides/mobile-widget-implementation` keeps `/api/overview`.
 - `guides/payment-processing`, and its Mintlify-era twin `/guides/payment-processing`, go to
-  `/concepts/checkout`, the page that describes Fluid's payment layer. That is a decision, not a
-  claim of coverage: payment routing itself has no published page yet. Repoint both when the Help
-  Center's Payment Routing article ships.
+  `/help/admin/settings/payment-routing`, the Help Center's Payment Routing article. Until that
+  article shipped, both went to `/concepts/checkout`, the page that describes Fluid's payment
+  layer.
 
 No blanket catch-all wildcard is added. A catch-all would hide which URLs are actually being hit;
 one analytics cycle of real 404 data is the cheaper way to decide the long tail.
@@ -1293,6 +1333,14 @@ binding warning: do not mix the surfaces within one cart lifecycle, because unsu
 line reprices bundle children and releases the derived price lock on the Public SDK API while the
 Checkout API only clears the subscription fields.
 
+Amended 2026-10-10: the Checkout API gained dedicated `POST`/`DELETE
+/api/checkout/v2026-04/carts/{cart_token}/items/{item_id}/subscription` operations
+(`checkout_v2026_04_subscribe_cart_item`, `checkout_v2026_04_unsubscribe_cart_item`), which run
+the same subscribe/unsubscribe path as the Public SDK API, including bundle repricing on
+unsubscribe. The equivalence map now points the "Subscribe or unsubscribe a line" row at them.
+The warning stays, narrowed: clearing subscription fields through `PATCH items/{id}` still does
+not reprice bundle children, so the page steers readers to the dedicated operations.
+
 Both OpenAPI `info.description` blocks state audience, unique capability, authentication model, and
 the reciprocal boundary. The shared choosing page is their stable cross-link because an OpenAPI nav
 group has no landing page.
@@ -1366,6 +1414,17 @@ navigated pages rather than approximate redirects:
   generated operation pages; it does not duplicate parameters, schemas, or status codes.
   The temporary `/docs/openapi/forms-v0` redirect now lands on this successor page
   instead of the generic API overview.
+
+### Reversed 2026-09-28 — `/api/public/forms` removed
+
+The `/api/public/forms` page was deleted on request, and its entry was removed from
+`eval/advertised-docs-links.json` and from `docs.json` navigation. `/docs/openapi/forms-v0`
+redirects to `/api/overview` again. No redirect replaces `/api/public/forms`, for the reason
+above: an approximate successor-version target is worse than its 404.
+
+Known consequence: the sunset form-by-ID response still emits `/api/public/forms` in its
+`Link: rel="successor-version"` header, so that header resolves to a 404 until the emitter
+changes. Do not restore the page or add a redirect without a decision recorded here.
 
 ### Runtime docs URLs are registered contracts
 
@@ -1630,6 +1689,16 @@ adoption.
 
 Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, the menu editor's `linkable_type: "Link"` writes, and fluid's `Api::MenusController`, `Api::MenuItemsController`, `Menus::{Index,Create,Update}Action`, `MenuItems::UpdateAction`, `Menu`, `MenuItem`, `MenuBlueprinter`, and `MenuItemBlueprinter`. Creation requires `linkable_type` on top-level items; custom URLs use `Link`. Move endpoint contracts to generated reference pages and convert applicable claims to mechanical checks once the upstream menu spec is synced.
 
+**Header binding and import additions (navigation-menus-016 to -031, plus edits to -003, -006, -010).** Verified against fluid `8b78b0a`:
+
+- Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
+- `Menu` validates `countries` presence, so an empty `country_ids` fails. The schema defaults `active` to false. The `-006` example now sends a country ID.
+- Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
+- Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
+- `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
+- Section setting values live in the template's schema `sections` settings. The visual editor saves the template content, and schema defaults apply only when a key is missing or null. Live rendering reads the published template snapshot, and a resource push saves without publishing.
+- The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
+
 
 ### Member manifest v2 authoring
 
@@ -1858,3 +1927,692 @@ expiration choices are published because a reader selects them in the UI, not as
 a restatement of a request schema. Do not describe programmatic token management
 as the primary path while the dashboard is the only documented one, and do not
 reintroduce **Settings → Developer** as the token location.
+
+## Member storefront signed Droplet queries
+
+`themes/member-storefront/droplet-data.mdx` describes a gated, account-host
+connection and SDK 0.11.0. Keep its documentation PR in draft until the endpoint
+and compatible SDK release are available; no company is enabled by publishing
+the guide. This is an internal, unsynced member-session API, so its guide claims
+are semantic and verified against the implementation, Skooma integration tests,
+helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
+these claims at the unrelated public storefront API schema. The guide documents
+the section helper and receiving backend contract, without reproducing an
+endpoint reference. The existing widget guide's obsolete blanket statement that
+a backend cannot verify a viewing member is replaced with the gated flow.
+
+Read-only operations, tenant-scoped member mapping, timestamp replay limitations,
+preview refusal and same-document script access remain explicit boundaries.
+Production pilot-company selection and enabling its flag are separate decisions.
+
+Signed Droplet query lifecycle: the standalone helper shares one removal observer,
+timer and in-flight session-context check across sections in a document. Server
+context checks run at most once per 15 seconds; the local cookie hint remains
+on a one-second timer. A rapid
+account switch is detected even if the presence cookie stays set. Failed checks
+or the five-second verification deadline clear matching private state. Checks
+are periodic and browser timers can be throttled, so do not promise immediate
+cross-tab notification. Evidence: SDK `droplet/session-monitor.ts` and the
+account-switch unit/browser regressions in fluid-commerce/fluid#24049.
+
+Connection prerequisites and sequence: the guide distinguishes the Droplet's
+registered `widget_data_url`, embedded UI URL and lifecycle webhook URLs. The
+query receiver uses the Droplet-level `webhook_secret`, returned by the create
+view only; ordinary owner/update views omit it. Evidence: Droplet create/update
+actions and serializer, the member query resolver and shared data client in
+fluid-commerce/fluid. The operation dispatcher is application-owned example
+code, not a Fluid SDK API. Its mapping and permission checks remain backend
+responsibilities. The sequence diagram includes authorization refusals, signed
+forwarding, post-response session revalidation and ongoing result cleanup.
+
+Liquid query attributes: `droplet_data_attributes` is a separate Rails release
+dependency after the signed-query stack. It emits only an escaped canonical
+extension URI and a marker, with no member context, SDK loading, or backend call.
+Evidence: `LiquidTags::DropletDataAttributes`, the Liquid render registers,
+section block normalization, both block render paths, and
+`droplet_data_attributes_test.rb` in fluid-commerce/fluid. Snippets explicitly
+inherit their caller's URI because isolated Liquid subcontexts do not otherwise
+preserve register overrides. Theme-owned child blocks clear it. Keep this
+follow-up docs PR in draft until the helper is deployed; manual `data-extension`
+remains compatible with the preceding SDK/API release.
+
+
+Member-page global client: `window.Fluid.droplets.createQueryClient` is installed
+by PageBuilder only for member page/dashboard templates with the exact boolean
+MEMBER_STOREFRONT flag. The inline bootstrap precedes layout/section scripts, supports bare
+pages, preserves other Fluid helpers, and imports the pinned SDK on first use.
+Concurrent calls share the module promise but create separate SDK clients; load
+failures reject and detached roots are refused. No session or authorization logic
+is duplicated in the bootstrap. Evidence: `Themes::HeadScripts` plus its executable
+Node VM tests, PageBuilder rendering tests, and the live member-page integration
+regression. The global loader requires its own Rails deployment after SDK 0.11.0
+is published; keep this guide draft until both are available. Direct module imports
+remain supported on older deployments. Local Fluid development may point
+`MEMBER_DROPLET_SDK_URL` at a built standalone SDK bundle; it is deployment config,
+not an extension setting or browser-provided destination.
+
+
+### Mist and AI-agent authoring workflow
+
+The signed-data guide's AI section joins registration, backend verification,
+extension authoring, installation, placement and live verification. It is an
+authoring recipe, not a new Mist tool or a guarantee of deployed availability.
+The example operation names and response fields are application-owned. Reuse
+the backend verifier and lifecycle-aware section example rather than introducing
+a parallel authentication or SDK-loading implementation. Link the existing widget
+and extension AI briefs to this section so an agent following either path sees
+the private-data requirements.
+
+Scoped reference-pending registration example: the user explicitly requested a
+workflow Mist can use to create Droplets and sections. The minimal creation
+payload is therefore included alongside the previously authorized unsynced
+upload recipe, pending a generated Droplet-management reference. Evidence:
+Api::Droplets::CreateAction requires a nested droplet hash with name/embed_url
+and accepts widget_data_url; DropletBlueprint's create view returns uuid and
+webhook_secret. Ordinary views do not return that secret. The recipe does not
+claim creation activates or installs a Droplet, and does not reproduce the old
+general creation guide's illustrative top-level payload or credential exchange.
+
+Semantic checks also use Themes::Import::ExtensionTemplates for package layout,
+LiquidTags::DropletDataAttributes for root metadata, and SDK query-client.ts for
+query, destroy and onInvalidate behavior. Theme sections are not sandboxed widget
+packages. The global bootstrap imports only the SDK; the extension still owns
+its script and presentation. No environment flag, deployment, installation or
+live backend is changed by this documentation update.
+
+
+Member-storefront gate alignment: the signed-query endpoint inherits the existing
+MEMBER_STOREFRONT check from Site::Members::Api::BaseController, and the global
+loader uses that same gate through Themes::MemberStorefront.enabled?. There is
+no additional Droplet data flag. Account-host, live-session, site access, CSRF,
+installation, extension publication and backend verification checks still apply.
+Disabling MEMBER_STOREFRONT disables the member storefront and this connection
+together. Publish this wording with the matching gate-alignment Rails deployment.
+
+
+### Existing Mist secret provisioning
+
+The signed-data guide distinguishes hosted Mist attachment, external hosting and
+local development. This is existing infrastructure, not a new secret mechanism.
+Evidence in fluid-commerce/fluid: `Mist::DropletEnvBackfiller#sync` maps the
+Droplet's webhook_secret to FLUID_DROPLET_SECRET and FLUID_WEBHOOK_AUTH_TOKEN,
+and its uuid to FLUID_DROPLET_UUID. The integration-points controller syncs before
+persisting the attachment and then calls enqueue_redeploy; the latter queues
+only with github_repo_id present. Do not promise a redeploy without that condition.
+The shared `Droplet::DataClient` signs with that same webhook_secret.
+
+Mist desktop's list_mist_env_vars exposes keys/targets/managed status rather than
+plaintext values; set_mist_env_var rejects managed keys. The CLI's
+`packages/cli/mist/src/commands/env/pull.ts` explicitly skips managed variables
+and encrypted values, preserving locally maintained entries. Therefore hosted
+provisioning must not be described as automatic local secret delivery. Independent
+hosting still requires secure provisioning of the creation response's secret.
+The verifier example remains hosting-neutral; Mist authors pass the managed
+FLUID_DROPLET_SECRET value and do not generate a second signing key. No live
+secret values were read or changed to verify these claims.
+
+
+Signature verification reuses the existing public verifySignature export from
+@fluid-app/droplet-sdk. Evidence: packages/platform/droplet-sdk/src/signatures.ts
+and src/index.ts, plus the published 0.2.4 package. The verifier accepts byte
+buffers, checks HMAC-SHA256 over timestamp-dot-body with constant-time comparison,
+rejects a missing secret, and defaults to a 300-second absolute freshness window.
+Use the low-level verifier rather than withFluidWebhook, whose event routing and
+per-company/bootstrap secret selection are inappropriate for member-data queries.
+The example rejects invalid signatures before parsing or accessing member data.
+It intentionally leaves operation validation and member authorization to the
+application, as described immediately below. No signature format, request
+envelope or SDK API is added by this documentation change.
+
+## Storefront guides — resource-generic restructure (2026-09-29)
+
+The five storefront pilot guides under `api/guides/` (find-and-create
+categories/collections, rename-publish-and-schedule, country-availability,
+category-hierarchy, translate-resources) were retired and replaced by a
+**Storefront guides** group in the Documentation tab (`storefront/*.mdx`). The new
+guides describe all eight v2026-04 storefront resources generically and split out
+only what is resource-specific (`storefront/resources.mdx`,
+`storefront/category-hierarchy.mdx`). Their 304 claims were removed and the new guides
+were re-extracted blind under `sf-*` prefixes. The old URLs redirect
+(`permanent: false`) to their nearest replacements.
+
+Behavior was re-verified against the Rails implementation on `origin/main`
+(`eaaf49469a`). Four earlier guide statements were wrong there and are superseded — do
+not restore them:
+
+- **Public show is looser than public list for every resource.** Lists return live rows
+  only. Show-by-slug also returns draft, scheduled-before-`publish_at`, and inactive rows,
+  with `seo.indexable: false`. Show returns `404` only for archived or deleted rows
+  (products, categories, collections, posts) or deleted rows (pages, media, playlists,
+  enrollment packs, which have no archived state). The earlier "a non-live category
+  returns 404 on its public slug" is wrong. So is the overview's "404 for non-public
+  resources". Integration tests pin the looser behavior.
+- **Renaming does not regenerate an existing slug** — except on pages, whose slug follows
+  the title unless `custom_slug: true`. The earlier "an auto-generated slug regenerates on
+  every title change" is wrong for every other resource.
+- **An unsupported `lang` is ignored on reads.** Only writes return `422`. A missing
+  translation falls back to its `en` value.
+- **SEO nested writes replace without `id`.** The SEO association accepts nested
+  attributes without `update_only`, so `search_engine_optimizer_attributes` sent without
+  the record's `id` builds a replacement record, and omitted fields reset. The SEO guide
+  tells integrators to send `seo.id`.
+
+The published `storefront-v2026-04` prose repeated the first two errors, and two
+company `.../products` operations lacked `security`. Corrections are staged upstream on
+the `docs/openapi-api-host-servers-main` branch. Until they sync, generated pages may
+still show the old wording; the guides follow the implementation.
+
+`api/agent-signup.mdx` sat in the API Reference **Overview** group beside
+`api/overview.mdx` and `api/authentication.mdx`. It moved to the **Guided setup** group on
+2026-10-01 (see the agent launch guide entry). Like those pages, it is not in the
+registry. It documents `POST /api/company` (`company-v0`, unauthenticated). It
+deliberately omits bot-protection field names, rate-limit numbers, and the per-recipient
+confirmation window: they help an abuser, not an integrator. The upstream spec entry for
+that operation is being tightened in the same branch.
+
+### Storefront guides — metafields and FairShare SDK (2026-09-29)
+
+Two guides were added to the storefront group, `storefront/metafields.mdx` and
+`storefront/fairshare-sdk.mdx`, and verified against `origin/main` of the Rails
+monorepo and of `fluid-fairshare`. Durable decisions:
+
+- **Metafield writes follow one contract on six resources.** On categories, posts, pages,
+  media, playlists, and enrollment packs, `metafields_attributes` upserts by
+  `namespace` + `key`. Sending nothing, or `[]`, changes nothing. `_destroy: true` still
+  requires `value` and `value_type`. **Collections** and **products** don't follow that
+  contract on v2026-04: collection writes fail, and product writes can only add. The guide
+  states this as a current limitation. Don't document `id`-based metafield updates —
+  stored metafields have no `id`.
+- **A product translation PATCH is not text-only.** It applies every field sent. The
+  other seven resources are text-only. The translations guide and the upstream spec now
+  say so.
+- **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
+  can double-fire declarative add-to-cart.
+- **Attribution comes from the page URL** and attaches to the cart **at creation**. Item
+  adds don't re-attribute. A cart created on `/home/...` by a visitor without FairShare
+  credit has no rep; a visitor a member already credited keeps that member's credit
+  (amended 2026-10-04, see the FairShare credit model entry below).
+  `data-*` overrides are first-present, not first-valid, and are remembered in browser
+  storage. The server looks `data-share-guid` up as a **username**, so UUID examples
+  were removed from the SDK pages.
+- **The media widget is broader than the public list.** It renders any non-deleted medium
+  or playlist by id or slug, including drafts and restricted media.
+
+Corrections made to unregistered pages in the same change: `sdk/overview.mdx`,
+`sdk/installation.mdx`, `sdk/cart-api.mdx` (opening the cart after an add is the
+default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.mdx`
+(`/search` is not a page; the playlist and enrollment index routes redirect to `/`, which
+carries no credit segment; product detail is by slug).
+
+### FairShare credit model — established, then kept (2026-10-04)
+
+The docs owner's model of rep credit is authoritative for every page:
+
+- A visit to a member's credit path (`/<username>/...`, a rep subdomain, or a `username` /
+  `referral` query parameter) that the SDK logs **establishes** that member's credit.
+- The member **keeps** it. FairShare's tracking (cookies, browser fingerprint, and similar
+  signals) carries it across later pages and visits, including `/home/...` pages, custom
+  routes, and marketing URLs that redirect, such as `/tv-offer`.
+- Non-credited pages, redirects, and marketing URLs establish no new credit and **never
+  remove** existing credit. Don't write that they "lose", "drop", "strip", or "remove" it.
+  The CDN doesn't strip credit or the `username` / `share_guid` parameters.
+- When a credited visitor later lands on a different member's credit path, the admin's
+  **Shared links (multi-rep)** setting (first touch, last touch, most activity) decides
+  commission. Don't document a fixed precedence or a credit duration.
+- Members share credit paths; marketing and legacy URLs serve orphaned customers.
+
+`concepts/fair-share.mdx#how-credit-is-established-and-kept` is the single canonical
+explanation. Other pages link to it instead of restating it.
+
+Code evidence (`origin/main`, 2026-10-04): the SDK writes the server-resolved affiliate to a
+`fluid_affiliate` cookie and never clears it when a later page resolves no rep, so hydration
+keeps showing the member on `/home/...`. `getAttribution()` and the attribution sent at
+cart creation reflect only the current URL (or an override), so a cart created on
+`/home/...` carries no rep of its own. The order's rep is then resolved server-side from the
+session's earlier credited visits, under the company's first/last/most-touch setting. The
+cross-session carry and the fingerprint's role are the owner's statement; the traced
+order path links visits by session, and is noted for the owner rather than documented.
+
+## API Reference sidebar — generated sections (2026-09-29)
+
+The API Reference tab is organized into sections that mirror Fluid Admin (Storefront,
+Commerce, Checkout, Members, People, Payments, Website, Content and tools, Analytics,
+Settings, DAM, FairShare SDK, Developers) rather than one group per spec.
+`eval/generate-api-nav.mjs` builds those groups from the synced specs using the ordered
+rules in `.github/api-reference-nav.json`. The hourly sync reruns it with every spec
+change, and `validate.yml` fails a PR whose `docs.json` doesn't match. Change placement
+in the rules file, never in `docs.json`. The groups `Overview` and `Portal & Widgets`
+stay hand-edited.
+
+- **URLs are unchanged.** Each endpoint's page URL is still derived from its tag and
+  summary. Before and after the switch, the same 691 pages loaded. `company-v0` pages
+  keep their `/api-reference/company-v0/` prefix because they are referenced from a
+  group that carries the spec's `directory` setting — the "Legacy (v0)" child group.
+  A file-prefixed reference would drop the prefix.
+- **Placement rules.** Every `/api/checkout/` endpoint goes in Checkout, including the
+  shopper's own account, subscriptions, and directory. Members holds only the
+  member-called `/api/member/` routes (identity, memberships, team; every member area
+  since 2026-10-07, see **Member API overview covers every member area** below). Company-side member
+  administration — member management, member types, genealogy trees, and the legacy rep
+  endpoints — goes in People, under "Members". Say "members", not "reps", in section and
+  group names.
+- **Duplicate tag+summary pairs share one URL.** Mintlify fails the build when two
+  sidebar entries resolve to the same page, so the generator keeps the first and warns.
+  Upstream fixes are staged on `docs/openapi-api-host-servers-main`:
+  - The seven storefront Lighthouse and compliance summaries per resource.
+  - The Public SDK "Flag a cart as enrollment eligible" summary.
+  - The media watch GET summary.
+  - The member move-job read summary.
+- **Follow-up when those fixes sync.** Add `permanent: false` redirects from
+  `/api-reference/company/{latest-lighthouse-result,trigger-a-lighthouse-scan,
+  latest-compliance-result,trigger-a-compliance-scan}` to their `-for-a-category`
+  successors. Those were the pages that existed before.
+- **Unsorted endpoints.** An operation no rule places is published under
+  "Unsorted endpoints" with a warning. Add a rule rather than leaving it there.
+- **Member APIs.** `member-people-v2026-10` and `genealogy-v2026-10` are now synced.
+  `api/member-apis.mdx` explains them. Member-type CRUD (`/api/v2025-06/member-types`)
+  is being moved upstream from the unsynced admin spec into `members-v2025-06`, and a
+  rule places it under People → Member types.
+- **DAM** has one hand-written page, `api/dam-upload.mdx`, for
+  `POST https://upload.fluid.app/upload`. The upload service has no OpenAPI spec, so
+  this is a deliberate exception to "no hand-written per-endpoint contracts" until one
+  is published. The page covers only server-side multipart file uploads with company or
+  partner tokens. URL import is left out until its SSRF fix ships. The raw DAM asset
+  endpoints are excluded from the sidebar.
+
+### Settings and admin specs synced (2026-09-30)
+
+`settings-v0` and `admin-v2025-06` were added to the sync so that the API reference
+covers the admin's Settings pages and the admin-only resources: brand guidelines,
+checkout settings, countries, warehouses, promo codes (`discounts`), shipping methods,
+sitemap, points, price types, sales channels, and tokens. A scoped `AGENTS.md` exception
+covers the generated `admin-v2025-06` and `members-v2025-06` pages. The admin spec's
+superseded storefront operations, its Lighthouse and compliance scans, and its
+rep-facing `users` API are excluded by `.github/api-reference-nav.json`. Upstream, on the
+same Fluid branch:
+
+- Both specs lose the `{company}.fluid.app` server.
+- Ten duplicate admin summaries are renamed: shipping methods and rates, the `PUT`
+  aliases, company email settings, and the company subscription list.
+- Member types are removed from the admin spec, now that they live in
+  `members-v2025-06`.
+
+### Unpublished groups, Messaging, Events, and My Site (2026-09-30)
+
+- **Unpublished on request.** These are excluded in `.github/api-reference-nav.json`,
+  not merely hidden, so the site builds no page for them:
+  - leads and visitors;
+  - the auth spec's authentication, single sign-on, social sign-in, and token-exchange
+    operations (multi-factor authentication stays);
+  - trainings, announcements, widgets, explore and pins, comments, and notifications;
+  - shop;
+  - Checkout's member directory (`/reps`, `/users`).
+
+  The `docs.json` AI instructions no longer describe them. They still exist in the
+  published specs on the GCS mirror, which Fluid owns.
+- **Messaging** is a section of its own and holds company messaging only.
+  - `messaging-v1` (`/api/v1/messaging`) is a signed-in user's inbox on a banned legacy
+    path, so it isn't published.
+  - `internal/member-storefront-messaging-v0` is internal, cookie-authenticated, and
+    doesn't parse.
+  - Member messaging waits for a member-API messaging resource. (Superseded: member
+    messaging is `member-messaging-v2026-10`, under Member API → Messaging since 2026-10-07.)
+- **Events.** The calendar events CRUD (`/api/company/events`) is documented in
+  `webhooks-v0` under the `company-events` tag. It is placed under Content and tools →
+  Events, not Settings. Moving it to a content spec upstream would be cleaner.
+- **My Site** (Website) holds company-side My Site management only:
+  - the company default My Site (`content-v0`);
+  - My Site themes (`themes-v0`);
+  - a member's links (`/api/users/{user_id}/links`, users permission).
+
+  Those two specs are synced but publish only these operations. The member's own
+  `/api/mysite` settings are excluded. `POST /api/user_companies/{company_id}/
+  replace_with_default_mysite` exists in routes but has no spec, so it needs one upstream
+  before it can appear.
+
+## Onboarding API adopted for the agent launch guide (2026-10-01)
+
+`onboarding-v0` (`api-reference/onboarding-v0.yaml`, `info.title: Fluid Onboarding API`)
+now syncs from the mirror. It is the API behind **Settings → Onboarding**, the Fluid
+Payments onboarding form, and the API the `fluid payments onboarding` CLI plugin calls.
+It was never deliberately deferred. Its sidebar rules put `onboarding_info`, `entities`,
+`owners`, `bank_accounts`, and the company-scoped `company_countries` under
+**Payments → Payments onboarding**, and the four `/api/companies/set_*` operations under
+**Settings → Company**.
+
+This supersedes the payments onboarding guided setup's note (item 14 of its upstream
+spec gaps) that the onboarding form's operations "aren't in any synced spec yet". That
+guide may now link the generated reference from its **Use the API directly** section.
+
+Verified against `origin/main` of the Rails monorepo:
+
+- **The onboarding update is a partial write.** Omitted top-level fields are left
+  alone, and `underwriting_info`, `data_migration`, and `onboarding_steps` merge into
+  what's stored. An optional `onboarding_info_version` turns a write built on a
+  superseded revision into `409`.
+- **Submitting needs a person.** The update stamps the calling user as the signer of the
+  steps audit and the terms acceptance, and a company API token has no user. With a
+  company token, the CLI's `submit` changes nothing and returns `ready_to_submit` with a
+  `submitUrl`, the admin's onboarding form, where a person submits. Writes that don't
+  touch those fields work with either token.
+
+### Agent launch guide (`api/agent-launch.mdx`)
+
+The guide sits right after `api/agent-signup.mdx` in the Developer Platform **Guided setup**
+group, after `setup/overview`. Both moved there from the API Reference **Overview** group on
+2026-10-01, and their URLs didn't change. Like agent signup, the guide is not in the claims registry. It sequences the guided setups rather than
+restating them: Connect (Exigo, InfoTrax, ByDesign, Pillars), payments onboarding, open a
+country, add a language, the TikTok Shop, Meta, and Google Merchant Center channels, and
+custom domain, plus create a page. All of them landed in #101. Step details, commands,
+and contracts stay on those pages.
+
+The agent prefills payments onboarding, and the merchant provides owners, bank accounts,
+and documents and submits. An existing sales-channel account needs the merchant to approve
+Fluid in a browser, through the channel guided setups.
+
+**Fluid sets up sales-channel accounts from the onboarding form, as an opt-in.** When a
+merchant has no TikTok Shop, Meta, or Google account, Fluid's team can create them from the
+business details in the payments onboarding form. It's an optional service the merchant
+opts in to, not a default. This is a service Fluid provides, confirmed by the docs
+owner on 2026-10-01. It's not an automated code path, so don't look for it in the
+onboarding or channel code, and don't remove the claim because the code doesn't show it.
+The channel guided setups cover connecting accounts the merchant already has.
+
+One product claim comes from the requester, not the implementation, and is open for
+confirmation on PR #90: a merchant can build and preview a store before adding a card at
+**Settings → Billing**. Nothing in the code gates going live on a card.
+
+## Sitemap, custom routes, and redirects (2026-10-04)
+
+`help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
+were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
+(`b26e25102b`). They aren't in the registry. One bullet in `storefront/fairshare-sdk.mdx`
+was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was dropped on
+2026-10-04 with that clause). Durable decisions:
+
+- **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
+  serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
+  product or page. Members share credited `/<username>/...` paths from the mobile app or
+  their own links. Don't document adding rep credit to a marketing URL, and don't tie the
+  redirect's query-string behavior to that pattern. Non-credited routes are the option only
+  when the address must stay in the address bar.
+- **Credit wording follows the owner's model.** Non-credited routes and redirects establish
+  no credit; a visitor a member already credited keeps that credit. Never write that a route
+  or redirect loses, drops, or strips credit, and don't present the query string a redirect
+  doesn't forward as a credit risk. The two verified risks are the `404` at
+  `/<username>/<non-credited-path>` and the username/route collision, which credits the
+  matching member for the route's visits.
+- **Per-country targets need country routes.** Redirects have one target (optionally one
+  domain, API only). Country-route redirects are `302`.
+- **Country detection is `?region=`, then the country in the `fluid_locale` cookie, then
+  geolocation headers, then the company default, then `US`.** An internal design doc names
+  a `fluid_country` cookie; the router doesn't read it. Don't document it. Don't claim how
+  the CDN treats `?region=` — that's unverified.
+- **The URL Redirects screen isn't in the admin sidebar.** It's reachable at
+  `/url_redirects` and through the admin search, which lists it as **Url Redirects**. The
+  page header says **URL Redirects**, which is the `sidebarTitle`.
+- **Current behavior documented as such** (fixes pending in fluid; update the pages when
+  they ship): the custom-route drawer's **Include in Sitemap** off also deactivates the
+  route; the sitemap lists credited custom routes at `/<path>` instead of `/home/<path>`;
+  redirects and `302` route rules don't forward the query string; redirect lookups are
+  cached per path and host for up to 30 days and saving a redirect clears a different
+  cache key, so changes can lag; the drawer offers **Post** and **Playlist** overrides that
+  the API rejects.
+- **Product decisions documented as current behavior:** the Fair Share option on country
+  routes has no effect, and username/route collisions aren't prevented.
+- **Generated pages linked by current URL.** fluid#24889 renames the five theme region rule
+  operations; a separate docs PR adds `permanent: false` redirects from the old URLs.
+
+## Navigation APIs told apart (2026-10-04)
+
+Fluid has three navigation APIs, and the reference didn't say which was which. They are now named
+consistently, in the specs (fluid#24884), the sidebar, and AGENTS.md:
+
+- **Website navigation menus** (`content-v0`, `/api/menus` and `menu_items`): the storefront's
+  navigation bars, footers, and other site menus. Website → **Navigation menus**. They were hidden by
+  the `content-v0` exclude rule, whose comment wrongly called them superseded: `storefront-v2026-04`
+  has no menu paths. The `docs.json` AI instruction that said they weren't in any synced spec was
+  also wrong. Both are corrected.
+- **Mobile app navigation** (`mobile-v2`, `/api/v2/mobile_navigations`): the Fluid mobile app's
+  navigation. Mobile app → **Navigation**. `mobile-v2` now syncs, but its `mobile-pages` tag stays
+  excluded: none of its 21 operations has a description, and most summaries are machine-generated
+  ("Explore explore"). Publish it once the spec describes it.
+- **Portal navigation** (`fluid-os-v0`): a portal definition's navigation. Each has a `platform` of
+  `web` or `mobile` (`FluidOS::Navigation` `enum :platform`), which the profile importer describes as
+  "browser or mobile". The docs don't say that `mobile` means the Fluid mobile app, because the code
+  doesn't establish it.
+
+Two list operations get narrow offset-pagination exceptions in AGENTS.md, verified against Rails:
+List website navigation menus and List mobile app navigations
+(`.page(page_param).per(records_per_page)`).
+
+Generated tags keep their hyphens apart from case folding, so `fluid-os - navigations` serves at
+`fluid-os--navigations`, with two hyphens. Check the live sitemap before writing a redirect to a tag
+with punctuation: four guessed variants failed the broken-links check before the sitemap showed the
+real one.
+
+## FairShare credit across domains and browsers (2026-10-05)
+
+The docs owner confirmed both: **credit carries across domains, but not across browsers.** A shopper
+credited by a member's link keeps that credit on the company's other domains and at checkout, in
+the same browser. Opening the store in another browser or on another device doesn't carry it. This
+supersedes the earlier "browser storage doesn't cross domains, so keep shoppers on one domain"
+guidance. Browser storage itself is still per domain, and so is the cart, which reaches checkout
+through its token. Credit is the part that carries. `concepts/fair-share.mdx`,
+`platform-overview.mdx`, `concepts/we-commerce.mdx`, and `storefront/fairshare-sdk.mdx`
+(`sf-fairshare-081`) say so. The fingerprint's role in deciding credit is still unconfirmed by code;
+the docs keep the owner's wording ("cookies, browser fingerprint, and similar signals").
+
+## Checkout forms (2026-10-07)
+
+`guides/checkout-forms.mdx` is gated against `checkout-v2026-04` (prefix `checkout-forms`).
+`help/admin/forms.mdx` documents the admin's `/forms` screen and sits in a new Help Center
+**Content** group, mirroring the admin sidebar's **More** > **Content** section. Durable
+decisions, all verified against the implementation rather than the spec:
+
+- **Forms are enrollment-only and country-scoped.** An enrollment cart gets every active
+  Post Purchase form whose countries include the cart's country. Nothing links a form to an
+  enrollment pack, member type or product, and a regular cart never gets a form. So a
+  "How did you hear about us?" question on a regular checkout isn't possible with forms; the
+  pages point to a General form shared by link instead. Do not document per-pack or
+  per-member-type forms until the product ships them.
+- **After payment is the current behaviour, not a universal one.** New forms can only be
+  General or Post Purchase. Pre Purchase is retired for new and updated forms, but an existing
+  Pre Purchase form is still evaluated and asks before the order is placed. The pages say so.
+- **The order, not the form, makes the member.** The order is placed and the enrollment
+  member is created before the form appears; the form only decides whether the enrollment is
+  complete (reminders, the member-record copy of the answers, and the completion webhook).
+- **Update enrollment field answer takes the field id (fixed in fluid#25248).** The PATCH
+  action used to resolve `{field_id}` as the saved answer's `field_answer_id`, against the
+  spec. It now takes the field's `id`, like submit, updates the enrollment's latest answer
+  to that field, and returns `404` when the field has no answer yet. The legacy answer-id
+  route is unchanged and stays undocumented. The guide says so (claims
+  `checkout-forms-028`, `-029`, `-107`, `-108`); the synced spec's description matches.
+- **General forms can hold enrollments open.** Completion counts every active form for the
+  country, while hosted checkout renders only `post_purchase` fields. Documented as a gotcha;
+  revisit if the backend scopes completion to Post Purchase forms.
+- **The forms admin API stays undocumented.** `forms-v0` is not in
+  `.github/synced-api-references.json`, so no generated page exists to link. The pages say the
+  API Reference doesn't publish form management yet and do not hand-write `/api/forms` paths.
+  This does not change the 2026-09-28 decision to keep `/api/public/forms` removed.
+
+## Forms API adopted (2026-10-07)
+
+`forms-v0` (Fluid Forms API, `/api/forms/*`, 20 operations) now syncs from the mirror. It is the
+admin's More → Content → Forms, so its operations sit in Content and tools → **Forms**, through one
+spec-wide rule in `.github/api-reference-nav.json`. The upstream spec was described end to end first
+(fluid#25245): all 20 operations, 27 parameters, and 194 schema properties, verified against the Rails
+forms actions, models, and serializers and against the admin's form builder.
+
+- **Pagination.** Four list operations use offset `page` / `per_page`, verified against the Rails
+  actions: List forms, List form elements, List form respondents, and List incomplete enrollees.
+  AGENTS.md names each generated page, and `eval/check-hosted-docs.mjs` sanctions `per_page` on those
+  four pages only. No other Forms page, and no hand-written prose, inherits the exception.
+- **Legacy markers.** The spec names no `v2025-06` path. Where it sends public respondents elsewhere,
+  it names the Fluid Public SDK API's token-addressed forms operations instead of typing their path,
+  so no Forms page needs the Public SDK version sanction.
+- **Not a successor for `/api/public/forms`.** The Forms reference is the company-side admin API.
+  It doesn't change the 2026-09-28 decision above, and the sunset form-by-ID response's
+  `successor-version` header is unaffected.
+- **Known spec gaps, reported upstream rather than restated here.** The create request body is drawn
+  flat, though the API reads it under `form`. List forms and List form respondents declare no query
+  parameters, and their `pagination` schema lists `next_page` / `prev_page`, which aren't returned. The
+  statistics `id` parameter is marked required but ignored. Embed settings has no request body schema.
+  The descriptions say how each actually behaves; the structural fixes need a contract change upstream.
+
+## Forms API walkthrough (2026-10-07)
+
+`guides/checkout-forms.mdx` gained **Build a form through the API**, and
+`setup/open-a-country.mdx` now says how to turn the atlas's enrollment fields into a form and what
+`--legacy-defaults` adds. This supersedes the "forms admin API stays undocumented" bullet above.
+Verified against the Rails forms actions and models, the admin form builder, hosted checkout's
+enrollment renderer, and the canonical country rows:
+
+- **Country IDs.** `country_ids` holds Fluid catalog country IDs (access countries), read from
+  each company country's `country.id`, never the company country's own `id`. Germany is `74`,
+  the United States `214`, Canada `35`. The open-a-country example used `81`, which is Guam; it
+  now uses `74`.
+- **Updates come from `form_components`, not List form elements.** Responses annotate each
+  component with its active element's `id`; List form elements also returns deactivated
+  elements and doesn't mark them. The guide says so instead of the "list elements" approach.
+- **`is_form_field` is load-bearing.** Enrollment fields are only elements with
+  `is_form_field: true`; the API doesn't default it. Every example sets it.
+- **The create body is shown nested under `form`,** which is what the API reads. No mechanical
+  `example` claim covers it, because the spec draws the create body flat (known gap above).
+- **`--legacy-defaults`** (`seed_legacy_defaults`) adds, for US, CA, MX, ES, DE, TR, AU, NZ and
+  PH only, the country's checkout and enrollment agreements (active, `<title> - <country>`) and
+  an active Post Purchase `<Country> Enrollment Form` with required fields; for Japan one
+  inactive email marketing consent agreement; otherwise nothing. Japan's overview-document
+  (gaiyo shomen) form is created whenever the country requires it, flag or not; not documented.
+- **Atlas component mapping** follows the admin builder's mapping, since the atlas `component`
+  names are the builder's component names.
+- **`fluid countries forms` is step 6 of Open a country (2026-10-07).** Merged in fluid#25342
+  and published in `@fluid-app/fluid-cli-localization` 0.1.6, checked on npm before it was
+  documented. Verified against the merged command, its report and plan code, and the plugin
+  README: read-only by default; `--create --yes` makes `Enrollment - <Country>` as a draft
+  (`--activate` publishes it) or adds only missing fields, sending existing components back
+  with their ids; `--form <id>` takes only a Post Purchase form for that country alone;
+  forms shared with other countries are never changed; reps-only (`requiredFor`) fields,
+  SSNs and value fields labelled as ID, tax, bank or card numbers or passwords, and
+  multiple choices without options are left `byHand`. `status` gained the `enrollment_form`
+  check and an `enrollmentForm` block, and `byHand.enrollmentFields` now lists only what the
+  command leaves to a person. The atlas component mapping moved to **Use the API directly**,
+  with the plugin's `puck_type` values; it no longer lists an SSN mapping, because the
+  command never creates one. Claims `open-country-034` to `-060`.
+  
+## Theme error pages (`themes/error-pages.mdx`, 2026-10-04)
+
+`themes/error-pages.mdx` documents the `error_page` 404 and 503 templates. Like
+`themes/theme-variables.mdx` and `themes/developer-guide.mdx`, it isn't in the claims
+registry: it asserts no API path, parameter or status-code contract, only storefront
+rendering behavior. Each claim was checked against `origin/main` of the Rails monorepo
+(the error renderer, the errors routes, the theme region router, the CDN function and
+the Base root theme) and of fluid-admin (template grouping, type labels and template
+actions). Re-verify against both before changing a behavioral claim.
+
+Durable decisions:
+
+- **Lookup is by name on the active theme, or the previewed one.** The template must be named `404` or `503`,
+  be the active default for that name, and have a published version. A template named
+  `default` never renders. Defaults are scoped by name, so the 404 and 503 defaults are
+  independent. Region rules don't apply. Since fluid#24895, a preview
+  (`preview_theme_id`, the preview cookie, or the `X-Fluid-Theme` header `fluid theme dev`
+  sends) renders the previewed company theme's template; when it has none, the static page
+  renders, not the active theme's.
+- **Single-segment paths aren't 404s.** `/:credit` matches any one-segment path, so an
+  unknown `/spring-sale` renders the home page. The page's 404 table describes
+  multi-segment unknown paths, and says so.
+- **The fallback status differs.** With no themed 503, an unhandled error returns the
+  static page with `500`. The themed page returns `503`.
+- **`content_for_header` is head Global Embeds only on error pages.** The renderer skips
+  the usual header builder, so there's no title, meta, CSRF tag, Fluid script or theme
+  stylesheet. The page tells authors to load CSS and a title from the layout.
+- **Mostly English, and `t | default:` falls back (fluid#24897).** The errors controller
+  doesn't switch locale, and a missing record's rescue handler runs after the storefront's
+  locale `around_action` has unwound, so those render in English. Missing enrollment packs,
+  libraries (playlists) and rep sites call the 404 inside the action, so they render in the
+  visitor's language; the page says so. For a key no locale defines, `t` now returns
+  the `Translation missing: …` text as a value that reads as empty, so `default:` and
+  `blank` checks fall through; a filter between `t` and `default:` loses that. Base's 19
+  locales gained the five `error.*` keys; existing themes aren't re-synced, so the page
+  says older Base copies show the templates' English fallback.
+- **CLI push makes each error template its own default (fluid#24898).** The resource
+  write now checks for an existing default per name for `error_page`, and skips a
+  bodiless error page (a sidecar written before `index.liquid`). Themes pushed before
+  the fix weren't backfilled, so the page keeps a note to use **Make Default**. A theme
+  import makes each imported template default and publishes it.
+- **Missing records render the 404 in place (fluid#24894).** HTML requests (any `Accept`
+  listing HTML, or bare `*/*`; `text/html;q=0` counts as rejecting HTML) get the 404
+  with status `404` at the original URL, and `request.path` is that URL; other formats
+  still redirect to `/404`. `/my/home` and placeholder-username MySite links redirect to
+  `/`. Still redirecting, and not documented because theme authors don't style them:
+  `/s/:token` share links, the media spam check, and the subscription and conversation
+  unsubscribe-token pages.
+- **Editor preview links (fluid#24895).** Error-page preview links carry the template's
+  `preview_theme_id`, so a draft theme's template previews without a cookie. The 503
+  template previews at `/errors/503`, because a static file answers `/500` before the
+  app; `/404` is unchanged.
+- **Pages a theme can't style** (billing pause, unreachable origin, rate limiting,
+  blocked IPs, unknown host) are listed without internals. The billing pause links to the
+  Help Center Billing **Status** card. There is no maintenance or password mode.
+
+## Member API overview covers every member area (2026-10-08, revised 2026-10-12)
+
+ENG-2067. `api/member-apis.mdx` said the member API covered only identity, memberships, and team. That
+went stale when fluid#24515 added contacts (merged 2026-10-06) and the ten other member specs
+were synced on 2026-10-07. Mike's 516c2c9 and 8cee87e (2026-10-09) replaced the Note with an
+"Everything else" table, one row and one starting link per area, and dropped One Auth tokens
+until they're public. ENG-2067 builds on that table rather than replacing it. It adds a detailed
+**Contacts** section, the per-area eligibility rules, the full email-link JWT list, and the team
+rules after fluid#25535. `api/company-and-member-apis.mdx` lost the same "profile, memberships,
+and team" scope and its "the member's JWT" wording, since a member token isn't a JWT. Neither page
+is in the claims registry. Verified against `origin/main` of the Rails monorepo (the member routes,
+the member API and team controllers, the credential resolver and its strategies, the access
+concerns, the messaging participant rule, and the member move policy) and the eleven
+`member-*-v2026-10` specs:
+
+- **Credentials.** The page lists member tokens, member session JWTs, and portal JWTs. It doesn't
+  name the identity service's access tokens until they're public (Mike, 2026-10-09). They resolve
+  only where an environment setting turns the identity service on. Member session JWTs and portal
+  JWTs are read-only. Admin and impersonation credentials get `401`.
+- **Email-link JWT.** The member session JWT travels in order and subscription email links.
+  Contacts (with their imports, activities, notes, tasks, orders, and subscriptions), groups,
+  notes, tasks, messaging, AI conversations, the statistics reads, My Site statistics, push
+  devices, and the team list refuse it with `403`. Orders, subscriptions, and the activity feed
+  accept it.
+- **Eligibility is an allow-list per area, so the page names who is let in, not only who is
+  refused** (Otto review on #131, 2026-10-09):
+  - The rep member type (or an admin row): contacts, groups, notes, tasks, the team list, and
+    messaging, which also needs a messaging identity. A company's own member types are refused.
+    For messaging, **Can act as rep** doesn't qualify a type.
+  - The member type's **Can act as rep** switch (`rep_eligible`): media, uploads, playlists,
+    shares, asset statistics, the AI assistant, and My Site.
+  - Every membership can use catalogue search, the dashboard, and the activity feed.
+- **Team routes use the member credential resolver for reads too (fluid#25535, merged
+  2026-10-09).** Before that, reads went through the older token path alone, and an admin's
+  portal JWT or an impersonation JWT could read the team. The 2026-10-08 draft of this entry
+  recorded that older behaviour, and so did the draft PR fluid-commerce/mintlify-starter#86. Now
+  every team route refuses what the rest of the member API refuses. The one exception is reads by
+  a member whose user is also an admin of the company (an owner who is also a rep), with that
+  member's own opaque token (`own_token_of_admin_member`). Writes still refuse read-only JWTs with
+  `403`. The member's own seat can't be moved, because the move policy needs a positive distance
+  from it. Requesting a move needs **Can act as rep**.
+- **From #86, still true:** the own-seat rule and the refusal of impersonation credentials.
+  **No longer true:**
+  - moves with a session or portal JWT (now `403`);
+  - admin team reads (refused since #25535);
+  - credited orders always hiding the buyer. Buyer details now show when the company's
+    contact-visibility policy allows it, and never to the email-link JWT.
+
+  Its `team` / `team-moves` URLs depend on fluid#24340, which is still open. Its AGENTS.md
+  surface-first rule and its `pageSlug()` fix stay with that PR.
+- **Curly apostrophes stay in slugs.** Mintlify keeps `’` in a page slug, but
+  `eval/generate-api-nav.mjs` `pageSlug()` drops it. It affects three member operations:
+  `orders/list-the-signed-in-member’s-orders`,
+  `subscriptions/list-the-signed-in-member’s-product-subscriptions`, and
+  `subscriptions/show-one-of-the-member’s-subscriptions`. A hand-written link to one must use the
+  curly form. The generator fix is in #86.
+- **One more duplicate summary (ENG-2068).** The member `GET …/subscriptions/{id}/failed-cycle-waiver`
+  ("Preview a failed-cycle waiver") shares its tag and summary with Checkout's. The generator
+  leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
+  Checkout's operation. It needs a unique summary upstream.

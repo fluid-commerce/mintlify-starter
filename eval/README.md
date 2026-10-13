@@ -175,7 +175,7 @@ occurrence — never to a whole tag or marker:
 | The 69 generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
 | Checkout's reciprocal Public SDK boundary | `v2025-06` only | The exact `info.description` sentence saying that the FairShare SDK calls the Fluid Public SDK API, and only when the same generated page carries a `checkout-v2026-04.yaml` contract line at an `/api/checkout/v2026-04/*` path. |
 
-Any other hit fails the run. Two properties of the Public SDK page-list exception are
+Hits on `company/v1/` and `/api/v1/` outside those exceptions are reported as `WARN` and don't fail the run: AGENTS.md prefers the newer version of an operation but allows a v1 path that has none, so a person judges each one. Any other hit fails the run. Two properties of the Public SDK page-list exception are
 load-bearing. It is keyed on the exact page, not a `v2025-06` pattern class, so the
 legacy admin/partner surface
 (`admin-v2025-06`, `/api/v2025-06/*` — a different API) keeps failing. And three of that

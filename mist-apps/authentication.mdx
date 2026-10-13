@@ -1,0 +1,102 @@
+---
+title: "Authentication in Mist apps"
+sidebarTitle: "Authentication"
+description: "How the starter template authenticates webhooks, droplet installs, embedded requests and the person viewing an embedded page, and which parts you must not rebuild yourself."
+---
+
+The starter template already handles authentication between your app and Fluid. This page explains each part, so you can build on it instead of replacing it.
+
+There are four questions your app has to answer:
+
+| Question | How the template answers it |
+| --- | --- |
+| Did this webhook really come from Fluid? | An HMAC signature on every webhook. |
+| Which company is this, and how do I call the API for it? | The droplet install flow, which stores a droplet installation token for each company. |
+| Which installation is this embedded request for? | An installation reference that Fluid adds to the embed's URL. |
+| Who is looking at this embedded page? | A short-lived session token that Fluid signs. |
+
+## Webhook signatures
+
+Fluid signs every webhook it sends. The template's `/api/webhooks` route checks the signature before it does anything else.
+
+- Fluid sends `X-Fluid-Signature`, an HMAC-SHA256 of `{timestamp}.{raw body}`, and `X-Fluid-Timestamp`.
+- The template rejects a webhook whose timestamp is more than five minutes old, to block replays.
+- **Company webhooks**, such as `order.created`, are checked against that company's own webhook secret. The template finds the company from the `X-Fluid-Shop` header.
+- **Lifecycle webhooks**, `droplet.installed` and `droplet.uninstalled`, are checked against `FLUID_WEBHOOK_AUTH_TOKEN`, which Fluid sets when you add a droplet.
+
+Every webhook is saved to the `webhooks` table, with tokens and secrets removed from the stored copy. See [Webhooks](/api/guides/webhooks) for the events Fluid sends.
+
+## The droplet install flow
+
+When a company installs your droplet, Fluid sends `droplet.installed` to `/api/webhooks/installed`. The template then:
+
+1. Exchanges the short-lived install token for the company's credentials: a [droplet installation token](/api/authentication#droplet-installation-token), which starts with `dit_`, and a webhook secret.
+2. Saves them in the `companies` table, one row per installation.
+3. Registers the webhooks, callbacks and drop zones you turned on in `lib/config/droplet.config.ts`.
+
+When the company uninstalls the droplet, the template deactivates the installation, removes what it registered and erases the stored credentials.
+
+Use the installation's token to call the Fluid API for that company:
+
+```ts
+import { createFluidClientForInstallation } from "@/lib/fluid/client";
+import { resolveFluidInstallation } from "@/lib/fluid/installation-context";
+
+const context = await resolveFluidInstallation(request);
+const fluid = createFluidClientForInstallation(context.installation);
+```
+
+A droplet installation token can do only what its installation's scopes allow. See [Token scopes](/concepts/droplets#token-scopes).
+
+## Installation context for embedded pages
+
+When the Fluid admin opens your droplet, it adds `?dri=dri_…` to your app's URL. That value identifies the company's installation of your droplet.
+
+The template turns it into a server-side tenancy boundary:
+
+1. In the browser, read it once with `readFluidInstallationReference(window.location.href)`.
+2. Call your own API routes with `fluidInstallationFetch()`. It sends the reference in the `X-Fluid-Droplet-Installation` header and only to your app's own origin.
+3. On the server, call `resolveFluidInstallation(request)` first in every route that reads company data or calls Fluid. It finds the one active installation, or throws.
+
+Scope every query by `context.companyId` or `context.installation`.
+
+<Warning>
+  The `dri` value selects an installation. It doesn't prove who is viewing the page. Anyone who has a valid `dri` can call routes that check only the installation. When a route needs to know the viewer, also verify a session token.
+</Warning>
+
+## Viewer identity with session tokens
+
+The Fluid admin can also add a `session_token` to the URL. It's a short-lived token, signed with HS256, that names the viewer (`sub`) and the store (`dest`).
+
+`verifySessionToken()` in `lib/fluid/session-token.ts` checks it on the server. It checks the signature, issuer, audience, expiry and store, and allows 30 seconds of clock skew. It reads its keys from `FLUID_SESSION_TOKEN_SIGNING_SECRET`, `FLUID_OAUTH_CLIENT_ID` and `FLUID_SESSION_TOKEN_ISSUER`. Fluid sets them in production only, and verification fails closed when they're missing.
+
+The `/embed/session-example` route shows the full pattern:
+
+1. It resolves the installation from `dri`.
+2. It looks up the store with the installation's token. This needs the `settings` scope on the installation.
+3. It verifies the `session_token` against that store.
+4. It sets its own HttpOnly cookie for 120 seconds, so later pages in the same frame don't need the token again.
+5. It removes `session_token` from the browser's address bar.
+
+If the cookie expires or the browser blocks it, the page asks the viewer to reload it from Fluid. A fresh load brings a new session token.
+
+The session token identifies the viewer. It doesn't authorize Fluid API calls. To call Fluid, use the installation's token.
+
+## What you must not build yourself
+
+- **Don't create your own login.** Don't add a password form, an OAuth flow or a second viewer token for pages embedded in Fluid. Use the installation context and the session token.
+- **Don't trust what the browser sends about the company.** Never pick the company from a query parameter, the `X-Fluid-Shop` header of a browser request, a shared token or "the only row in the database". Resolve the installation on the server.
+- **Don't send tokens to the browser.** Keep droplet installation tokens and `FLUID_COMPANY_PRIVATE_TOKEN` on the server. Never forward a Fluid session token to the Fluid API.
+- **Don't skip signature checks.** Don't disable the webhook signature check, even while you test.
+
+## Local development
+
+Locally, nothing signs webhooks or session tokens for you. The home page renders without a viewer, so you can build the UI right away.
+
+To test the install flow locally, copy `.env.example` to `.env.local` and set the lifecycle variables it lists. The session-token variables exist only in production, so verified-viewer routes return `401` locally.
+
+## Related pages
+
+- [Integration points](/mist-apps/integration-points)
+- [Authentication](/api/authentication) for every Fluid token type
+- [Creating droplets](/guides/creating-droplets)

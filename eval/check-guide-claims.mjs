@@ -228,6 +228,18 @@ function schemaTypes(schema) {
 // Spec navigation helpers
 // ---------------------------------------------------------------------------
 
+// Multi-spec guides: the first spec that defines the claim's anchor path, else
+// the first spec. A claim without a path (or an `absent` endpoint claim whose
+// path no spec defines) falls back to the first spec.
+function pickSpecForClaim(specs, claim) {
+  const path = claim && claim.anchor && claim.anchor.path;
+  if (typeof path === "string") {
+    const hit = specs.find((s) => s && s.paths && Object.prototype.hasOwnProperty.call(s.paths, path));
+    if (hit) return hit;
+  }
+  return specs[0];
+}
+
 function getPathItem(spec, path) {
   const paths = spec.paths || {};
   return paths[path] ? deref(spec, paths[path]) : undefined;
@@ -1125,7 +1137,7 @@ function checkAll(spec, registry, getGuide, opts = {}) {
             // `guideSpecs` map validates against its own spec; every other guide
             // falls back to the default `spec`. Absent a resolver (e.g. the
             // in-memory self-test), the single `spec` is used unchanged.
-            const claimSpec = opts.resolveSpec ? opts.resolveSpec(claim.guide) : spec;
+            const claimSpec = opts.resolveSpec ? opts.resolveSpec(claim.guide, claim) : spec;
             try {
               fn(claimSpec, claim, report);
             } catch (err) {
@@ -1460,6 +1472,21 @@ function runSelfTest() {
   const gsOk = !gsFailed.has("GS-mapped") && gsFailed.has("GS-fallback");
   assertions.push({ id: "guideSpecs: mapped guide uses its spec; unmapped falls back to default", ok: gsOk, expected: "PASS", got: gsOk ? "PASS" : "FAIL" });
 
+  // guideSpecs array: a guide mapped to several specs validates each claim
+  // against the spec that defines its anchor path, and a path no listed spec
+  // defines falls back to the first one (so it still fails).
+  const GS_MULTI_GUIDE = "fixtures/multi.mdx";
+  const gsMultiGetGuide = (p) => (p === GS_MULTI_GUIDE ? "gadgets live here" : null);
+  const gsMultiClaims = [
+    { id: "GS-multi-second", guide: GS_MULTI_GUIDE, line: 1, quote: "gadgets live here", type: "endpoint", check: "mechanical", claim: "path only in the second spec", anchor: { path: "/api/v1/gadgets", method: "get" } },
+    { id: "GS-multi-missing", guide: GS_MULTI_GUIDE, line: 1, quote: "gadgets live here", type: "endpoint", check: "mechanical", claim: "path in no listed spec", anchor: { path: "/api/v1/nowhere", method: "get" } },
+  ];
+  const gsMultiResolve = (g, c) => (g === GS_MULTI_GUIDE ? pickSpecForClaim([SELFTEST_SPEC, GS_SPEC_B], c) : SELFTEST_SPEC);
+  const gsMultiRun = checkAll(SELFTEST_SPEC, { version: 1, guides: [], claims: gsMultiClaims }, gsMultiGetGuide, { resolveSpec: gsMultiResolve });
+  const gsMultiFailed = new Set(gsMultiRun.report.failures.map((f) => f.id));
+  const gsMultiOk = !gsMultiFailed.has("GS-multi-second") && gsMultiFailed.has("GS-multi-missing");
+  assertions.push({ id: "guideSpecs array: claim uses the spec defining its path; unknown path fails", ok: gsMultiOk, expected: "PASS", got: gsMultiOk ? "PASS" : "FAIL" });
+
   // Report.
   let allOk = true;
   for (const a of assertions) {
@@ -1567,16 +1594,21 @@ function main() {
   let defaultSpec;
   try {
     defaultSpec = loadSpecCached(opts.spec);
-    for (const p of new Set(Object.values(guideSpecs))) {
+    for (const p of new Set(Object.values(guideSpecs).flat())) {
       if (typeof p === "string") loadSpecCached(p);
     }
   } catch (err) {
     process.stderr.write(`ERROR loading spec: ${err.message}\n`);
     process.exit(2);
   }
-  const resolveSpec = (guidePath) => {
+  // A guide may map to one spec (a string) or to several (an array) when its
+  // flow spans surfaces. With an array, each claim validates against the first
+  // listed spec that defines its anchor path, else the first spec listed.
+  const resolveSpec = (guidePath, claim) => {
     const p = guideSpecs[guidePath];
-    return typeof p === "string" ? loadSpecCached(p) : defaultSpec;
+    if (typeof p === "string") return loadSpecCached(p);
+    if (Array.isArray(p) && p.length > 0) return pickSpecForClaim(p.map(loadSpecCached), claim);
+    return defaultSpec;
   };
 
   const { report, stats } = checkAll(defaultSpec, registry, makeGuideLoader(), { resolveSpec });

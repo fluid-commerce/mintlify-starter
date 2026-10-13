@@ -75,6 +75,16 @@ jobs:
         with:
           node-version: 22
 
+      # The API Reference sidebar is generated from the specs by the section rules
+      # in .github/api-reference-nav.json. Regenerate it with every spec change so
+      # a new endpoint lands in its section and a removed one never leaves a
+      # dangling page reference (which would fail mint validate below).
+      - name: Regenerate the API Reference sidebar
+        id: nav
+        if: steps.diff.outputs.openapi_changed == 'true'
+        continue-on-error: true
+        run: node eval/generate-api-nav.mjs
+
       # HARD GATE: an invalid reference or docs config must never publish. The docs
       # auto-generate pages from these files, so a broken reference breaks the
       # build. continue-on-error lets us branch: validate success → flow to main;
@@ -83,7 +93,12 @@ jobs:
         id: validate
         if: steps.diff.outputs.changed == 'true'
         continue-on-error: true
-        run: npx --yes mint@4.2.930 validate
+        run: |
+          if [ "${{ steps.nav.outcome }}" = "failure" ]; then
+            echo "The API Reference sidebar could not be regenerated; quarantining this sync."
+            exit 1
+          fi
+          npx --yes mint@4.2.930 validate
 
       - name: Configure git identity
         if: steps.diff.outputs.changed == 'true'
@@ -97,7 +112,7 @@ jobs:
       - name: Commit and push synced references to main
         if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
         run: |
-          paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ')"
+          paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ') docs.json"
           git add $paths
           files="$(git diff --cached --name-only | tr '\n' ' ')"
           git commit -m "chore: sync generated API references: ${files}"
@@ -157,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ')"
+          paths="$(jq -r '.[].path' "$MANIFEST" | tr '\n' ' ') docs.json"
           git add $paths
           git commit -m "chore: BLOCKED reference sync — mint validate failed"
           git push --force origin HEAD:reference-sync-blocked

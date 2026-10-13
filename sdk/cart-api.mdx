@@ -27,12 +27,12 @@ For common actions you don't need to write any JavaScript. Add the following `da
 <!-- Add a specific quantity -->
 <button data-fluid-add-to-cart="123456" data-fluid-quantity="2">Add 2 to Cart</button>
 
-<!-- Add and immediately open the cart panel -->
+<!-- The cart panel opens after an add by default; keep it closed -->
 <button
   data-fluid-add-to-cart="123456"
-  data-fluid-open-cart-after-add="true"
+  data-fluid-open-cart-after-add="false"
 >
-  Add &amp; View Cart
+  Add Quietly
 </button>
 
 <!-- Add as a subscription -->
@@ -44,6 +44,47 @@ For common actions you don't need to write any JavaScript. Add the following `da
 <button data-fluid-add-enrollment-pack="42">Add Enrollment Pack</button>
 ```
 
+**Adding several items, subscriptions, and bundles:**
+
+```html
+<!-- Several variants in one click; subscribe per item, in the same order -->
+<button
+  data-fluid-add-to-cart="123456,123457"
+  data-fluid-subscribe="true,false"
+>
+  Add Both
+</button>
+
+<!-- Subscribe on a specific plan. A plan ID implies subscribe="true" -->
+<button
+  data-fluid-add-to-cart="123456"
+  data-fluid-subscription-plan-id="7"
+>
+  Subscribe Monthly
+</button>
+
+<!-- A bundle product with the items the shopper chose -->
+<button
+  data-fluid-add-to-cart="123456"
+  data-fluid-bundled-items='[{"variant_id": 2001, "quantity": 1}, {"variant_id": 2002, "quantity": 2}]'
+>
+  Add Bundle
+</button>
+
+<!-- An enrollment pack whose products need bundle choices -->
+<button
+  data-fluid-add-enrollment-pack="42"
+  data-fluid-bundle-selections='[{"variant_id": 123456, "bundled_items": [{"variant_id": 2001, "quantity": 1}]}]'
+>
+  Join with Bundle
+</button>
+
+<!-- An enrollment pack plus extra items: "packId+variantId,variantId" -->
+<button data-fluid-add-combined="42+123456,123457">Join and Add Items</button>
+```
+
+`data-fluid-subscription-plan-id` takes a single plan ID. `data-fluid-bundled-items` and `data-fluid-bundle-selections` take JSON; the SDK logs invalid JSON to the console and adds the item without it. Attribute names are case-sensitive kebab-case: `data-fluid-addToCart` does nothing.
+
 ## Cart Display
 
 Place a `<span>` with `id="fluid-cart-count"` anywhere in your markup and FairShare will keep its text content in sync with the current cart item count. The count updates automatically when items are added, removed, updated, or when the cart is cleared, created, or refreshed — no JavaScript needed.
@@ -51,6 +92,12 @@ Place a `<span>` with `id="fluid-cart-count"` anywhere in your markup and FairSh
 ```html
 <span id="fluid-cart-count">0</span>
 ```
+
+## Real-time cart sync
+
+Enable [real-time cart updates](/sdk/installation#enable-real-time-cart-updates) on your loader tag to receive updates to the current cart over Action Cable. The SDK applies those updates to local cart state and notifies mounted cart widgets. Your existing cart methods stay the same.
+
+Some stores create carts in the background. On those stores, the first add creates the cart, and the response returns it empty. The items arrive about a second later as a real-time update. `addCartItems()` resolves, and `CART_OPERATION_SUCCESS` fires, before the items are in the cart. Read the items from `UPDATE_CART_ITEM`, not from the value the add resolves with. If the items cannot be added, the SDK emits [`CART_POPULATION_FAILED`](#cart-population-failures) instead.
 
 ## JavaScript Cart Methods
 
@@ -332,6 +379,58 @@ const language = window.FairShareSDK.getLanguage();
 
 For a complete Liquid and JavaScript implementation, see [navbar locale selector](/themes/navbar-locale-selector).
 
+## Cart state events
+
+The SDK listens for `cart_update` messages over Action Cable when you enable [real-time sync](/sdk/installation#enable-real-time-cart-updates). After applying a received cart, it emits a `CustomEvent` named `UPDATE_CART_ITEM` on `window`. Built-in cart widgets already listen for this event; add a listener when you build your own cart display.
+
+The WebSocket message name `cart_update` is not a browser event name. Listen for `UPDATE_CART_ITEM` on `window` to react to the applied update. Other WebSocket message types are ignored by the SDK's cart-sync subscription.
+
+These browser events also help you keep custom cart displays in sync with local SDK actions:
+
+| Event | When to use it |
+| --- | --- |
+| `CREATE_CART` | React to cart creation. |
+| `ADD_TO_CART` | React to an item being added. |
+| `UPDATE_CART_ITEM` | React to item changes, `refreshCart()`, cart adoption, or applied real-time updates. |
+| `REMOVE_FROM_CART` | React to an item removal, including an optimistic removal before its request completes. |
+| `SET_CART_TOKEN` | React to a validated external cart being adopted. Adoption also emits `UPDATE_CART_ITEM`. |
+
+State events can describe optimistic changes. Use [cart operation events](#cart-operation-events) when you need a mutation's success or failure rather than a display update. A received real-time update does not by itself emit `CART_OPERATION_SUCCESS` or `CART_OPERATION_ERROR`.
+
+```javascript
+const cartEvents = [
+  "CREATE_CART",
+  "ADD_TO_CART",
+  "UPDATE_CART_ITEM",
+  "REMOVE_FROM_CART",
+];
+
+function updateCartSummary(event) {
+  const cart = event.detail?.cart ?? window.FairShareSDK.getLocalCart();
+  if (!cart) return;
+
+  document.querySelector("#cart-summary-count").textContent =
+    String(window.FairShareSDK.getCartItemCount());
+}
+
+cartEvents.forEach((name) => {
+  window.addEventListener(name, updateCartSummary);
+});
+
+// Remove these listeners when your page or component is torn down.
+function stopListeningToCart() {
+  cartEvents.forEach((name) => {
+    window.removeEventListener(name, updateCartSummary);
+  });
+}
+```
+
+The example assumes your page contains an element with `id="cart-summary-count"`. You can also use the built-in `fluid-cart-count` element described under [cart display](#cart-display).
+
+State-event details can include `cart`, `handledByWidget`, and `widgetId`. SDK-dispatched cart events also include a unique `eventId` and an ISO `timestamp`. Treat `widgetId` as a producer identifier, not as a transport selector: Action Cable updates retain the historical `widgetId: "pusher"` value. Use `eventId` if your integration needs to deduplicate the same dispatch.
+
+For loading indicators around widget actions, listen for `CART_LOADING_START` and `CART_LOADING_END` on `window`. These are widget loading signals, not a success or failure result for every SDK method.
+
 ## Cart operation events
 
 These six methods emit a consistent success or error event on `window`:
@@ -368,6 +467,31 @@ rethrow the error. A no-op result from `addCartItems()`, `addEnrollmentPack()`,
 `decrementCartItem()`, or `updateCartItemVariant()` emits no success event.
 `updateCartItems()` emits success when its void operation completes.
 
+## Cart population failures
+
+On a store that creates carts in the background, adding the items can fail after the add has already reported success. For example, none of the items may be sold in the shopper's country. The cart then stays empty. The SDK emits `CART_POPULATION_FAILED` on `window` for the cart it currently holds:
+
+```javascript
+window.addEventListener("CART_POPULATION_FAILED", (event) => {
+  const { apiMessage } = event.detail;
+  document.querySelector("#cart-notice").textContent =
+    apiMessage ?? "We couldn't add those items. Try again.";
+});
+```
+
+The example assumes your page contains an element with `id="cart-notice"`.
+
+| Field | Description |
+| --- | --- |
+| `cartToken` | The cart that stayed empty. |
+| `apiMessage` | A reason written for shoppers, such as "None of the requested items could be added to the cart". Present only when every item was unavailable. |
+| `errorMessage` | The server's message as sent. Often a bare status phrase, such as `"bad request"`. Don't show it to shoppers. |
+| `errors` | The server's details as sent. The shape depends on why the items could not be added. |
+
+The event requires [real-time sync](/sdk/installation#enable-real-time-cart-updates). The SDK leaves the empty cart in place, so the shopper can add to it again. A failure for a cart the SDK has since cleared or replaced is ignored.
+
+When the built-in toast shows errors, it also shows this event. It uses `apiMessage` when present and the error message otherwise. Your `error` message override replaces both. See [cart feedback](/themes/cart-feedback).
+
 ## Analytics
 
 Fire events and inspect attribution state directly from your JavaScript code.
@@ -384,7 +508,7 @@ window.FairShareSDK.trackFairshareEvent({
 // Track that a checkout flow has started
 window.FairShareSDK.trackCheckoutStarted({ cart_token: "7Hq2Kd9Rm4bV1nX" });
 
-// Get the resolved attribution record for the current session
+// Get the attribution record resolved from the current page URL
 const attribution = window.FairShareSDK.getAttribution();
 
 // Get the current session token for cross-system correlation
