@@ -1998,6 +1998,131 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/PreviewCommentError"
+  "/api/v202604/themes/{theme_id}/preview_comments/runs/{run_id}/check-in":
+    parameters:
+    - name: theme_id
+      in: path
+      required: true
+      description: Id of the theme whose comments the run holds.
+      schema: {type: integer}
+    - name: run_id
+      in: path
+      required: true
+      description: Identity of the run checking in, as allocated when it claimed its comments.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: '^[A-Za-z0-9_-]+$'
+    put:
+      summary: Record that a Mist run is still alive
+      description: |-
+        Mist Desktop calls this about every two minutes while a run works.
+        It stamps `run_checked_in_at_ms` on every comment the run holds for
+        the caller: a live root comment that is `handed` with this `run_id`
+        and whose run the caller claimed. Reassigning the comment does not
+        change who claimed the run. The stamp is a liveness marker, not an
+        edit, so it does not change `lock_version`, and a cancel or backstop
+        that follows still matches the version the caller observed.
+
+        A check-in never moves the stamp backwards: one that carries an
+        earlier time than the stored stamp leaves it as it was and still
+        succeeds, because the run still holds the comment. An answer from
+        Mist, which moves the comment to review, clears the stamp.
+
+        The caller must be a person, since the run's claimer is the one user
+        who may check in for it. A token with no user behind it is refused
+        with 403.
+
+        A client that sees the stamp go quiet can warn that Mist has not
+        checked in. Nothing is released on silence; a person cancels.
+
+        A run that holds no comment for the caller was canceled, answered, or
+        claimed by another admin, or it was claimed before the claimer was
+        recorded. That is a 409, which tells Mist Desktop the run was stopped
+        elsewhere. Subscribers to the theme's comment stream
+        are told to refetch after a check-in that stamped anything.
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "nested under the shipped preview_comments resource; its path segment and tag predate the kebab-case and section rules"
+      tags: [preview comments]
+      operationId: checkInThemePreviewCommentRun
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The check-in was recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, status, meta]
+                properties:
+                  run:
+                    type: object
+                    description: What the check-in reached.
+                    required: [run_id, checked_in_at_ms, comment_count]
+                    properties:
+                      run_id:
+                        type: string
+                        description: The run that checked in.
+                      checked_in_at_ms:
+                        type: integer
+                        description: The time this check-in carried, in milliseconds since the epoch. A comment whose stamp was already later keeps its later stamp.
+                      comment_count:
+                        type: integer
+                        minimum: 1
+                        description: How many comments the run holds for the caller and matched.
+                  status:
+                    type: integer
+                    description: HTTP status, repeated in the body.
+                  meta:
+                    "$ref": "#/components/schemas/PreviewCommentResponseMeta"
+              example:
+                run:
+                  run_id: run_01J8Z3K4QF7M2V9XB6T0RC5HWD
+                  checked_in_at_ms: 1789464485000
+                  comment_count: 1
+                status: 200
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:28:05Z'
+        '401':
+          description: Authentication is required.
+        '403':
+          description: A company admin with theme update permission is required, and a person behind the request, who is the run's claimer.
+        '404':
+          description: The theme is unavailable.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PreviewCommentError"
+                - type: object
+                  required: [error]
+                  additionalProperties: false
+                  properties:
+                    error: {type: string, enum: [Not found]}
+        '409':
+          description: The run holds no comment for the caller. It was canceled, answered, or claimed by another admin, or it was claimed before the claimer was recorded.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
+              example:
+                error:
+                  message: This run no longer holds any comment.
+                  details:
+                    type: conflict
+                status: 409
+                meta:
+                  request_uuid: 7c1e9a52-4b3d-4f0e-9d2a-81f6c3b5e240
+                  timestamp: '2026-09-15T09:28:05Z'
+        '422':
+          description: The run id is invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
   "/api/v202604/themes/{theme_id}/preview_comments/{client_id}/backstop-reply":
     post:
       summary: Record an unanswered turn without overriding a newer decision
@@ -3172,6 +3297,15 @@ components:
         run_id:
           type: [string, 'null']
           description: The associated Mist run, or null for unbound comments and replies.
+        run_checked_in_at_ms:
+          type: [integer, 'null']
+          description: |-
+            When Mist Desktop last reported that the run holding this comment is
+            alive, in milliseconds since the epoch. Set when the run claims the
+            comment, advanced by each check-in, and null once no run holds it.
+            Carried by the root only. A client can warn that Mist has not
+            checked in when this is old while the comment is `handed`; nothing
+            releases the comment on silence.
         lock_version:
           type: integer
           minimum: 0
