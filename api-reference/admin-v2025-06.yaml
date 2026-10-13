@@ -40209,10 +40209,21 @@ paths:
       operationId: admin_v202506_tiktok_connection_patch
       summary: Configure the TikTok warehouse used for inventory publishing
       description: Sets the TikTok logistics warehouse that inventory publishing uses
-        for the company's TikTok Shop connection. `tiktok_warehouse_id` must match a Fluid
-        warehouse this company has mapped to that TikTok warehouse; an unmapped id returns
-        422 and leaves the connection unchanged. Requires a company admin token with the
-        company_settings.update permission. Returns the updated connection.
+        for the company's TikTok Shop connection. Without `fluid_warehouse_id`,
+        `tiktok_warehouse_id` must match a Fluid warehouse this company has already mapped
+        to that TikTok warehouse; an unmapped id returns 422 and leaves the connection
+        unchanged. With `fluid_warehouse_id`, the TikTok warehouse is checked against the
+        shop's warehouses (it must exist, be a sales warehouse, and not be disabled); then, in one
+        transaction, the Fluid warehouse (which must belong to this company) is mapped to
+        it, any other warehouse of this company mapped to the same TikTok warehouse is
+        unmapped, and the connection is updated. A Fluid warehouse already mapped to a
+        warehouse that is not one of this shop's TikTok warehouses is refused with 422.
+        Each successful mapping re-syncs inventory for the connection's listed SKUs
+        to TikTok in the background, so repeating a request is safe.
+        Requires a company admin token with the company_settings.update permission,
+        and also warehouses.update when `fluid_warehouse_id` is sent (droplet tokens
+        cannot send it). Returns the
+        updated connection.
       tags: [tiktok]
       security:
       - bearer_auth: []
@@ -40222,12 +40233,17 @@ paths:
           application/json:
             example:
               tiktok_warehouse_id: '7302198465731028741'
+              fluid_warehouse_id: 12
             schema:
               type: object
               required: [tiktok_warehouse_id]
               properties:
                 tiktok_warehouse_id:
                   type: string
+                fluid_warehouse_id:
+                  type: integer
+                  minimum: 1
+                  description: Id of the company's Fluid warehouse to map to the TikTok warehouse. Omit it to select a warehouse that is already mapped.
               additionalProperties: false
       responses:
         '200':
@@ -40269,7 +40285,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is authenticated but is not a company admin, or lacks the company_settings.update permission.
+          description: The caller is authenticated but is not a company admin, lacks the company_settings.update permission, or sent `fluid_warehouse_id` without also holding the warehouses.update permission (a droplet token is always refused when it sends `fluid_warehouse_id`).
           content:
             application/json:
               schema:
@@ -40281,7 +40297,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: The warehouse is not mapped to this company, or the request is invalid.
+          description: The request is invalid, the warehouse is not mapped to this company, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, the Fluid warehouse is mapped to another system, or TikTok rejected the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, timed out, kept rate limiting the request, or returned a malformed response while the shop's warehouses were being checked, or the server's TikTok app credentials are not configured.
           content:
             application/json:
               schema:
