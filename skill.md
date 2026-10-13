@@ -101,3 +101,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 
 - Help Center URLs mirror admin routes: the admin's `/settings/taxes` screen is documented at https://docs.fluid.app/help/admin/settings/taxes.
 - Settings open from the **Settings** gear in the admin's top bar. The Settings sidebar groups screens under **Company**, **Commerce**, **Payments** and **System**.
+
+## Native member widgets
+
+- Native widgets are Fluid supplied; Droplet widgets require the supplying Droplet. Native catalog pilot availability and live integrations must be verified before publishing. Use the catalog names, sizes, configuration and preview rules at https://docs.fluid.app/themes/member-storefront/native-widgets.
