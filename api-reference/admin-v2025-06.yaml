@@ -35,7 +35,7 @@ tags:
     price grid of a bundle product.
   x-fluid-section: Commerce
 - name: tiktok
-  description: The company's TikTok Shop connection, its logistics warehouses, product listings, and orders.
+  description: The company's TikTok Shop connection, its logistics warehouses, category tree, product listings, and orders.
   x-fluid-section: Sales channels
 components:
   parameters:
@@ -2299,6 +2299,39 @@ components:
         last_imported_at:
           type: [string, 'null']
           format: date-time
+    TiktokCategory:
+      description: One category of the connected shop's TikTok category tree.
+        Only leaf categories the shop is permitted to use can be chosen as a
+        listing's category override.
+      type: object
+      properties:
+        id:
+          type: string
+          description: TikTok's category id.
+        name:
+          type: string
+          description: The category's localized name.
+        is_leaf:
+          type: boolean
+          description: Whether the category has no children.
+        parent_id:
+          type: [string, 'null']
+          description: The parent category id, or null for a root category.
+        path:
+          type: string
+          description: The category's breadcrumb from the root, joined with " > ".
+        permission_statuses:
+          type: array
+          description: TikTok's permission statuses for this shop on the
+            category, such as AVAILABLE or INVITE_ONLY. Empty when TikTok
+            reports none.
+          items:
+            type: string
+        permitted:
+          type: boolean
+          description: Whether the shop may list under the category. True when
+            permission_statuses is empty or includes AVAILABLE.
+      additionalProperties: false
     TiktokConnection:
       description: A company's link to one TikTok Shop seller account. Never exposes
         the encrypted OAuth tokens themselves — only identity, status, expiry, and
@@ -2391,8 +2424,10 @@ components:
           $ref: '#/components/schemas/TiktokWarehouseAddress'
         fluid_warehouse_id:
           type: [integer, 'null']
-          description: This company's Fluid Warehouse already mapped to this TikTok
-            warehouse (by external_integration_market_id), or null if none is mapped yet.
+          description: For the selected TikTok warehouse, the Fluid Warehouse bound on
+            the connection (null if none resolves). For other warehouses, the company's Fluid
+            Warehouse whose external_integration_market_id matches, shown only while the
+            connection has no bound warehouse; otherwise null.
         selected:
           type: boolean
           description: Whether this is the connection's currently configured
@@ -40269,14 +40304,14 @@ paths:
       summary: Configure the TikTok warehouse used for inventory publishing
       description: Sets the TikTok logistics warehouse that inventory publishing uses
         for the company's TikTok Shop connection. Without `fluid_warehouse_id`,
-        `tiktok_warehouse_id` must match a Fluid warehouse this company has already mapped
-        to that TikTok warehouse; an unmapped id returns 422 and leaves the connection
-        unchanged. With `fluid_warehouse_id`, the TikTok warehouse is checked against the
+        `tiktok_warehouse_id` must either equal the id already stored on the connection or,
+        for a connection with no bound Fluid warehouse yet, match exactly one Fluid warehouse
+        of this company by external_integration_market_id (the connection is then bound to
+        it); anything else returns 422 and leaves the connection unchanged. Changing a bound
+        connection to a different TikTok warehouse requires `fluid_warehouse_id`. With `fluid_warehouse_id`, the TikTok warehouse is checked against the
         shop's warehouses (it must exist, be a sales warehouse, and not be disabled); then, in one
-        transaction, the Fluid warehouse (which must belong to this company) is mapped to
-        it, any other warehouse of this company mapped to the same TikTok warehouse is
-        unmapped, and the connection is updated. A Fluid warehouse already mapped to a
-        warehouse that is not one of this shop's TikTok warehouses is refused with 422.
+        transaction, the connection stores the TikTok warehouse id and the Fluid warehouse
+        id (the warehouse must belong to this company); no warehouse record is modified.
         Each successful mapping re-syncs inventory for the connection's listed SKUs
         to TikTok in the background, so repeating a request is safe.
         Requires a company admin token with the company_settings.update permission,
@@ -40356,7 +40391,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: The request is invalid, the warehouse is not mapped to this company, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, the Fluid warehouse is mapped to another system, or TikTok rejected the request.
+          description: The request is invalid, no single Fluid warehouse of this company maps the TikTok warehouse id (none, or several), a bound connection asked for a different id without `fluid_warehouse_id`, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, or TikTok rejected the request.
           content:
             application/json:
               schema:
@@ -40547,8 +40582,9 @@ paths:
         Read-only visibility onto the shop's TikTok logistics warehouses, so
         the admin can pick one to map via `PATCH /tiktok/connection`. Each
         warehouse includes `fluid_warehouse_id` — this company's Fluid
-        Warehouse already mapped to it (by `external_integration_market_id`),
-        or null — and `selected`, whether it is the connection's current
+        Warehouse for it: the connection's bound warehouse for the selected
+        row, otherwise the company's warehouse with a matching
+        `external_integration_market_id`, or null — and `selected`, whether it is the connection's current
         `tiktok_warehouse_id`. Requires an active TikTok Shop connection;
         a never-connected or inactive connection is rejected the same way
         the other TikTok endpoints reject one.
@@ -40633,6 +40669,122 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '502':
           description: TikTok could not be reached, or returned a malformed/non-API response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/tiktok/categories:
+    get:
+      operationId: admin_v202506_tiktok_categories_get
+      x-fluid-audience: company
+      summary: Browse the connected TikTok shop's categories
+      description: >-
+        Read-only browse of the shop's TikTok category tree (v2), for choosing
+        a listing's category override. Without parameters it returns the root
+        categories; `parent_id` returns all of that category's children;
+        `keyword` searches leaf category names (case-insensitive substring),
+        returns at most `limit` matches and wins over `parent_id`. Each category carries its breadcrumb `path` and TikTok's
+        permission status for the shop. Requires a company admin token with the
+        products.view permission and an active TikTok Shop connection. The
+        tree is cached per connection for up to 1 hour.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: parent_id
+        in: query
+        required: false
+        description: List this category's children. Omit for root categories.
+        schema:
+          type: string
+          pattern: '^[0-9]+$'
+      - name: keyword
+        in: query
+        required: false
+        description: Search leaf categories whose name contains this text.
+          Wins over parent_id.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of matches a keyword search returns (max
+          200). Ignored when browsing by parent_id, which returns every child.
+        schema:
+          type: integer
+          default: 50
+          minimum: 1
+          maximum: 200
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                tiktok_categories:
+                - id: '601450'
+                  name: Face Serums
+                  is_leaf: true
+                  parent_id: '600966'
+                  path: Beauty & Personal Care > Skincare > Face Serums
+                  permission_statuses: [AVAILABLE]
+                  permitted: true
+                - id: '601452'
+                  name: Face Moisturizers
+                  is_leaf: true
+                  parent_id: '600966'
+                  path: Beauty & Personal Care > Skincare > Face Moisturizers
+                  permission_statuses: [INVITE_ONLY]
+                  permitted: false
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-09-30T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  tiktok_categories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TiktokCategory'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the products.view permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid query parameters, the connection is not active, or TikTok rejected
+            the request as a business matter (for example a revoked scope or shop).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed/non-API response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
           content:
             application/json:
               schema:
@@ -40897,10 +41049,9 @@ paths:
                   description: Optional per-product TikTok categories to publish
                     under instead of TikTok's recommendation. Every product_id
                     must also appear in product_ids. Ignored for a product that
-                    is already listed. Only the id format is checked here;
-                    leaf and known-id validation arrives with the category
-                    browse endpoint, and until then TikTok rejects an unknown
-                    or non-leaf category when the listing is published.
+                    is already listed. Every category must be a leaf in the
+                    shop's TikTok category tree that the shop is permitted to
+                    use; browse them with GET /tiktok/categories.
                   items:
                     type: object
                     required: [product_id, tiktok_category_id]
@@ -40975,8 +41126,23 @@ paths:
         '422':
           description: Invalid parameters, a product_id does not belong to this company,
             a category_overrides product_id is not in product_ids, the TikTok Shop connection
-            is not active, or an override category id is malformed (error.details.type is
-            invalid_category_id).
+            is not active, an override category id is malformed (error.details.type is
+            invalid_category_id), or an override category is rejected (error.details.type is
+            unknown_category when it is not in the shop's category tree, category_not_leaf when
+            it has child categories, category_not_permitted when the shop may not use it, or
+            tiktok_error when TikTok rejected the category lookup).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed response while validating a category override.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
           content:
             application/json:
               schema:
@@ -40990,10 +41156,8 @@ paths:
       description: >-
         Sets, changes or clears (with null) the TikTok category an admin
         chose for a listing, overriding TikTok's recommendation on the next
-        publish. Only the id format is checked here; leaf and known-id
-        validation arrives with the category browse endpoint, and until then
-        TikTok rejects an unknown or non-leaf category when the listing is
-        published. Only JSON null clears the override; an empty string is
+        publish. A set category must be a leaf in the shop's TikTok category
+        tree that the shop is permitted to use. Only JSON null clears the override; an empty string is
         rejected as invalid_category_id. When the listing is published on
         TikTok and the effective category differs from the one TikTok last
         received, a resync is queued so the change reaches TikTok (an
@@ -41082,7 +41246,23 @@ paths:
           description: Invalid parameters, the TikTok Shop connection is not active, the listing
             is not editable (error.details.type is listing_not_editable with its status), the
             category id is malformed or an empty string (error.details.type is invalid_category_id),
-            or the listing was updated concurrently (error.details.type is listing_changed; retry).
+            the category is rejected (error.details.type is unknown_category when it is not in the
+            shop's category tree, category_not_leaf when it has child categories,
+            category_not_permitted when the shop may not use it, or tiktok_error when TikTok
+            rejected the category lookup), or the listing was updated concurrently
+            (error.details.type is listing_changed; retry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed response while validating the category.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
           content:
             application/json:
               schema:
