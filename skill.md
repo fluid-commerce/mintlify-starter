@@ -104,4 +104,4 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 
 ## Native member widgets
 
-- Native widgets are Fluid supplied; Droplet widgets require the supplying Droplet. Native catalog pilot availability and live integrations must be verified before publishing. Use the catalog names, sizes, configuration and preview rules at https://docs.fluid.app/themes/member-storefront/native-widgets.
+- Native widgets are Fluid supplied Liquid sections rendered on the server; Droplet widgets require the supplying Droplet. Native catalog pilot availability and live integrations must be verified before publishing. Use the catalog names, sizes, configuration and preview rules at https://docs.fluid.app/themes/member-storefront/native-widgets.
