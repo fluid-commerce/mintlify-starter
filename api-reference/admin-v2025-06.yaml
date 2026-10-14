@@ -2416,6 +2416,19 @@ components:
           type: [string, 'null']
         tiktok_category_id:
           type: [string, 'null']
+          description: The category TikTok recommended or the publisher last
+            resolved for this listing. An admin override, when set, takes
+            precedence; see effective_tiktok_category_id.
+        tiktok_category_override_id:
+          type: [string, 'null']
+          description: The category an admin chose for this listing, or
+            null when none is set. Set it with PATCH on the listing, or with
+            category_overrides when creating listings.
+        effective_tiktok_category_id:
+          type: [string, 'null']
+          description: The category a publish uses - tiktok_category_override_id
+            when set, otherwise tiktok_category_id. Null until the first
+            publish resolves one.
         status:
           type: string
           description: draft until the first publish attempt; active once TikTok
@@ -40847,6 +40860,9 @@ paths:
               product_ids:
               - 91274
               - 91302
+              category_overrides:
+              - product_id: 91274
+                tiktok_category_id: '601450'
             schema:
               type: object
               required: [product_ids]
@@ -40855,6 +40871,25 @@ paths:
                   type: array
                   items:
                     type: integer
+                category_overrides:
+                  type: array
+                  description: Optional per-product TikTok categories to publish
+                    under instead of TikTok's recommendation. Every product_id
+                    must also appear in product_ids. Ignored for a product that
+                    is already listed. Only the id format is checked here;
+                    leaf and known-id validation arrives with the category
+                    browse endpoint, and until then TikTok rejects an unknown
+                    or non-leaf category when the listing is published.
+                  items:
+                    type: object
+                    required: [product_id, tiktok_category_id]
+                    properties:
+                      product_id:
+                        type: integer
+                        minimum: 1
+                      tiktok_category_id:
+                        type: string
+                        pattern: '^[0-9]{1,20}$'
       responses:
         '201':
           description: Created
@@ -40905,7 +40940,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is authenticated but is not a company admin, or lacks the products.update permission.
+          description: The caller is authenticated but is not a company admin, or lacks the products.update permission, or the caller is a droplet token sending category_overrides.
           content:
             application/json:
               schema:
@@ -40917,12 +40952,120 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Invalid parameters, or a product_id does not belong to this company.
+          description: Invalid parameters, a product_id does not belong to this company,
+            a category_overrides product_id is not in product_ids, the TikTok Shop connection
+            is not active, or an override category id is malformed (error.details.type is
+            invalid_category_id).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
   /api/v202506/tiktok/product_listings/{id}:
+    patch:
+      operationId: admin_v202506_tiktok_product_listing_patch
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; the product_listings path segment predates the kebab-case rule"
+      summary: Set or clear a TikTok listing's category override
+      description: >-
+        Sets, changes or clears (with null) the TikTok category an admin
+        chose for a listing, overriding TikTok's recommendation on the next
+        publish. Only the id format is checked here; leaf and known-id
+        validation arrives with the category browse endpoint, and until then
+        TikTok rejects an unknown or non-leaf category when the listing is
+        published. Only JSON null clears the override; an empty string is
+        rejected as invalid_category_id. When the listing is published on
+        TikTok and the effective category differs from the one TikTok last
+        received, a resync is queued so the change reaches TikTok (an
+        identical retry queues it again if the first queueing failed);
+        otherwise the override is only stored. A listing that is draft
+        (a publish is queued), deleted or seller_deactivated cannot be edited:
+        wait for the queued publish, or reactivate first. Requires a company
+        admin token with the products.update permission and an active TikTok
+        Shop connection.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              tiktok_category_override_id: '601450'
+            schema:
+              type: object
+              required: [tiktok_category_override_id]
+              properties:
+                tiktok_category_override_id:
+                  type: [string, 'null']
+                  pattern: '^[0-9]{1,20}$'
+                  description: The TikTok category id to publish under, or
+                    null to clear the override. An empty string is rejected.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                product_listing:
+                  id: 27418
+                  tiktok_product_id: '1729587461203847291'
+                  product_id: 91274
+                  product_title: Hydrating Face Serum
+                  tiktok_category_id: '600966'
+                  tiktok_category_override_id: '601450'
+                  effective_tiktok_category_id: '601450'
+                  status: active
+                  audit_status: approved
+                  last_published_at: '2026-09-22T14:05:37.000Z'
+                  last_synced_at: '2026-09-29T09:12:44.000Z'
+                  last_error: null
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-09-30T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  product_listing:
+                    $ref: '#/components/schemas/TiktokProductListing'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the products.update permission, or the caller is a droplet token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop, or `id` does not match a listing on this connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid parameters, the TikTok Shop connection is not active, the listing
+            is not editable (error.details.type is listing_not_editable with its status), the
+            category id is malformed or an empty string (error.details.type is invalid_category_id),
+            or the listing was updated concurrently (error.details.type is listing_changed; retry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
     delete:
       operationId: admin_v202506_tiktok_product_listing_delete
       summary: Unpublish a TikTok product listing
