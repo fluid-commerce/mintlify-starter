@@ -1383,7 +1383,8 @@ against the archive before publication. The redirect remains temporary per Phase
 
 ### The leakage exception is exact by page and marker
 
-`PUBLIC_SDK_V2025_06_PAGES` sanctions the 69 generated operation pages.
+`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption, 74 since
+the ENG-1186 refresh (mintlify-starter#151). Since ENG-2784 it maps each page to its operation.
 `PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
 the hand-written pages that must name the SDK's real version. Both sets forgive only the
 `v2025-06` / `v202506` marker.
