@@ -1252,28 +1252,14 @@ describe("countLlmsEntries", () => {
   });
 });
 
-describe("PUBLIC_SDK_V2025_06_PAGES", () => {
+describe("PUBLIC_SDK_V2025_06_PAGES, ADMIN_V2025_06_PAGES and MEMBERS_V2025_06_PAGES", () => {
   // docs.json is rebuilt from the synced specs (generate-api-nav.mjs, gated by
-  // --check in CI), so its public-v2025-06 references are exactly the Public SDK
-  // pages Mintlify publishes. A sync that adds or removes one changes this count.
-  it("lists one page per public-v2025-06 operation in docs.json", () => {
-    const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
-    const refs = new Set(docs.match(/"api-reference\/public-v2025-06\.yaml [A-Z]+ [^"]+"/g) ?? []);
-    assert.ok(refs.size > 0, "docs.json has no public-v2025-06 references");
-    assert.equal(
-      PUBLIC_SDK_V2025_06_PAGES.size,
-      refs.size,
-      "regenerate PUBLIC_SDK_V2025_06_PAGES from a `mint export` (see check-hosted-docs.mjs)",
-    );
-  });
-});
-
-describe("ADMIN_V2025_06_PAGES and MEMBERS_V2025_06_PAGES", () => {
-  // docs.json publishes exactly the generated pages, so each map's operations must be
+  // --check in CI) and publishes exactly the generated pages, so each map's operations must be
   // the operations docs.json lists for that spec. Comparing the operations rather than
   // the count catches a sync that swaps one operation for another and names it.
   const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
   for (const [name, map, spec] of [
+    ["PUBLIC_SDK_V2025_06_PAGES", PUBLIC_SDK_V2025_06_PAGES, "public-v2025-06"],
     ["ADMIN_V2025_06_PAGES", ADMIN_V2025_06_PAGES, "admin-v2025-06"],
     ["MEMBERS_V2025_06_PAGES", MEMBERS_V2025_06_PAGES, "members-v2025-06"],
   ]) {

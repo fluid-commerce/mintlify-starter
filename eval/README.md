@@ -189,9 +189,10 @@ admin/partner surface
 list and keeps failing everywhere else, prose included. And three of that
 spec's tags are **shared** with the v2026-04 surfaces — `carts` also holds 12
 `checkout-v2026-04` pages, `orders` one, `paypal` four — so a `carts/` prefix would have
-forgiven a real leak on 17 current pages. The page list is the `mint export` path
-inventory (the regeneration command is in the source comment); an upstream summary edit
-renames a page and drops it out of the set, which fails loudly rather than silently.
+forgiven a real leak on 17 current pages. The page list maps each published page to the
+operation it documents (the regeneration command is in the source comment), and a unit
+test matches those operations to docs.json. An upstream summary edit renames a page and
+drops it out of the map, which fails loudly rather than silently.
 
 The Checkout boundary is narrower still. The checker removes one exact safe occurrence
 before it scans the rest of the page. Changing the sentence, copying it onto a
