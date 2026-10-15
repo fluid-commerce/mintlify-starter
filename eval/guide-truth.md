@@ -219,7 +219,9 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   run checks internal links (`node eval/check-broken-links.mjs`) as another
   non-gating step and, on a failure, opens or comments on a single labeled issue
   (`broken-docs-link`) carrying the `FAIL` lines. `validate.yml` stays red on `main`
-  until a PR fixes the link or adds a redirect.
+  until a PR fixes the link or adds a redirect. The next sync whose link check passes
+  closes the issue; the check runs only when a sync changes something, so the PR that
+  fixes the links can close it sooner.
 - **`external-links.yml`** — weekly (Mondays) and on demand. Runs
   `node eval/check-broken-links.mjs --external` twice, 15 minutes apart, and keeps only
   the external links broken on both passes, because the CLI also counts a timeout or
