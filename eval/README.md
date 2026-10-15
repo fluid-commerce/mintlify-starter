@@ -20,7 +20,10 @@ Four independent things live here:
   `broken-links` check with redirects, anchors and snippets, and fails CI on any broken
   internal link or redirect destination. Links into generated TypeDoc pages are exempt
   only for symbols present in `sdk-artifacts/typedoc/`. `--external` also checks
-  external links; CI runs that mode as a separate, non-gating report.
+  external links; CI runs that mode as a separate, non-gating report. The hourly spec
+  sync also runs the internal check after it pushes and opens a `broken-docs-link`
+  issue on a failure, and the weekly `external-links.yml` opens a
+  `broken-external-link` issue for external links broken on two passes in a row.
 
 One-off run records (adversarial verification, omission sweeps, hosted-check runs) live
 on the phase's Linear issue, not in the repo. Durable decisions go in `guide-truth.md`.
@@ -307,7 +310,8 @@ no credentials and no deploy: `mint validate`, `check-guide-claims.mjs` and its 
 `check-advertised-docs-links.mjs`, `check-broken-links.mjs`, and this directory's unit tests
 (`*.test.mjs`). The one exception is the last step, `check-broken-links.mjs --external`, which
 needs the network and so is non-gating: it reports broken external links but never fails the
-build.
+build. The weekly `.github/workflows/external-links.yml` is the alert for those (see
+`guide-truth.md` → CI wiring).
 **Nothing in CI requires an API key** — and now nothing in this directory does either.
 
 ## Production-advertised docs URLs

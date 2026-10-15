@@ -22,6 +22,8 @@ env:
   MANIFEST: .github/synced-api-references.json
   CONFLICT_LABEL: guide-spec-conflict
   CLAIMS_OUTPUT: /tmp/claims-output.txt
+  LINKS_LABEL: broken-docs-link
+  LINKS_OUTPUT: /tmp/links-output.txt
 
 jobs:
   sync:
@@ -125,7 +127,11 @@ jobs:
         id: claims
         if: steps.diff.outputs.openapi_changed == 'true' && steps.validate.outcome == 'success'
         continue-on-error: true
-        run: node eval/check-guide-claims.mjs 2>&1 | tee "$CLAIMS_OUTPUT"
+        # A run step with no `shell:` uses `bash -e` without pipefail, so without
+        # it the step would take tee's exit status and never report a failure.
+        run: |
+          set -o pipefail
+          node eval/check-guide-claims.mjs 2>&1 | tee "$CLAIMS_OUTPUT"
 
       - name: Open/update guide-spec conflict issue
         if: steps.diff.outputs.openapi_changed == 'true' && steps.validate.outcome == 'success' && steps.claims.outcome == 'failure'
@@ -163,6 +169,52 @@ jobs:
           else
             gh issue create --title "Guide↔spec conflict from spec sync" \
               --label "$CONFLICT_LABEL" --body-file "$body"
+          fi
+
+      # FLAG (non-gating): GitHub does not start validate.yml for this bot push, so
+      # check internal links here. A synced spec that renames a generated page breaks
+      # every hand-written link to it; this catches that on the sync instead of on
+      # the next unrelated PR. A failure is captured for the issue below; it does
+      # NOT fail the run.
+      - name: Check internal links against synced references
+        id: links
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          node eval/check-broken-links.mjs 2>&1 | tee "$LINKS_OUTPUT"
+
+      - name: Open/update broken-link issue
+        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success' && steps.links.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "$LINKS_LABEL" \
+            --description "A docs link is broken on main" --color D93F0B || true
+
+          body="/tmp/links-issue-body.md"
+          {
+            echo "The hourly API reference sync pushed to \`main\`, and the internal link check now fails there. A renamed generated page usually means a hand-written link still points at its old URL."
+            echo
+            echo "Sync run: ${RUN_URL}"
+            echo
+            echo "Fix the links, or add a redirect in \`docs.json\`, in a PR. \`validate.yml\` stays **red** on \`main\` until then."
+            echo
+            echo "Failing links (truncated to 300 lines):"
+            echo
+            echo '```'
+            grep -E '^FAIL  ' "$LINKS_OUTPUT" | head -300
+            echo '```'
+          } > "$body"
+
+          existing="$(gh issue list --label "$LINKS_LABEL" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+            echo "Commented on existing broken-link issue #${existing}."
+          else
+            gh issue create --title "Broken docs links after API reference sync" \
+              --label "$LINKS_LABEL" --body-file "$body"
           fi
 
       # QUARANTINE: validation failures never reach main. Park invalid references

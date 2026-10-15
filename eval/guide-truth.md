@@ -189,7 +189,7 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   exempt, because production serves them but the CLI does not build them, and only
   for symbols present in `sdk-artifacts/typedoc/`. A last, non-gating step reports
   broken external links (`--external`); it needs the network, and the CLI counts a
-  timeout as broken too.
+  timeout as broken too. The weekly `external-links.yml` run is the alert for those.
 - **`sync-generated-api-references.yml`** — hourly, **manifest-driven** and
   **flow-and-flag** for OpenAPI changes. `.github/synced-api-references.json` is the
   control surface for OpenAPI and TypeDoc references (each entry is pulled from its
@@ -199,7 +199,7 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   navigation group at the spec with no explicit page list).
   - **Hard gate — `mint validate` (quarantine).** A broken spec would break the
     auto-generated build, so `mint validate` still gates. On failure the invalid
-    spec is parked on the `spec-sync-blocked` branch behind a PR and the run exits
+    spec is parked on the `reference-sync-blocked` branch behind a PR and the run exits
     non-zero; `main` and the hosted docs stay on the last-good spec. That PR is now
     strictly about build validation — guide-claim conflicts are no longer a reason
     for it.
@@ -215,8 +215,17 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   pushes, so `validate.yml` does **not** run on a synced commit. A conflict therefore
   shows up as the issue above and as a red `validate.yml` on the next human PR or
   merge. A generated-page rename that breaks a hand-written link (the drop-zones
-  summary rename of 2026-08-03 did) surfaces the same way, from the broken-links step,
-  and opens no issue.
+  summary rename of 2026-08-03 did) is caught on the sync itself: after the push, the
+  run checks internal links (`node eval/check-broken-links.mjs`) as another
+  non-gating step and, on a failure, opens or comments on a single labeled issue
+  (`broken-docs-link`) carrying the `FAIL` lines. `validate.yml` stays red on `main`
+  until a PR fixes the link or adds a redirect.
+- **`external-links.yml`** — weekly (Mondays) and on demand. Runs
+  `node eval/check-broken-links.mjs --external` twice, 15 minutes apart, and keeps only
+  the external links broken on both passes, because the CLI also counts a timeout or
+  network error as broken. While any stay broken it opens, or comments on, a single
+  labeled issue (`broken-external-link`); the first clean week closes it. The PR-time
+  `--external` step in `validate.yml` stays report-only.
 
 ### Future: replacing the cron with Mintlify-native sync
 
