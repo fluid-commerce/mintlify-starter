@@ -2643,8 +2643,8 @@ docs. These are now the checker's rules:
   required, so the prompt expects `optional`. The checker used to read any
   `- bearer_auth: []` as required.
 - **`admin-v2025-06` and `members-v2025-06` generated pages** may carry their version
-  markers, as AGENTS.md already said. The checker lists the pages one by one, and a unit
-  test ties each list to docs.json.
+  markers, as AGENTS.md already said. The checker lists the pages one by one, keyed to their
+  operations, and a unit test matches those operations to docs.json.
 - **49 more offset lists**, on `company-v0`, `messaging-v1`, `integrations-v0`,
   `themes-v0` and `admin-v2025-06`, plus the Public SDK root themes list, were checked
   against their Rails actions. Every one reads integer `page` / `per_page` and pages by
@@ -2652,8 +2652,8 @@ docs. These are now the checker's rules:
   page, and AGENTS.md lists them as pagination exceptions.
 - **Not leaks, by exact page:**
   - the `/api/v2025-06/tokens/` prefix, anywhere;
-  - `per_page` on `themes/navigation-menus`, `themes/query-parameters-and-caching` and
-    `themes/theme-variables`;
+  - `per_page` in the two `themes/navigation-menus` sentences about the website menus
+    list, and anywhere on `themes/query-parameters-and-caching` and `themes/theme-variables`;
   - the version markers on the two generated pages that compare themselves with their
     `admin-v2025-06` counterpart: the v2026-04 company orders list and the `company-v0`
     customers list.

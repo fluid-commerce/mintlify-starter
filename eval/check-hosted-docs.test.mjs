@@ -1020,7 +1020,7 @@ describe("isSanctionedLegacyHit", () => {
     for (const page of [
       "api-reference/shipping-methods/list-shipping-methods",
       "api-reference/admins/list-admins",
-      [...MEMBERS_V2025_06_PAGES][0],
+      [...MEMBERS_V2025_06_PAGES.keys()][0],
     ]) {
       const label = page.startsWith("api-reference/") ? page : `api-reference/${page}`;
       assert.equal(isSanctionedLegacyHit("v2025-06", label), true, label);
@@ -1044,15 +1044,13 @@ describe("isSanctionedLegacyHit", () => {
   });
 
   it("sanctions per_page on the exact prose pages that are not API pagination", () => {
-    for (const page of [
-      "themes/navigation-menus",
-      "themes/query-parameters-and-caching",
-      "themes/theme-variables",
-    ]) {
+    for (const page of ["themes/query-parameters-and-caching", "themes/theme-variables"]) {
       assert.equal(isSanctionedLegacyHit("per_page", page), true, page);
       assert.equal(isSanctionedLegacyHit("v2025-06", page), false, page);
     }
     assert.equal(isSanctionedLegacyHit("per_page", "themes/developer-guide"), false);
+    // navigation-menus is sanctioned sentence by sentence, never page-wide.
+    assert.equal(isSanctionedLegacyHit("per_page", "themes/navigation-menus"), false);
   });
 });
 
@@ -1154,6 +1152,25 @@ describe("scanLegacyAttributed", () => {
     );
   });
 
+  it("sanctions the two navigation-menus sentences but no other per_page on that page", () => {
+    const menusSentences =
+      "`GET /api/menus` accepts `status` (`active` or `inactive`), `page`,\n`per_page`, `search_query`, " +
+      "`country_ids`, and `sorted_by`.\n\nList responses contain `menus` and `meta` with `total_count`, " +
+      "`total_pages`, `current_page`, and `per_page`.";
+    const clean = scanLegacyAttributed([{ label: "themes/navigation-menus", text: menusSentences }]);
+    assert.deepEqual(clean.sanctioned, [{ marker: "per_page", label: "themes/navigation-menus" }]);
+    assert.deepEqual(clean.unsanctioned, []);
+
+    const extra = scanLegacyAttributed([
+      { label: "themes/navigation-menus", text: `${menusSentences}\n\nPortal navigations also take per_page.` },
+    ]);
+    assert.deepEqual(extra.unsanctioned, [{ marker: "per_page", label: "themes/navigation-menus" }]);
+
+    // The same sentences on another page are not sanctioned.
+    const elsewhere = scanLegacyAttributed([{ label: "themes/developer-guide", text: menusSentences }]);
+    assert.deepEqual(elsewhere.sanctioned, []);
+  });
+
   it("splits sanctioned, advisory, and unsanctioned hits and keeps the owning section label", () => {
     const { sanctioned, advisory, unsanctioned } = scanLegacyAttributed([
       { label: "(agent-instructions banner)", text: "never use per_page" },
@@ -1252,17 +1269,27 @@ describe("PUBLIC_SDK_V2025_06_PAGES", () => {
 });
 
 describe("ADMIN_V2025_06_PAGES and MEMBERS_V2025_06_PAGES", () => {
-  // Same drift guard as the Public SDK list: docs.json publishes exactly the generated
-  // pages, so a sync that adds or removes an operation changes the count.
+  // docs.json publishes exactly the generated pages, so each map's operations must be
+  // the operations docs.json lists for that spec. Comparing the operations rather than
+  // the count catches a sync that swaps one operation for another and names it.
   const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
-  for (const [name, set, spec] of [
+  for (const [name, map, spec] of [
     ["ADMIN_V2025_06_PAGES", ADMIN_V2025_06_PAGES, "admin-v2025-06"],
     ["MEMBERS_V2025_06_PAGES", MEMBERS_V2025_06_PAGES, "members-v2025-06"],
   ]) {
-    it(`lists one page per ${spec} operation in docs.json`, () => {
-      const refs = new Set(docs.match(new RegExp(`"api-reference/${spec}\\.yaml [A-Z]+ [^"]+"`, "g")) ?? []);
-      assert.ok(refs.size > 0, `docs.json has no ${spec} references`);
-      assert.equal(set.size, refs.size, `regenerate ${name} from llms-full.txt (see check-hosted-docs.mjs)`);
+    it(`maps one page to each ${spec} operation in docs.json`, () => {
+      const prefix = `"api-reference/${spec}.yaml `;
+      const published = new Set(
+        (docs.match(new RegExp(`"api-reference/${spec}\\.yaml [A-Z]+ [^"]+"`, "g")) ?? []).map((ref) =>
+          ref.slice(prefix.length, -1),
+        ),
+      );
+      assert.ok(published.size > 0, `docs.json has no ${spec} references`);
+      const listed = new Set(map.values());
+      const hint = `regenerate ${name} from llms-full.txt (see check-hosted-docs.mjs)`;
+      assert.equal(listed.size, map.size, `${name} maps two pages to one operation`);
+      assert.deepEqual([...published].filter((op) => !listed.has(op)), [], `unlisted: ${hint}`);
+      assert.deepEqual([...listed].filter((op) => !published.has(op)), [], `no longer published: ${hint}`);
     });
   }
 });
