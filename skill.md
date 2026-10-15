@@ -106,3 +106,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 ## Native member widgets
 
 - Native widgets are Fluid supplied Liquid sections rendered on the server; Droplet widgets require the supplying Droplet. Existing member storefront availability, deployed native templates, and supported live actions must be verified before publishing. Preserve the 8px grid, at most two font families / three sizes / three weights across all four variants, theme inset and concentric radii, four cell footprints, visible focus, honest unavailable states, and inert previews. Treat each Purpose/Data/Tap/Adapt entry as design intent until its live source and action are verified. Use the catalog names, sizes, configuration and preview rules at https://docs.fluid.app/themes/member-storefront/native-widgets.
+
+## Private Droplet reads
+
+- Use the existing cookie-based browser helper for member-page Liquid sections. A separate Member API alternative for authenticated applications is pending release; verify its deployment and generated reference first. Never embed bearer tokens in Liquid or replace the helper’s session flow implicitly. Both paths need installed-extension authorization and signed-backend member permissions: https://docs.fluid.app/themes/member-storefront/droplet-data.
