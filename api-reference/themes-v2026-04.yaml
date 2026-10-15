@@ -205,12 +205,16 @@ paths:
                     current: true
                     author_id: 52001
                     author_name: Michael Scott
+                    changed_fields:
+                    - custom_stylesheet
                   - version: 6
                     created_at: '2026-09-09T16:20:48Z'
                     published: false
                     current: false
                     author_id: 52018
                     author_name: Pam Beesly
+                    changed_fields:
+                    - variables
                   images:
                   - id: 66120
                     url: https://cdn.fluid.app/dunder-mifflin/themes/48213/cover.png
@@ -567,6 +571,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -665,7 +670,6 @@ paths:
                 client_id: c-3f9a2e71
                 body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
                 template_id: 902114
-                number: 4
                 page_path: /
                 pin:
                   x: 48.2
@@ -751,11 +755,20 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/PreviewCommentError"
+        '409':
+          description: |-
+            Another write took the comment's number at the same moment, twice
+            running. Nothing was stored; send the same request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/PreviewCommentError"
         '422':
           description: |-
             The request did not describe a storable comment — a missing or
-            invalid field, a template that belongs to another theme, or a
-            `client_id` belonging to a deleted comment.
+            invalid field, a template that belongs to another theme, a
+            `client_id` belonging to a deleted comment — or the theme has
+            used every comment number it can hold.
           content:
             application/json:
               schema:
@@ -807,6 +820,20 @@ paths:
                       type: integer
                       minimum: 0
                       description: The lock_version from the comment being changed.
+                    resolution:
+                      type: string
+                      enum: [approved, closed]
+                      description: |-
+                        How a Done comment was decided: `approved` when a person
+                        accepted Mist's answer, `closed` when it was closed
+                        without approving. Accepted only with status `skipped`;
+                        with any other status the request is rejected with 422.
+                        Optional: a `skipped` write without one leaves the
+                        comment's current resolution as it is (null for a
+                        comment that was not Done). Moving a comment out of
+                        `skipped` clears it. A verdict is a person's decision: a
+                        credential with no person behind it gets 403 when it
+                        sends one, and may still change the status without one.
                   required: [status, expected_version]
               required: [preview_comment]
             example:
@@ -829,6 +856,7 @@ paths:
                   n: 4
                   body: The hero headline wraps onto three lines on mobile. Can we tighten it so it fits on two?
                   status: needs_info
+                  resolution: null
                   status_at_ms: 1789464365000
                   page_url: /
                   author_name: Michael Scott
@@ -867,6 +895,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -877,6 +906,8 @@ paths:
                   timestamp: '2026-09-15T09:26:05Z'
         '401':
           description: Unauthorized
+        '403':
+          description: A company admin with theme update permission is required, and a person behind the request to record a `resolution`.
         '404':
           description: No such theme or comment for this caller.
           content:
@@ -971,6 +1002,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1004,11 +1036,28 @@ paths:
         repeating its answer stores nothing and succeeds, so the same body
         cannot arrive twice under two ids.
 
+        An agent reply can be a question instead. With `unfinished` true the
+        reply is Mist saying it could not make the change without the author's
+        answer, and a reply bound to the active run moves the thread from
+        `handed` to `needs_info` rather than `review`, handing it back to the
+        person who sent it. The author answers by reopening the thread and
+        sending it to Mist again. `unfinished` needs an agent reply with a
+        `run_id`; anywhere else it receives 422.
+
         An agent reply bound to a run (`run_id` given) must come from the
         person who started that run, the one who sent the comment to Mist.
         From anyone else it receives 409 and stores nothing. A run started
         before the starter was recorded accepts any authorized caller, as it
         did before.
+
+        An agent reply is recorded with the person who posted it, in the
+        reply's `posted_by`. An agent reply with no `run_id` needs a person
+        behind the request: a token with no person, such as a company or app
+        token, receives 403 and stores nothing. It is posted by that person's
+        own chat, and the same text from two people is two replies, while one
+        person repeating it is one. A reply bound to a run is the run's, so a
+        token with no person may post it only to a run started before its
+        starter was recorded, and has no `posted_by`.
 
         Replying is discussion and is never refused for belonging to work.
         When the thread belongs to a work item, though, the run that owns the
@@ -1055,13 +1104,23 @@ paths:
                       type: string
                       maxLength: 255
                       description: The runtime run identity. A mismatched run receives 409; an unbound reply never changes status.
+                    unfinished:
+                      type: boolean
+                      default: false
+                      description: >-
+                        The reply is Mist's question: it could not make the change
+                        without the author's answer. A reply bound to the active
+                        run then moves the comment to needs_info instead of
+                        review. Only valid on an agent reply with a run_id;
+                        otherwise 422.
                     author_kind:
                       type: string
                       enum: [user, agent]
                       default: user
                       description: >-
                         Who the reply is recorded as. A matching active agent run moves
-                        the comment to review; other replies leave status alone.
+                        the comment to review, or to needs_info when `unfinished`;
+                        other replies leave status alone.
                     shot:
                       type: object
                       description: >-
@@ -1171,6 +1230,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1181,6 +1241,11 @@ paths:
                   timestamp: '2026-09-14T15:04:37Z'
         '401':
           description: Unauthorized
+        '403':
+          description: >-
+            A company admin with theme update permission is required, and a
+            person behind an agent reply (`author_kind` `agent`) that names no
+            `run_id`.
         '404':
           description: No such theme or comment for this caller.
           content:
@@ -1197,7 +1262,9 @@ paths:
               schema:
                 "$ref": "#/components/schemas/PreviewCommentError"
         '422':
-          description: A missing field, or a reply on a deleted comment.
+          description: >-
+            A missing field, a reply on a deleted comment, or `unfinished` on a
+            reply that is not an agent reply with a `run_id`.
           content:
             application/json:
               schema:
@@ -1325,6 +1392,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1483,6 +1551,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1664,6 +1733,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1821,6 +1891,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -1962,6 +2033,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -2139,6 +2211,11 @@ paths:
 
         The reply's `client_id` is validated before the run and version are
         compared, so a malformed id is 422 whether or not they still match.
+
+        The comment lands in `needs_info`, not `review`: the turn ended without
+        an answer, so there is nothing to judge and the next move is its
+        author's. Ownership goes back to the person who sent it, as an answer's
+        does.
 
         The reply may carry the same `shot` and `proof` an answer carries: the
         page as the turn left it, and the before taken when the run started.
@@ -2321,6 +2398,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -2330,6 +2408,10 @@ paths:
                     body: This turn ended without posting an answer. The run stopped before it could change the hero section;
                       send it again to retry.
                     author_name: Mist
+                    posted_by:
+                      id: '52018'
+                      name: Pam Beesly
+                      kind: user
                     created_at_ms: 1789467150000
                     mentions: []
                     shot: null
@@ -2501,6 +2583,7 @@ paths:
                     run_id: null
                     body: Agreed. Let's drop the font size a step below 768px rather than rewording it.
                     author_name: Pam Beesly
+                    posted_by: null
                     created_at_ms: 1789398277000
                     mentions: []
                     shot: null
@@ -2648,6 +2731,10 @@ paths:
                     run_id: run-8d41c2f0
                     body: Dropped the headline a step below 768px, so it fits on two lines.
                     author_name: Mist
+                    posted_by:
+                      id: '52018'
+                      name: Pam Beesly
+                      kind: user
                     created_at_ms: 1789464720000
                     mentions: []
                     shot: null
@@ -3221,6 +3308,15 @@ components:
             Who replied. The literal `Mist` for the agent's own replies, which
             is what a client compares against to tell whether a thread has been
             answered.
+        posted_by:
+          description: |-
+            The person who posted a Mist reply, so an agent reply is
+            attributable to whose hands sent it. Null on a human reply, whose
+            author is the poster, and on a reply stored before the poster was
+            recorded.
+          oneOf:
+          - "$ref": "#/components/schemas/PreviewCommentPerson"
+          - type: "null"
         created_at_ms:
           type: integer
           description: When the reply was created, in milliseconds since the epoch.
@@ -3238,7 +3334,7 @@ components:
           - "$ref": "#/components/schemas/PreviewCommentProof"
           - type: "null"
           description: The evidence around the screenshot, when the reply carries it.
-      required: [run_id, client_id, body, author_name, created_at_ms, mentions, shot, proof]
+      required: [run_id, client_id, body, author_name, posted_by, created_at_ms, mentions, shot, proof]
     PreviewCommentPerson:
       type: object
       description: |-
@@ -3325,8 +3421,11 @@ components:
         n:
           type: integer
           description: |-
-            Display number shown on the pin. Assigned by the client, so it is a
-            label rather than an identifier — address a comment by `client_id`.
+            Display number shown on the pin. Assigned by the server when the
+            comment is created: one past the highest number the theme has used,
+            deleted comments included, so a number is never reused within a
+            theme. Still a label rather than an identifier — address a comment
+            by `client_id`.
         body:
           type: string
           description: The comment text.
@@ -3336,14 +3435,26 @@ components:
             Where the comment stands. `kept` is a legacy spelling that still
             counts as open. `handed` means it has been sent for work and is
             still running; `review` means the work finished and is waiting on a
-            person. Only a person sets `skipped`, and only a person moves a
-            comment past `review` — the agent stops there.
+            person. `needs_info` is a comment waiting on its author: a person
+            can set it, and Mist moves a run's comment there by asking a
+            question instead of answering. Only a person sets `skipped`, and only
+            a person moves a comment past `review` or `needs_info` — the agent
+            stops there.
 
             When two writes carry the same stamp the order is
             `skipped` > `review` > `handed` > the incoming value, so a resolve
             is never lost to a same-millisecond write and finished work is never
             dragged back to in-progress.
           enum: [open, kept, skipped, handed, review, needs_info]
+        resolution:
+          type: [string, 'null']
+          enum: [approved, closed, null]
+          description: |-
+            How a Done (`skipped`) comment was decided: `approved` when a person
+            accepted Mist's answer, `closed` when it was closed without
+            approving. Null while the comment is not Done, and for a Done
+            comment decided without a verdict (written before this field
+            existed, or by a client that does not send one).
         status_at_ms:
           type: [integer, "null"]
           description: |-
@@ -3498,7 +3609,8 @@ components:
           description: The theme template being commented on. Must belong to this theme.
         number:
           type: integer
-          description: Display number for the pin.
+          deprecated: true
+          description: Ignored; the server assigns the next number.
         page_path:
           type: string
           description: Normalized path of the page.
@@ -3535,7 +3647,7 @@ components:
           type: array
           description: People or projects mentioned in the comment.
           items: {"$ref": "#/components/schemas/PreviewCommentMention"}
-      required: [client_id, body, template_id, number, page_path, pin]
+      required: [client_id, body, template_id, page_path, pin]
     ThemeSummary:
       type: object
       description: A theme as a picker row — no stylesheet blobs.
@@ -3557,6 +3669,12 @@ components:
         A template's metadata. Deliberately excludes `content` (the Liquid
         body), `variables` and `translations` — all unbounded blobs.
       properties:
+        native_widget_key:
+          type: [string, 'null']
+          description: Trusted Fluid native widget identity.
+        native_widget_uri:
+          type: [string, 'null']
+          description: Stable Fluid native widget placement reference.
         id: {type: integer}
         name: {type: [string, 'null']}
         themeable_type: {type: [string, 'null']}
@@ -3585,6 +3703,9 @@ components:
         stylesheet columns, versions, images and GitSync repos. Does NOT embed
         templates.
       properties:
+        native_widget_catalog_enabled:
+          type: boolean
+          description: Server-evaluated company native widget release capability.
         id: {type: integer}
         name: {type: string}
         version: {type: [string, 'null']}
@@ -3596,7 +3717,17 @@ components:
         cover_image: {type: [string, 'null'], description: URL of the theme's cover image.}
         custom_stylesheet: {type: [string, 'null']}
         global_stylesheet: {type: [string, 'null']}
-        versions: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
+        versions:
+          type: [array, 'null']
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              changed_fields:
+                type: array
+                description: The tracked columns this version wrote (variables,
+                  custom_stylesheet, global_stylesheet).
+                items: {type: string}
         images: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
         git_sync_repos: {type: [array, 'null'], items: {type: object, additionalProperties: true}}
         created_at: {type: [string, 'null'], format: date-time}
@@ -3604,8 +3735,14 @@ components:
       required: [id, name]
     ThemeTemplate:
       type: object
-      description: A template including its Liquid `content`.
+      description: A template including its Liquid content. Native and droplet widget sections expose metadata and settings only; content contains only the declarative settings schema.
       properties:
+        native_widget_key:
+          type: [string, 'null']
+          description: Trusted Fluid native widget identity.
+        native_widget_uri:
+          type: [string, 'null']
+          description: Stable Fluid native widget placement reference.
         id: {type: integer}
         name: {type: [string, 'null']}
         content: {type: [string, 'null']}

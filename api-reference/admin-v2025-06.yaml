@@ -35,7 +35,7 @@ tags:
     price grid of a bundle product.
   x-fluid-section: Commerce
 - name: tiktok
-  description: The company's TikTok Shop connection, its logistics warehouses, product listings, and orders.
+  description: The company's TikTok Shop connection, its logistics warehouses, category tree, product listings, and orders.
   x-fluid-section: Sales channels
 components:
   parameters:
@@ -2299,6 +2299,39 @@ components:
         last_imported_at:
           type: [string, 'null']
           format: date-time
+    TiktokCategory:
+      description: One category of the connected shop's TikTok category tree.
+        Only leaf categories the shop is permitted to use can be chosen as a
+        listing's category override.
+      type: object
+      properties:
+        id:
+          type: string
+          description: TikTok's category id.
+        name:
+          type: string
+          description: The category's localized name.
+        is_leaf:
+          type: boolean
+          description: Whether the category has no children.
+        parent_id:
+          type: [string, 'null']
+          description: The parent category id, or null for a root category.
+        path:
+          type: string
+          description: The category's breadcrumb from the root, joined with " > ".
+        permission_statuses:
+          type: array
+          description: TikTok's permission statuses for this shop on the
+            category, such as AVAILABLE or INVITE_ONLY. Empty when TikTok
+            reports none.
+          items:
+            type: string
+        permitted:
+          type: boolean
+          description: Whether the shop may list under the category. True when
+            permission_statuses is empty or includes AVAILABLE.
+      additionalProperties: false
     TiktokConnection:
       description: A company's link to one TikTok Shop seller account. Never exposes
         the encrypted OAuth tokens themselves — only identity, status, expiry, and
@@ -2391,8 +2424,10 @@ components:
           $ref: '#/components/schemas/TiktokWarehouseAddress'
         fluid_warehouse_id:
           type: [integer, 'null']
-          description: This company's Fluid Warehouse already mapped to this TikTok
-            warehouse (by external_integration_market_id), or null if none is mapped yet.
+          description: For the selected TikTok warehouse, the Fluid Warehouse bound on
+            the connection (null if none resolves). For other warehouses, the company's Fluid
+            Warehouse whose external_integration_market_id matches, shown only while the
+            connection has no bound warehouse; otherwise null.
         selected:
           type: boolean
           description: Whether this is the connection's currently configured
@@ -2416,6 +2451,24 @@ components:
           type: [string, 'null']
         tiktok_category_id:
           type: [string, 'null']
+          description: The category TikTok recommended or the publisher last
+            resolved for this listing. An admin override, when set, takes
+            precedence; see effective_tiktok_category_id.
+        tiktok_category_override_id:
+          type: [string, 'null']
+          description: The category an admin chose for this listing, or
+            null when none is set. Set it with PATCH on the listing, or with
+            category_overrides when creating listings.
+        effective_tiktok_category_id:
+          type: [string, 'null']
+          description: The category a publish uses - tiktok_category_override_id
+            when set, otherwise tiktok_category_id. Null until the first
+            publish resolves one.
+        category_resync_due:
+          type: boolean
+          description: True when an admin-triggered category resync was queued
+            within the last 15 minutes and is not yet finished or skipped.
+            Resyncs queued by other paths do not set it.
         status:
           type: string
           description: draft until the first publish attempt; active once TikTok
@@ -2445,6 +2498,31 @@ components:
           format: date-time
         last_error:
           type: [object, 'null']
+        audit_reasons:
+          type: [object, 'null']
+          additionalProperties: true
+          description: TikTok's audit detail from the last status refresh —
+            everything under the product's audit object except status, such as
+            not_submitted_reasons and pre_approved_reasons. Unknown keys TikTok
+            adds pass through verbatim. Null when TikTok reports no reasons, and
+            cleared on the next refresh once they go away.
+        sku_listings:
+          type: array
+          description: The listing's per-SKU state, including the SKU-level
+            error when TikTok rejected that variant.
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              variant_id:
+                type: integer
+              seller_sku:
+                type: string
+              tiktok_sku_id:
+                type: [string, 'null']
+              last_error:
+                type: [object, 'null']
     TiktokOrder:
       description: The raw TikTok order envelope plus Fluid's ingestion and
         affiliate-attribution state (Phase 004).
@@ -7355,6 +7433,27 @@ paths:
         schema:
           type: string
           format: date
+      - name: filter[last_ship_before]
+        in: query
+        required: false
+        description: Only subscriptions whose last order shipped on or before this date. The whole day is included.
+        schema:
+          type: string
+          format: date
+      - name: filter[created_after]
+        in: query
+        required: false
+        description: Only subscriptions created on or after this date.
+        schema:
+          type: string
+          format: date
+      - name: filter[created_before]
+        in: query
+        required: false
+        description: Only subscriptions created on or before this date. The whole day is included.
+        schema:
+          type: string
+          format: date
       - name: filter[customer_id]
         in: query
         required: false
@@ -8272,7 +8371,7 @@ paths:
     post:
       operationId: admin_v2025_06_customers_post
       summary: Create a customer
-      description: Creates a customer in the current company. When `address` is supplied it becomes the customer's default address, and `metadata` accepts at most 50 keys. A request whose identifying details collide with an existing customer is rejected with 422. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback). When the member write-target rollout is enabled, the response `created_at` is the creation time of the newly created member record, or of the new customer record when an existing member without a customer is reused; until then it is the customer record's.
+      description: Creates a customer in the current company. When `address` is supplied it becomes the customer's default address, and `metadata` accepts at most 50 keys. A request whose identifying details collide with an existing customer is rejected with 422. When customer-create echo protection is enabled, a caller without the `members.view` permission also receives that 422 when the email belongs to an existing member, and never receives `errors.existing_customer`. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback). When the member write-target rollout is enabled, the response `created_at` is the creation time of the newly created member record, or of the new customer record when an existing member without a customer is reused; until then it is the customer record's.
       tags: [customers]
       security:
       - bearer_auth: []
@@ -8787,7 +8886,7 @@ paths:
     post:
       operationId: admin_v2025_06_customers_bulk_post
       summary: Create multiple customers
-      description: Creates or updates up to 1,000 customers in one request, matching existing customers by email (emails are lowercased). Each entry may carry a default address. The response lists one id per submitted entry, in order, so an email repeated in the payload returns the same id more than once. Rep attribution, default addresses and identity sync are applied in the background after the response. If any email is invalid, the whole batch is rejected with 422. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback).
+      description: Creates or updates up to 1,000 customers in one request, matching existing customers by email (emails are lowercased). Each entry may carry a default address. The response lists one id per submitted entry, in order, so an email repeated in the payload returns the same id more than once. Rep attribution, default addresses and identity sync are applied in the background after the response. If any email is invalid, the whole batch is rejected with 422. When customer-create echo protection is enabled, a caller without the `members.view` permission is rejected with 422 for an email that belongs to an existing member without a customer. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback).
       tags: [customers]
       security:
       - bearer_auth: []
@@ -30156,10 +30255,10 @@ paths:
                           type: string
                         amount:
                           type: string
-                          description: Decimal string; "0.0" when none is stored.
+                          description: Decimal string.
                         amount_in_base:
                           type: string
-                          description: Decimal string; "0.0" when this base value is not stored.
+                          description: Decimal string.
                         base_to_currency_rate:
                           type: [string, 'null']
                         note:
@@ -30176,10 +30275,10 @@ paths:
                           type: string
                         in_flight_refund_total:
                           type: string
-                          description: Total of refunds the payment provider has accepted but not yet settled, reserved against the order's refundable amount.
+                          description: Total of refunds the payment provider has accepted but not yet settled or never answered, and of refunds the gateway paid out that have no Refund record yet, reserved against the order's refundable amount.
                         pending_refunds:
                           type: array
-                          description: Refunds the provider has accepted but not settled. Absent from refunds and refund_total until settlement.
+                          description: Refunds the provider has accepted but not settled or never answered, and refunds the gateway paid out that have no Refund record yet. Absent from refunds and refund_total until recorded.
                           items:
                             type: object
                             properties:
@@ -30190,6 +30289,10 @@ paths:
                                 format: date-time
                               provider_refund_id:
                                 type: [string, 'null']
+                              state:
+                                type: string
+                                enum: [awaiting_provider, unrecorded]
+                                description: awaiting_provider when the provider accepted the refund and will settle it, or never answered the refund call, unrecorded when the gateway paid it out but its Refund record failed to write.
                               order_items:
                                 type: array
                                 description: Units reserved by this refund. Empty for a custom refund, which reserves an amount but no units.
@@ -31054,7 +31157,7 @@ paths:
                     properties:
                       in_flight_refund_total:
                         type: string
-                        description: Total of refunds the payment provider has accepted but not yet settled, reserved against the order's refundable amount.
+                        description: Total of refunds the payment provider has accepted but not yet settled or never answered, and of refunds the gateway paid out that have no Refund record yet, reserved against the order's refundable amount.
                       in_flight_refund_components:
                         type: object
                         description: Part of in_flight_refund_total held against each cash component, as decimal strings.
@@ -31067,7 +31170,7 @@ paths:
                             type: string
                       pending_refunds:
                         type: array
-                        description: Refunds the provider has accepted but not settled. Absent from refunds and refund_total until settlement.
+                        description: Refunds the provider has accepted but not settled or never answered, and refunds the gateway paid out that have no Refund record yet. Absent from refunds and refund_total until recorded.
                         items:
                           type: object
                           properties:
@@ -31078,6 +31181,10 @@ paths:
                               format: date-time
                             provider_refund_id:
                               type: [string, 'null']
+                            state:
+                              type: string
+                              enum: [awaiting_provider, unrecorded]
+                              description: awaiting_provider when the provider accepted the refund and will settle it, or never answered the refund call, unrecorded when the gateway paid it out but its Refund record failed to write.
                             order_items:
                               type: array
                               description: Units reserved by this refund. Empty for a custom refund, which reserves an amount but no units.
@@ -31106,10 +31213,10 @@ paths:
                         type: string
                       amount:
                         type: string
-                        description: Decimal string; "0.0" when none is stored.
+                        description: Decimal string.
                       amount_in_base:
                         type: string
-                        description: Decimal string; "0.0" when this base value is not stored.
+                        description: Decimal string.
                       base_to_currency_rate:
                         type: [string, 'null']
                       note:
@@ -31167,16 +31274,16 @@ paths:
                         type: string
                       tax_in_base:
                         type: string
-                        description: Decimal string; "0.0" when this base value is not stored.
+                        description: Decimal string.
                       subtotal_in_base:
                         type: string
-                        description: Decimal string; "0.0" when this base value is not stored.
+                        description: Decimal string.
                       enrollment_fee_in_base:
                         type: string
-                        description: Decimal string; "0.0" when this base value is not stored.
+                        description: Decimal string.
                       discount_in_base:
                         type: string
-                        description: Decimal string; "0.0" when this base value is not stored.
+                        description: Decimal string.
                       sale_date:
                         type: [string, 'null']
                         format: date-time
@@ -31216,7 +31323,7 @@ paths:
                         type: [object, 'null']
                       current_adjustment_total:
                         type: string
-                        description: Decimal string; "0.0" when none is stored.
+                        description: Decimal string.
                       current_subtotal:
                         type: string
                       current_discount:
@@ -31497,7 +31604,7 @@ paths:
                         type: [string, 'null']
                       tax:
                         type: string
-                        description: Decimal string; "0.0" when none is stored.
+                        description: Decimal string.
                       shipping:
                         type: string
                         description: Quoted shipping rate, as a decimal string. The stored
@@ -37761,11 +37868,13 @@ paths:
                   points_amount: 10
                   currency_symbol: $
                   currency_name: US Dollar
+                  configured: true
                 - id: 7303
                   currency_code: CAD
                   points_amount: 14
                   currency_symbol: $
                   currency_name: Canadian Dollar
+                  configured: true
                 primary_currency: USD
                 primary_currency_data:
                   id: 7302
@@ -37773,6 +37882,7 @@ paths:
                   points_amount: 10
                   currency_symbol: $
                   currency_name: US Dollar
+                  configured: true
                 meta:
                   request_id: 8c2f4e71-3b9a-4d6e-a1f5-7e0b9c3d2a48
                   timestamp: '2026-09-14T16:05:22Z'
@@ -37799,6 +37909,9 @@ paths:
                           type: [string, 'null']
                         currency_name:
                           type: [string, 'null']
+                        configured:
+                          type: boolean
+                          description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
                   primary_currency:
                     type: string
                   primary_currency_data:
@@ -37814,6 +37927,9 @@ paths:
                         type: [string, 'null']
                       currency_name:
                         type: [string, 'null']
+                      configured:
+                        type: boolean
+                        description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
                   meta:
                     $ref: '#/components/schemas/Meta'
                 additionalProperties: false
@@ -37825,7 +37941,7 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     patch:
       summary: Update a points value for a currency
-      description: Update or create a points value for a specific currency.
+      description: Update or create a points value for a specific currency. The authenticated user is recorded as the person who set it; submitting an unchanged value confirms it. A token that names no user is refused with 422 where the company refuses unpriced markets; elsewhere its value is saved with no author, so it reads as configured false.
       tags: [points-values]
       operationId: admin_v2025_06_update_points_value
       security:
@@ -37862,6 +37978,7 @@ paths:
                   points_amount: 14
                   currency_symbol: $
                   currency_name: Canadian Dollar
+                  configured: true
                 meta:
                   request_id: 8c2f4e71-3b9a-4d6e-a1f5-7e0b9c3d2a48
                   timestamp: '2026-09-14T16:05:22Z'
@@ -37881,6 +37998,9 @@ paths:
                         type: [string, 'null']
                       currency_name:
                         type: [string, 'null']
+                      configured:
+                        type: boolean
+                        description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
                   meta:
                     $ref: '#/components/schemas/Meta'
                 additionalProperties: false
@@ -37899,7 +38019,7 @@ paths:
   /api/v202506/points_values/refresh:
     post:
       summary: Refresh points values
-      description: Refresh points values for all currencies used by the company.
+      description: Price every other market the company sells in from its primary currency's points value and the stored exchange rates. The primary currency must have a points value; where the company refuses unpriced markets, one a person set. Values derived from a primary value nobody set record no author. A market with no stored exchange rate is left unchanged and named in the message. A token that names no user is refused with 422 where the company refuses unpriced markets; elsewhere it refreshes and what it derives records no author. A refresh that collides with another one refreshing the same company answers 409 and can be sent again unchanged.
       tags: [points-values]
       operationId: admin_v2025_06_refresh_points_values
       security:
@@ -37928,6 +38048,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '422':
+          description: unprocessable entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another refresh of the same company collided with this one, and nothing was written. Send it again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v202506/posts/{post_id}/compliance:
     get:
       summary: Get latest compliance scan for a post
@@ -40209,10 +40341,21 @@ paths:
       operationId: admin_v202506_tiktok_connection_patch
       summary: Configure the TikTok warehouse used for inventory publishing
       description: Sets the TikTok logistics warehouse that inventory publishing uses
-        for the company's TikTok Shop connection. `tiktok_warehouse_id` must match a Fluid
-        warehouse this company has mapped to that TikTok warehouse; an unmapped id returns
-        422 and leaves the connection unchanged. Requires a company admin token with the
-        company_settings.update permission. Returns the updated connection.
+        for the company's TikTok Shop connection. Without `fluid_warehouse_id`,
+        `tiktok_warehouse_id` must either equal the id already stored on the connection or,
+        for a connection with no bound Fluid warehouse yet, match exactly one Fluid warehouse
+        of this company by external_integration_market_id (the connection is then bound to
+        it); anything else returns 422 and leaves the connection unchanged. Changing a bound
+        connection to a different TikTok warehouse requires `fluid_warehouse_id`. With `fluid_warehouse_id`, the TikTok warehouse is checked against the
+        shop's warehouses (it must exist, be a sales warehouse, and not be disabled); then, in one
+        transaction, the connection stores the TikTok warehouse id and the Fluid warehouse
+        id (the warehouse must belong to this company); no warehouse record is modified.
+        Each successful mapping re-syncs inventory for the connection's listed SKUs
+        to TikTok in the background, so repeating a request is safe.
+        Requires a company admin token with the company_settings.update permission,
+        and also warehouses.update when `fluid_warehouse_id` is sent (droplet tokens
+        cannot send it). Returns the
+        updated connection.
       tags: [tiktok]
       security:
       - bearer_auth: []
@@ -40222,12 +40365,17 @@ paths:
           application/json:
             example:
               tiktok_warehouse_id: '7302198465731028741'
+              fluid_warehouse_id: 12
             schema:
               type: object
               required: [tiktok_warehouse_id]
               properties:
                 tiktok_warehouse_id:
                   type: string
+                fluid_warehouse_id:
+                  type: integer
+                  minimum: 1
+                  description: Id of the company's Fluid warehouse to map to the TikTok warehouse. Omit it to select a warehouse that is already mapped.
               additionalProperties: false
       responses:
         '200':
@@ -40269,7 +40417,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is authenticated but is not a company admin, or lacks the company_settings.update permission.
+          description: The caller is authenticated but is not a company admin, lacks the company_settings.update permission, or sent `fluid_warehouse_id` without also holding the warehouses.update permission (a droplet token is always refused when it sends `fluid_warehouse_id`).
           content:
             application/json:
               schema:
@@ -40281,7 +40429,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: The warehouse is not mapped to this company, or the request is invalid.
+          description: The request is invalid, no single Fluid warehouse of this company maps the TikTok warehouse id (none, or several), a bound connection asked for a different id without `fluid_warehouse_id`, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, or TikTok rejected the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, timed out, kept rate limiting the request, or returned a malformed response while the shop's warehouses were being checked, or the server's TikTok app credentials are not configured.
           content:
             application/json:
               schema:
@@ -40466,8 +40620,9 @@ paths:
         Read-only visibility onto the shop's TikTok logistics warehouses, so
         the admin can pick one to map via `PATCH /tiktok/connection`. Each
         warehouse includes `fluid_warehouse_id` — this company's Fluid
-        Warehouse already mapped to it (by `external_integration_market_id`),
-        or null — and `selected`, whether it is the connection's current
+        Warehouse for it: the connection's bound warehouse for the selected
+        row, otherwise the company's warehouse with a matching
+        `external_integration_market_id`, or null — and `selected`, whether it is the connection's current
         `tiktok_warehouse_id`. Requires an active TikTok Shop connection;
         a never-connected or inactive connection is rejected the same way
         the other TikTok endpoints reject one.
@@ -40552,6 +40707,131 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '502':
           description: TikTok could not be reached, or returned a malformed/non-API response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/tiktok/categories:
+    get:
+      operationId: admin_v202506_tiktok_categories_get
+      x-fluid-audience: company
+      summary: Browse the connected TikTok shop's categories
+      description: >-
+        Read-only browse of the shop's TikTok category tree (v2), for choosing
+        a listing's category override. Without parameters it returns the root
+        categories; `parent_id` returns all of that category's children;
+        `keyword` searches leaf category names (case-insensitive substring),
+        returns at most `limit` matches and wins over `parent_id`; `ids` looks
+        up specific categories (unknown ids are omitted) and wins over both. Each category carries its breadcrumb `path` and TikTok's
+        permission status for the shop. Requires a company admin token with the
+        products.view permission and an active TikTok Shop connection. The
+        tree is cached per connection for up to 1 hour.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: parent_id
+        in: query
+        required: false
+        description: List this category's children. Omit for root categories.
+        schema:
+          type: string
+          pattern: '^[0-9]+$'
+      - name: ids
+        in: query
+        required: false
+        description: Comma-separated TikTok category ids (max 50) to look up.
+          Unknown ids are omitted. Wins over keyword and parent_id.
+        schema:
+          type: string
+          pattern: '^[0-9]+(,[0-9]+){0,49}$'
+      - name: keyword
+        in: query
+        required: false
+        description: Search leaf categories whose name contains this text.
+          Wins over parent_id.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of matches a keyword search returns (max
+          200). Ignored when browsing by parent_id, which returns every child.
+        schema:
+          type: integer
+          default: 50
+          minimum: 1
+          maximum: 200
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                tiktok_categories:
+                - id: '601450'
+                  name: Face Serums
+                  is_leaf: true
+                  parent_id: '600966'
+                  path: Beauty & Personal Care > Skincare > Face Serums
+                  permission_statuses: [AVAILABLE]
+                  permitted: true
+                - id: '601452'
+                  name: Face Moisturizers
+                  is_leaf: true
+                  parent_id: '600966'
+                  path: Beauty & Personal Care > Skincare > Face Moisturizers
+                  permission_statuses: [INVITE_ONLY]
+                  permitted: false
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-09-30T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  tiktok_categories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TiktokCategory'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the products.view permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid query parameters, the connection is not active, or TikTok rejected
+            the request as a business matter (for example a revoked scope or shop).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed/non-API response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
           content:
             application/json:
               schema:
@@ -40800,6 +41080,9 @@ paths:
               product_ids:
               - 91274
               - 91302
+              category_overrides:
+              - product_id: 91274
+                tiktok_category_id: '601450'
             schema:
               type: object
               required: [product_ids]
@@ -40808,6 +41091,24 @@ paths:
                   type: array
                   items:
                     type: integer
+                category_overrides:
+                  type: array
+                  description: Optional per-product TikTok categories to publish
+                    under instead of TikTok's recommendation. Every product_id
+                    must also appear in product_ids. Ignored for a product that
+                    is already listed. Every category must be a leaf in the
+                    shop's TikTok category tree that the shop is permitted to
+                    use; browse them with GET /tiktok/categories.
+                  items:
+                    type: object
+                    required: [product_id, tiktok_category_id]
+                    properties:
+                      product_id:
+                        type: integer
+                        minimum: 1
+                      tiktok_category_id:
+                        type: string
+                        pattern: '^[0-9]{1,20}$'
       responses:
         '201':
           description: Created
@@ -40858,7 +41159,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is authenticated but is not a company admin, or lacks the products.update permission.
+          description: The caller is authenticated but is not a company admin, or lacks the products.update permission, or the caller is a droplet token sending category_overrides.
           content:
             application/json:
               schema:
@@ -40870,12 +41171,149 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Invalid parameters, or a product_id does not belong to this company.
+          description: Invalid parameters, a product_id does not belong to this company,
+            a category_overrides product_id is not in product_ids, the TikTok Shop connection
+            is not active, an override category id is malformed (error.details.type is
+            invalid_category_id), or an override category is rejected (error.details.type is
+            unknown_category when it is not in the shop's category tree, category_not_leaf when
+            it has child categories, category_not_permitted when the shop may not use it, or
+            tiktok_error when TikTok rejected the category lookup).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed response while validating a category override.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
   /api/v202506/tiktok/product_listings/{id}:
+    patch:
+      operationId: admin_v202506_tiktok_product_listing_patch
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "existing shipped route; the product_listings path segment predates the kebab-case rule"
+      summary: Set or clear a TikTok listing's category override
+      description: >-
+        Sets, changes or clears (with null) the TikTok category an admin
+        chose for a listing, overriding TikTok's recommendation on the next
+        publish. A set category must be a leaf in the shop's TikTok category
+        tree that the shop is permitted to use. Only JSON null clears the override; an empty string is
+        rejected as invalid_category_id. When the listing is published on
+        TikTok and the effective category differs from the one TikTok last
+        received, a resync is queued so the change reaches TikTok (an
+        identical retry queues it again if the first queueing failed);
+        otherwise the override is only stored. A listing that is draft
+        (a publish is queued), deleted or seller_deactivated cannot be edited:
+        wait for the queued publish, or reactivate first. Requires a company
+        admin token with the products.update permission and an active TikTok
+        Shop connection.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              tiktok_category_override_id: '601450'
+            schema:
+              type: object
+              required: [tiktok_category_override_id]
+              properties:
+                tiktok_category_override_id:
+                  type: [string, 'null']
+                  pattern: '^[0-9]{1,20}$'
+                  description: The TikTok category id to publish under, or
+                    null to clear the override. An empty string is rejected.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                product_listing:
+                  id: 27418
+                  tiktok_product_id: '1729587461203847291'
+                  product_id: 91274
+                  product_title: Hydrating Face Serum
+                  tiktok_category_id: '600966'
+                  tiktok_category_override_id: '601450'
+                  effective_tiktok_category_id: '601450'
+                  status: active
+                  audit_status: approved
+                  last_published_at: '2026-09-22T14:05:37.000Z'
+                  last_synced_at: '2026-09-29T09:12:44.000Z'
+                  last_error: null
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-09-30T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  product_listing:
+                    $ref: '#/components/schemas/TiktokProductListing'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the products.update permission, or the caller is a droplet token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop, or `id` does not match a listing on this connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid parameters, the TikTok Shop connection is not active, the listing
+            is not editable (error.details.type is listing_not_editable with its status), the
+            category id is malformed or an empty string (error.details.type is invalid_category_id),
+            the category is rejected (error.details.type is unknown_category when it is not in the
+            shop's category tree, category_not_leaf when it has child categories,
+            category_not_permitted when the shop may not use it, or tiktok_error when TikTok
+            rejected the category lookup), or the listing was updated concurrently
+            (error.details.type is listing_changed; retry).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: TikTok could not be reached, rate limited the request, or returned a malformed response while validating the category.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: The TikTok app credentials are not configured on the server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
     delete:
       operationId: admin_v202506_tiktok_product_listing_delete
       summary: Unpublish a TikTok product listing

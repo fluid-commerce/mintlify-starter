@@ -445,9 +445,11 @@ components:
                 - not_attempted
                 - declined
                 - unknown
+                - held
                 description: >-
-                  What happened to the payment: the default the error catalog gives the
-                  blocker's `code` (`not_attempted` for every blocker code today), or
+                  What happened to the payment: the catalog default for the blocker's
+                  `code`, which is `not_attempted` for every blocker code; `held` instead
+                  when the cart's only money is the payment a resubmit reuses; or
                   `unknown` on every blocker while the cart may already hold money or
                   that cannot be read. Check before charging again on `unknown`.
                   `declined` reflects the stored payment status; for some gateways an
@@ -1048,7 +1050,10 @@ components:
         creditable_points:
           type: integer
         product:
-          type: object
+          # Null on a custom (variant-less) line.
+          type:
+          - object
+          - 'null'
           additionalProperties:
             $ref: '#/components/schemas/JsonValue'
         variant:
@@ -5735,7 +5740,7 @@ components:
               issue:
                 type: string
                 description: MISSING_SHIPPING_ADDRESS, MISSING_ORDER_ID,
-                  SHIPPING_UNAVAILABLE or CART_TOTAL_UNAVAILABLE.
+                  SHIPPING_UNAVAILABLE, CART_TOTAL_UNAVAILABLE or PRICING_STALE.
             required:
             - issue
             additionalProperties: false
@@ -7055,9 +7060,11 @@ components:
                     - not_attempted
                     - declined
                     - unknown
+                    - held
                     description: >-
-                      What happened to the payment: the default the error catalog gives the
-                      blocker's `code` (`not_attempted` for every blocker code today), or
+                      What happened to the payment: the catalog default for the blocker's
+                      `code`, which is `not_attempted` for every blocker code; `held` instead
+                      when the cart's only money is the payment a resubmit reuses; or
                       `unknown` on every blocker while the cart may already hold money or
                       that cannot be read. Check before charging again on `unknown`.
                       `declined` reflects the stored payment status; for some gateways an
@@ -7897,9 +7904,11 @@ components:
           - not_attempted
           - declined
           - unknown
+          - held
           description: >-
             `not_attempted`: fix the cause and resubmit. `declined`: the payment was refused; resubmit with another method. `declined` reflects the stored payment status; for some gateways an unconfirmed failure is still reported as `declined`.
             `unknown`: money may have moved; check the order before charging again.
+            `held`: the cart's only money is the payment a resubmit reuses. Fix the field and resubmit with the same payment method; checkout will not charge again.
         message:
           type: string
           description: The English message for this entry. Not translated.
@@ -7954,7 +7963,15 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          "$ref": "#/components/responses/OrderOverrideForbidden"
+          description: >-
+            The caller is not allowed to override orders (see
+            OrderOverrideForbidden), or an admin without
+            `orders.add_custom_item` tried to reprice a custom (variant-less)
+            line.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: |-
             The request was understood but refused. Distinguish the cases by
@@ -10567,6 +10584,23 @@ paths:
         Adds one or more variants — including dynamic bundles — to the cart.
         When the request includes an enrollment, a cart whose checkout lock is
         held is refused with 409.
+
+        An entry without `cart_item_id` is matched to an existing line of the
+        same variant. For a regular variant that carries `subscription`, only a
+        line in that subscription state matches (`true` matches a subscription
+        line; `false` or `null` matches a one-time line); with no such line a
+        new line is created, so a cart can hold the same variant once as a
+        subscription and once as a one-time purchase, and adding one never
+        changes the other. A regular variant whose entry omits `subscription`
+        matches the variant's existing line whatever its state and leaves that
+        line's subscription unchanged. A dynamic bundle is matched on its
+        component selection and its subscribe choice instead, and an omitted
+        `subscription` counts as one-time. Send `cart_item_id` to address one
+        exact line. With `quantity: 0`, the entry removes the line it matches
+        by the same rule for regular variants, and the request fails when no
+        line is in the stated state. Removal by `variant_id` does not
+        distinguish the configurations of a dynamic bundle, so send
+        `cart_item_id` to remove one.
       parameters:
       - name: cart_token
         in: path
@@ -10796,6 +10830,14 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+        '403':
+          description: >-
+            An admin without `orders.add_custom_item` tried to add a custom
+            (variant-less) line.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '404':
           description: Cart not found, or the requested `enrollment.enrollment_pack_id`
             does not exist or is inactive.
@@ -10844,7 +10886,9 @@ paths:
                     properties:
                       variant_id:
                         type: integer
-                        description: Variant ID
+                        description: Variant ID. Omitted for a custom (variant-less)
+                          line, which takes a `title` and `price`, and when
+                          `cart_item_id` names an existing line.
                       cart_item_id:
                         type: integer
                         description: ID of an existing cart line. When present, the entry
@@ -10877,6 +10921,16 @@ paths:
                       title:
                         type: string
                         description: Item title override
+                      sku:
+                        type: string
+                        description: >-
+                          A custom (variant-less) line's SKU, so the order exports
+                          it as that catalog item. Must match a variant SKU in
+                          the company's catalog, ignoring case. Accepted only as
+                          the custom line is added, from a caller that may set a
+                          custom line's values (an admin with
+                          `orders.add_custom_item`, a droplet or a company
+                          token). Ignored on a catalog line.
                       image_url:
                         type: string
                         description: Item image URL
@@ -10912,7 +10966,6 @@ paths:
                           - variant_id
                           - quantity
                     required:
-                    - variant_id
                     - quantity
                 perform_cart_calculations:
                   type: boolean
@@ -11713,7 +11766,15 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          "$ref": "#/components/responses/OrderOverrideForbidden"
+          description: >-
+            The caller is not allowed to override orders (see
+            OrderOverrideForbidden), or an admin without
+            `orders.add_custom_item` tried to set a custom (variant-less)
+            line's CV/QV.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '200':
           description: Success
           content:
@@ -16106,7 +16167,7 @@ paths:
         the amount PayPal now holds, whenever PayPal reported one. For a zero-amount "start free" subscription
         cart, send `setup_token_id` instead of `order_id`: the approved vault setup token is exchanged for a
         reusable PayPal payment method on the cart, nothing is charged, and the response carries `payment_method_id`.
-        Returns 422 when `order_id` is missing on a chargeable cart or the cart does not require payment, 404
+        Returns 422 when `order_id` is missing on a chargeable cart, is not an order this cart opened, or the cart does not require payment, 404
         when the cart or its PayPal payment account is not found, and 400 when PayPal declines the authorization.
         Used by Fluid checkout and the FairShare SDK; direct REST integrations should use checkout-v2026-04.'
       tags:
@@ -16227,7 +16288,8 @@ paths:
       description: Called by Fluid checkout when the buyer changes their shipping address inside the PayPal
         window. Writes the address to the cart as the ship-to address (and uses it for billing), reprices shipping
         and tax, then patches the PayPal order so its amount matches the cart. No Bearer token; the cart is
-        addressed by `cart_token`. Returns 422 when `order_id` or `shipping_address` is missing, 404 when the
+        addressed by `cart_token`. Returns 422 when `order_id` or `shipping_address` is missing, `order_id` is not an order this cart opened, or the repricing
+        could not finish (the PayPal order is left unchanged), 404 when the
         cart or its PayPal payment account is not found, and 400 when PayPal rejects the update. Used by Fluid
         checkout and the FairShare SDK; direct REST integrations should use checkout-v2026-04.
       tags:
@@ -16308,7 +16370,8 @@ paths:
       description: Called by Fluid checkout when the buyer picks a different shipping option inside the PayPal
         window. Sets the cart's shipping method, recalculates totals, and patches the PayPal order with the
         new amount and shipping options. No Bearer token; the cart is addressed by `cart_token`. Returns 422
-        when `order_id` or `shipping_method_id` is missing, 404 when the cart or its PayPal payment account
+        when `order_id` or `shipping_method_id` is missing, `order_id` is not an order this cart opened, or the repricing could not finish (the PayPal order
+        is left unchanged), 404 when the cart or its PayPal payment account
         is not found, and 400 when PayPal rejects the update. Used by Fluid checkout and the FairShare SDK;
         direct REST integrations should use checkout-v2026-04.
       tags:
@@ -16373,8 +16436,8 @@ paths:
         `shipping_option`; its presence is what distinguishes the two callbacks. The chosen option is applied
         before repricing. The response body is the update itself: PayPal applies the returned `purchase_units`
         rather than Fluid patching the order, so this action does not use the `{ success, order_id, meta }`
-        envelope. Declines use PayPal''s 422 shape (`MISSING_SHIPPING_ADDRESS`, `MISSING_ORDER_ID`, `SHIPPING_UNAVAILABLE`
-        or `CART_TOTAL_UNAVAILABLE`), and a declined address is removed from the cart again. No Bearer token;
+        envelope. Declines use PayPal''s 422 shape (`MISSING_SHIPPING_ADDRESS`, `MISSING_ORDER_ID`, `SHIPPING_UNAVAILABLE`,
+        `CART_TOTAL_UNAVAILABLE` or `PRICING_STALE`), and a declined address is removed from the cart again. No Bearer token;
         the cart is addressed by `cart_token`.'
       tags:
       - carts

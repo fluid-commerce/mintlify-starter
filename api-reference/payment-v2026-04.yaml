@@ -1191,7 +1191,7 @@ components:
             "$ref": "#/components/schemas/ErrorResponse"
     Conflict:
       description: |
-        One of four states, told apart by the body's `message`:
+        One of five states, told apart by the body's `message`:
 
         - A request with the same Idempotency-Key is still being processed.
           Retry once it completes; the cached response then replays with
@@ -1207,6 +1207,9 @@ components:
           it under this key or a fresh one: read the resulting transaction
           instead. Every retry under the same key answers 409 until 24 hours
           after the reconciliation.
+        - On capture, void and credit, another request for the same transaction
+          is running. Nothing was sent to the payment provider for this one;
+          retry once the other finishes, so the balance it leaves is checked.
         - On gateway updates, the gateway's country membership changed since
           the caller loaded it; the body's `errors.current_country_codes` lists
           the current ISO codes.
@@ -1230,6 +1233,13 @@ components:
         run, unless a response is already cached under that key, which
         replays; its `message` says to confirm the outcome of an earlier
         request before sending it again under a different key.
+
+        A capture, void or credit the source transaction cannot take also
+        answers 422 and does not run: a capture needs a successful
+        authorization that was not voided, a credit needs a successful
+        capture or purchase, a void needs an authorization with no capture or
+        void, and the amount cannot exceed what is left to capture or refund.
+        Its `message` says which rule refused it.
 
         A request whose payment account uses an adapter not on the guard's
         audited allowlist also answers 422 and does not run, whether or not
@@ -2225,8 +2235,11 @@ paths:
         and returns it with `201`; read the capture outcome from `data.status`. Pass
         an `Idempotency-Key` header to make retries safe. Returns `404` when the
         authorization is not found — including authorizations that were not created
-        through this API — `409` on an in-flight duplicate key, and `422` when the
-        authorization cannot be captured. On success, API-key-authenticated requests
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same authorization is running, and `422` when the
+        authorization cannot be captured: it is not a successful authorization, it
+        was voided, or `amount_cents` exceeds the authorized amount less the
+        captures already made. On success, API-key-authenticated requests
         emit a `payment.captured` webhook.
       tags:
       - Transactions
@@ -2333,8 +2346,10 @@ paths:
         returns it with `200`; read the void outcome from `data.status`. Pass an
         `Idempotency-Key` header to make retries safe. Returns `404` when the
         authorization is not found — including authorizations that were not created
-        through this API — `409` on an in-flight duplicate key, and `422` when the
-        authorization cannot be voided. On success, API-key-authenticated requests
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same authorization is running, and `422` when the
+        authorization cannot be voided: it is not a successful authorization, or
+        it was already captured or voided. On success, API-key-authenticated requests
         emit a `payment.voided` webhook.
       tags:
       - Transactions
@@ -2428,13 +2443,15 @@ paths:
         it to refund the full amount. Partial refunds accumulate in the source
         transaction's `credited_amount_cents`. Creates a `refund` transaction linked
         via `parent_transaction_id` and returns it with `201`; read the refund
-        outcome from `data.status`. The refundable balance is not pre-checked: an
-        over-refund is submitted to the provider and typically comes back as a `201`
-        with `data.status: declined` or `error`. Pass an `Idempotency-Key` header to
-        make retries safe. Returns `404` when the transaction is not found —
-        including transactions that were not created through this API — `409` on an
-        in-flight duplicate key, and `422` when the request fails validation (for
-        example `amount_cents: 0`). On success, API-key-authenticated requests emit
+        outcome from `data.status`. Only a successful `capture` or `purchase` can be
+        refunded, and the refunds together cannot exceed its amount: the refundable
+        balance is checked before anything is sent to the provider. Pass an
+        `Idempotency-Key` header to make retries safe. Returns `404` when the
+        transaction is not found — including transactions that were not created
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same transaction is running, and `422` when the request
+        fails validation (for example `amount_cents: 0`), the transaction cannot be
+        refunded, or `amount_cents` exceeds the refundable balance. On success, API-key-authenticated requests emit
         a `payment.refunded` webhook.
       tags:
       - Transactions

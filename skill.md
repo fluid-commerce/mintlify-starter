@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.3"
+  version: "1.4"
 ---
 
 # Fluid
@@ -60,7 +60,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
 - **Checkout is a separate app.** A theme renders the storefront and cart; nothing in it can change checkout.
 - **Order totals across currencies:** each order's `amount` is in its own `currency_code`. Sum `amount_in_base`, which is always US dollars, converted at the rate saved on the order: https://docs.fluid.app/concepts/order-currency
-- **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`): https://docs.fluid.app/themes/common-pitfalls
+- **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`, `request.design_mode` to detect the editor): https://docs.fluid.app/themes/common-pitfalls
 
 ## REST API conventions
 
@@ -85,6 +85,7 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 ```
 
 - **Cart:** add items with `addCartItems()` and change them with `updateCartItems()`, both on `window.FairShareSDK`. Then call `FairShareSDK.checkout()` to send the shopper to Fluid checkout.
+- **Carts fill in the background.** `addCartItems()` resolves with the filled cart, or `undefined` if the fill fails. Never use `createCart()` to read data: it creates a new empty cart and replaces the shopper's. Use `getCountryCode()`. A theme with its own cart sidebar follows https://docs.fluid.app/themes/custom-cart-drawer. A custom add button calls `FairShareSDK.cart.control.open()` at the click.
 - **Attribution:** `FairShareSDK.getAttribution()`.
 - **Signatures and options:** https://docs.fluid.app/sdk/cart-api
 

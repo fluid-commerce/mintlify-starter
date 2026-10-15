@@ -988,9 +988,11 @@ components:
           - not_attempted
           - declined
           - unknown
+          - held
           description: >-
             `not_attempted`: fix the cause and resubmit. `declined`: the payment was refused; resubmit with another method. `declined` reflects the stored payment status; for some gateways an unconfirmed failure is still reported as `declined`.
             `unknown`: money may have moved; check the order before charging again.
+            `held`: the cart's only money is the payment a resubmit reuses. Fix the field and resubmit with the same payment method; checkout will not charge again.
         message:
           type: string
           description: The English message for this entry. Not translated.
@@ -1697,9 +1699,11 @@ components:
                     - not_attempted
                     - declined
                     - unknown
+                    - held
                     description: >-
-                      What happened to the payment: the default the error catalog gives the
-                      blocker's `code` (`not_attempted` for every blocker code today), or
+                      What happened to the payment: the catalog default for the blocker's
+                      `code`, which is `not_attempted` for every blocker code; `held` instead
+                      when the cart's only money is the payment a resubmit reuses; or
                       `unknown` on every blocker while the cart may already hold money or
                       that cannot be read. Check before charging again on `unknown`.
                       `declined` reflects the stored payment status; for some gateways an
@@ -3766,8 +3770,8 @@ components:
         source:
           type: [string, 'null']
         # amount / amount_in_base serialize Money#amount, a BigDecimal, as a
-        # decimal string; a NULL cents column floors to "0.0", never null.
-        # base_to_currency_rate is a decimal column, null when unset.
+        # decimal string. base_to_currency_rate is a decimal column, null when
+        # unset.
         amount:
           type: string
         amount_in_base:
@@ -7900,9 +7904,11 @@ components:
                     - not_attempted
                     - declined
                     - unknown
+                    - held
                     description: >-
-                      What happened to the payment: the default the error catalog gives the
-                      blocker's `code` (`not_attempted` for every blocker code today), or
+                      What happened to the payment: the catalog default for the blocker's
+                      `code`, which is `not_attempted` for every blocker code; `held` instead
+                      when the cart's only money is the payment a resubmit reuses; or
                       `unknown` on every blocker while the cart may already hold money or
                       that cannot be read. Check before charging again on `unknown`.
                       `declined` reflects the stored payment status; for some gateways an
@@ -8170,11 +8176,14 @@ components:
             pending_url:
               type: [string, 'null']
               format: uri
+            closed:
+              type: boolean
           required:
           - enrollment_fields
           - state
           - status
           - pending_url
+          - closed
           additionalProperties: false
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
@@ -8306,6 +8315,18 @@ components:
               type: string
             country_name:
               type: string
+            authored:
+              type: boolean
+              description: True when the company country's own fields are served
+                (a cart_token or signed-in caller for a company with an authored
+                list), false for the platform list.
+            authored_address_fields_enabled:
+              type: boolean
+              description: True when the list is authored and the company's authored
+                address form is on, so checkout validates addresses in this country
+                against this list. Always false when `authored` is false. Checkout
+                reads it when the store contract cannot be fetched, and renders an
+                authored list only when both are true.
             fields:
               type: array
               items:
@@ -8351,6 +8372,8 @@ components:
           - country_code
           - country_name
           - fields
+          - authored
+          - authored_address_fields_enabled
           additionalProperties: false
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
@@ -8380,6 +8403,8 @@ components:
       - requires_3ds
       - checkout_requires_terms
       - address_fields
+      - address_fields_source
+      - authored_address_fields_enabled
       - agreements
       - payment_method_priority
       - legal_settings
@@ -8451,6 +8476,25 @@ components:
               order:
                 type: integer
                 minimum: 1
+        address_fields_source:
+          type: string
+          enum:
+          - authored
+          - legacy
+          - default
+          description: Where `address_fields` came from. `authored` is the company
+            country's own list, `legacy` the platform list for the country,
+            `default` the contract's default list for a country the platform
+            list does not describe.
+        authored_address_fields_enabled:
+          type: boolean
+          description: Whether checkout shows the company's authored address
+            fields. True when the company enforces its address fields, or when
+            it stores a required address field for at least one country and
+            its authored address form release is on. False when the company
+            neither enforces its address fields nor stores any required address
+            field. True does not mean a country's list is authored; the store
+            address fields response's `authored` says that per country.
         agreements:
           type: array
           description: The cart's agreements when a cart that ships here was given,
@@ -14413,7 +14457,19 @@ paths:
         `quantity` to add or update a variant. Use `variant_id` or `cart_item_id`
         with `quantity: 0` to remove the matching existing line. Mark a line as a
         subscription by setting `subscription: true`; `subscription_plan_id` is
-        optional when the product has a default plan. Access is scoped by the
+        optional when the product has a default plan. Without `cart_item_id`, a
+        regular variant's entry that carries `subscription` matches only an
+        existing line of the variant in that subscription state (`true` is a
+        subscription line, `false` or `null` a one-time line) and otherwise adds
+        a new line, so a cart can hold one variant as both a subscription and a
+        one-time line. A regular variant's entry that omits `subscription`
+        matches the variant's existing line whatever its state and leaves its
+        subscription unchanged. A dynamic bundle is matched on its component
+        selection and subscribe choice instead (an omitted `subscription` counts
+        as one-time). `cart_item_id` addresses one exact line, and it is the
+        only way to remove one configuration of a dynamic bundle with
+        `quantity: 0`, since removal by `variant_id` does not distinguish bundle
+        configurations. Access is scoped by the
         `cart_token` in the path — the endpoint itself does not require
         authentication. In Fluid's recommended server-side integration you send a
         company bearer token (`Authorization: Bearer <company_token>`) on every cart
@@ -21958,12 +22014,6 @@ paths:
           - member_order
           - enrollment_order
           - autoship_order
-      - name: customer_id
-        in: query
-        required: false
-        description: Filter by customer id
-        schema:
-          type: integer
       - name: user_company_id
         in: query
         required: false
@@ -22942,6 +22992,7 @@ paths:
                   state: incomplete
                   status: partial
                   pending_url: https://checkout.fluid.app/orders/for_8f3c2a1b
+                  closed: false
                 meta:
                   request_id: 9e4c1a7b-2d5f-4b8e-a3c6-7f0d2e9b5a18
                   timestamp: '2026-09-15T10:12:44Z'
@@ -23552,6 +23603,8 @@ paths:
                   - field: postal_code
                     label: Zip code
                     required: true
+                  authored: false
+                  authored_address_fields_enabled: false
                 meta:
                   request_id: 4d8a2e6c-9b1f-4a7d-b3e5-6c0f2a8d4b19
                   timestamp: '2026-09-14T15:24:50Z'
@@ -23644,6 +23697,8 @@ paths:
                     visible: true
                     column_width: half
                     order: 3
+                  address_fields_source: legacy
+                  authored_address_fields_enabled: false
                   agreements:
                   - id: 162906953
                     default_checked: false
@@ -26104,8 +26159,10 @@ paths:
       operationId: checkout_v2026_04_list_subscription_discounts
       description: |
         Lists the discounts attached to the subscription `{token}`. Requires a
-        bearer token. Returns `403` when the caller may not view the subscription,
-        `404` when it is not found, and `401` when unauthenticated.
+        droplet token or an admin's bearer token; an admin also needs the
+        `subscriptions.view` permission. Returns `403` when the caller may not
+        view the subscription, `404` when it is not found, and `401` when
+        unauthenticated.
       security:
       - bearer_auth: []
       parameters:
@@ -26186,9 +26243,10 @@ paths:
       description: |
         Attaches a discount to the subscription `{token}`, by `discount_id` or
         `discount_code`, optionally scoped by `duration`/`duration_cycles`.
-        Requires a bearer token. Returns `422` on validation failure, `403` when
-        not permitted, `404` when the subscription is not found, and `401` when
-        unauthenticated.
+        Requires a droplet token or an admin's bearer token; an admin also needs
+        the `subscriptions.update` permission. Returns `422` on validation
+        failure, `403` when not permitted, `404` when the subscription is not
+        found, and `401` when unauthenticated.
       security:
       - bearer_auth: []
       parameters:
@@ -26303,9 +26361,10 @@ paths:
       operationId: checkout_v2026_04_remove_subscription_discount
       description: |
         Detaches the discount `{id}` from the subscription `{token}`. Requires a
-        bearer token. Returns `422` when it cannot be removed, `403` when not
-        permitted, `404` when the subscription or discount is not found, and `401`
-        when unauthenticated.
+        droplet token or an admin's bearer token; an admin also needs the
+        `subscriptions.update` permission. Returns `422` when it cannot be
+        removed, `403` when not permitted, `404` when the subscription or
+        discount is not found, and `401` when unauthenticated.
       security:
       - bearer_auth: []
       parameters:
