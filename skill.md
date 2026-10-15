@@ -109,4 +109,4 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 
 ## Private Droplet reads
 
-- Use the existing cookie-based browser helper for member-page Liquid sections. A separate Member API alternative for authenticated applications is pending release; verify its deployment and generated reference first. Never embed bearer tokens in Liquid or replace the helper’s session flow implicitly. Both paths need installed-extension authorization and signed-backend member permissions: https://docs.fluid.app/themes/member-storefront/droplet-data.
+- Use the existing cookie-based browser helper for member-page Liquid sections. A separate Member API alternative for authenticated applications is pending release; verify its deployment and generated reference first. Never embed bearer tokens in Liquid or replace the helper's session flow implicitly. Both paths need installed-extension authorization and signed-backend member permissions: https://docs.fluid.app/themes/member-storefront/droplet-data.
