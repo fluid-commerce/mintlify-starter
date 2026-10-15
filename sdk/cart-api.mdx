@@ -95,9 +95,61 @@ Place a `<span>` with `id="fluid-cart-count"` anywhere in your markup and FairSh
 
 ## Real-time cart sync
 
-Enable [real-time cart updates](/sdk/installation#enable-real-time-cart-updates) on your loader tag to receive updates to the current cart over Action Cable. The SDK applies those updates to local cart state and notifies mounted cart widgets. Your existing cart methods stay the same.
+Real-time cart updates arrive over Action Cable, Fluid's WebSocket transport. The SDK applies each update to local cart state and notifies mounted cart widgets. Your existing cart methods stay the same.
 
-Some stores create carts in the background. On those stores, the first add creates the cart, and the response returns it empty. The items arrive about a second later as a real-time update. `addCartItems()` resolves, and `CART_OPERATION_SUCCESS` fires, before the items are in the cart. Read the items from `UPDATE_CART_ITEM`, not from the value the add resolves with. If the items cannot be added, the SDK emits [`CART_POPULATION_FAILED`](#cart-population-failures) instead.
+The loader on every Fluid storefront always sets `data-realtime-enabled="true"`, so you don't turn it on in a theme. If you install the SDK by hand outside a Fluid theme, add the attribute yourself. See [Enable real-time cart updates](/sdk/installation#enable-real-time-cart-updates).
+
+## Carts that fill in the background
+
+Every Fluid storefront creates carts in the background. The first add on a new cart creates the cart, and the server fills it in. The cart's `population_status` moves from `pending` to `complete`, or to `failed` if the items cannot be added. The fill usually takes a few hundred milliseconds to about 2 seconds.
+
+The cart methods wait for the fill, so you rarely handle `pending` yourself:
+
+| Call | What it returns |
+| --- | --- |
+| `addCartItems()`, `addEnrollmentPack()`, `setEnrollment()` | Resolve with the filled cart. They wait for the fill, for at most 10 seconds. If the fill is still running after that, they resolve with the pending cart. If the fill fails, they resolve `undefined`. |
+| `getCart()` | Waits while the cart is filling, for at most 10 seconds, then reads the cart again. Past that limit it returns the pending cart. |
+| `refreshCart()` | Waits while the cart is filling, then refreshes it. |
+| `getLocalCart()` | Returns the stored cart at once. It does not wait, so it can return a pending cart with no items. |
+| `whenCartSettled()` | Waits until the server has filled the cart, then resolves with the stored cart. |
+| `createCart()` | Unchanged. It always creates a new, empty cart and replaces the shopper's stored cart token. |
+
+`CART_OPERATION_SUCCESS` carries the filled cart too. When a fill fails, the add resolves `undefined`, no success event fires, and the SDK emits [`CART_POPULATION_FAILED`](#cart-population-failures) with the reason.
+
+Use `whenCartSettled()` when your code needs the items and does not hold the value an add resolved with. It takes an optional `timeoutMs`, which defaults to 10 seconds. It resolves with the filled cart, a failed cart (`population_status: "failed"`), or a cart that is still `pending` when the wait ends. It resolves `null` when there is no cart, and it never rejects.
+
+```javascript
+const cart = await window.FairShareSDK.whenCartSettled();
+if (cart?.population_status === "complete") {
+  renderLines(cart.items);
+}
+```
+
+<Warning>
+  Never call `createCart()` to read data such as the shopper's country. It creates a new empty cart and replaces the stored cart token, so the shopper loses the cart they had. Read the country and language with `getCountryCode()` and `getLanguage()`, and read the current cart with `getLocalCart()`.
+</Warning>
+
+```javascript
+// Don't: this replaces the shopper's cart just to read a value.
+await window.FairShareSDK.createCart();
+const country = window.FairShareSDK.getCountryCode();
+
+// Do: read the value directly.
+const country = window.FairShareSDK.getCountryCode();
+const language = window.FairShareSDK.getLanguage();
+```
+
+```javascript
+// Don't: the cart can still be filling, so it can have no items yet.
+window.FairShareSDK.addCartItems(48291);
+renderLines(window.FairShareSDK.getLocalCart()?.items ?? []);
+
+// Do: use the cart the add resolves with.
+const cart = await window.FairShareSDK.addCartItems(48291);
+if (cart) renderLines(cart.items);
+```
+
+The cart drawer does not wait for the fill. It opens at the click and draws the new line at once. A theme with its own cart sidebar, or its own add button, has more to do. See [Build a custom cart drawer](/themes/custom-cart-drawer).
 
 ## JavaScript Cart Methods
 
@@ -212,7 +264,8 @@ await window.FairShareSDK.updateCartItemVariant({
 // Clear the SDK's local cart state
 await window.FairShareSDK.clearCart();
 
-// Create a new cart session
+// Create a new, empty cart. This replaces the shopper's stored cart,
+// so don't call it to read data such as the country.
 await window.FairShareSDK.createCart();
 ```
 
@@ -394,6 +447,10 @@ These browser events also help you keep custom cart displays in sync with local 
 | `UPDATE_CART_ITEM` | React to item changes, `refreshCart()`, cart adoption, or applied real-time updates. |
 | `REMOVE_FROM_CART` | React to an item removal, including an optimistic removal before its request completes. |
 | `SET_CART_TOKEN` | React to a validated external cart being adopted. Adoption also emits `UPDATE_CART_ITEM`. |
+| `CART_ITEMS_ADDING` | Draw a pending line the moment the shopper presses add. It fires synchronously when an add starts, before any request. |
+| `CART_ITEMS_SETTLED` | Know that an add resolved or failed. It fires once the add ends. |
+
+`CART_ITEMS_ADDING` and `CART_ITEMS_SETTLED` bracket every add of items, bundles and enrollment packs, and each pair shares an `operationId`. The `detail` of `CART_ITEMS_ADDING` holds `operationId`, `cartToken` (`null` on the add that creates the cart), `lines`, and `enrollment` when the add claims an enrollment pack. The `detail` of `CART_ITEMS_SETTLED` holds `operationId`, `outcome` (`"success"` or `"error"`), `cartToken`, and the `cart` the add resolved with, when there is one. That cart can still be filling. Code that needs the final items should use the value the add resolves with, [`whenCartSettled()`](#carts-that-fill-in-the-background), or `onCartChange()`. See [Build a custom cart drawer](/themes/custom-cart-drawer).
 
 State events can describe optimistic changes. Use [cart operation events](#cart-operation-events) when you need a mutation's success or failure rather than a display update. A received real-time update does not by itself emit `CART_OPERATION_SUCCESS` or `CART_OPERATION_ERROR`.
 
@@ -433,10 +490,11 @@ For loading indicators around widget actions, listen for `CART_LOADING_START` an
 
 ## Cart operation events
 
-These six methods emit a consistent success or error event on `window`:
+These seven methods emit a consistent success or error event on `window`:
 
 - `addCartItems()`
 - `addEnrollmentPack()`
+- `setEnrollment()`
 - `updateCartItems()`
 - `decrementCartItem()`
 - `removeCartItemById()`
@@ -457,19 +515,21 @@ window.addEventListener("CART_OPERATION_ERROR", (event) => {
 
 Every detail includes `operation`, the `add` / `update` / `remove` category,
 the per-call toast preference, identifying IDs when available, and an ISO
-timestamp. A success can include the updated `cart`. An error includes the raw
-thrown `error` and a human-readable `message`.
+timestamp. A success can include the updated `cart`. For `addCartItems()`,
+`addEnrollmentPack()` and `setEnrollment()`, that is the filled cart. An error
+includes the raw thrown `error` and a human-readable `message`.
 
-When an error reaches the public operation wrapper, all six methods emit
+When an error reaches the public operation wrapper, all seven methods emit
 `CART_OPERATION_ERROR`. `addCartItems()` and `decrementCartItem()` then resolve
-`undefined` to preserve their historical contract. The other four methods
+`undefined` to preserve their historical contract. The other five methods
 rethrow the error. A no-op result from `addCartItems()`, `addEnrollmentPack()`,
-`decrementCartItem()`, or `updateCartItemVariant()` emits no success event.
+`setEnrollment()`, `decrementCartItem()`, or `updateCartItemVariant()` emits no
+success event. So does a fill that fails.
 `updateCartItems()` emits success when its void operation completes.
 
 ## Cart population failures
 
-On a store that creates carts in the background, adding the items can fail after the add has already reported success. For example, none of the items may be sold in the shopper's country. The cart then stays empty. The SDK emits `CART_POPULATION_FAILED` on `window` for the cart it currently holds:
+When the server cannot fill a new cart, the cart stays empty. For example, none of the items may be sold in the shopper's country. The call that created the cart resolves `undefined`, and no `CART_OPERATION_SUCCESS` fires. The SDK emits `CART_POPULATION_FAILED` on `window` for the cart it currently holds:
 
 ```javascript
 window.addEventListener("CART_POPULATION_FAILED", (event) => {
