@@ -16,6 +16,8 @@ import { readFileSync } from "node:fs";
 
 import {
   PUBLIC_SDK_V2025_06_PAGES,
+  ADMIN_V2025_06_PAGES,
+  MEMBERS_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
@@ -39,6 +41,7 @@ import {
   checkWorkflowContract,
   scanLegacy,
   removeCheckoutPublicSdkBoundary,
+  removeSanctionedOccurrences,
   splitLlmsSections,
   stripAgentBanner,
   isSanctionedLegacyHit,
@@ -608,6 +611,22 @@ describe("authFromPage", () => {
   it("returns none for non-string input", () => {
     assert.equal(authFromPage(null), "none");
   });
+
+  it("reads optional when the empty requirement sits beside bearer, in either order", () => {
+    // public_v2025_06_cart-checkout declares `security: [bearer_auth, {}]`: a token is
+    // accepted but not required.
+    assert.equal(authFromPage("      security:\n        - bearer_auth: []\n        - {}\n"), "optional");
+    assert.equal(authFromPage("      security:\n        - {}\n        - bearer_auth: []\n"), "optional");
+  });
+
+  it("keeps bearer when an unrelated empty object appears elsewhere on the page", () => {
+    // The root `security: []` and an example array of empty objects are not the
+    // operation's requirement list.
+    const page =
+      "security: []\npaths:\n  /x:\n    post:\n      security:\n        - bearer_auth: []\n" +
+      "      responses:\n        example:\n          items:\n            - {}\n";
+    assert.equal(authFromPage(page), "bearer");
+  });
 });
 
 describe("checkApiContract", () => {
@@ -959,14 +978,81 @@ describe("isSanctionedLegacyHit", () => {
   });
 
   it("sanctions only the version marker on a public-v2025-06 page", () => {
-    // Adoption licenses the version in the path, nothing else. Whether the Public SDK
-    // surface's offset `page`/`per_page` params are genuine is unverified against the
-    // implementation, so per_page still fails there.
-    const page = "api-reference/root-themes/list-root-themes";
+    // Adoption licenses the version in the path, nothing else. Offset pagination is
+    // sanctioned only on the Public SDK pages verified against their Rails actions
+    // (Drop Zones and root themes), so per_page still fails on every other one.
+    const page = "api-reference/carts/creates-a-cart";
     assert.equal(isSanctionedLegacyHit("v2025-06", page), true);
     assert.equal(isSanctionedLegacyHit("per_page", page), false);
     assert.equal(isSanctionedLegacyHit("/api/v1/", page), false);
     assert.equal(isSanctionedLegacyHit("company/v1/", page), false);
+  });
+
+  it("sanctions per_page on the verified Public SDK root themes list, and nothing more", () => {
+    const page = "api-reference/root-themes/list-root-themes";
+    assert.equal(isSanctionedLegacyHit("per_page", page), true);
+    assert.equal(isSanctionedLegacyHit("v2025-06", page), true);
+    assert.equal(isSanctionedLegacyHit("/api/v1/", page), false);
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/root-themes/get-root-theme-by-id"), false);
+  });
+
+  it("sanctions per_page on the exact offset list pages verified against Rails", () => {
+    for (const page of [
+      "api-reference/company-v0/users/list-company-users",
+      "api-reference/messaging--bots/list-bots",
+      "api-reference/droplets/an-array-of-available-droplets",
+      "api-reference/file-resources/returns-a-list-of-file-resources",
+      "api-reference/shipping-methods/list-shipping-methods",
+      "api-reference/menus/list-website-navigation-menus",
+      "api-reference/mobile-navigations/list-mobile-app-navigations",
+    ]) {
+      assert.equal(isSanctionedLegacyHit("per_page", page), true, page);
+      assert.equal(isSanctionedLegacyHit("/api/v1/", page), false, page);
+    }
+    // A neighbouring operation on the same spec and tag is not covered.
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/messaging--bots/create-a-bot"), false);
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/droplets/create-a-droplet"), false);
+  });
+
+  it("sanctions only the version marker on admin-v2025-06 and members-v2025-06 pages", () => {
+    // AGENTS.md: generated reference pages only, and version marker only. per_page on
+    // these pages is still judged page by page against the verified offset list.
+    for (const page of [
+      "api-reference/shipping-methods/list-shipping-methods",
+      "api-reference/admins/list-admins",
+      [...MEMBERS_V2025_06_PAGES][0],
+    ]) {
+      const label = page.startsWith("api-reference/") ? page : `api-reference/${page}`;
+      assert.equal(isSanctionedLegacyHit("v2025-06", label), true, label);
+      assert.equal(isSanctionedLegacyHit("v202506", label), true, label);
+      assert.equal(isSanctionedLegacyHit("company/v1/", label), false, label);
+    }
+    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/admins/list-admins"), false);
+    // Prose never inherits the generated-page licence.
+    assert.equal(isSanctionedLegacyHit("v2025-06", "guides/widget-user-information"), false);
+  });
+
+  it("sanctions the version marker on the two version-comparison pages only", () => {
+    for (const page of [
+      "api-reference/orders/list-the-companys-orders",
+      "api-reference/company-v0/customers/list-customers",
+    ]) {
+      assert.equal(isSanctionedLegacyHit("v202506", page), true, page);
+      assert.equal(isSanctionedLegacyHit("per_page", page), false, page);
+    }
+    assert.equal(isSanctionedLegacyHit("v202506", "api-reference/orders/create-an-order"), false);
+  });
+
+  it("sanctions per_page on the exact prose pages that are not API pagination", () => {
+    for (const page of [
+      "themes/navigation-menus",
+      "themes/query-parameters-and-caching",
+      "themes/theme-variables",
+    ]) {
+      assert.equal(isSanctionedLegacyHit("per_page", page), true, page);
+      assert.equal(isSanctionedLegacyHit("v2025-06", page), false, page);
+    }
+    assert.equal(isSanctionedLegacyHit("per_page", "themes/developer-guide"), false);
   });
 });
 
@@ -1039,6 +1125,33 @@ describe("scanLegacyAttributed", () => {
     assert.deepEqual(result.unsanctioned, [
       { marker: "v2025-06", label: "api-reference/carts/create-a-cart" },
     ]);
+  });
+
+  it("sanctions the tokens path prefix on any page and still fails another marker beside it", () => {
+    const result = scanLegacyAttributed([
+      {
+        label: "api/authentication",
+        text: "Partner tokens can be managed on the `/api/v2025-06/tokens/*` endpoints.",
+      },
+      {
+        label: "guides/widget-user-information",
+        text:
+          "Rotate it on `/api/v2025-06/tokens/{id}`, then call " +
+          "`GET /api/v2025-06/users/by-public-id/{public_id}`.",
+      },
+    ]);
+    assert.deepEqual(result.sanctioned, [
+      { marker: "v2025-06", label: "api/authentication" },
+      { marker: "v2025-06", label: "guides/widget-user-information" },
+    ]);
+    assert.deepEqual(result.unsanctioned, [
+      { marker: "v2025-06", label: "guides/widget-user-information" },
+    ]);
+    assert.equal(
+      removeSanctionedOccurrences("api/authentication", "see /api/v2025-06/tokenize").markers.length,
+      0,
+      "only the tokens/ path prefix is removed",
+    );
   });
 
   it("splits sanctioned, advisory, and unsanctioned hits and keeps the owning section label", () => {
@@ -1136,4 +1249,20 @@ describe("PUBLIC_SDK_V2025_06_PAGES", () => {
       "regenerate PUBLIC_SDK_V2025_06_PAGES from a `mint export` (see check-hosted-docs.mjs)",
     );
   });
+});
+
+describe("ADMIN_V2025_06_PAGES and MEMBERS_V2025_06_PAGES", () => {
+  // Same drift guard as the Public SDK list: docs.json publishes exactly the generated
+  // pages, so a sync that adds or removes an operation changes the count.
+  const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
+  for (const [name, set, spec] of [
+    ["ADMIN_V2025_06_PAGES", ADMIN_V2025_06_PAGES, "admin-v2025-06"],
+    ["MEMBERS_V2025_06_PAGES", MEMBERS_V2025_06_PAGES, "members-v2025-06"],
+  ]) {
+    it(`lists one page per ${spec} operation in docs.json`, () => {
+      const refs = new Set(docs.match(new RegExp(`"api-reference/${spec}\\.yaml [A-Z]+ [^"]+"`, "g")) ?? []);
+      assert.ok(refs.size > 0, `docs.json has no ${spec} references`);
+      assert.equal(set.size, refs.size, `regenerate ${name} from llms-full.txt (see check-hosted-docs.mjs)`);
+    });
+  }
 });

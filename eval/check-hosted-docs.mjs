@@ -137,6 +137,19 @@ const OFFSET_PAGINATED_SECTIONS =
 // The four `forms-v0` list pages are genuine offset endpoints too, verified against
 // the Rails actions (integer `page` / `per_page`, `.page(...).per(...)`). Exact pages
 // only; no other Forms page is sanctioned.
+//
+// The website and mobile app navigation lists are AGENTS.md's two navigation
+// exceptions, and the Public SDK root themes list was verified the same way (integer
+// `page` / `per_page`, `.page(page).per(per_page)`, default 10). It is the only other
+// Public SDK page here; `per_page` on any further Public SDK page still fails.
+//
+// The rest are list operations of five more synced specs, each verified against its
+// Rails action on 2026-10-15 (ENG-2784). Every one reads integer `page` / `per_page`
+// and pages by offset: Kaminari `.page(...).per(...)` for most, Searchkick for
+// `GET /api/reps`, and an in-memory slice for `GET /api/google_fonts` and
+// `GET /api/sections/{id}/paginated_section_items`. Exact pages again: a neighbouring
+// operation of the same spec is not covered. Regenerate a group from the hits the run
+// reports as unsanctioned, and only after checking the new operation the same way.
 const OFFSET_PAGINATED_PAGES = new Set([
   "customer-addresses/list-customer-addresses",
   "customer-payment-methods/list-customer-payment-methods",
@@ -151,6 +164,74 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "form-elements/list-form-elements",
   "forms/list-form-respondents",
   "forms/list-incomplete-enrollees",
+  "menus/list-website-navigation-menus",
+  "mobile-navigations/list-mobile-app-navigations",
+  "root-themes/list-root-themes",
+  // admin-v2025-06
+  "points-ledgers/points-ledgers-points-ledgers",
+  "reps/list-credited-orders-for-a-rep",
+  "shipping-methods/list-shipping-methods",
+  "sitemap/get-sitemap-urls",
+  // company-v0
+  "company-v0/activities/list-paginated-user-activities",
+  "company-v0/agreements/lists-agreements",
+  "company-v0/company-contacts/list-company-contacts",
+  "company-v0/company/list-conversation-recipients",
+  "company-v0/company/list-conversations",
+  "company-v0/company/list-paginated-events",
+  "company-v0/company/search-message-recipients",
+  "company-v0/customernotes/list-customer-notes",
+  "company-v0/domains/lists-domains",
+  "company-v0/drop-zones/an-array-of-available-drop-zones",
+  "company-v0/enrollment-packs/list-all-enrollment-packs",
+  "company-v0/globalembeds/list-global-embeds",
+  "company-v0/google-fonts/list-google-fonts",
+  "company-v0/legacy-themes/list-legacy-themes",
+  "company-v0/media/list-filtered-media",
+  "company-v0/pages/list-pages",
+  "company-v0/products/list-filtered-products",
+  "company-v0/redirects/lists-redirects",
+  "company-v0/reps/list-reps",
+  "company-v0/roles/lists-roles-for-a-company",
+  "company-v0/search/global-search-across-all-searchable-models",
+  "company-v0/sections/list-paginated-section-items",
+  "company-v0/settings/list-country-settings",
+  "company-v0/shares/get-shares",
+  "company-v0/users/list-company-users",
+  "company-v0/webhook-events/list-webhook-events",
+  // integrations-v0
+  "droplet-installations/list-droplet-installations",
+  "droplets/an-array-of-available-droplets",
+  "droplets/list-your-companys-own-droplets",
+  "droplets/returns-an-array-of-companies-using-a-droplet",
+  // messaging-v1
+  "messaging--bots/list-bots",
+  "messaging--conversations/list-all-conversations-by-template",
+  "messaging--conversations/list-connected-recipients",
+  "messaging--conversations/list-conversations",
+  "messaging--drafts/list-all-my-draft-messages",
+  "messaging--messages/list-messages",
+  "messaging--messages/list-pinned-messages",
+  "messaging--messages/list-reactions-for-a-message",
+  "messaging--messages/list-recipients-who-saw-a-message",
+  "messaging--recipients/list-blocked-recipients",
+  "messaging--recipients/list-recipients-in-a-conversation",
+  "messaging--scheduled-messages/list-all-my-scheduled-messages",
+  "messaging--scheduled-messages/list-scheduled-messages-in-a-conversation",
+  // themes-v0
+  "applicationthemetemplates/returns-all-available-themeables-for-theme-template",
+  "file-resources/returns-a-list-of-file-resources",
+]);
+
+// Hand-written pages whose `per_page` is not a leak. `themes/navigation-menus` documents
+// the website navigation menus list (an exception above) and says it is offset-paginated,
+// which AGENTS.md allows for prose that names one of those operations. The two theme
+// pages document the storefront's own page URL parameter and the Liquid `pagination`
+// object, not an API request parameter. Exact pages, `per_page` only.
+const PER_PAGE_PROSE_PAGES = new Set([
+  "themes/navigation-menus",
+  "themes/query-parameters-and-caching",
+  "themes/theme-variables",
 ]);
 
 // The 74 generated reference pages of `public-v2025-06` — the Public SDK surface the
@@ -263,6 +344,199 @@ const PUBLIC_SDK_V2025_06_PROSE_PAGES = new Set([
   "sdk/cart-api",
 ]);
 
+// The generated reference pages of `admin-v2025-06` and `members-v2025-06`: Fluid's
+// current admin API for resources with no newer version, published in the 2026-09-30
+// API Reference regroup. Their paths genuinely carry `v2025-06` or `v202506`, and
+// AGENTS.md sanctions that on these generated pages only. Prose gets no such licence
+// (its one exception is the tokens prefix in SANCTIONED_OCCURRENCES), and `per_page`
+// on these pages is judged by OFFSET_PAGINATED_PAGES like anywhere else.
+//
+// Enumerated page by page for the reasons PUBLIC_SDK_V2025_06_PAGES gives: these specs
+// share tags such as `orders`, `customers`, and `members` with the v2026-04 surfaces,
+// where a version marker is a real leak. Each list is the published contract-line
+// inventory, regenerated with (swap in `members-v2025-06` for the second list):
+//   curl -s https://docs.fluid.app/llms-full.txt | awk '/^Source: /{s=$2}
+//     /^\/api-reference\/admin-v2025-06\.yaml /{sub("https://docs.fluid.app/api-reference/","",s); print s}' | sort -u
+// check-hosted-docs.test.mjs compares each list's size with the operations docs.json
+// publishes, so a sync that adds or removes one fails CI instead of drifting.
+const ADMIN_V2025_06_PAGES = new Set([
+  "admins/list-admins",
+  "amazon/disconnect-the-companys-amazon-connection",
+  "amazon/get-the-companys-amazon-connection",
+  "amazon/list-the-companys-amazon-orders",
+  "amazon/list-the-companys-amazon-product-listings",
+  "amazon/publish-fluid-products-as-amazon-offers",
+  "amazon/retry-a-failed-amazon-product-listing-publish",
+  "amazon/select-the-connections-amazon-marketplace",
+  "amazon/start-the-amazon-seller-central-consent-flow",
+  "amazon/unpublish-an-amazon-product-listing",
+  "company-email-settings/company-email-settings-company-email-settings",
+  "company-email-settings/get-company-email-settings",
+  "company-email-settings/replace-company-email-settings",
+  "company-email-settings/returns-company-email-settings",
+  "company-email-settings/update-company-email-settings",
+  "company-email-settings/updates-company-email-settings",
+  "company-transactions/company-transactions-company-transactions",
+  "company-transactions/export-csv-export-csv",
+  "company-transactions/filter-options-filter-options",
+  "customer-orders/list-orders-for-a-customer",
+  "customer-orders/list-orders-for-a-member",
+  "customers/create-a-customer",
+  "customers/create-multiple-customers",
+  "customers/delete-a-customer",
+  "customers/delete-multiple-customers",
+  "customers/get-a-customer",
+  "customers/list-customers",
+  "customers/update-a-customer",
+  "discounts/copy-a-promo-code-discount",
+  "discounts/create-a-promo-code-discount",
+  "discounts/delete-a-promo-code-discount",
+  "discounts/delete-several-promo-codes-discounts",
+  "discounts/get-a-promo-code-discount",
+  "discounts/list-promo-codes-discounts",
+  "discounts/update-a-promo-code-discount",
+  "fairshare/get-fair-share-settings",
+  "fairshare/update-fair-share-settings",
+  "google/disconnect-the-companys-google-merchant-center-connection",
+  "google/get-the-companys-google-merchant-center-connection",
+  "google/list-the-companys-google-shopping-listings",
+  "google/publish-fluid-products-to-the-connected-merchant-center",
+  "google/retry-a-failed-google-shopping-listing-publish",
+  "google/start-the-google-merchant-center-connect-flow",
+  "google/unpublish-a-google-shopping-listing",
+  "members/archive-a-custom-member-type",
+  "members/archive-a-price-type",
+  "members/change-a-members-email-address",
+  "members/create-a-custom-member-type",
+  "members/create-a-custom-price-type",
+  "members/create-members-in-bulk",
+  "members/discard-a-member",
+  "members/discard-members-in-bulk",
+  "members/list-company-member-types",
+  "members/list-company-pricing-tiers",
+  "members/rename-a-price-type",
+  "members/update-a-member-type",
+  "meta/disconnect-the-companys-meta-commerce-connection",
+  "meta/get-the-companys-meta-catalog-ads-readiness",
+  "meta/get-the-companys-meta-commerce-connection",
+  "meta/list-the-companys-meta-catalog-listings",
+  "meta/list-the-companys-whatsapp-cart-intents",
+  "meta/publish-fluid-products-to-the-connected-meta-catalog",
+  "meta/retry-a-failed-meta-catalog-listing-publish",
+  "meta/start-the-meta-business-login-connect-flow",
+  "meta/unpublish-a-meta-catalog-listing",
+  "order-change-logs/list-order-change-logs",
+  "orders/export-orders-as-csv",
+  "orders/get-an-order",
+  "orders/get-an-order-journey",
+  "orders/get-order-journey-events",
+  "orders/get-order-statistics",
+  "orders/import-an-order",
+  "orders/list-orders",
+  "partner-tokens/creates-a-new-partner-token",
+  "partner-tokens/deletes-a-partner-token",
+  "partner-tokens/returns-a-specific-partner-token",
+  "partner-tokens/returns-an-array-of-partner-tokens",
+  "partner-tokens/updates-a-partner-token",
+  "payment/cancel-authorized-bread-payment-transaction",
+  "payment/create-payment-record-using-payment-account-uuid-and-cart-info",
+  "payment/list-of-filter-options-of-transactions",
+  "payment/list-payment-transactions-with-filtering-sorting-and-pagination",
+  "payment/settle-authorized-payment-transaction",
+  "payment/tokenize-credit-card",
+  "payments/approval-rate-approval-rate",
+  "payments/available-providers-available-providers",
+  "payments/average-latency-average-latency",
+  "payments/average-latency-by-provider-average-latency-by-provider",
+  "payments/error-rate-error-rate",
+  "payments/kpis-kpis",
+  "payments/transaction-amount-transaction-amount",
+  "payments/transaction-volume-transaction-volume",
+  "pinterest/disconnect-the-companys-pinterest-connection",
+  "pinterest/get-the-companys-pinterest-connection",
+  "pinterest/list-the-companys-pinterest-catalog-listings",
+  "pinterest/publish-fluid-products-to-the-connected-pinterest-catalog",
+  "pinterest/retry-a-failed-pinterest-catalog-listing-publish",
+  "pinterest/start-the-pinterest-connect-flow",
+  "pinterest/unpublish-a-pinterest-catalog-listing",
+  "points-ledgers/create-a-new-points-ledger-entry",
+  "points-ledgers/points-ledgers-points-ledgers",
+  "points-ledgers/retrieve-a-list-of-points-ledger-entries-for-a-customer",
+  "points-values/refresh-points-values",
+  "points-values/retrieve-a-list-of-points-values-for-company-currencies",
+  "points-values/update-a-points-value-for-a-currency",
+  "ranks/creates-a-rank-for-a-company",
+  "ranks/lists-all-ranks-for-the-current-company",
+  "ranks/soft-deletes-a-rank",
+  "ranks/updates-a-rank",
+  "reps/create-a-rep",
+  "reps/create-multiple-reps",
+  "reps/delete-a-rep",
+  "reps/delete-multiple-reps",
+  "reps/get-a-rep",
+  "reps/get-most-shared-resources",
+  "reps/get-most-viewed-resources",
+  "reps/get-top-products-sold-by-rep",
+  "reps/list-credited-orders-for-a-rep",
+  "reps/list-reps",
+  "reps/list-shared-assets-for-a-rep",
+  "reps/update-a-rep",
+  "shipping-methods/create-a-shipping-method",
+  "shipping-methods/create-a-shipping-method-rate",
+  "shipping-methods/delete-shipping-method-rates",
+  "shipping-methods/delete-shipping-methods",
+  "shipping-methods/get-shipping-methods",
+  "shipping-methods/list-shipping-method-rates",
+  "shipping-methods/list-shipping-methods",
+  "shipping-methods/replace-a-shipping-method",
+  "shipping-methods/replace-a-shipping-method-rate",
+  "shipping-methods/update-a-shipping-method",
+  "shipping-methods/update-a-shipping-method-rate",
+  "sitemap/get-sitemap-urls",
+  "sitemap/update-sitemap-url-visibility",
+  "subscriptions/export-csv-export-csv",
+  "subscriptions/list-company-subscriptions",
+  "tiktok/browse-the-connected-tiktok-shops-categories",
+  "tiktok/configure-the-tiktok-warehouse-used-for-inventory-publishing",
+  "tiktok/disconnect-the-companys-tiktok-shop-connection",
+  "tiktok/get-the-companys-tiktok-shop-connection",
+  "tiktok/list-the-companys-tiktok-orders",
+  "tiktok/list-the-companys-tiktok-product-listings",
+  "tiktok/list-the-connected-tiktok-shops-logistics-warehouses",
+  "tiktok/publish-fluid-products-to-the-connected-tiktok-shop",
+  "tiktok/retry-a-failed-tiktok-product-listing-publish",
+  "tiktok/set-or-clear-a-tiktok-listings-category-override",
+  "tiktok/start-the-tiktok-oauth-connect-flow",
+  "tiktok/unpublish-a-tiktok-product-listing",
+  "tokens/create-a-public-token",
+  "tokens/create-a-scoped-client",
+  "tokens/creates-a-new-partner-token",
+  "tokens/delete-a-public-token",
+  "tokens/deletes-a-partner-token",
+  "tokens/embeddable-embeddable",
+  "tokens/list-public-tokens",
+  "tokens/list-the-companys-scoped-clients",
+  "tokens/returns-a-specific-partner-token",
+  "tokens/returns-an-array-of-partner-tokens",
+  "tokens/revoke-a-scoped-client",
+  "tokens/rotate-a-scoped-clients-secret",
+  "tokens/updates-a-partner-token",
+  "transactions/export-csv-export-csv",
+]);
+
+const MEMBERS_V2025_06_PAGES = new Set([
+  "members/change-a-members-type",
+  "members/create-a-member",
+  "members/exchange-a-member-for-a-shopper-token",
+  "members/find-a-member-by-a-unique-identifier",
+  "members/get-a-member",
+  "members/get-a-members-sponsor-genealogy",
+  "members/list-a-members-payment-methods",
+  "members/list-members",
+  "members/redeem-a-handoff-token-for-a-shopper-session",
+  "members/update-a-member",
+]);
+
 // `checkout-v2026-04` carries one reciprocal audience boundary in its
 // info.description. Mintlify inlines that description on every generated Checkout
 // operation page. Sanction only this exact sentence, and only when the same page
@@ -276,6 +550,24 @@ const CHECKOUT_PUBLIC_SDK_BOUNDARY =
   /\*\*If you are using the `@fluid-app` FairShare SDK in a theme or storefront,\s+you are not calling this surface\*\* — the SDK calls the Fluid Public SDK API\s+\(`public-v2025-06`\)\./;
 const CHECKOUT_GENERATED_CONTRACT =
   /^`{3,}yaml \/api-reference\/checkout-v2026-04\.yaml (?:get|post|patch|put|delete) \/api\/checkout\/v2026-04(?:\/\S*)?$/m;
+
+// Exact text occurrences AGENTS.md permits, removed one by one before the rest of the
+// section is scanned, so a second marker on the same page still fails. `pages: null`
+// means any page. Today there is one: the tokens exception. Partner and public token
+// management genuinely lives at `/api/v2025-06/tokens/*`, and prose may say so. That
+// path prefix only.
+const SANCTIONED_OCCURRENCES = [{ pages: null, occurrence: /\/api\/v2025-06\/tokens\//g }];
+
+// Two generated pages whose descriptions compare the operation with its published
+// `admin-v2025-06` counterpart, the way AGENTS.md asks a page that names both versions
+// to say which to use: the v2026-04 company orders list says how it differs from
+// `GET /api/v202506/orders` and sends stats to `GET /api/v202506/orders/stats`, and the
+// company-v0 customers list says to prefer `GET /api/v2025-06/customers`. Exact pages,
+// version marker only.
+const VERSION_COMPARISON_PAGES = new Set([
+  "orders/list-the-companys-orders",
+  "company-v0/customers/list-customers",
+]);
 
 // Matches only a bare version token — what `scanLegacy` captures for the two
 // version patterns. Deliberately anchored so the Public SDK sanction can never
@@ -579,8 +871,13 @@ function hasBodyField(pageText, field) {
 // <token>", so any prose-based check would report bearer for every API prompt. A
 // requirement renders as `- bearer_auth: []`; the `securitySchemes` definition
 // renders as `bearer_auth:` with no dash, so the dash is what distinguishes them.
+// An operation that also lists the empty requirement `- {}` beside it accepts a bearer
+// token but does not need one, which reads as `optional`.
 function authFromPage(pageText) {
-  return typeof pageText === "string" && /-\s+bearer_auth\b/.test(pageText) ? "bearer" : "none";
+  if (typeof pageText !== "string" || !/-\s+bearer_auth\b/.test(pageText)) return "none";
+  return /-\s+bearer_auth:\s*\[\]\s*\n\s*-\s+\{\}|-\s+\{\}\s*\n\s*-\s+bearer_auth\b/.test(pageText)
+    ? "optional"
+    : "bearer";
 }
 
 function checkApiContract(expected, pageText) {
@@ -655,6 +952,22 @@ function removeCheckoutPublicSdkBoundary(rawText) {
   };
 }
 
+// Removes every SANCTIONED_OCCURRENCES match that applies to this section's page and
+// returns the markers those occurrences carried, so each is still reported as sanctioned.
+function removeSanctionedOccurrences(label, rawText) {
+  const page = typeof label === "string" ? label.replace(/^api-reference\//, "") : "";
+  let text = typeof rawText === "string" ? rawText : "";
+  const markers = [];
+  for (const { pages, occurrence } of SANCTIONED_OCCURRENCES) {
+    if (pages && !pages.has(page)) continue;
+    text = text.replace(occurrence, (match) => {
+      markers.push(...scanLegacy(match));
+      return "";
+    });
+  }
+  return { text, markers: [...new Set(markers)] };
+}
+
 // llms-full.txt is an agent-instructions banner followed by one `# Title` /
 // `Source: <url>` section per page. `# ` at line start is the section delimiter —
 // page bodies use `##` and deeper, so it does not collide. Each section carries
@@ -677,8 +990,9 @@ function splitLlmsSections(text) {
 //   1. The agent-instructions banner names legacy markers in order to forbid them.
 //   2. `webhooks-v0` list endpoints genuinely use offset `page`/`per_page`, and the
 //      generated reference reflects the spec. Prose pages get no such licence.
-//   3. The named `checkout-v2026-04` pages whose offset pagination is real — see
-//      OFFSET_PAGINATED_PAGES. Exact pages only, never a whole tag.
+//   3. The named generated pages whose offset pagination is real, each verified against
+//      its Rails action — see OFFSET_PAGINATED_PAGES — plus the exact prose pages in
+//      PER_PAGE_PROSE_PAGES. Exact pages only, never a whole tag.
 //   4. The named `public-v2025-06` reference pages, whose paths genuinely carry the
 //      version, plus the exact prose pages that explain this surface — see the two
 //      PUBLIC_SDK_V2025_06 sets. That sanction covers only the version marker.
@@ -687,17 +1001,26 @@ function splitLlmsSections(text) {
 //   5. The exact reciprocal Public SDK sentence in `checkout-v2026-04`'s
 //      info.description, removed occurrence-by-occurrence before this page-level
 //      sanction function runs. A generated Checkout contract line is required.
+//   6. The named `admin-v2025-06` and `members-v2025-06` generated pages, and the two
+//      VERSION_COMPARISON_PAGES. The version marker only.
+//   7. The tokens path prefix, removed occurrence-by-occurrence like 5 — see
+//      SANCTIONED_OCCURRENCES.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
   const page = label.replace(/^api-reference\//, "");
   if (/\bper_page\b/.test(marker)) {
     if (OFFSET_PAGINATED_SECTIONS.test(label)) return true;
     if (OFFSET_PAGINATED_PAGES.has(page)) return true;
+    if (PER_PAGE_PROSE_PAGES.has(page)) return true;
     if (sectionText.includes("webhooks-v0.yaml")) return true;
   }
   if (
     V2025_06_MARKER.test(marker) &&
-    (PUBLIC_SDK_V2025_06_PAGES.has(page) || PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page))
+    (PUBLIC_SDK_V2025_06_PAGES.has(page) ||
+      PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) ||
+      ADMIN_V2025_06_PAGES.has(page) ||
+      MEMBERS_V2025_06_PAGES.has(page) ||
+      VERSION_COMPARISON_PAGES.has(page))
   ) {
     return true;
   }
@@ -716,9 +1039,11 @@ function scanLegacyAttributed(sections) {
     if (checkoutBoundary.sanctioned) {
       sanctioned.push({ marker: "v2025-06", label: section.label });
     }
-    for (const marker of scanLegacy(checkoutBoundary.text)) {
+    const occurrences = removeSanctionedOccurrences(section.label, checkoutBoundary.text);
+    for (const marker of occurrences.markers) sanctioned.push({ marker, label: section.label });
+    for (const marker of scanLegacy(occurrences.text)) {
       const hit = { marker, label: section.label };
-      if (isSanctionedLegacyHit(marker, section.label, checkoutBoundary.text)) sanctioned.push(hit);
+      if (isSanctionedLegacyHit(marker, section.label, occurrences.text)) sanctioned.push(hit);
       else if (ADVISORY_LEGACY.test(marker)) advisory.push(hit);
       else unsanctioned.push(hit);
     }
@@ -1181,6 +1506,8 @@ if (isMain) {
 // Pure parsing/checking helpers — exported for unit testing (see check-hosted-docs.test.mjs).
 export {
   PUBLIC_SDK_V2025_06_PAGES,
+  ADMIN_V2025_06_PAGES,
+  MEMBERS_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
@@ -1204,6 +1531,7 @@ export {
   checkWorkflowContract,
   scanLegacy,
   removeCheckoutPublicSdkBoundary,
+  removeSanctionedOccurrences,
   splitLlmsSections,
   stripAgentBanner,
   isSanctionedLegacyHit,

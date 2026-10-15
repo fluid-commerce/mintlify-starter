@@ -92,7 +92,7 @@ For API prompts, against the page's full markdown:
 | Expectation | How it is matched |
 | ----------- | ----------------- |
 | `method`, `path` | Present on the page; `{template}` segments match one path segment. |
-| `auth` | The inlined security requirement `- bearer_auth: []` ⇒ `bearer`, else `none`. |
+| `auth` | The inlined security requirement `- bearer_auth: []` ⇒ `bearer`; the same with the empty requirement `- {}` beside it ⇒ `optional` (a token is accepted but not required); else `none`. |
 | `required_query_params` | The inlined spec's parameter form, `name: page[limit]`. |
 | `required_body_fields` | The schema-property form, `country_isos:`. |
 
@@ -166,22 +166,27 @@ targeted run.
 
 `llms-full.txt`, every prompt's retrieved content, and every fetched target page are
 scanned for `company/v1/`, `/api/v1/`, `v2025[-_]?06`, `v202506`, and `per_page`. Each
-hit is attributed to the page carrying it. Five exceptions are sanctioned, each straight
-out of AGENTS.md and scoped to one marker plus an exact page set or exact text
+hit is attributed to the page carrying it. The exceptions below are sanctioned, each
+straight out of AGENTS.md and scoped to one marker plus an exact page set or exact text
 occurrence — never to a whole tag or marker:
 
 | Sanctioned | Marker | Scope |
 | ---------- | ------ | ----- |
 | The `llms-full.txt` agent-instructions banner | any | It names the legacy markers in order to forbid them. |
 | `webhooks-v0` reference sections | `per_page` | That surface's list endpoints are genuinely offset-paginated. Prose pages get no such licence. |
-| The seven verified offset `checkout-v2026-04` list pages, plus `customer-orders/list-customer-orders` for its response metadata | `per_page` | `OFFSET_PAGINATED_PAGES` — exact pages, because `directory`, `store`, and `subscriptions` also hold operations that do not paginate that way. |
-| The 69 generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
+| The generated list pages whose offset pagination was verified against their Rails actions: the seven `checkout-v2026-04` pages, Public SDK Drop Zones and root themes, the four `forms-v0` lists, the website and mobile app navigation lists, and 49 list operations of `company-v0`, `messaging-v1`, `integrations-v0`, `themes-v0`, and `admin-v2025-06` (ENG-2784). Plus `customer-orders/list-customer-orders` for its response metadata | `per_page` | `OFFSET_PAGINATED_PAGES` — exact pages, because the same tags also hold operations that do not paginate that way. |
+| Three hand-written pages: `themes/navigation-menus` (names the website menus list) and the two theme pages that document the storefront's page URL parameter and Liquid `pagination` object | `per_page` | `PER_PAGE_PROSE_PAGES` — exact pages. |
+| The 74 generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
+| The 162 generated `admin-v2025-06` and 10 `members-v2025-06` reference pages | `v2025-06` / `v202506` only | `ADMIN_V2025_06_PAGES` and `MEMBERS_V2025_06_PAGES` — exact pages, generated pages only. Prose that introduces these paths still fails. |
+| Two generated pages that compare themselves with their published `admin-v2025-06` counterpart: the v2026-04 company orders list and the `company-v0` customers list | `v2025-06` / `v202506` only | `VERSION_COMPARISON_PAGES` — exact pages. |
+| The tokens path prefix `/api/v2025-06/tokens/` | `v2025-06` only | `SANCTIONED_OCCURRENCES` — removed occurrence by occurrence on any page, so another marker on the same page still fails. |
 | Checkout's reciprocal Public SDK boundary | `v2025-06` only | The exact `info.description` sentence saying that the FairShare SDK calls the Fluid Public SDK API, and only when the same generated page carries a `checkout-v2026-04.yaml` contract line at an `/api/checkout/v2026-04/*` path. |
 
 Hits on `company/v1/` and `/api/v1/` outside those exceptions are reported as `WARN` and don't fail the run: AGENTS.md prefers the newer version of an operation but allows a v1 path that has none, so a person judges each one. Any other hit fails the run. Two properties of the Public SDK page-list exception are
 load-bearing. It is keyed on the exact page, not a `v2025-06` pattern class, so the
-legacy admin/partner surface
-(`admin-v2025-06`, `/api/v2025-06/*` — a different API) keeps failing. And three of that
+admin/partner surface
+(`admin-v2025-06`, `/api/v2025-06/*` — a different API) is judged by its own exact page
+list and keeps failing everywhere else, prose included. And three of that
 spec's tags are **shared** with the v2026-04 surfaces — `carts` also holds 12
 `checkout-v2026-04` pages, `orders` one, `paypal` four — so a `carts/` prefix would have
 forgiven a real leak on 17 current pages. The page list is the `mint export` path
@@ -202,7 +207,7 @@ Two things this check learned the hard way:
   everywhere and forgives everywhere. `stripAgentBanner` removes the leading block quote
   so each page is judged on its own content.
 - **Coverage is bounded by the prompt set.** The scan sees `llms-full.txt` plus only the
-  pages the 66 prompts retrieve or target — not the whole site. And `llms-full.txt` is
+  pages the 58 prompts retrieve or target — not the whole site. And `llms-full.txt` is
   terse for generated reference pages: one contract line and a description, without the
   parameter detail. That is why the two `per_page` leaks on `checkout-v2026-04` list
   operations surfaced only through `/mcp` and the fetched pages, and why more of that
@@ -276,7 +281,7 @@ EVAL_DOCS_BASE_URL=https://fluid-docs.mintlify.app node eval/check-hosted-docs.m
 | `EVAL_CONCURRENCY` | optional | `4` | Parallel searches in flight. |
 | `EVAL_LLMS_MIN_CHARS` | optional | `100000` | Size floor for `llms-full.txt`. |
 
-Target pages are fetched once each and shared across prompts, so a full run makes 66
+Target pages are fetched once each and shared across prompts, so a full run makes 58
 search calls. Target-page fetches are deduplicated; stage-1 misses add fetches for the
 pages that did rank so the checker can report whether an alternate carried the contract.
 
@@ -346,7 +351,7 @@ API-call prompts omit `expected.type`; every field is checked:
   "expected": {
     "method": "GET|POST|PATCH|PUT|DELETE",
     "path": "/api/v202604/company/categories/{id}",   // templated
-    "auth": "none" | "bearer",
+    "auth": "none" | "bearer" | "optional",
     "required_query_params": ["filter[country]"],      // optional
     "required_body_fields": ["title"]                  // optional
   },
@@ -370,13 +375,14 @@ Workflow prompts declare their target page and use required and forbidden terms:
 }
 ```
 
-The set currently holds 66 prompts: 60 API-call prompts and 6 workflow prompts. Direct
-API coverage spans all eight published specs:
+The set currently holds 58 prompts: 52 API-call prompts and 6 workflow prompts. Direct
+API coverage spans seven published specs. The eight `auth-v0` prompts were retired on
+2026-10-15 (ENG-2784): the 2026-09-30 API Reference regroup stopped publishing the
+`auth-v0` pages on purpose, so no page documents them (see `guide-truth.md`).
 
 | Synced spec | API prompts |
 | ----------- | ----------: |
 | `storefront-v2026-04.yaml` | 14 |
-| `auth-v0.yaml` | 8 |
 | `checkout-v2026-04.yaml` | 8 |
 | `public-v2025-06.yaml` | 3 |
 | `payment-v2026-04.yaml` | 9 |
