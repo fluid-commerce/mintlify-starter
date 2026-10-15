@@ -1463,8 +1463,8 @@ references remain authoritative for the two public Drop Zones readers.
   `/api-reference/public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public`.
   It is SDK-internal. New direct REST integrations use Checkout.
 - Both public operations call `Api::Public::DropZones::IndexAction`. That action
-  scopes to active records whose configured page is `checkout` or
-  `order_confirmation`. This shared implementation settles the visibility claim
+  scopes to active records whose configured page is `checkout`, `cart` (the
+  slideout cart) or `order_confirmation`. This shared implementation settles the visibility claim
   carried by the guide.
 
 ### Why `company-v0` remains unsynced
@@ -1487,7 +1487,7 @@ references replace the guides' no-published-reference statements.
 
 The old Drop Zones guide's exhaustive location table is not carried forward. Runtime
 placement constants can evolve, and the current management contract is not fit to
-publish them. The authored guide names only the verified Admin, checkout, and
+publish them. The authored guide names only the verified Admin, checkout, slideout-cart, and
 order-confirmation contexts.
 
 The old guide also claimed that a cart token is always appended, that a B2B company
