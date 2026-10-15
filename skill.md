@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.3"
+  version: "1.4"
 ---
 
 # Fluid
@@ -85,6 +85,7 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 ```
 
 - **Cart:** add items with `addCartItems()` and change them with `updateCartItems()`, both on `window.FairShareSDK`. Then call `FairShareSDK.checkout()` to send the shopper to Fluid checkout.
+- **Carts fill in the background.** `addCartItems()` resolves with the filled cart, or `undefined` if the fill fails. Never use `createCart()` to read data: it creates a new empty cart and replaces the shopper's. Use `getCountryCode()`. A theme with its own cart sidebar follows https://docs.fluid.app/themes/custom-cart-drawer. A custom add button calls `FairShareSDK.cart.control.open()` at the click.
 - **Attribution:** `FairShareSDK.getAttribution()`.
 - **Signatures and options:** https://docs.fluid.app/sdk/cart-api
 
