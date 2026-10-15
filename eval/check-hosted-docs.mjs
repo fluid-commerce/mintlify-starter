@@ -153,7 +153,7 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "forms/list-incomplete-enrollees",
 ]);
 
-// The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
+// The 74 generated reference pages of `public-v2025-06` — the Public SDK surface the
 // `@fluid-app` SDK actually calls, adopted in Phase 9.6f. Its paths are genuinely
 // `/api/public/v2025-06/...` and `/api/v202506/carts/...`, so every one of these pages
 // carries a version marker the legacy scan otherwise treats as a leak.
@@ -173,21 +173,28 @@ const OFFSET_PAGINATED_PAGES = new Set([
 // `<tag>/<summary>` case-folded with spaces hyphenated, so an upstream summary edit
 // renames its page and drops it out of this set. That fails loudly — the run reports an
 // unsanctioned hit naming the new page — which is the right direction: regenerate the
-// list from the export rather than loosening the key.
+// list from the export rather than loosening the key. Mintlify keeps `_` and `:` in
+// these paths (`carts/removes-rep_buyer-...`), so copy them from the export rather
+// than slugging summaries by hand. check-hosted-docs.test.mjs compares the list's size
+// with the `public-v2025-06` operations docs.json publishes, so a sync that adds or
+// removes one fails CI instead of drifting.
 const PUBLIC_SDK_V2025_06_PAGES = new Set([
   "affiliate/retrieve-affiliate-information",
+  "braintree/save-a-braintree-paypal-account-without-a-charge",
   "carts/add-enrollment-to-existing-cart",
   "carts/adds-items-to-cart",
-  "carts/applies-a-discount-to-the-cart",
+  "carts/apply-a-promo-code-to-the-cart",
   "carts/check-order-status-check-order-status",
   "carts/client-token-client-token",
   "carts/completes-cart-checkout",
   "carts/confirm-magic-link-for-cart",
   "carts/create-dlocal",
+  "carts/create-dlocal-refund-notification",
   "carts/create-magic-link-for-cart",
   "carts/create-payment-create-payment",
   "carts/create-ppro",
   "carts/creates-a-cart",
+  "carts/flag-a-public-sdk-cart-as-enrollment-eligible",
   "carts/ipn-ipn",
   "carts/removes-item-from-cart",
   "carts/removes-rep_buyer-and-customer-for-the-cart",
@@ -206,7 +213,9 @@ const PUBLIC_SDK_V2025_06_PAGES = new Set([
   "carts/updates-subscribe:false-to-cart-item",
   "carts/updates-the-country-of-a-cart-also-updates-the-currency-code",
   "carts/updates-the-language-of-a-cart",
+  "carts/venmo-shipping-callback-shipping-callback",
   "checkout/record-a-checkout-starting",
+  "commerce/recalculate-the-carts-external-discounts",
   "commerce/update-cart-items-prices",
   "enrollment-packs/get-enrollment-pack-by-slug",
   "events/save-a-new-lead-capture",
@@ -228,7 +237,6 @@ const PUBLIC_SDK_V2025_06_PAGES = new Set([
   "playlist/get-playlist-by-slug-deprecated",
   "product/get-product-by-slug-in-a-foreign-local-includes-the-correct-variants",
   "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
-  "public/auth-auth",
   "public/countries-countries",
   "public/db-port-db-port",
   "public/get-apple-pay-domain",
@@ -240,6 +248,7 @@ const PUBLIC_SDK_V2025_06_PAGES = new Set([
   "root-themes/list-root-themes",
   "session/start-a-new-session",
   "settings/retrieve-page-settings",
+  "subscriptions/create-dlocal-renewal-notification",
   "widgets/retrieve-banner-widget",
   "widgets/retrieve-cart-widget",
   "widgets/retrieve-chat-widget",
@@ -1171,6 +1180,7 @@ if (isMain) {
 
 // Pure parsing/checking helpers — exported for unit testing (see check-hosted-docs.test.mjs).
 export {
+  PUBLIC_SDK_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
