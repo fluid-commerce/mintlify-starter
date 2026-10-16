@@ -2688,3 +2688,34 @@ transport/signature-verifier boundaries substituted; it proves request formation
 late-result refusal after explicit disposal, missing-CSRF refusal, exact signed
 member echo, and operation/input rejection. It does not prove deployment, real
 signature cryptography, implicit revocation monitoring, or a deployed host bridge.
+
+## Built-in Portal Droplet capability replaces the custom bridge recipe
+
+The previous custom-host guide reflected the missing built-in seam at its
+authoring point. The authorized built-in implementation now defines
+`queryDropletData` on the public worker facade and declares `dropletData@1/query`.
+The primary guide therefore replaces obsolete custom-host/no-built-in claims
+with built-in usage, keeping receiver verification and exact signed-member echo.
+Unchanged claims retain their IDs; superseded custom-host claims are retired
+rather than left as contradictory current guidance. Historical evidence above
+is intentionally retained.
+
+The standard provider owns cookie/CSRF and opaque-context proof; workers declare
+the function and require the existing exact package-version capability approval.
+No host-project edit or new LaunchDarkly flag is part of this workflow. Missing
+proof and old hosts fail unavailable, with no unbound fallback. Publication is
+automatically versioned from SDK main0.1.701, so the guide does not invent a next
+release number or assert that merged source is deployed. Backend proof source:
+Fluid PR27037. SDK implementation: Fluid PR27038, reviewed source b312515d23b57977add1bb2ebb46c13d2aff5175. Both implementation links are evidence of source, not publication or deployment.
+The existing Portal screen builder authorizes widget insertion through
+`ScreensWorkspace.authorizeWidgetAddition` and its capability consent dialog.
+It shows publisher/package version/permissions and existing translated Allow
+capabilities/Cancel actions. Stale exact-version grants require re-insertion;
+the guide does not invent an approval popup or security-JSON editing step.
+
+The executable guide tests now evaluate the actual built-in worker example:
+function-value `uses`, fixed operation/UUID/no identity input, approved-field
+text rendering, malformed/rejected results, and ignored component continuation
+after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
+and auth monitoring correctness belong to the SDK's independently reviewed tests;
+the docs tests do not simulate deployment or claim instant server revocation.
