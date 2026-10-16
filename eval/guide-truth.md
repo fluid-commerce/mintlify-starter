@@ -2627,3 +2627,39 @@ concerns, the messaging participant rule, and the member move policy) and the el
   ("Preview a failed-cycle waiver") shares its tag and summary with Checkout's. The generator
   leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
   Checkout's operation. It needs a unique summary upstream.
+
+
+### Common Droplet UUID queries and canonical receiver naming (pending deployment)
+
+The preferred query target is the existing public Droplet `uuid`, shared by
+member-page browser queries and the canonical Member API. Legacy extension
+selectors remain a compatibility path. A UUID target needs no theme extension
+or publication; active company installation, Droplet availability/operational
+checks and backend read permissions still apply. Browser cookie/CSRF/site and
+the existing member-storefront company flag remain required; the Member API
+uses its existing member credential policy. This work introduces no new
+feature-flag or rollout-configuration prerequisite. Earlier historical notes about
+extension-only selection describe the original connection, not this update.
+
+The UUID-aware Liquid tag emits the owning public Droplet identifier alongside
+legacy extension metadata only inside a trusted Droplet extension. Native/custom
+roots must explicitly configure a known public Droplet UUID; there is no automatic
+provider discovery. The browser SDK's `dropletUuid` option maps to the same target.
+UUID-target signed bodies omit `widget_type`; legacy extension bodies retain it.
+All receivers verify signed identity and operation permissions before returning data.
+
+The canonical receiver name becomes `data_url`. The old `widget_data_url` remains
+a deprecated input/output alias backed by the same storage; equal dual inputs are
+accepted and conflicting dual values are refused. Existing sandbox receiver
+selection is unchanged. Earlier audit notes naming `widget_data_url` are preserved
+as historical evidence. Guide examples remain conditional on deployment and
+registration read-back, not on a newly configured feature flag.
+
+The exact HTTP request/response contract belongs to generated API references;
+this guide supplies workflow and security guidance. Evidence:
+[common query backend](https://github.com/fluid-commerce/fluid/pull/26995) and
+[compatible receiver naming](https://github.com/fluid-commerce/fluid/pull/26996).
+[UUID-aware Liquid metadata and loader adoption](https://github.com/fluid-commerce/fluid/pull/27000)
+and [SDK UUID support](https://github.com/fluid-commerce/fluid/pull/27002)
+are separate browser prerequisites. These links establish intended behavior, not
+deployed availability or publication of the SDK 0.12.0 artifact.
