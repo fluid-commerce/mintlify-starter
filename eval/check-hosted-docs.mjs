@@ -526,11 +526,13 @@ const ADMIN_V2025_06_PAGES = new Map([
 ]);
 
 const MEMBERS_V2025_06_PAGES = new Map([
+  ["members/change-a-members-mysite-theme", "PUT /api/v2025-06/members/{member_id}/mysite-theme"],
   ["members/change-a-members-type", "PUT /api/v2025-06/members/{member_id}/member-type"],
   ["members/create-a-member", "POST /api/v2025-06/members"],
   ["members/exchange-a-member-for-a-shopper-token", "POST /api/v2025-06/members/{member_id}/customer-token-exchange"],
   ["members/find-a-member-by-a-unique-identifier", "GET /api/v2025-06/members/find"],
   ["members/get-a-member", "GET /api/v2025-06/members/{member_id}"],
+  ["members/get-a-members-mysite-theme", "GET /api/v2025-06/members/{member_id}/mysite-theme"],
   ["members/get-a-members-sponsor-genealogy", "GET /api/v2025-06/members/{member_id}/genealogy"],
   ["members/list-a-members-payment-methods", "GET /api/v2025-06/members/{member_id}/payment_methods"],
   ["members/list-members", "GET /api/v2025-06/members"],
