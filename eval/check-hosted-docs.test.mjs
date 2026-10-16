@@ -12,8 +12,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
+  PUBLIC_SDK_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
@@ -1117,5 +1119,21 @@ describe("countLlmsEntries", () => {
   it("returns 0 for a stub index with no entries and for non-strings", () => {
     assert.equal(countLlmsEntries("# Fluid\n\n> Nothing here yet.\n"), 0);
     assert.equal(countLlmsEntries(null), 0);
+  });
+});
+
+describe("PUBLIC_SDK_V2025_06_PAGES", () => {
+  // docs.json is rebuilt from the synced specs (generate-api-nav.mjs, gated by
+  // --check in CI), so its public-v2025-06 references are exactly the Public SDK
+  // pages Mintlify publishes. A sync that adds or removes one changes this count.
+  it("lists one page per public-v2025-06 operation in docs.json", () => {
+    const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
+    const refs = new Set(docs.match(/"api-reference\/public-v2025-06\.yaml [A-Z]+ [^"]+"/g) ?? []);
+    assert.ok(refs.size > 0, "docs.json has no public-v2025-06 references");
+    assert.equal(
+      PUBLIC_SDK_V2025_06_PAGES.size,
+      refs.size,
+      "regenerate PUBLIC_SDK_V2025_06_PAGES from a `mint export` (see check-hosted-docs.mjs)",
+    );
   });
 });
