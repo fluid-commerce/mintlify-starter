@@ -2627,3 +2627,29 @@ concerns, the messaging participant rule, and the member move policy) and the el
   ("Preview a failed-cycle waiver") shares its tag and summary with Checkout's. The generator
   leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
   Checkout's operation. It needs a unique summary upstream.
+
+
+### API-only member Droplet queries and canonical receiver naming (pending release)
+
+The Member API can select an installed Droplet directly after the headless-query
+release, without a theme extension or UI placement. This is distinct from the
+existing extension target and browser helper, whose authorization and lifecycle
+rules remain unchanged. The direct selector uses the existing public Droplet
+`uuid` returned by management operations, not the database-only UUID column.
+Active company installation, Droplet availability and operational checks, member
+credential policy, signed forwarding, destination restrictions, throttling and
+backend read permissions remain required. Headless signed bodies omit
+`widget_type`; receivers offering both paths must tolerate its absence.
+
+The canonical receiver name becomes `data_url`. The old `widget_data_url` remains
+a deprecated input/output alias backed by the same storage; equal dual inputs are
+accepted and conflicting dual values are refused. Existing sandbox receiver
+selection is unchanged. Earlier audit notes naming `widget_data_url` describe the
+then-current contract and are retained as historical evidence, not instructions
+to prefer it in new integrations. Public guide examples remain release-conditional.
+
+The query operation's exact request/response contract belongs to the generated
+Member API reference. This guide supplies workflow and security guidance rather
+than a second HTTP request schema. Evidence: [headless Member Droplet queries](https://github.com/fluid-commerce/fluid/pull/26995)
+and [compatible receiver naming](https://github.com/fluid-commerce/fluid/pull/26996).
+These implementation references establish intended behavior, not deployment or rollout.
