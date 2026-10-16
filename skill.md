@@ -114,3 +114,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 ## Private Droplet reads
 
 - Use the common Droplet UUID selector for member-page browser queries and authenticated Member API applications after their backend/SDK releases. Copy the actual management API public `uuid`; do not invent a database UUID or automatically connect a native widget to a Droplet. Browser calls retain cookie/CSRF, site and existing member-storefront flag checks; Member API calls use supported member credentials. Both require an active company-scoped Droplet installation and signed-backend read permissions. Keep bearer credentials out of Liquid. Use canonical `data_url` after deployment, with `widget_data_url` as its deprecated compatibility alias: https://docs.fluid.app/themes/member-storefront/droplet-data.
+
+## Portal worker Droplet reads
+
+- For a Portal widget that reads its member through a Droplet, follow https://docs.fluid.app/portal-widgets/widget-packages/droplet-data first. Require host-project access and a deployed custom typed function bridge; workers cannot read host CSRF or use authenticated Portal fetch. Keep host auth-scope disposal/remount, verified exact-member echo, and deployment prerequisites. Do not substitute the member-storefront helper or invent a built-in function.
