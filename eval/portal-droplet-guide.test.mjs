@@ -7,38 +7,47 @@ function example(name) {
   assert.notEqual(start, -1);
   return guide.slice(start).split('\n').slice(1).join('\n').split('\n```')[0].replace(/^import .*;\n/gm, '').replace(/export /g, '');
 }
-function host(fetch, csrf = 'real-host-token') {
-  return new Function('implementPortalFunction', 'readDropletMember', 'document', 'fetch', example('droplet-member-host.js') + '\nreturn createDropletMemberBridge;')(
-    (_, handler) => handler, {}, { querySelector: () => csrf ? { content: csrf } : null }, fetch,
-  )('drp_acme_rewards');
-}
 const member = { id: 'native-member', public_id: 'public-member', external_id: null };
-test('host fixes selector/operation, uses Portal CSRF/cookies and unwraps only data', async () => {
-  let request;
-  const bridge = host(async (url, options) => { request = { url, options }; return { ok: true, json: async () => ({ data: { member: { ...member, private_unapproved_field: "must not cross worker bridge" } }, status: 200 }) }; });
-  assert.deepEqual(await bridge.implementation(), { member });
-  assert.equal(request.url, '/api/member/v2026-10/droplet-queries');
-  assert.equal(request.options.credentials, 'same-origin');
-  assert.equal(request.options.headers['X-CSRF-Token'], 'real-host-token');
-  assert.deepEqual(JSON.parse(request.options.body), { droplet_uuid: 'drp_acme_rewards', operation: 'member.echo', params: {} });
-  bridge.dispose();
-  await assert.rejects(bridge.implementation(), /scope ended/);
+function worker(query) {
+  const texts = [];
+  let cleanup;
+  const exports = new Function('createElement', 'useEffect', 'useState', 'defineWidget', 'queryDropletData', example('member-echo-widget.js') + '\nreturn { MemberEchoCard, memberEchoWidget };')(
+    (tag, props, text) => ({ tag, props, text }),
+    effect => { cleanup = effect(); },
+    initial => { texts.push(initial); return [initial, text => texts.push(text)]; },
+    definition => definition, query,
+  );
+  exports.MemberEchoCard();
+  return { texts, unmount: () => cleanup(), definition: exports.memberEchoWidget };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+test('worker declares actual function and queries only configured Droplet operation', async () => {
+  let input;
+  const query = async value => { input = value; return { member: { ...member, private_field: 'must not display' } }; };
+  const widget = worker(query);
+  await flush();
+  assert.deepEqual(widget.definition.uses, [query]);
+  assert.deepEqual(input, { dropletUuid: 'drp_acme_rewards', operation: 'member.echo', params: {} });
+  assert.deepEqual(JSON.parse(widget.texts.at(-1)), member);
+  assert.ok(!widget.texts.some(text => text.includes('must not display')));
 });
-test('disposal rejects late response even when transport ignores abort', async () => {
+test('worker refuses late results after unmount', async () => {
   let finish;
-  const bridge = host(async () => ({ ok: true, json: () => new Promise(resolve => { finish = resolve; }) }));
-  const pending = bridge.implementation();
-  await Promise.resolve();
-  bridge.dispose();
-  finish({ data: { member } });
-  await assert.rejects(pending, /scope ended/);
+  const widget = worker(() => new Promise(resolve => { finish = resolve; }));
+  widget.unmount();
+  finish({ member });
+  await flush();
+  assert.deepEqual(widget.texts, ['Loading member…', 'Loading member…']);
 });
-test('missing CSRF never fetches; errors/malformed responses never return private results', async () => {
-  const absent = host(() => { throw new Error('must not fetch'); }, null);
-  await assert.rejects(absent.implementation(), /CSRF/);
-  for (const response of [{ ok: false, json: async () => ({ error: { details: { backend_response: 'private' } } }) }, { ok: true, json: async () => ({ data: { member: [] } }) }]) {
-    await assert.rejects(host(async () => response).implementation());
+test('rejected or malformed capability results become unavailable', async () => {
+  for (const result of [null, [], { member: { id: 1 } }]) {
+    const widget = worker(async () => result);
+    await flush();
+    assert.equal(widget.texts.at(-1), 'Member data is unavailable');
   }
+  const widget = worker(async () => { throw new Error('NOT_GRANTED'); });
+  await flush();
+  assert.equal(widget.texts.at(-1), 'Member data is unavailable');
 });
 test('receiver preserves exact verified member and rejects unsigned or injected operations', async () => {
   let signedBytes;
