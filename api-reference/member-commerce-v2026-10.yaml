@@ -68,6 +68,8 @@ components:
           type: string
           format: date-time
           description: ISO 8601 timestamp at which the server produced the response.
+        subscription_schedule:
+          "$ref": "#/components/schemas/SubscriptionSchedule"
       required:
       - request_uuid
       - timestamp
@@ -1053,6 +1055,60 @@ components:
           type: string
           format: uuid
           description: Public UUID of an owned saved address. Omission preserves the current address; country cannot change.
+    SubscriptionSchedule:
+      type: object
+      description: Current owned billing intent state. Present in detail-read metadata and confirmed Skip/Undo metadata; never in legacy empty-body Skip metadata. Dates use the subscription timezone. The optional applied flag appears only after a confirmed mutation and is false for an accepted replay.
+      additionalProperties: false
+      properties:
+        next_bill_date:
+          type: [string, 'null']
+          format: date
+          description: Current local billing date, or null when unscheduled.
+        latest_skip_id:
+          type: [string, 'null']
+          format: uuid
+          description: Latest historical skip UUID, including undone skips, or null before the first skip. Echo this exact epoch when confirming a new skip.
+        pending_skip_id:
+          type: [string, 'null']
+          format: uuid
+          description: Currently undoable skip UUID, or null.
+        pending_skip_date:
+          type: [string, 'null']
+          format: date
+          description: Local date skipped by the pending intent, or null.
+        can_skip:
+          type: boolean
+          description: Whether current plan, state and skip allowance permit a new skip.
+        applied:
+          type: boolean
+          description: True only when this request changed the schedule; false for an accepted replay. Omitted on reads.
+      required: [next_bill_date, latest_skip_id, pending_skip_id, pending_skip_date, can_skip]
+    SubscriptionSkip:
+      description: Preserve legacy empty-body Skip, or confirm an exact local date and historical skip epoch together. A replay cannot skip another bill, including after Undo.
+      oneOf:
+      - "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+      - type: object
+        additionalProperties: false
+        properties:
+          scheduled_date:
+            type: string
+            format: date
+            description: Local billing date explicitly confirmed by the member.
+          expected_latest_skip_id:
+            type: [string, 'null']
+            format: uuid
+            description: Latest historical skip UUID from current detail metadata, or explicit null before the first skip.
+        required: [scheduled_date, expected_latest_skip_id]
+    SubscriptionUndo:
+      type: object
+      description: Restore exactly the confirmed pending skip. An identical already-undone retry succeeds without applying another change.
+      additionalProperties: false
+      properties:
+        skip_id:
+          type: string
+          format: uuid
+          description: Owned pending skip UUID from current detail metadata.
+      required: [skip_id]
     SubscriptionEmptyTransition:
       type: object
       description: No transition fields are accepted. Supply an empty JSON object.
@@ -3379,7 +3435,7 @@ paths:
         pending skip are distinct refusals. Duplicate concurrent requests must not advance
         two cycles. The bearer fixes the member and company. State and ownership are rechecked
         under write locks. Responses are no-store, including refusals, and never return
-        304. Unknown fields and query parameters are rejected.
+        304. Unknown fields and query parameters are rejected. An empty body preserves legacy behavior and response metadata. Supplying scheduled_date and expected_latest_skip_id together confirms an idempotent intent; success includes meta.subscription_schedule with applied. Read the current date and epoch from GET subscription detail before confirming.
       parameters:
       - name: id
         in: path
@@ -3390,13 +3446,153 @@ paths:
           format: uuid
       requestBody:
         required: false
-        description: Top-level transition fields; omit the body or send an empty object
-          when no fields are needed.
+        description: Omit the body or send an empty object for legacy behavior, or supply both confirmed intent fields.
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+              "$ref": "#/components/schemas/SubscriptionSkip"
             example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/undo":
+    post:
+      operationId: member_subscriptions_undo
+      tags:
+      - subscriptions
+      summary: Undo a specific subscription billing skip
+      description: Restore the exact owned pending skip through locked lifecycle policy. Identical already-undone retries succeed with applied false. Expired, replaced or foreign skip IDs conflict without writes. Every success includes meta.subscription_schedule with applied and authoritative current state. Canonical member credentials determine ownership; Members Site enablement and cookies are not required. Responses are no-store. Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        description: The exact pending skip to restore.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionUndo"
+            example:
+              skip_id: 019a23a4-9211-71bf-8fa5-a5f31a82a0e2
       responses:
         '400':
           description: The request body is not valid JSON.
