@@ -15,7 +15,7 @@ function host(fetch, csrf = 'real-host-token') {
 const member = { id: 'native-member', public_id: 'public-member', external_id: null };
 test('host fixes selector/operation, uses Portal CSRF/cookies and unwraps only data', async () => {
   let request;
-  const bridge = host(async (url, options) => { request = { url, options }; return { ok: true, json: async () => ({ data: { member }, status: 200 }) }; });
+  const bridge = host(async (url, options) => { request = { url, options }; return { ok: true, json: async () => ({ data: { member: { ...member, private_unapproved_field: "must not cross worker bridge" } }, status: 200 }) }; });
   assert.deepEqual(await bridge.implementation(), { member });
   assert.equal(request.url, '/api/member/v2026-10/droplet-queries');
   assert.equal(request.options.credentials, 'same-origin');
