@@ -1383,7 +1383,8 @@ against the archive before publication. The redirect remains temporary per Phase
 
 ### The leakage exception is exact by page and marker
 
-`PUBLIC_SDK_V2025_06_PAGES` sanctions the 69 generated operation pages.
+`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption, 74 since
+the ENG-1186 refresh (mintlify-starter#151). Since ENG-2784 it maps each page to its operation.
 `PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
 the hand-written pages that must name the SDK's real version. Both sets forgive only the
 `v2025-06` / `v202506` marker.
@@ -2628,7 +2629,6 @@ concerns, the messaging participant rule, and the member move policy) and the el
   leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
   Checkout's operation. It needs a unique summary upstream.
 
-
 ### Common Droplet UUID queries and canonical receiver naming (pending deployment)
 
 The preferred query target is the existing public Droplet `uuid`, shared by
@@ -2663,6 +2663,39 @@ this guide supplies workflow and security guidance. Evidence:
 and [SDK UUID support](https://github.com/fluid-commerce/fluid/pull/27002)
 are separate browser prerequisites. These links establish intended behavior, not
 deployed availability or publication of the SDK 0.12.0 artifact.
+
+## Hosted docs checker realigned with the published API Reference (2026-10-15, ENG-2784)
+
+The 2026-09-30 API Reference regroup published more specs than the hosted checker
+(`eval/check-hosted-docs.mjs`) knew about, so its runs failed on decisions rather than on
+docs. These are now the checker's rules:
+
+- **The eight `auth-v0` prompts are retired.** The regroup stopped publishing the `auth-v0`
+  pages on purpose (auth, SSO, social sign-in, token exchange, MFA), so no page documents
+  those operations and every run failed them in both stages. Restore a prompt only if its
+  operation is published again.
+- **Optional auth is its own expectation.** `public_v2025_06_cart-checkout` declares
+  `security: [bearer_auth, {}]` since fluid#24276. A bearer token is accepted but not
+  required, so the prompt expects `optional`. The checker used to read any
+  `- bearer_auth: []` as required.
+- **`admin-v2025-06` and `members-v2025-06` generated pages** may carry their version
+  markers, as AGENTS.md already said. The checker lists the pages one by one, keyed to their
+  operations, and a unit test matches those operations to docs.json.
+- **49 more offset lists**, on `company-v0`, `messaging-v1`, `integrations-v0`,
+  `themes-v0` and `admin-v2025-06`, plus the Public SDK root themes list, were checked
+  against their Rails actions. Every one reads integer `page` / `per_page` and pages by
+  offset. Defaults run from 5 to 50 and most have no maximum. They are sanctioned page by
+  page, and AGENTS.md lists them as pagination exceptions.
+- **Not leaks, by exact page:**
+  - the `/api/v2025-06/tokens/` prefix, anywhere;
+  - `per_page` in the two `themes/navigation-menus` sentences about the website menus
+    list, and anywhere on `themes/query-parameters-and-caching` and `themes/theme-variables`;
+  - the exact phrases with which two generated pages compare themselves to their
+    `admin-v2025-06` counterpart: the v2026-04 company orders list and the `company-v0`
+    customers list. Any other version marker on either page still fails.
+- **Still failing on purpose:** `guides/widget-user-information` tells readers to call
+  `GET /api/v2025-06/users/by-public-id/{public_id}` in prose. AGENTS.md forbids that, and
+  the rep-facing `users` API is excluded from the sidebar.
 
 ## Portal worker Droplet bridge guide (2026-10-16)
 
