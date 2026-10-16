@@ -563,6 +563,13 @@ const CHECKOUT_GENERATED_CONTRACT =
 //      menus list, an offset exception in OFFSET_PAGINATED_PAGES, and say it uses page
 //      numbers. AGENTS.md allows offset language in prose only there; any other
 //      `per_page` on the page still fails.
+//   3. Two generated pages that compare their operation with its published
+//      `admin-v2025-06` counterpart, the way AGENTS.md asks a page that names both
+//      versions to say which to use. The v2026-04 company orders list explains how it
+//      differs from `GET /api/v202506/orders` (in its description and in the inlined
+//      response schemas) and sends stats to `GET /api/v202506/orders/stats`; the
+//      company-v0 customers list says to prefer `GET /api/v2025-06/customers`. Exact
+//      phrases on each page, so a new version marker in either description still fails.
 const SANCTIONED_OCCURRENCES = [
   { pages: null, occurrence: /\/api\/v2025-06\/tokens\//g },
   {
@@ -571,6 +578,23 @@ const SANCTIONED_OCCURRENCES = [
       "`GET /api/menus` accepts `status` (`active` or `inactive`), `page`, `per_page`,",
       "`meta` with `total_count`, `total_pages`, `current_page`, and `per_page`.",
     ),
+  },
+  {
+    pages: new Set(["orders/list-the-companys-orders"]),
+    occurrence: exactText(
+      "differences from `GET /api/v202506/orders`",
+      "Unlike `GET /api/v202506/orders`,",
+      "come from `GET /api/v202506/orders/stats`",
+      "no stats block; see `GET /api/v202506/orders/stats`",
+      "made the v2025-06 index expensive",
+      "interchangeable with the v2025-06",
+      "retained for compatibility with the v2025-06 payload",
+      "Unlike the v2025-06 index this carries no",
+    ),
+  },
+  {
+    pages: new Set(["company-v0/customers/list-customers"]),
+    occurrence: exactText("prefer `GET /api/v2025-06/customers`"),
   },
 ];
 
@@ -581,16 +605,6 @@ function exactText(...literals) {
   return new RegExp(literals.map(escape).join("|"), "g");
 }
 
-// Two generated pages whose descriptions compare the operation with its published
-// `admin-v2025-06` counterpart, the way AGENTS.md asks a page that names both versions
-// to say which to use: the v2026-04 company orders list says how it differs from
-// `GET /api/v202506/orders` and sends stats to `GET /api/v202506/orders/stats`, and the
-// company-v0 customers list says to prefer `GET /api/v2025-06/customers`. Exact pages,
-// version marker only.
-const VERSION_COMPARISON_PAGES = new Set([
-  "orders/list-the-companys-orders",
-  "company-v0/customers/list-customers",
-]);
 
 // Matches only a bare version token — what `scanLegacy` captures for the two
 // version patterns. Deliberately anchored so the Public SDK sanction can never
@@ -1024,9 +1038,10 @@ function splitLlmsSections(text) {
 //   5. The exact reciprocal Public SDK sentence in `checkout-v2026-04`'s
 //      info.description, removed occurrence-by-occurrence before this page-level
 //      sanction function runs. A generated Checkout contract line is required.
-//   6. The named `admin-v2025-06` and `members-v2025-06` generated pages, and the two
-//      VERSION_COMPARISON_PAGES. The version marker only.
-//   7. The tokens path prefix and the two navigation-menus sentences, removed
+//   6. The named `admin-v2025-06` and `members-v2025-06` generated pages. The version
+//      marker only.
+//   7. The tokens path prefix, the two navigation-menus sentences, and the exact
+//      version-comparison phrases on two generated pages, removed
 //      occurrence-by-occurrence like 5 — see SANCTIONED_OCCURRENCES.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
@@ -1042,8 +1057,7 @@ function isSanctionedLegacyHit(marker, label, sectionText = "") {
     (PUBLIC_SDK_V2025_06_PAGES.has(page) ||
       PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) ||
       ADMIN_V2025_06_PAGES.has(page) ||
-      MEMBERS_V2025_06_PAGES.has(page) ||
-      VERSION_COMPARISON_PAGES.has(page))
+      MEMBERS_V2025_06_PAGES.has(page))
   ) {
     return true;
   }

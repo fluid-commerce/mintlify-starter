@@ -2690,9 +2690,9 @@ docs. These are now the checker's rules:
   - the `/api/v2025-06/tokens/` prefix, anywhere;
   - `per_page` in the two `themes/navigation-menus` sentences about the website menus
     list, and anywhere on `themes/query-parameters-and-caching` and `themes/theme-variables`;
-  - the version markers on the two generated pages that compare themselves with their
+  - the exact phrases with which two generated pages compare themselves to their
     `admin-v2025-06` counterpart: the v2026-04 company orders list and the `company-v0`
-    customers list.
+    customers list. Any other version marker on either page still fails.
 - **Still failing on purpose:** `guides/widget-user-information` tells readers to call
   `GET /api/v2025-06/users/by-public-id/{public_id}` in prose. AGENTS.md forbids that, and
   the rep-facing `users` API is excluded from the sidebar.

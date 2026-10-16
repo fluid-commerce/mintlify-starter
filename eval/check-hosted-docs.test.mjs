@@ -1032,15 +1032,15 @@ describe("isSanctionedLegacyHit", () => {
     assert.equal(isSanctionedLegacyHit("v2025-06", "guides/widget-user-information"), false);
   });
 
-  it("sanctions the version marker on the two version-comparison pages only", () => {
+  it("never sanctions the version-comparison pages page-wide", () => {
+    // Their comparison phrases are sanctioned one by one in SANCTIONED_OCCURRENCES.
     for (const page of [
       "api-reference/orders/list-the-companys-orders",
       "api-reference/company-v0/customers/list-customers",
     ]) {
-      assert.equal(isSanctionedLegacyHit("v202506", page), true, page);
-      assert.equal(isSanctionedLegacyHit("per_page", page), false, page);
+      assert.equal(isSanctionedLegacyHit("v202506", page), false, page);
+      assert.equal(isSanctionedLegacyHit("v2025-06", page), false, page);
     }
-    assert.equal(isSanctionedLegacyHit("v202506", "api-reference/orders/create-an-order"), false);
   });
 
   it("sanctions per_page on the exact prose pages that are not API pagination", () => {
@@ -1169,6 +1169,28 @@ describe("scanLegacyAttributed", () => {
     // The same sentences on another page are not sanctioned.
     const elsewhere = scanLegacyAttributed([{ label: "themes/developer-guide", text: menusSentences }]);
     assert.deepEqual(elsewhere.sanctioned, []);
+  });
+
+  it("sanctions the exact version-comparison phrases and still fails a new marker beside them", () => {
+    const orders = "api-reference/orders/list-the-companys-orders";
+    const comparison =
+      "Two deliberate differences from `GET /api/v202506/orders`: stats come from\n" +
+      "  `GET /api/v202506/orders/stats`. Cursors are not interchangeable with the v2025-06\n" +
+      "Rotulus cursors. Unlike the\n        v2025-06 index this carries no `total_pages`.";
+    const clean = scanLegacyAttributed([{ label: orders, text: comparison }]);
+    assert.deepEqual(clean.unsanctioned, []);
+    assert.deepEqual(new Set(clean.sanctioned.map((h) => h.marker)), new Set(["v202506", "v2025-06"]));
+
+    const extra = scanLegacyAttributed([
+      { label: orders, text: `${comparison}\nTo export, call \`GET /api/v202506/orders/export\`.` },
+    ]);
+    // Both version patterns match `v202506`, so the hit appears once per pattern; the
+    // report dedupes by marker and page.
+    assert.deepEqual([...new Set(extra.unsanctioned.map((h) => `${h.marker} ${h.label}`))], [`v202506 ${orders}`]);
+
+    // The phrase is exact per page: the customers pointer does not carry over to orders.
+    const moved = scanLegacyAttributed([{ label: orders, text: "prefer `GET /api/v2025-06/customers`" }]);
+    assert.deepEqual(moved.unsanctioned, [{ marker: "v2025-06", label: orders }]);
   });
 
   it("splits sanctioned, advisory, and unsanctioned hits and keeps the owning section label", () => {
