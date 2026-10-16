@@ -2663,3 +2663,28 @@ this guide supplies workflow and security guidance. Evidence:
 and [SDK UUID support](https://github.com/fluid-commerce/fluid/pull/27002)
 are separate browser prerequisites. These links establish intended behavior, not
 deployed availability or publication of the SDK 0.12.0 artifact.
+
+## Portal worker Droplet bridge guide (2026-10-16)
+
+The new Portal widget Droplet guide separates RemoteDOM workers from the Portal
+host. There is no built-in Droplet function and network grants do not grant the
+authenticated host transport. The supported custom-function seam is
+`definePortalFunction` plus `implementPortalFunction`, registered through
+`FluidProvider.remoteWidgets.functions` or the registry provider's `functions`.
+Application-owned host authentication lifecycle must dispose pending calls and
+unmount old workers; no SDK session hook or silent-cookie detection is invented.
+
+Evidence: Fluid PR26997 supplies the Portal-host cookie/CSRF dated adapter; PR26995
+supplies shared UUID selection. The standalone Portal OpenAPI contract is still
+extension-only, and no deployed UUID availability is asserted. This narrow task
+guide includes the same-origin request needed to explain the worker/host bridge;
+its pending UUID deployment example is semantic, not mechanically checked against
+that older generated contract. Do not hand-edit generated references. Source
+checks include Portal homepage CSRF meta, public worker/host function exports,
+and Portal controller auth/response/error policies on Fluid main01145103ab.
+
+The executable guide test evaluates the actual host and receiver snippets with
+transport/signature-verifier boundaries substituted; it proves request formation,
+late-result refusal after explicit disposal, missing-CSRF refusal, exact signed
+member echo, and operation/input rejection. It does not prove deployment, real
+signature cryptography, implicit revocation monitoring, or a deployed host bridge.
