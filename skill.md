@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.4"
+  version: "1.5"
 ---
 
 # Fluid
@@ -53,7 +53,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 Some areas have more than one generation of endpoints, and search can rank an older one first.
 
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
-- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
+- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
 
 ## Platform pitfalls
 
@@ -93,10 +93,12 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 
 Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
 
-- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
+- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme lint`, `fluid theme push`, `fluid theme crawl`.
+- **MySite themes** (https://docs.fluid.app/themes/cli#mysite-themes): `fluid mysite list`, `fluid mysite pull`, `fluid mysite dev`, `fluid mysite publish` (live at once).
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
-- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
-- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget push` (publish with this; it also records your source), `fluid widget publish`.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env list`, `fluid mist env set`, `fluid mist env unset`, `fluid mist env pull`, `fluid mist staging`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet reinstall`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Files and setups**: `fluid assets upload` (https://docs.fluid.app/api/dam-upload), `fluid setup list`, `fluid setup show`, `fluid setup run` (https://docs.fluid.app/setup/overview).
 
 ## Admin portal help
 
