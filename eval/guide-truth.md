@@ -565,7 +565,7 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 16. **`POST /api/company/webhook_events/{id}/retrigger` is in no synced spec.** The
     route (`config/routes/storefront/api_integrations.rb`) and its controller action are
     live, and `company-v0` models only the list and show operations beside it. The
-    webhooks guide documents the resend, so its claims (`webhooks-070` to `-072`) are
+    webhooks guide documents the resend, so its claims (`webhooks-070` to `-073`, the last covering its permissions) are
     `check: semantic`, verified against the controller and `WebhookCaller.broadcast_event`.
     The guide's `guideSpecs` entry lists `webhooks-v0` and `company-v0`, so the list
     endpoint and its filters are mechanical. When the backend models retrigger, make
