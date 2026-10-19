@@ -45,7 +45,8 @@ tags:
   x-fluid-section: Developers
 - name: mist_traffic
   description: |
-    Read a Mist app's visitors and page views from Vercel Web Analytics.
+    Read a Mist app's visitors and page views from Vercel Web Analytics, and
+    turn Web Analytics on for the app.
   x-fluid-section: Developers
 components:
   securitySchemes:
@@ -56,7 +57,7 @@ components:
         Bearer token authentication. Accepts company admin tokens with
         the matching `mist.*` permission:
           - `mist.view` to list and show Mists
-          - `mist.create` to create and rename Mists
+          - `mist.create` to create and rename Mists, and to turn on visitor numbers
           - `mist.destroy` to delete and restore Mists
           - `mist.code` for deployments, logs, and traffic
           - `mist.env_vars` to read and manage environment variables
@@ -423,6 +424,28 @@ components:
               - invalid_range
               - not_provisioned
               - web_analytics_off
+              - web_analytics_plan_required
+              - web_analytics_forbidden
+              - vendor_error
+            message:
+              type: string
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    MistTrafficEnablementError:
+      type: object
+      description: A request to turn on visitor numbers that failed. `error.code` names the reason.
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+              - not_provisioned
               - web_analytics_plan_required
               - web_analytics_forbidden
               - vendor_error
@@ -1542,6 +1565,135 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/MistTrafficError"
+              example:
+                error:
+                  code: vendor_error
+                  message: vercel answered 500
+                status: 502
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+  "/api/v202604/mists/{mist_id}/traffic/enablement":
+    post:
+      operationId: mist_traffic_enable
+      summary: Turn on visitor numbers for a Mist app
+      description: |
+        Turns on Vercel Web Analytics for the Mist's Vercel project, which
+        is what the traffic read needs before it can return numbers. Page
+        views then count toward the app's hosting usage.
+
+        Calling it again for an app that is already on answers the same
+        `200`, so it is safe to repeat. The request has no body.
+
+        Only companies with Mist growth tools turned on can call it. For
+        any other company this endpoint returns `404` and sends nothing to
+        Vercel.
+
+        A failed request names its reason in `error.code`:
+          - `409` `not_provisioned` when the Mist has no Vercel project yet.
+          - `402` `web_analytics_plan_required` when the Vercel plan does
+            not include Web Analytics.
+          - `502` `web_analytics_forbidden` when Mist's Vercel credential
+            may not change the project.
+          - `502` `vendor_error` for any other Vercel failure.
+
+        Returns `409` without `error.code` while the Mist is
+        `pending_destroy`.
+
+        Requires a company admin token with the `mist.create` permission.
+      x-fluid-audience: company
+      tags: [mist_traffic]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      responses:
+        '200':
+          description: Web Analytics is on for the app
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traffic_enablement, status, meta]
+                properties:
+                  traffic_enablement:
+                    type: object
+                    required: [enabled]
+                    properties:
+                      enabled:
+                        type: boolean
+                        enum: [true]
+                  status:
+                    type: integer
+                  meta:
+                    "$ref": "#/components/schemas/Meta"
+              example:
+                traffic_enablement:
+                  enabled: true
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistMessageError"
+        '402':
+          description: "`web_analytics_plan_required`: the Vercel plan does not include Web Analytics."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficEnablementError"
+              example:
+                error:
+                  code: web_analytics_plan_required
+                  message: Web Analytics needs a paid Vercel plan
+                status: 402
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '403':
+          description: |
+            The credential is not a company admin (`message`), is a droplet
+            token, or lacks the `mist.create` permission (`error`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistPermissionError"
+                - "$ref": "#/components/schemas/MistMessageError"
+        '404':
+          description: The Mist does not exist in this company, or growth tools are off for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: |
+            `not_provisioned`, or the Mist is `pending_destroy` (no
+            `error.code`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistTrafficEnablementError"
+                - "$ref": "#/components/schemas/MistPendingDestroyError"
+              example:
+                error:
+                  code: not_provisioned
+                  message: hosting has no vercel_project_id
+                status: 409
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '502':
+          description: "`web_analytics_forbidden` or `vendor_error`: Vercel did not turn Web Analytics on."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficEnablementError"
               example:
                 error:
                   code: vendor_error
