@@ -2719,3 +2719,16 @@ text rendering, malformed/rejected results, and ignored component continuation
 after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
 and auth monitoring correctness belong to the SDK's independently reviewed tests;
 the docs tests do not simulate deployment or claim instant server revocation.
+
+## Pending Mist widget workflow follow-up (2026-10-19)
+
+Prepared against the uncommitted Fluid source in the isolated Mist widget
+workflow branch, not a published desktop release. The guide explicitly marks
+all three additions pending and preserves existing manual setup/handoff paths.
+Dependency installation is a writable project tool with exact fresh approval,
+package-script disclosure, npm/pnpm ownership, refusals for unsupported/conflicting
+locks, and no direct-tool bypass. Local Portal source registration validates the
+active company, canonical workspace descendant and generated marker files; it
+is not remote creation/activation or script execution. Structured handoffs carry
+six explicit sections rather than source conversation history and never enlarge
+authority. Final code PR/release evidence is required before publication.
