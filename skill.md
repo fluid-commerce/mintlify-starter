@@ -122,3 +122,5 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 ## Build and troubleshoot Portal widgets
 
 - Start with https://docs.fluid.app/portal-widgets/widget-packages/company-quickstart and use https://docs.fluid.app/portal-widgets/widget-packages/troubleshooting when a stage fails. Work in the Portal project, verify SDK support, and distinguish package publication from screen placement, exact-version capability approval and Portal publication. Test the actual signed-in Portal before claiming completion; report pending authoring steps explicitly.
+
+- When a Portal project is inaccessible, distinguish access from existence. Ask the user to open the known existing folder and provide a self-contained handoff with plain-text docs URLs, full behavior, resource identifiers, completed checks and publication scope. Preserve existing widgets and package identity; do not recreate a Portal app to bypass workspace access. Follow the troubleshooting guide's cross-project handoff checklist.
