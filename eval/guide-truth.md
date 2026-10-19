@@ -2731,4 +2731,4 @@ locks, and no direct-tool bypass. Local Portal source registration validates the
 active company, canonical workspace descendant and generated marker files; it
 is not remote creation/activation or script execution. Structured handoffs carry
 six explicit sections rather than source conversation history and never enlarge
-authority. Current source evidence is Fluid branch `pralish/mist-portal-project-discovery`, inspected while uncommitted; code PR links are not yet assigned. This is conditional guidance: verify final code/release evidence before declaring the features available.
+authority. Implementation source: Fluid PR27130 (approved dependency operations and structured handoffs), PR27131 (explicit local import and discovery), and PR27132 (related capability diagnostics). These are source references, not desktop release or deployment evidence. Confirm the installed release exposes the documented feature before declaring it available.
