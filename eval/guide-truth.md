@@ -2765,3 +2765,16 @@ preview uses Run/direct `fluid portal dev --skip-pull`; direct deploy, including
 dry-run, and opaque wrappers are refused in favor of the supported publication
 control. These are immutable inspected source references, not an assertion of
 passing remote CI, an automated review score, or a desktop release/deployment.
+
+Further pending hardening: dependency preparation uses a private approved metadata
+snapshot on macOS/Linux, rejects unsupported dependency graphs, and publishes only
+if origin metadata and installation identity remain unchanged; rollback is not
+a cross-file operating-system transaction. Final dependency source reference is
+`23324d951e3ab5c46d15a31d8e5163f40e30bebc` (Fluid PR27130), committed
+2026-10-19T16:51:02Z. Guarded outputs are package metadata and `node_modules`;
+approved package-manager cache/store writes are expected. Local preview/validation
+environment source is `bc10323d4f07201a41e6f51e15fe5edec7af6b8c`
+(Fluid PR27131), committed 2026-10-19T16:53:28Z: disposable
+configuration directories and no inherited Mist/provider credentials or saved CLI
+profile. Project code still runs; this is not an OS sandbox. These are source
+contracts, not release, remote-CI or current automated-score assertions.
