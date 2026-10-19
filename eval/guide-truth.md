@@ -2722,8 +2722,8 @@ the docs tests do not simulate deployment or claim instant server revocation.
 
 ## Pending Mist widget workflow follow-up (2026-10-19)
 
-Prepared against the uncommitted Fluid source in the isolated Mist widget
-workflow branch, not a published desktop release. The guide explicitly marks
+Prepared against the recorded Fluid source snapshots below, not a published
+desktop release. The guide explicitly marks
 all three additions pending and preserves existing manual setup/handoff paths.
 Dependency installation is a writable project tool with exact fresh approval,
 package-script disclosure, npm/pnpm ownership, refusals for unsupported/conflicting
@@ -2731,4 +2731,16 @@ locks, and no direct-tool bypass. Local Portal source registration validates the
 active company, canonical workspace descendant and generated marker files; it
 is not remote creation/activation or script execution. Structured handoffs carry
 six explicit sections rather than source conversation history and never enlarge
-authority. Implementation source: Fluid PR27130 (approved dependency operations and structured handoffs), PR27131 (explicit local import and discovery), and PR27132 (related capability diagnostics). These are source references, not desktop release or deployment evidence. Confirm the installed release exposes the documented feature before declaring it available.
+authority. Recorded source snapshots inspected for this guide:
+
+- Fluid PR27130 (dependency approval and structured handoffs):
+  `c74ee1ffd7bde86b9cf7512ab1304c17b1059f03`, committed 2026-10-19T15:43:42Z.
+- Fluid PR27131 (explicit local import and discovery):
+  `de67d65a11bd217cfee9705c706e8fc9e244ff20`, committed 2026-10-19T15:44:13Z.
+- Fluid PR27132 (related capability diagnostics):
+  `caa4f490373c746f5ee8f6b46fd4265f25884c01`, committed 2026-10-19T15:42:29Z.
+
+These immutable references document the inspected source, not passing code
+reviews/CI, desktop release or deployment. Later implementation fixes do not
+retroactively change these snapshots. Confirm the installed release exposes
+the documented feature before declaring it available.
