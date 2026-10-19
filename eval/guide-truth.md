@@ -2786,3 +2786,9 @@ in troubleshooting. Analytics additions and lifecycle-install retries have no
 approval exception. Recognized recovery outputs may be restored; newer edits
 retain backups and refuse continuation. No power-loss/OS-transaction or desktop
 release claim follows from this source reference.
+
+The subsequent published source `7628484a13f49a2c77ecef2d27bcaf12d229aa5a`
+(Fluid PR27131), committed 2026-10-19T18:20:11Z, supports the pending local
+Git-read restrictions and isolated typed-publication config/build/detection
+subprocess guidance. Project code still executes; this source reference proves
+neither an operating-system sandbox nor passing remote review/CI or release.
