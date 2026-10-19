@@ -2778,3 +2778,11 @@ environment source is `bc10323d4f07201a41e6f51e15fe5edec7af6b8c`
 configuration directories and no inherited Mist/provider credentials or saved CLI
 profile. Project code still runs; this is not an OS sandbox. These are source
 contracts, not release, remote-CI or current automated-score assertions.
+
+The later published installer source `52c681118b9f555e3d503536ce92d10c172fc9ba`
+(Fluid PR27130; behavior commit `ecc4cf6a9e51042c21fa89974855d77f495e082b`)
+adds the strict manager-entrypoint and process-crash recovery policies described
+in troubleshooting. Analytics additions and lifecycle-install retries have no
+approval exception. Recognized recovery outputs may be restored; newer edits
+retain backups and refuse continuation. No power-loss/OS-transaction or desktop
+release claim follows from this source reference.
