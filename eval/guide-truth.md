@@ -2726,12 +2726,17 @@ Prepared against the recorded Fluid source snapshots below, not a published
 desktop release. The guide explicitly marks
 all three additions pending and preserves existing manual setup/handoff paths.
 Dependency installation is a writable project tool with exact fresh approval,
-package-script disclosure, npm/pnpm ownership, refusals for unsupported/conflicting
+lifecycle/pnpmfile-hook execution disabled, no build-verification claim, npm/pnpm
+ownership, refusals for unsupported/conflicting
 locks, and no direct-tool bypass. Local Portal source registration validates the
 active company, canonical workspace descendant and generated marker files; it
 is not remote creation/activation or script execution. Structured handoffs carry
 six explicit sections rather than source conversation history and never enlarge
-authority. Recorded source snapshots inspected for this guide:
+authority. The pending source-only project guard uses the supported Run preview
+and company-bound Publish widgets action; CLI deploy including dry-run and opaque
+dev/exec wrappers are controlled refusals. Generic terminal commands are explicitly
+separated from the Mist agent workflow, never a bypass. Initial snapshots inspected
+before these hardenings:
 
 - Fluid PR27130 (dependency approval and structured handoffs):
   `c74ee1ffd7bde86b9cf7512ab1304c17b1059f03`, committed 2026-10-19T15:43:42Z.
@@ -2744,3 +2749,19 @@ These immutable references document the inspected source, not passing code
 reviews/CI, desktop release or deployment. Later implementation fixes do not
 retroactively change these snapshots. Confirm the installed release exposes
 the documented feature before declaring it available.
+
+Hardened contract snapshots supporting this policy follow-up:
+
+- Fluid PR27130: `5b182be16b0f7b295438ae49be2f471f6888fb8c`, committed
+  2026-10-19T16:21:26Z; behavior source is
+  `ec34b074960bc9faea7bd21d4fb1b2d4ab8bb314`, committed 2026-10-19T16:20:54Z.
+- Fluid PR27131: `db31cc52ee656874f1642ed747680fe32883b069`, committed
+  2026-10-19T16:19:49Z.
+
+The hardened contract disables lifecycle scripts and pnpmfile hooks, checks the
+exact final spawn snapshot, and requires separately authorized supported
+build/validation rather than automatic post-install execution. Source-only
+preview uses Run/direct `fluid portal dev --skip-pull`; direct deploy, including
+dry-run, and opaque wrappers are refused in favor of the supported publication
+control. These are immutable inspected source references, not an assertion of
+passing remote CI, an automated review score, or a desktop release/deployment.
