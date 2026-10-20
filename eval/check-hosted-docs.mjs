@@ -498,7 +498,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["subscriptions/export-csv-export-csv", "GET /api/v202506/subscriptions/export_csv"],
   ["subscriptions/list-company-subscriptions", "GET /api/v2025-06/subscriptions"],
   ["tiktok/browse-the-connected-tiktok-shops-categories", "GET /api/v202506/tiktok/categories"],
-  ["tiktok/configure-the-tiktok-warehouse-used-for-inventory-publishing", "PATCH /api/v202506/tiktok/connection"],
+  ["tiktok/configure-the-tiktok-shop-connection", "PATCH /api/v202506/tiktok/connection"],
   ["tiktok/disconnect-the-companys-tiktok-shop-connection", "DELETE /api/v202506/tiktok/connection"],
   ["tiktok/get-the-companys-tiktok-shop-connection", "GET /api/v202506/tiktok/connection"],
   ["tiktok/list-the-companys-tiktok-orders", "GET /api/v202506/tiktok/orders"],
