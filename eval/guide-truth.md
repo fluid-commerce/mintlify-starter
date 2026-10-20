@@ -310,16 +310,13 @@ only needed when behavioral statements changed.
 `api/guides/headless-commerce.mdx` walks a flow that legitimately spans three
 published surfaces: product listing (`storefront-v2026-04`), the cart→order
 lifecycle (`checkout-v2026-04`), and card tokenization/3DS + wallets
-(`payments-v2026-04`). The mechanical checker resolves **one** spec per guide, so
-the guide is gated against `checkout-v2026-04` (its `guideSpecs` entry) and **all**
-its mechanical claims anchor there. The storefront and payments touchpoints are
+(`payments-v2026-04`). At Phase 9 the mechanical checker resolved **one** spec per
+guide, so the guide was gated against `checkout-v2026-04` alone and **all** its
+mechanical claims anchored there. The storefront and payments touchpoints were
 expressed as prose **cross-links** to their reference groups, deliberately
-token-light so the coverage lint stays satisfied against the checkout spec — the
-guide never emits a `/api/v202604/...` product path or a payments snake_case field
-as an asserted fact. This preserves the one-spec-per-guide model with no
-eval-harness change; if a future guide genuinely needs mechanical claims across
-multiple specs, extend `guideSpecs` to accept an array and resolve each claim
-against the spec that holds its anchor.
+token-light so the coverage lint stayed satisfied against the checkout spec. The
+array support below replaced that workaround; see the 2026-10-21 note for the
+guide's current mapping.
 
 **`guideSpecs` arrays (2026-10-07).** A `guideSpecs` value may now be an array of
 specs. Each claim validates against the first listed spec whose `paths` defines its
@@ -327,6 +324,15 @@ specs. Each claim validates against the first listed spec whose `paths` defines 
 fails. `guides/checkout-forms.mdx` maps to checkout, forms and settings, and
 `setup/open-a-country.mdx` to settings and forms. The self-test covers both the
 match and the fallback.
+
+**`headless-commerce` moved to an array (2026-10-21, ENG-2401).** The guide's
+"Place a test order" section gives the card steps as worked requests, so it now
+maps to checkout, `payments-v2026-04` (set the cart payment method) and
+`admin-v2025-06` (`tokenize_card`), and those claims anchor mechanically. The
+rest of the guide is unchanged: product listing and the wallet flows are still
+prose cross-links. `tokenize_card`'s spec lists `bearer_auth` while its own
+description and the controller take no authentication, so the guide's "needs no
+Bearer token" is a semantic claim (`headless-063`), not a mechanical `auth` one.
 
 ## Accepted omissions (deliberate — do not re-litigate without cause)
 
