@@ -1,0 +1,95 @@
+---
+title: "Egress proxy"
+sidebarTitle: "Egress proxy"
+description: "Give your Mist app a fixed outbound IP address, so it can reach Exigo's API and SQL replicas, which only accept allowlisted addresses."
+---
+
+Exigo accepts calls only from IP addresses each tenant has allowlisted. A Mist app runs on Vercel, where the outbound address changes, so no tenant can allowlist it. Fluid's egress proxy lends your app a fixed outbound address that Exigo tenants can allowlist.
+
+The proxy only opens a tunnel. The TLS connection runs from your app to Exigo through it, so the proxy never sees your Exigo credentials or the data you exchange.
+
+## What the proxy reaches
+
+- Exigo's REST API, on any `exigo.com` host, on port 443.
+- Exigo-hosted SQL replicas, on port 1433.
+
+The proxy refuses every other host and port.
+
+## Before you start
+
+- Your Mist app has a droplet attached. See [Integration points](/mist-apps/integration-points).
+- You're an admin of the company that owns the droplet.
+- The Exigo tenant has allowlisted Fluid's egress addresses, for both the API and the SQL replica:
+
+  | Address |
+  | --- |
+  | `34.144.173.17` |
+  | `34.174.57.210` |
+
+## Turn on the egress proxy
+
+Turn it on with any of these:
+
+- **CLI:** run `fluid mist droplet egress-proxy on` from the app's folder, or pass the app's slug: `fluid mist droplet egress-proxy on spring-bonus`.
+- **Mist:** check the egress option when you add or edit the droplet in the integration point dialog. The option shows when your company has it.
+- **Admin:** open the droplet's settings, and under **Network Access**, check **Let this droplet reach external systems (e.g. Exigo) through Fluid's egress proxy**.
+
+The proxy lets the droplet through as soon as egress is on, with no further approval. To turn it off, run `fluid mist droplet egress-proxy off`, or uncheck the option.
+
+The proxy checks each droplet again at least once a minute. After you turn egress off, new connections are refused within a minute. Connections that are already open keep running until they close.
+
+## Use the proxy from your app
+
+When you add a droplet to a Mist app, Fluid sets `FLUID_EGRESS_PROXY_URL` on the app. Your app authenticates to the proxy with the installation's droplet installation token, which starts with `dit_`. See [Authentication](/mist-apps/authentication#the-droplet-install-flow) for where the token comes from.
+
+With the [Exigo connection SDK](/sdk/exigo-sdk), pass both to the REST client and the SQL pool:
+
+```ts
+import { createExigoRestClient } from "@fluid-app/exigo-connection-sdk/rest";
+import { getExigoPool } from "@fluid-app/exigo-connection-sdk/sql";
+import { resolveFluidInstallation } from "@/lib/fluid/installation-context";
+
+const { installation, companyId } = await resolveFluidInstallation(request);
+const { rest, sql } = await resolveExigoCredentials(String(companyId));
+
+const egressProxy = process.env.FLUID_EGRESS_PROXY_URL
+  ? {
+      url: process.env.FLUID_EGRESS_PROXY_URL,
+      token: installation.authenticationToken,
+    }
+  : undefined;
+
+const exigo = createExigoRestClient(rest, { egressProxy });
+const pool = await getExigoPool(sql, { egressProxy });
+```
+
+Without the SDK, use any HTTP client that supports an HTTPS `CONNECT` proxy, and send the token on the proxy request:
+
+```http
+Proxy-Authorization: Bearer dit_9XcT3vMq7LpW2nRb5KsZ8hJf
+```
+
+The proxy URL is always `https`, because the token travels outside the tunnel.
+
+### Local runs
+
+`fluid mist env pull` leaves `FLUID_EGRESS_PROXY_URL` out on purpose. The proxy refuses calls from outside Fluid's platform, so a local run calls Exigo directly. The code above does that when the variable isn't set. To test the proxied path, deploy the app.
+
+## When the proxy refuses
+
+The Exigo connection SDK throws `ExigoProxyError`, whose `status` is the proxy's answer:
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| `407` | The proxy doesn't accept the token. | Send the installation's `dit_` token. The installation must still be active. |
+| `403` | The proxy doesn't let this droplet or this host through. | Turn on the egress proxy for the droplet, and check that the host is one [the proxy reaches](#what-the-proxy-reaches). |
+| `502` or `504` | The proxy couldn't reach the host. | Check the host name and port. |
+| `503` | The proxy couldn't verify the token, or is at capacity. | Retry after a short wait. |
+
+If the proxy lets you through but Exigo still refuses the call, the Exigo tenant hasn't allowlisted [Fluid's egress addresses](#before-you-start) for that service. The API and the SQL replica are allowlisted separately.
+
+## Related pages
+
+- [Exigo connection SDK](/sdk/exigo-sdk): call Exigo's API and query its SQL replica.
+- [Hosting](/mist-apps/hosting): the environment variables Fluid sets on your app.
+- [Integration points](/mist-apps/integration-points): attach a droplet to your Mist app.
