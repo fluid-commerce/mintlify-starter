@@ -777,8 +777,8 @@ components:
       description: >-
         A bundle group item and its stored in-kit override cells. When the
         item's variant is not this company's (or is gone), variant_available is
-        false and variant_id, title and sku are null.
-      required: [id, variant_available, variant_id, title, sku, cells]
+        false and variant_id, title, product_title and sku are null.
+      required: [id, variant_available, variant_id, title, product_title, sku, cells, read_fields, read_roles]
       additionalProperties: false
       properties:
         id:
@@ -789,16 +789,37 @@ components:
           type: [integer, 'null']
         title:
           type: [string, 'null']
+        product_title:
+          type: [string, 'null']
+          description: The title of the item's variant's product.
         sku:
           type: [string, 'null']
         cells:
           type: array
           items:
             $ref: '#/components/schemas/BundlePriceCell'
+        read_fields:
+          type: array
+          description: >-
+            The figures checkout or points read for this row in the bundle's
+            current configuration, at any price type.
+          items:
+            type: string
+            enum: [price, subscription_price, cv, qv, creditable_points]
+        read_roles:
+          type: object
+          description: >-
+            Price type id => { field => charged | fallback | recurring_pending }. A fallback is
+            read only when another figure is blank, zero or absent.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+              enum: [charged, fallback, recurring_pending]
     BundlePriceGroup:
       type: object
       description: A bundle group, its stored cells (fixed groups), and its items.
-      required: [id, title, group_type, pricing_type, cells, items]
+      required: [id, title, group_type, pricing_type, cells, items, read_fields, read_roles]
       additionalProperties: false
       properties:
         id:
@@ -818,6 +839,24 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BundlePriceItem'
+        read_fields:
+          type: array
+          description: >-
+            The figures checkout or points read for this row in the bundle's
+            current configuration, at any price type.
+          items:
+            type: string
+            enum: [price, subscription_price, cv, qv, creditable_points]
+        read_roles:
+          type: object
+          description: >-
+            Price type id => { field => charged | fallback | recurring_pending }. A fallback is
+            read only when another figure is blank, zero or absent.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+              enum: [charged, fallback, recurring_pending]
     BundlePricesWriteRequest:
       type: object
       description: >-
@@ -880,13 +919,19 @@ components:
         are sparse. bundle is null when the product has no master variant.
         pricing_enabled is whether bundle-level pricing is on (otherwise the
         bundle is priced from its groups).
-      required: [product_id, pricing_enabled, price_types, currency_codes, bundle, groups, status, meta]
+      required: [product_id, pricing_enabled, calculate_volume_from_items, bundle_subscriptions, price_types, currency_codes, bundle, groups, status, meta]
       additionalProperties: false
       properties:
         product_id:
           type: integer
         pricing_enabled:
           type: boolean
+        calculate_volume_from_items:
+          type: boolean
+          description: Whether the bundle's CV/QV is summed from its group items.
+        bundle_subscriptions:
+          type: boolean
+          description: Whether the company's bundle subscriptions are on (the subscription price is read only then).
         price_types:
           type: array
           items:
@@ -898,9 +943,27 @@ components:
         bundle:
           anyOf:
           - type: object
-            required: [variant_id, cells]
+            required: [variant_id, cells, read_fields, read_roles]
             additionalProperties: false
             properties:
+              read_fields:
+                type: array
+                description: >-
+                  The figures checkout or points read for this row in the bundle's
+                  current configuration, at any price type.
+                items:
+                  type: string
+                  enum: [price, subscription_price, cv, qv, creditable_points]
+              read_roles:
+                type: object
+                description: >-
+                  Price type id => { field => charged | fallback | recurring_pending }. A fallback is
+                  read only when another figure is blank, zero or absent.
+                additionalProperties:
+                  type: object
+                  additionalProperties:
+                    type: string
+                    enum: [charged, fallback, recurring_pending]
               variant_id:
                 type: integer
               cells:
@@ -1321,9 +1384,9 @@ components:
           description: 'Percent off as a decimal string, for example `10.0`. Meaningful only for `percentage` discounts.'
           type: [string, 'null']
         source:
-          description: 'Who manages the discount. `promo`: a merchant promo code that shoppers can enter. `droplet`: created by a droplet and not redeemable at customer checkout. `manual`: a one-off discount an admin applied to a cart; the list endpoint never returns these.'
+          description: 'Who manages the discount. `promo`: a merchant promo code that shoppers can enter. `droplet`: created by a droplet and not redeemable at customer checkout. `manual`: a one-off discount an admin applied to a cart; the list endpoint never returns these. `subscription_pro`: a tier or offer discount that Subscription Pro manages; the list endpoint returns these only with source=subscription_pro, and update and delete refuse them.'
           type: string
-          enum: [promo, manual, droplet]
+          enum: [promo, manual, droplet, subscription_pro]
         value_managed_by_droplet:
           description: 'True when a droplet computes the real discount amount at cart time.'
           type: boolean
@@ -2433,6 +2496,10 @@ components:
         tiktok_warehouse_id:
           type: [string, 'null']
           description: The TikTok logistics warehouse selected for inventory publishing.
+        house_member_id:
+          type: [string, 'null']
+          format: uuid
+          description: The member credited with this shop's TikTok orders that have no creator, or whose creator is unmatched or ambiguous. Null when no house account is configured. Applies only to orders imported after it was set.
     TiktokWarehouseAddress:
       description: >-
         A warehouse's address, as TikTok returns it. Field shapes are taken
@@ -8995,7 +9062,7 @@ paths:
     post:
       operationId: admin_v2025_06_customers_bulk_post
       summary: Create multiple customers
-      description: Creates or updates up to 1,000 customers in one request, matching existing customers by email (emails are lowercased). Each entry may carry a default address. The response lists one id per submitted entry, in order, so an email repeated in the payload returns the same id more than once. Rep attribution, default addresses and identity sync are applied in the background after the response. If any email is invalid, the whole batch is rejected with 422. When customer-create echo protection is enabled, a caller without the `members.view` permission is rejected with 422 for an email that belongs to an existing member without a customer. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback).
+      description: Creates or updates up to 1,000 customers in one request, matching existing customers by email (emails are lowercased). Each entry may carry a default address. The response lists one id per submitted entry, in order, so an email repeated in the payload returns the same id more than once. Rep attribution, default addresses and identity sync are applied in the background after the response. If any email is invalid, the whole batch is rejected with 422. When customer-create echo protection is enabled, a caller without the `members.view` permission has the whole batch rejected with 422, and nothing is written, when any email belongs to an existing member or customer (kept or discarded); the response lists only the submitted emails that collide and never a customer id. Requires a company admin Bearer token with the `members.manage` permission (`customers.update` is accepted as a fallback).
       tags: [customers]
       security:
       - bearer_auth: []
@@ -9695,7 +9762,7 @@ paths:
     get:
       operationId: admin_v2025_06_discounts_get
       summary: List promo codes (discounts)
-      description: 'Lists the company''s promo codes, which the API calls discounts. Returns merchant and droplet promo codes by default. Pass source=promo or source=droplet to filter by source. Manual discounts are always excluded from this listing.'
+      description: 'Lists the company''s promo codes, which the API calls discounts. Returns merchant and droplet promo codes by default. Pass source=promo, source=droplet or source=subscription_pro to filter by source. Manual discounts are always excluded from this listing.'
       tags: [discounts]
       security:
       - bearer_auth: []
@@ -9728,10 +9795,10 @@ paths:
       - name: source
         in: query
         required: false
-        description: Filter by discount source. Omit to include merchant and droplet promo codes.
+        description: Filter by discount source. Omit to include merchant and droplet promo codes. Subscription Pro discounts are listed only with source=subscription_pro.
         schema:
           type: string
-          enum: [promo, droplet]
+          enum: [promo, droplet, subscription_pro]
       responses:
         '200':
           description: Success
@@ -10225,8 +10292,10 @@ paths:
         Deletes several of the company's promo codes (discounts) in one request and returns the ids that were
         removed. The ids can also name manual discounts, which the list endpoint excludes. Discounts that are still referenced by orders or carts are archived rather than
         hard-deleted, so they stop appearing in listings. If any id does not belong to the company
-        (or is already deleted) nothing is removed and the request returns 404. Requires a company
-        admin Bearer token with coupons update permission.
+        (or is already deleted) nothing is removed and the request returns 404; this check runs first. When
+        every id belongs to the company and any of them names a discount that Subscription Pro manages,
+        nothing is removed and the request returns 422 with the error `managed_by_subscription_pro`.
+        Requires a company admin Bearer token with coupons update permission.
       tags: [discounts]
       security:
       - bearer_auth: []
@@ -10253,6 +10322,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
+        '404':
+          description: An id does not name a kept discount in the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A discount is managed by Subscription Pro
+          content:
+            application/json:
+              example:
+                error_message: Managed by Subscription Pro
+                errors:
+                  base:
+                  - managed_by_subscription_pro
+                meta:
+                  request_id: 4f1c2a9e-7b3d-4e8a-9c61-2d5f8a0b3e17
+                  timestamp: '2026-09-15T14:32:08Z'
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '200':
           description: Success
           content:
@@ -10397,7 +10486,8 @@ paths:
         endpoint excludes manual discounts. Send only the fields you want to change inside discount; omitted
         fields keep their current values. Requires a company admin Bearer token with coupons
         update permission. Returns the updated discount, 404 when it does not exist in the
-        company, or 422 when validation fails.
+        company, or 422 when validation fails. A discount that Subscription Pro manages is refused
+        with 422 and the error `managed_by_subscription_pro`.
       tags: [discounts]
       security:
       - bearer_auth: []
@@ -10685,7 +10775,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Validation failed
+          description: Validation failed, or the discount is managed by Subscription Pro
           content:
             application/json:
               schema:
@@ -10704,7 +10794,8 @@ paths:
         endpoint excludes manual discounts. A discount that is still referenced by orders or carts is archived
         instead of hard-deleted, and in both cases it no longer appears in listings. Requires a
         company admin Bearer token with coupons update permission. Returns 404 when the discount
-        does not exist in the company.
+        does not exist in the company. A discount that Subscription Pro manages is refused with 422
+        and the error `managed_by_subscription_pro`.
       tags: [discounts]
       security:
       - bearer_auth: []
@@ -10719,6 +10810,20 @@ paths:
           description: Not found
           content:
             application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The discount is managed by Subscription Pro
+          content:
+            application/json:
+              example:
+                error_message: Managed by Subscription Pro
+                errors:
+                  base:
+                  - managed_by_subscription_pro
+                meta:
+                  request_id: 4f1c2a9e-7b3d-4e8a-9c61-2d5f8a0b3e17
+                  timestamp: '2026-09-15T14:32:08Z'
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '200':
@@ -10754,7 +10859,7 @@ paths:
         code with `_(copy)` appended and is created inactive, so you can review and rename it
         before activating it. Requires a company admin Bearer token with coupons update
         permission. Returns the new discount, or 404 when the source discount does not exist in
-        the company.
+        the company. A discount that Subscription Pro manages is refused with 422 and the error `managed_by_subscription_pro`.
       tags: [discounts]
       security:
       - bearer_auth: []
@@ -10852,6 +10957,20 @@ paths:
           description: Not found
           content:
             application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The discount is managed by Subscription Pro
+          content:
+            application/json:
+              example:
+                error_message: Managed by Subscription Pro
+                errors:
+                  base:
+                  - managed_by_subscription_pro
+                meta:
+                  request_id: 4f1c2a9e-7b3d-4e8a-9c61-2d5f8a0b3e17
+                  timestamp: '2026-09-15T14:32:08Z'
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
       parameters:
@@ -14234,6 +14353,8 @@ paths:
               example:
                 product_id: 4021
                 pricing_enabled: true
+                calculate_volume_from_items: false
+                bundle_subscriptions: false
                 price_types:
                 - id: 0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c30
                   name: Retail
@@ -14257,6 +14378,14 @@ paths:
                     lock_token: 5b0f6c2a9d4e8f13a7c1e0b92d6f4a58c3e7b1d90a2f6c4e8b5d3a1f7c9e0b24
                     markets_in_sync: true
                     out_of_sync_market_ids: []
+                  read_fields: [price, cv, qv, creditable_points]
+                  read_roles:
+                    0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c30:
+                      price: charged
+                      subscription_price: recurring_pending
+                      creditable_points: charged
+                      cv: charged
+                      qv: charged
                 groups:
                 - id: 912
                   title: Starter essentials
@@ -14276,8 +14405,16 @@ paths:
                     variant_available: true
                     variant_id: 8790
                     title: Daily greens
+                    product_title: Daily greens
                     sku: GRN-001
                     cells: []
+                    read_fields: []
+                    read_roles:
+                      0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c30: {}
+                  read_fields: []
+                  read_roles:
+                    0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c30: {}
+
                 status: 200
                 meta:
                   request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
@@ -14357,6 +14494,8 @@ paths:
               example:
                 product_id: 1001
                 pricing_enabled: false
+                calculate_volume_from_items: false
+                bundle_subscriptions: false
                 price_types:
                 - id: 01900000-0000-7000-8000-0000000000a1
                   name: Preferred
@@ -14379,6 +14518,14 @@ paths:
                     creditable_points: null
                     lock_token: 3f2c9d1ab07e
                   items: []
+                  read_fields: [price, cv, qv, creditable_points]
+                  read_roles:
+                    01900000-0000-7000-8000-0000000000a1:
+                      price: charged
+                      subscription_price: recurring_pending
+                      cv: charged
+                      qv: charged
+                      creditable_points: charged
                 status: 200
                 meta:
                   request_id: 00000000-0000-4000-8000-000000000001
@@ -25012,7 +25159,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       summary: Create a new points ledger entry
-      description: Create a new points ledger entry for a customer.
+      description: >-
+        Create a new points ledger entry for a customer. `metadata.transaction_type`,
+        when given, must be one of order_redemption, order_refund, order_refund_deduction,
+        redemption_rollback, renewal_redemption_rollback, adjustment or charge; order_credit is
+        reserved for order earnings, and any other value is refused with 422. Whatever
+        it names, the entry is recorded as an adjustment with no price, and the name
+        stays in metadata.
       tags: [points-ledgers]
       operationId: admin_v2025_06_create_points_ledger
       security:
@@ -40466,8 +40619,12 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
     patch:
       operationId: admin_v202506_tiktok_connection_patch
-      summary: Configure the TikTok warehouse used for inventory publishing
-      description: Sets the TikTok logistics warehouse that inventory publishing uses
+      summary: Configure the TikTok shop connection
+      description: Sets the house-account member (`house_member_id`, null to clear) that
+        receives volume credit for TikTok orders with no creator or an unmatched or ambiguous
+        creator. It applies only to orders imported after the house member is set; earlier orders are never credited; the member must be an active member of this company, otherwise 422. At least one
+        of `tiktok_warehouse_id` and `house_member_id` is required, and `fluid_warehouse_id`
+        requires `tiktok_warehouse_id`. When `tiktok_warehouse_id` is sent, sets the TikTok logistics warehouse that inventory publishing uses
         for the company's TikTok Shop connection. Without `fluid_warehouse_id`,
         `tiktok_warehouse_id` must either equal the id already stored on the connection or,
         for a connection with no bound Fluid warehouse yet, match exactly one Fluid warehouse
@@ -40493,12 +40650,16 @@ paths:
             example:
               tiktok_warehouse_id: '7302198465731028741'
               fluid_warehouse_id: 12
+              house_member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
             schema:
               type: object
-              required: [tiktok_warehouse_id]
               properties:
                 tiktok_warehouse_id:
                   type: string
+                house_member_id:
+                  type: [string, 'null']
+                  format: uuid
+                  description: Id of the active company member to credit with TikTok orders that have no matched creator. Send null to clear the house account.
                 fluid_warehouse_id:
                   type: integer
                   minimum: 1
@@ -40556,7 +40717,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: The request is invalid, no single Fluid warehouse of this company maps the TikTok warehouse id (none, or several), a bound connection asked for a different id without `fluid_warehouse_id`, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, or TikTok rejected the request.
+          description: The request is invalid (including neither `tiktok_warehouse_id` nor `house_member_id`), `house_member_id` is not an active member of this company, no single Fluid warehouse of this company maps the TikTok warehouse id (none, or several), a bound connection asked for a different id without `fluid_warehouse_id`, the Fluid warehouse was not found, the connection is not active (when `fluid_warehouse_id` is given), the TikTok warehouse is missing from the shop, is not a sales warehouse, or is disabled, or TikTok rejected the request.
           content:
             application/json:
               schema:

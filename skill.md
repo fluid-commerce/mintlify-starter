@@ -118,3 +118,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 ## Portal worker Droplet reads
 
 - For a Portal widget that reads its member through a Droplet, follow https://docs.fluid.app/portal-widgets/widget-packages/droplet-data first. Use the built-in `queryDropletData({ dropletUuid, operation, params? })`, declare it in `uses`, and verify the SDK release, deployed bound-context backend and package-version capability approval. No custom host project is required once upgraded. Workers must not read host CSRF, fetch the authenticated Portal endpoint directly, persist private results, or use the member-storefront helper. Implement application-owned read-only receiver operations and verify the exact signed member echo.
+
+## Build and troubleshoot Portal widgets
+
+- Start with https://docs.fluid.app/portal-widgets/widget-packages/company-quickstart and use https://docs.fluid.app/portal-widgets/widget-packages/troubleshooting when a stage fails. Work in the Portal project, verify SDK support, and distinguish package publication from screen placement, exact-version capability approval and Portal publication. Test the actual signed-in Portal before claiming completion; report pending authoring steps explicitly.

@@ -12689,6 +12689,9 @@ components:
               - number
               - integer
               - 'null'
+        already_member:
+          type: boolean
+          description: Present and true when the email already held a member or admin seat in the company; nothing was written and no invitation was sent.
         meta:
           type:
           - object
@@ -12785,6 +12788,48 @@ components:
               - 'null'
               - number
               - integer
+            active:
+              type:
+              - boolean
+              - 'null'
+              default: true
+              description: When false, the member is created without sending an invitation.
+            rank_id:
+              type:
+              - integer
+              - 'null'
+              description: ID of one of the company's ranks.
+            sponsor_id:
+              type:
+              - string
+              - 'null'
+              description: Member or admin UUID, or legacy bigint ID, of the company. Not allowed with `roles` `admin`.
+            address:
+              type:
+              - object
+              - 'null'
+              additionalProperties: false
+              required:
+              - address1
+              - city
+              - state
+              - postal_code
+              - country_code
+              properties:
+                name:
+                  type: string
+                address1:
+                  type: string
+                address2:
+                  type: string
+                city:
+                  type: string
+                state:
+                  type: string
+                postal_code:
+                  type: string
+                country_code:
+                  type: string
     JsonValue:
       description: Any valid JSON value for provider, integration, theme, metadata, or other dynamic payloads whose keys are not fixed by the API contract.
       anyOf:
@@ -31937,13 +31982,42 @@ paths:
                   timestamp: '2026-09-30T14:12:45Z'
   "/api/company/contacts/export_csv":
     post:
-      summary: Queue a csv export for all company contacts
-      description: Queues a CSV export of every contact in the company. The file is built in the background and emailed to the calling user, so the response only confirms that the export was queued. Call it with a company admin user's token that has permission to view contacts.
+      summary: Queue a CSV export for company contacts
+      description: Queues a CSV export of company contacts, optionally filtered by creation date and country. The file is built in the background and emailed to the calling user, so the response only confirms that the export was queued. Call it with a company admin user's token that has permission to view contacts.
       tags:
       - contacts
       operationId: company_v0_export_company_contacts
       security:
       - bearer_auth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        description: First contact creation date to include, as an inclusive calendar day in `timezone` in MM/DD/YYYY format. Uses UTC when `timezone` is omitted.
+        example: 09/01/2026
+        schema:
+          type: string
+      - name: end_date
+        in: query
+        required: false
+        description: Last contact creation date to include, as an inclusive calendar day in `timezone` in MM/DD/YYYY format. Uses UTC when `timezone` is omitted.
+        example: 09/30/2026
+        schema:
+          type: string
+      - name: countries
+        in: query
+        required: false
+        description: Comma-separated ISO alpha-2 country codes used to filter contacts.
+        example: US,CA
+        schema:
+          type: string
+      - name: timezone
+        in: query
+        required: false
+        description: IANA time zone for the date filter day boundaries. An omitted or unrecognised value uses UTC.
+        example: America/Los_Angeles
+        schema:
+          type: string
       responses:
         '200':
           description: Success
@@ -31962,6 +32036,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '422':
+          description: A date is invalid, or the start date is after the end date.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/company/contacts/find_by_email":
     get:
       summary: Get Company User Details by email
@@ -39599,7 +39679,7 @@ paths:
   "/api/customers/import_csv":
     post:
       summary: Import customers via csv file in the url
-      description: Imports customers from a CSV file at `url`, typically one uploaded to a URL from `POST /api/customers/presigned_csv_url`. The file needs `email`, `first_name` and `last_name` columns and may add `phone`, `notes`, `address1`, `address2`, `city`, `state`, `postal_code` and `country`. The import runs synchronously and returns counts of created, failed and invalid rows. A missing required column fails the whole import with 422. Requires a company admin Bearer token with permission to manage members.
+      description: Imports customers from a CSV file at `url`, typically one uploaded to a URL from `POST /api/customers/presigned_csv_url`. The file needs `email`, `first_name` and `last_name` columns and may add `phone`, `notes`, `address1`, `address2`, `city`, `state`, `postal_code` and `country`. The import runs synchronously and returns counts of created, failed and invalid rows. When customer-create echo protection is enabled, a caller without the `members.view` permission has a row whose email belongs to an existing member or customer counted as failed, not created, and that member is not reused. A missing required column fails the whole import with 422. Requires a company admin Bearer token with permission to manage members.
       tags:
       - customers
       operationId: commerce_v0_import_customers_via_csv
@@ -57126,7 +57206,7 @@ paths:
   "/api/users/create_and_invite":
     post:
       summary: Creates and invites a user
-      description: "Adds a user to the token's company and emails them an invitation. The company is always the one the Bearer token belongs to; `company_id` may be omitted, and when sent it must be that company's ID. When the email already belongs to a user, that user is added to the company instead of a new one being created; the invitation is sent only when this is the user's first company. `roles` sets the member type (default `rep`); `admin` also grants the company's default admin role, and `admin_roles` adds further admin role IDs of the same company (admins only). Making someone an admin requires the caller to hold every permission of the roles granted; droplet tokens cannot create admins. Country and language fall back to the company's defaults when `country_code` / `language_code` are omitted. Requires a company admin Bearer token with permission to update users."
+      description: "Adds a user to the token's company, places them under their sponsor, and then emails them an invitation; the invitation is sent only after the member is created and placed. The company is always the one the Bearer token belongs to; `company_id` may be omitted, and when sent it must be that company's ID. When the email already belongs to a user, that user is added to the company instead of a new one being created; the invitation is sent only when this is the user's first company. When the email already holds a member or admin seat in the company, nothing is written, no invitation is sent, and the response carries `already_member: true`. Set `active` to false to create the member without sending an invitation. `rank_id` must be one of the company's ranks. `sponsor_id` is a member or admin UUID, or a legacy bigint ID, of the company; it is not allowed with `roles` `admin`. `address` accepts only `name`, `address1`, `address2`, `city`, `state`, `postal_code` and `country_code`, and requires `address1`, `city`, `state`, `postal_code` and `country_code`. `roles` sets the member type (default `rep`); `admin` also grants the company's default admin role, and `admin_roles` adds further admin role IDs of the same company (admins only). Making someone an admin requires the caller to hold every permission of the roles granted; droplet tokens cannot create admins. Country and language fall back to the company's defaults when `country_code` / `language_code` are omitted. Requires a company admin Bearer token with permission to update users."
       tags:
       - users
       operationId: company_v0_create_and_invite_user
@@ -57134,7 +57214,7 @@ paths:
       - bearer_auth: []
       responses:
         '200':
-          description: Success
+          description: The member was created and invited, or, with `already_member` true, the email already held a member or admin seat in the company and nothing was written.
           content:
             application/json:
               schema:
@@ -57167,7 +57247,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
-          description: The requested role is invalid, including selection of an archived custom member type or an admin role ID that is not one of the company's roles.
+          description: The request was refused and nothing was written, except for `invite_failed`. Causes are an invalid role (including an archived custom member type or an admin role ID that is not one of the company's roles), an invalid `address` (missing required key, unknown key, or unknown country), a `sponsor_id` that is not found or that is sent with `roles` `admin`, a `rank_id` that is not one of the company's ranks, or `invite_failed`, where the member was created but the invitation failed and `errors.member_id` holds the member's ID.
           content:
             application/json:
               schema:
@@ -57189,6 +57269,16 @@ paths:
                 phone: '+15705550163'
                 external_id: DM-REP-1044
                 username: pam-beesly
+                active: true
+                rank_id: 3021
+                sponsor_id: 7f3c2d9e-5b1a-4e8c-9d46-0a1b2c3d4e5f
+                address:
+                  name: Pam Beesly
+                  address1: 1725 Slough Avenue
+                  city: Scranton
+                  state: PA
+                  postal_code: '18505'
+                  country_code: US
   "/api/users/send_invite":
     post:
       operationId: commerce_v0_users_send_invite_post
