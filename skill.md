@@ -54,7 +54,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 Some areas have more than one generation of endpoints, and search can rank an older one first.
 
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
-- **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
+- **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
 - **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
 
 ## Before you build a Droplet
@@ -99,6 +99,8 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 ## Fluid CLI
 
 Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
+
+- **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. Or `FLUID_TOKEN=<token> fluid login`.
 
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
