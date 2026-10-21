@@ -35,7 +35,7 @@ Mist's theme development workflow uses the same CLI watcher. An agent saving the
 
 ## Document structure
 
-Use the exact filename **`members_sites.json`**, including the `s` in `members`. Put it next to root-level `variables.json`, not inside `config/`.
+Use the exact filename **`members_sites.json`**, including the `s` in `members`. Put it next to root-level `variables.json`, not inside `config/`. Fluid keeps `config/members_sites.json` for its own use, so an import that contains that file is rejected.
 
 These four top-level fields are required:
 
@@ -115,12 +115,15 @@ Each site requires these fields:
 | `active` | Boolean. Inactive sites do not match members. |
 | `default` | Boolean. Marks a fallback site, considered after explicit sites. Use `false` for an ordinary audience-specific site. |
 | `position` | Integer controlling site resolution order. |
-| `layout_name` | Layout name without directory or extension; `null` uses the normal layout fallback. `"none"` opts out of a theme layout. |
+| `layout_name` | Layout name without directory or extension, such as `member` for `layouts/member.liquid`. A name the theme doesn't have falls back to `member`, then to `theme`. `null` starts at `member`. `"none"` renders no layout and never falls back. |
 | `rule` | Object containing `country_codes` and `member_type_slugs` arrays. |
 | `menu_key` | Key of an entry in `menus`, or `null` for no assigned menu. |
 | `pages` | Array of custom member page definitions. |
 
-Rules use country codes such as `US` and `CA`, and member-type slugs such as `customer` and `rep`. Fluid resolves them against the receiving company. A missing country or missing/archived member type rejects the upload; it does not silently clear the restriction.
+A rule has two keys: `country_codes` holds ISO country codes such as `US` and `CA`, and `member_type_slugs` holds member-type slugs such as `customer` and `rep`. Fluid resolves them when it imports the document, and neither case below clears a restriction:
+
+- Each entry in `member_type_slugs` must match exactly one active member type in the receiving company. Otherwise the upload or import fails with `member type is missing or archived in destination`, at that entry's path. Before you copy a manifest to another company, check its slugs on the [Member Types](/help/admin/settings/member-types) screen or with [List company member types](/api-reference/members/list-company-member-types).
+- Fluid ignores a country code it doesn't recognize. If none of a site's country codes is recognized, the site is imported inactive, so it doesn't widen to every country.
 
 An empty rule axis is unconstrained. Clearing `member_type_slugs` broadens access; use `active: false` to disable a site. Country and member-type restrictions both apply when both are present. See [Site access rules](/themes/member-storefront/member-sites#decide-who-a-site-serves).
 
@@ -132,7 +135,7 @@ Every entry in a site's `pages` array requires:
 | --- | --- |
 | `key` | Page reference unique across all sites in this document. |
 | `title` | Display title. |
-| `slug` | Lowercase letters, numbers, and hyphens; unique within the site. |
+| `slug` | Lowercase letters, numbers, and hyphens, or `/` for the site's home page; unique within the site. |
 | `published` | Boolean controlling whether the member page is published. |
 | `template_path` | Relative path such as `members_page/rewards/index.liquid`, or `null` for an unbound page. |
 
@@ -148,6 +151,8 @@ For example, add this object to the intended site's `pages` array and include it
 }
 ```
 
+Some slugs are reserved, because the account host serves its own routes at them: `messaging`, `contacts`, `my-site`, `profile`, `orders`, `subscriptions`, `media`, `playlists`, `auth`, `api`, and `accounts`. A page with one of these slugs fails with `reserved system route`.
+
 A non-null template reference must resolve. Listing a path does not create the file's content. Include the layout, sections, snippets, and settings files that the page uses as well.
 
 System screens are Fluid-provided destinations. Link to them with a `MembersScreen` target; do not create custom page entries to represent them.
@@ -157,13 +162,24 @@ System screens are Fluid-provided destinations. Link to them with a `MembersScre
 Each menu requires `key`, `handle`, `title`, `active`, `country_codes`, and `items`.
 
 - `key` connects the menu to sites and declared settings.
-- `handle` is the preferred menu slug. An unrelated existing menu with that slug is not a prerequisite. Fluid can create a new menu and allocate a different handle on a collision.
-- `country_codes` must contain at least one country available in the receiving company. Unlike a site's country rule, this cannot be empty.
+- `handle` is the preferred menu slug. An unrelated existing menu with that slug is not a prerequisite. See [Menu handles on import](#menu-handles-on-import).
+- `country_codes` lists the countries the menu is available in. When it is empty, or none of its codes is recognized, the menu gets every country of the receiving company.
 - `items` is ordered. Each item requires `key`, `title`, `titles`, `target`, and `children`.
 - Item keys must be unique across all menus. `titles` maps locales to translated labels, such as `{"en": "Shop", "fr": "Boutique"}`. Use `{}` when there are no translations.
 - `children` contains more items of the same shape. Use `[]` for a leaf.
 
-Every declared menu must be referenced by a site's `menu_key` or a `menu_references` entry. Fluid preserves shared menus by creating a separate copy when an edit would otherwise change another consumer's navigation. Declared menu settings are rewritten to the allocated handle. Avoid hardcoding a handle that must survive a cross-company import.
+Every declared menu must be referenced by a site's `menu_key` or a `menu_references` entry. Fluid preserves shared menus by creating a separate copy when an edit would otherwise change another consumer's navigation.
+
+### Menu handles on import
+
+On import, Fluid updates the menu the site or setting already uses. When it has to create a menu and another menu in the company already has that handle, it adds a random suffix of 12 hexadecimal characters. For example, `customer-navigation` becomes `customer-navigation-d4e420b8aada`.
+
+Fluid rewrites two things to the handle it allocated:
+
+- Each site's menu link, which the layout reads as `settings.menu`.
+- Each `link_list` setting listed in `menu_references`.
+
+Fluid doesn't rewrite a handle typed into Liquid, so that markup keeps pointing at the other menu that already had the handle. Read the site's menu from `settings.menu`, or put the menu in a `link_list` setting, instead of naming a handle in markup.
 
 ### Link targets
 
@@ -243,11 +259,13 @@ Older array-based exports do not include a complete portable menu tree. Re-expor
 | --- | --- |
 | Saving does not trigger an upload | Use the exact root filename `members_sites.json`, check `.fluidignore`, and confirm the CLI is watching this directory. |
 | CLI says the member dependency is unavailable | Include all declared template files locally and remove ignore rules that exclude required dependencies. |
-| Upload fails after adding a country or member type | Use codes and slugs available in the target company. Do not use database IDs. |
+| Upload fails with `member type is missing or archived in destination` | Use a slug of an active member type in the target company, not a name or database ID. |
+| An imported site serves nobody | None of its country codes was recognized, so it was imported inactive. Fix the codes and import again. |
 | CLI reports an incomplete transfer | Correct the reported error and restart `fluid theme dev` as instructed. A rejected member transfer blocks later writes in that session. |
 | Navigation stays unchanged after a successful upload | Check the CLI's target theme, reload the correct preview, confirm the member resolves to the intended site, and verify the layout renders its assigned menu. |
 | The admin builder still shows the previous menu | Refresh that builder. The CLI's automatic reload applies to its own preview. |
 | A menu handle changes after import | Fluid allocated a separate menu to avoid a collision or protect a shared menu. Use the site's assigned menu or declared menu settings. |
+| A member page shows another menu after import | The Liquid names the handle directly, and it now belongs to a different menu. Read `settings.menu` or a `link_list` setting instead. |
 
 ## Task brief for coding agents
 
