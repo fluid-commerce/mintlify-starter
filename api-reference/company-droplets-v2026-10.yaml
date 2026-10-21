@@ -40,6 +40,10 @@ info:
 
     A droplet is described like the rest of the app's resources: a `title`, a one-line `summary` for its marketplace card, a longer `description` for its details page (HTML: paragraphs, headings, lists, links), a `logo_url`, and `features`, each a `title` with an optional `image_url` or `video_url`. Upload media to your company's DAM first and use the URLs it gives you.
 
+    ## Webhook secret
+
+    Fluid signs the webhooks and data requests it sends your droplet with its webhook secret. No droplet response carries it. `POST /droplets/{uuid}/webhook-secret-rotations` generates a new one and returns it once; the old one stops being used immediately.
+
     ## Checking a droplet's health
 
     `GET /droplets/{uuid}/health` says how a droplet's callbacks have behaved for your company's own installation over a trailing window: each callback it answers, whether a checkout waits on it, and its request, failure and timeout counts and latency. Read `metrics_available` first: the figures come from Fluid's monitoring, so they can be missing (`metrics` null, `metrics_error` set) while the installation and its callbacks are listed in full. A zero count is a real reading: nothing called that callback in the window. `installation` is null when your company publishes the droplet but has not installed it. Only your company's installation is ever returned.
@@ -52,6 +56,7 @@ info:
     - A droplet's installations are read by their own uuid at `/droplet-installations/{uuid}`, and `PATCH` there does not need `active`.
     - Listing who installed your droplet answers 404, not 401, when the droplet is not your company's.
     - `PATCH` changes only what you send.
+    - `status` replaces the `active` and `publicly_available` flags, with the same rules: anyone with `droplets.update` can take a droplet offline (`draft`) or back into service (`internal`); publishing, or unlisting a published droplet, needs a Fluid root admin.
     - `DELETE` is refused while another company has the droplet installed.
     - Publishing goes through marketplace review rather than an `active` or `publicly_available` flag.
   contact:
@@ -726,10 +731,16 @@ components:
           - type: object
             required:
             - id
+            - uuid
             - name
             properties:
               id:
                 type: integer
+                deprecated: true
+                description: 'Deprecated: use `uuid`.'
+              uuid:
+                type: string
+                format: uuid
               name:
                 type:
                 - string
@@ -841,6 +852,41 @@ components:
               items:
                 type: string
                 pattern: ^[A-Z]{3}$
+            data_url:
+              type:
+              - string
+              - 'null'
+              description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Sent together, the two
+                must match.
+            extension_zip_url:
+              type: string
+              minLength: 1
+              description: A public HTTPS URL of an extension zip (such as a theme extension) to import once the droplet is
+                saved. Any other URL is refused with 422 and nothing is written. The import runs in the background; read
+                `app_extensions` for its status.
+            egress_proxy_requested:
+              type: boolean
+              description: Ask for the droplet's installations to reach the internet through Fluid's egress proxy, from Fluid's
+                IP addresses. Only a company admin or a company API token may send it (403 otherwise). Setting it to false
+                also withdraws Fluid's grant. The grant itself, `egress_proxy_enabled`, is not set through this API.
+            lifecycle_contract_version:
+              type: string
+              enum:
+              - v1
+              - v2
+              description: Which install and uninstall webhook contract the droplet speaks.
+            status:
+              type: string
+              enum:
+              - draft
+              - internal
+              - published
+              description: '`draft` takes the droplet offline. `internal` makes it installable by your company and companies
+                it is granted to; a published droplet cannot be unlisted this way. `published` lists it in the public marketplace
+                and needs a Fluid root admin (403 otherwise): publish through marketplace review. Sending the current status
+                changes nothing, and moves the droplet''s lifecycle does not allow (for example out of `suspended`, or out
+                of service while other companies have it installed) are refused with 422. On create, the droplet starts from
+                `draft`.'
     CompanyDropletUpdateRequest:
       type: object
       required:
@@ -909,6 +955,41 @@ components:
               items:
                 type: string
                 pattern: ^[A-Z]{3}$
+            data_url:
+              type:
+              - string
+              - 'null'
+              description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Sent together, the two
+                must match.
+            extension_zip_url:
+              type: string
+              minLength: 1
+              description: A public HTTPS URL of an extension zip (such as a theme extension) to import once the droplet is
+                saved. Any other URL is refused with 422 and nothing is written. The import runs in the background; read
+                `app_extensions` for its status.
+            egress_proxy_requested:
+              type: boolean
+              description: Ask for the droplet's installations to reach the internet through Fluid's egress proxy, from Fluid's
+                IP addresses. Only a company admin or a company API token may send it (403 otherwise). Setting it to false
+                also withdraws Fluid's grant. The grant itself, `egress_proxy_enabled`, is not set through this API.
+            lifecycle_contract_version:
+              type: string
+              enum:
+              - v1
+              - v2
+              description: Which install and uninstall webhook contract the droplet speaks.
+            status:
+              type: string
+              enum:
+              - draft
+              - internal
+              - published
+              description: '`draft` takes the droplet offline. `internal` makes it installable by your company and companies
+                it is granted to; a published droplet cannot be unlisted this way. `published` lists it in the public marketplace
+                and needs a Fluid root admin (403 otherwise): publish through marketplace review. Sending the current status
+                changes nothing, and moves the droplet''s lifecycle does not allow (for example out of `suspended`, or out
+                of service while other companies have it installed) are refused with 422. On create, the droplet starts from
+                `draft`.'
     CompanyDropletPublishedInstallation:
       type: object
       description: Another company's installation of a droplet your company publishes.
@@ -999,6 +1080,36 @@ components:
           example: 200
         meta:
           $ref: '#/components/schemas/Meta'
+    CompanyDropletWebhookSecretRotationResponse:
+      type: object
+      description: The droplet's new webhook secret. Returned only here, once.
+      required:
+      - webhook_secret_rotation
+      - status
+      - meta
+      properties:
+        webhook_secret_rotation:
+          type: object
+          required:
+          - droplet_uuid
+          - webhook_secret
+          - rotated_at
+          properties:
+            droplet_uuid:
+              type: string
+            webhook_secret:
+              type: string
+              description: Signs the webhooks and data requests Fluid sends the droplet. Store it now; no response returns
+                it again.
+            rotated_at:
+              type: string
+              format: date-time
+              description: When the new secret took effect.
+        status:
+          type: integer
+          example: 201
+        meta:
+          $ref: '#/components/schemas/Meta'
     CompanyDropletInstallationUpdateRequest:
       type: object
       required:
@@ -1008,11 +1119,19 @@ components:
           type: object
           description: Only the keys sent change.
           properties:
+            role_uuid:
+              type:
+              - string
+              - 'null'
+              format: uuid
+              description: The role the droplet acts with, by its uuid. Null clears it. Needs the `roles.update` permission.
             role_id:
               type:
               - integer
               - 'null'
-              description: The role the droplet acts with. Null clears it.
+              deprecated: true
+              description: 'Deprecated: use `role_uuid`. The role by its integer id; null clears it. Sent with `role_uuid`,
+                both must name the same role or the update is refused with 422. Needs the `roles.update` permission.'
             scopes:
               type: array
               items:
@@ -1033,9 +1152,17 @@ components:
               items:
                 type: string
               description: Scopes to grant, within what the droplet requests. The droplet's own declaration when left out.
+            role_uuid:
+              type: string
+              format: uuid
+              description: The role the droplet acts with, by its uuid. A new role is made when left out. Needs the `roles.update`
+                permission.
             role_id:
               type: integer
-              description: The role the droplet acts with. A new role is made when left out.
+              deprecated: true
+              description: 'Deprecated: use `role_uuid`. The role by its integer id. Sent with `role_uuid`, both must name
+                the same role or the install is refused with 422. Needs the `roles.update` permission.'
+
     CompanyDropletFeature:
       type: object
       description: Something the droplet does, with an optional screenshot or video.
@@ -1098,6 +1225,27 @@ components:
               type:
               - string
               - 'null'
+    CompanyDropletInstallationFullListResponse:
+      type: object
+      description: A page of full installation rows (`view=full`).
+      required:
+      - droplet_installations
+      - status
+      - meta
+      properties:
+        droplet_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletInstallation'
+        status:
+          type: integer
+          example: 200
+        meta:
+          allOf:
+          - $ref: '#/components/schemas/Meta'
+          - type: object
+            required:
+            - pagination
     CompanyDropletInstallationListResponse:
       type: object
       required:
@@ -1115,6 +1263,26 @@ components:
         meta:
           $ref: '#/components/schemas/Meta'
   responses:
+    WriteForbidden:
+      description: Authenticated, but not a company admin with `droplets.update`, or a droplet installation token (bare body);
+        or a write only some callers may make (the error envelope), such as publishing without being a Fluid root admin, or
+        `egress_proxy_requested` from a caller other than a company admin or company API token.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ForbiddenError'
+            - $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Publishing goes through marketplace review
+              details:
+                status:
+                - must be a Fluid root admin to publish or unlist a droplet
+            status: 403
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-20T15:32:08Z'
     Unauthorized:
       description: Missing or invalid bearer token. The body is a bare `{ message }`, not the error envelope.
       content:
@@ -1395,7 +1563,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/WriteForbidden'
         '422':
           description: Invalid parameters or an unknown category slug, and nothing is written. Rarely, the droplet saves but
             its categories cannot be changed; `error.message` then says so.
@@ -1523,7 +1691,10 @@ paths:
       operationId: companyDropletUpdate
       summary: Update a droplet
       description: Changes a droplet your company publishes. Only the keys you send change, so updating the summary leaves
-        the description, logo and features alone. `features`, when sent, replaces the list.
+        the description, logo and features alone. `features`, when sent, replaces the list. `status` takes the droplet offline
+        (`draft`) or back into service (`internal`); publishing needs a Fluid root admin. `egress_proxy_requested` needs a
+        company admin or a company API token, and `extension_zip_url` a public HTTPS URL; both are checked before anything is
+        written.
       tags:
       - droplets
       x-fluid-audience: company
@@ -1591,7 +1762,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/WriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -1769,6 +1940,69 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+  /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The uuid of a droplet your company publishes.
+      schema:
+        type: string
+      example: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+    post:
+      operationId: companyDropletWebhookSecretRotationCreate
+      summary: Rotate a droplet's webhook secret
+      description: |-
+        Generates a new webhook secret for a droplet your company publishes and returns it, once. This is how you obtain the secret on v2026-10: no other response returns it, and asking again rotates again.
+
+        The old secret stops being used the moment the new one is saved: every webhook and data request Fluid signs from then on uses the new one, so update your droplet straight away. A lifecycle webhook already queued when you rotate is still signed with the old one. A droplet built in Mist has the new secret written to its app's `FLUID_DROPLET_SECRET` and `FLUID_WEBHOOK_AUTH_TOKEN` and is redeployed. A Mist app with no linked GitHub repository gets the new values but is not redeployed, so it keeps verifying with the old secret until its next deploy; deploy it yourself after rotating.
+
+        Another company's droplet is a 404. The response is never cached. Needs the `droplets.update` permission, including for a Fluid root admin's sign-in narrowed to company admin.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: The new secret.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletWebhookSecretRotationResponse'
+              example:
+                webhook_secret_rotation:
+                  droplet_uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                  webhook_secret: dws_3Fq8mZr2kTn6vXb1cLw9yHd4pJs7aGe5u
+                  rotated_at: '2026-10-20T15:32:08Z'
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
   /api/company/v2026-10/droplets/{droplet_uuid}/installations:
     parameters:
     - name: droplet_uuid
@@ -1881,9 +2115,9 @@ paths:
       description: |-
         Installs a droplet for your company and calls its install webhook. You can install a published droplet, one your company publishes, or an internal droplet granted to you.
 
-        The droplet receives the scopes it requests unless you narrow them with `installation.scopes`.
+        The droplet receives the scopes it requests unless you narrow them with `installation.scopes`. Name the role it acts with by `installation.role_uuid`; the integer `role_id` still works but is deprecated.
 
-        Needs the `droplets.update` permission.
+        Needs the `droplets.update` permission, and `roles.update` to name a role, as assigning a role to a member does.
       tags:
       - droplets
       x-fluid-audience: company
@@ -1907,6 +2141,7 @@ paths:
                   status: active
                   role:
                     id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
                     name: Order Sync
                   scopes:
                   - orders
@@ -1951,7 +2186,8 @@ paths:
                   request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-18T15:32:08Z'
         '422':
-          description: An unknown role, a sandbox company, or a refused install.
+          description: A role your company does not have, `role_id` and `role_uuid` naming different roles, a sandbox company,
+            or a refused install.
           content:
             application/json:
               schema:
@@ -1982,46 +2218,136 @@ paths:
                   installation:
                     scopes:
                     - orders
+              with_role:
+                summary: Act with an existing role
+                value:
+                  installation:
+                    role_uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
   /api/company/v2026-10/droplet-installations:
     get:
       operationId: companyDropletInstallationsIndex
       summary: List installed droplets
-      description: 'Every droplet your company has installed, ordered by title, with only the installation''s and droplet''s
-        identifiers, title and logo. Use it for navigation menus and other places shown on every page: it is one small response,
-        not paginated, where listing the catalog with `filter[ownership]=installed` returns each droplet''s full listing.
-        Installations being removed are left out.'
+      description: |-
+        Every droplet your company has installed, ordered by title, with only the installation's and droplet's identifiers, title and logo. Use it for navigation menus and other places shown on every page: it is one small response, not paginated, where listing the catalog with `filter[ownership]=installed` returns each droplet's full listing. Installations being removed are left out.
+
+        With `view=full` it returns full installation rows instead (status, scopes, effective scopes, the droplet, and the role when you have `roles.view`), as `GET /api/droplet_installations` did: every installation not yet uninstalled, so one being removed too, newest first, narrowed with `filter[category]` and paged by cursor (`page[limit]`, `page[cursor]`, `meta.pagination.next_cursor`). The other parameters are read only with `view=full`.
+
+        Needs the `droplets.view` permission.
       tags:
       - droplets
       x-fluid-audience: company
       security:
       - bearer_auth: []
+      parameters:
+      - name: view
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - full
+        example: full
+        description: '`full` for full installation rows, paged. Leave out for the navigation list.'
+      - name: filter[category]
+        in: query
+        required: false
+        schema:
+          type: string
+        example: payments
+        description: With `view=full`, only installations of droplets in this category slug.
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: With `view=full`, the opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: With `view=full`, installations per page. Default 25, maximum 100.
       responses:
         '200':
-          description: The installed droplets.
+          description: The installed droplets; full rows with `view=full`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CompanyDropletInstallationListResponse'
-              example:
-                droplet_installations:
-                - uuid: dri_7Hc2kWq9mNz4pLx8
-                  droplet:
-                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
-                    title: Order Sync
-                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
-                - uuid: dri_2Rk8vYb5cTq1wMe6
-                  droplet:
-                    uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
-                    title: Wholesale Pricing
-                    logo_url: null
-                status: 200
-                meta:
-                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-20T15:32:08Z'
+                anyOf:
+                - $ref: '#/components/schemas/CompanyDropletInstallationListResponse'
+                - $ref: '#/components/schemas/CompanyDropletInstallationFullListResponse'
+              examples:
+                navigation:
+                  summary: The navigation list
+                  value:
+                    droplet_installations:
+                    - uuid: dri_7Hc2kWq9mNz4pLx8
+                      droplet:
+                        uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                        title: Order Sync
+                        logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                    - uuid: dri_2Rk8vYb5cTq1wMe6
+                      droplet:
+                        uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                        title: Wholesale Pricing
+                        logo_url: null
+                    status: 200
+                    meta:
+                      request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                      timestamp: '2026-10-20T15:32:08Z'
+                full:
+                  summary: Full rows (view=full)
+                  value:
+                    droplet_installations:
+                    - uuid: dri_7Hc2kWq9mNz4pLx8
+                      droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                      droplet:
+                        uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                        title: Order Sync
+                        logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                      status: active
+                      role:
+                        id: 4182
+                        uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                        name: Order Sync
+                      scopes:
+                      - orders
+                      effective_scopes:
+                      - orders
+                      created_at: '2026-10-18T15:32:08Z'
+                      updated_at: '2026-10-18T15:32:08Z'
+                    status: 200
+                    meta:
+                      request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                      timestamp: '2026-10-20T15:32:08Z'
+                      pagination:
+                        cursor: null
+                        limit: 25
+                        prev_cursor: null
+                        next_cursor: null
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          description: With `view=full`, an invalid view, limit or cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    view:
+                    - must be one of: full
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
   /api/company/v2026-10/droplet-installations/{uuid}:
     parameters:
     - name: uuid
@@ -2061,6 +2387,7 @@ paths:
                   status: active
                   role:
                     id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
                     name: Order Sync
                   scopes:
                   - orders
@@ -2098,7 +2425,7 @@ paths:
       description: |-
         Changes the role or scopes of one of your company's installations. Only the keys you send change. Sending `active: false` then uninstalls it, as `DELETE` does: the droplet's credentials are revoked and its uninstall webhook is sent.
 
-        Needs the `droplets.update` permission, and `roles.update` to send `role_id`, as assigning a role to a member does. Replaces `PUT /api/droplet_installations/{uuid}`, where `active` was required on every call and `role_id` needed only `droplets.update`.
+        Needs the `droplets.update` permission, and `roles.update` to send `role_uuid` or the deprecated `role_id`, as assigning a role to a member does; sent together, both must name the same role. Replaces `PUT /api/droplet_installations/{uuid}`, where `active` was required on every call and `role_id` needed only `droplets.update`.
       tags:
       - droplets
       x-fluid-audience: company
@@ -2121,7 +2448,7 @@ paths:
                 summary: Change the role
                 value:
                   installation:
-                    role_id: 4182
+                    role_uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
       responses:
         '200':
           description: Updated, or uninstalling when `active` was false.
@@ -2140,6 +2467,7 @@ paths:
                   status: active
                   role:
                     id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
                     name: Order Sync
                   scopes:
                   - orders
@@ -2170,7 +2498,7 @@ paths:
                   request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-20T15:32:08Z'
         '422':
-          description: Invalid parameters, a role your company does not have, or scopes the droplet may not request.
+          description: Invalid parameters, a role your company does not have, `role_id` and `role_uuid` naming different roles, or scopes the droplet may not request.
           content:
             application/json:
               schema:
@@ -2179,7 +2507,7 @@ paths:
                 error:
                   message: Role not found
                   details:
-                    role_id:
+                    role_uuid:
                     - not found
                 status: 422
                 meta:
@@ -2215,6 +2543,7 @@ paths:
                   status: pending_uninstall
                   role:
                     id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
                     name: Order Sync
                   scopes:
                   - orders
