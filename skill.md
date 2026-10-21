@@ -30,6 +30,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
 | Build, host or troubleshoot a Mist app: hosting, database, env vars, integration points, domains, billing | https://docs.fluid.app/mist-apps/overview |
 | Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
+| Call Exigo's API or query its SQL replica from a droplet or Mist app, including through Fluid's egress proxy | https://docs.fluid.app/sdk/exigo-sdk, then https://docs.fluid.app/mist-apps/egress-proxy |
 | Decide between a Fluid theme and a headless front end | https://docs.fluid.app/themes/why-fluid-themes |
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
 | Call the REST API | https://docs.fluid.app/api/overview, then the task guides under https://docs.fluid.app/api/guides |
@@ -102,7 +103,7 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
 - **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
-- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet egress-proxy`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
 
 ## Admin portal help
 
