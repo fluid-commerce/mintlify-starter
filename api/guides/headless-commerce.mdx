@@ -160,15 +160,21 @@ A few cart operations, such as setting the volume rep, also need a Bearer token.
   </Step>
 
   <Step title="Collect payment">
-    Card capture and tokenization happen on Fluid's cart payment surface, which authenticates with the cart token in the path — no Bearer token — and returns a payment reference. See the Cart payment endpoints reference for tokenization, 3D Secure, and the wallet flows (Apple Pay, PayPal, and others). Carry the resulting reference into the next step as the `payment_uuid` query parameter.
+    Card capture and tokenization happen on Fluid's cart payment surface, which authenticates with the cart token in the path — no Bearer token. A card is attached to the cart itself, and completing the checkout charges it. See the Cart payment endpoints reference for tokenization, 3D Secure, and the wallet flows (Apple Pay, PayPal, and others). If your payment flow returns a payment reference, carry it into the next step as the `payment_uuid` query parameter. To try the whole flow without a real card, see [Place a test order](#place-a-test-order).
   </Step>
 
   <Step title="Complete the checkout">
-    Turn the cart into an order with `POST /api/checkout/v2026-04/carts/{cart_token}/complete`. Pass the payment reference as the `payment_uuid` query parameter, and send an `Idempotency-Key` header so a retried request never places a second order. A successful call returns `200` with the completed order.
+    Turn the cart into an order with `POST /api/checkout/v2026-04/carts/{cart_token}/complete`. If the payment step returned a payment reference, pass it as the `payment_uuid` query parameter. Always send an `Idempotency-Key` header so a retried request never places a second order. A successful call returns `200` with the completed order.
+
+    The cart lists its checkout agreements under `agreements`. Accept every agreement whose `required` is true by passing its id in `accepted_agreement_ids`, in the JSON request body; a checkout without them is refused with `422`.
 
     ```bash
     curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/complete?payment_uuid=pay_3Fd8Qw" \
-      -H "Idempotency-Key: 2f6b1c8a-checkout-01"
+      -H "Content-Type: application/json" \
+      -H "Idempotency-Key: 2f6b1c8a-checkout-01" \
+      -d '{
+        "accepted_agreement_ids": [5521, 5522, 5523]
+      }'
     ```
 
     <Warning>
@@ -184,6 +190,67 @@ A few cart operations, such as setting the volume rep, also need a Bearer token.
     ```
   </Step>
 </Steps>
+
+## Place a test order
+
+A new company comes with a test card gateway, so you can prove the whole flow works before the merchant's payments are approved, with no browser and no real card. The test gateway approves every charge and never sends the card to a processor, so no money moves. Everything else treats it as a real order: it sends the same order webhooks and order emails, and any back office, sales channel or droplet already connected sees it. The only test marker is on its payment, `test_transaction` true in the order webhook's `payments`. Give the cart an email address you control, tell the merchant which order was the test, and refund it afterwards (below).
+
+The test gateway is in place once the merchant has confirmed the company's signup. Build a cart through the shipping step above, with an email and an address, then:
+
+1. **Check the cart offers only the test gateway.** Read the cart and look at `available_payment_methods`. Go on only if every entry has `type` `credit_card`, `test` true, and `bogus_gateway` true, and take that entry's `uuid`. If any entry is a live payment method, stop: a charge could reach a real processor. An empty list means the company has no payment account yet.
+
+2. **Get a test card token.** Call [`POST /api/v202506/payments/tokenize_card`](/api-reference/payment/tokenize-credit-card) with test card details under `credit_card`: a test number such as `4242424242424242` and any future expiry month and year. Never send a real card to this endpoint: it takes the full card number with no Bearer token. It checks the card locally and returns the token under `transaction.payment_method.token`.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/payments/tokenize_card" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "credit_card": {
+          "first_name": "Dana",
+          "last_name": "Lee",
+          "number": "4242424242424242",
+          "verification_value": "123",
+          "month": "12",
+          "year": "2029"
+        }
+      }'
+    ```
+
+3. **Attach the card to the cart.** Call `PUT /api/payments/v2026-04/carts/{cart_token}/payment_method` with `type` `credit_card`, the card under `payment_method`, and the test gateway's `uuid` as `payment_account`, so the charge can only go to that account. A successful call returns `201`. Under `payment_method`, put the step 2 token in `token`, and copy the card's details from the same step 2 `payment_method`: `full_name` into `card_holder`, `last_four_digits` into `last_four`, `first_six_digits` into `bin`, `card_network` as it is, and `month` and `year` into `exp_month` and `exp_year`. Keep `token_provider` as `vgs`, even though this token didn't come from VGS: `vgs` is the only provider a card accepts.
+
+    ```bash
+    curl -X PUT "https://api.fluid.app/api/payments/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/payment_method" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "type": "credit_card",
+        "payment_method": {
+          "token_provider": "vgs",
+          "token": "Xc8Tn3WqL5vKp9RmZ2bHf7JdY4sA",
+          "card_holder": "Dana Lee",
+          "last_four": "4242",
+          "bin": "424242",
+          "card_network": "visa",
+          "exp_month": "12",
+          "exp_year": "2029"
+        },
+        "payment_account": "pa_81iupl3azdmjpmrrnf1yzviosbwhtqfd"
+      }'
+    ```
+
+4. **Complete the checkout** with the cart's required agreements in `accepted_agreement_ids` and no `payment_uuid`. A successful call returns `200` with the order.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/checkout/v2026-04/carts/ct_7Hq2Kd9Rm4bV1nX/complete" \
+      -H "Content-Type: application/json" \
+      -H "Idempotency-Key: 7c41e9d2-test-order-01" \
+      -d '{
+        "accepted_agreement_ids": [5521, 5522, 5523]
+      }'
+    ```
+
+If the company has no payment account yet, `complete` is refused with `422`, and the error's code is `payment_account_unavailable`. No money moves.
+
+When you've checked the order, refund it in full and cancel it with `POST /api/refunds`, using the order's numeric `id` from the order response, `type` `all` and `cancel_order` true. This needs the merchant's Bearer token with permission to update refunds; no cart-token route cancels an order. The refund and the cancellation send their own order webhooks, and customer emails where the company has them turned on.
 
 ## Related surfaces
 
