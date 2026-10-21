@@ -1850,13 +1850,18 @@ Phase 006 design in fluid `features/member-storefront` (sealed screens, a
 member identity bridge for droplets) is Draft; the guide claims none of it.
 
 **Scoped exception — the upload API.** At the user's explicit request, the
-guide documents the agent flow without the admin: `PUT /api/droplets/{uuid}`
-with `droplet.extension_zip_url`, polling `app_extensions[].status`, `POST
-/api/droplet_installations`, and `GET /api/application_theme_templates` for
-`extension_uri`. This overrides "no extension upload HTTP payload is restated"
-above for this guide only, in the same way as the navigation menus exception.
-None of these unversioned endpoints is in a synced spec, so the claims are
-semantic. Evidence: `Api::Droplets::{Create,Update,Show}Action`,
+guide documents the agent flow without the admin: `PATCH
+/api/company/v2026-10/droplets/{uuid}` with `droplet.extension_zip_url`, polling
+`droplet.app_extensions[].status` on `GET /api/company/v2026-10/droplets/{uuid}`,
+`POST /api/company/v2026-10/droplets/{droplet_uuid}/installations`, and `GET
+/api/application_theme_templates` for `extension_uri`. This overrides "no
+extension upload HTTP payload is restated" above for this guide only, in the same
+way as the navigation menus exception. The droplet steps moved from the
+unversioned `/api/droplets` and `/api/droplet_installations` endpoints to the
+synced `company-droplets-v2026-10` spec (fluid #27614, #27645), so the guide has a
+`guideSpecs` entry for that spec and its droplet claims are mechanical; the theme
+template step is still unsynced and semantic. Original evidence for the
+unversioned flow: `Api::Droplets::{Create,Update,Show}Action`,
 `Droplet::ExtensionImporter`, `UrlSecurity`, `AppExtension` (status enum),
 `AppExtensionBlueprint` (`error_message` on the owner view),
 `Api::DropletInstallations::CreateAction` (409 on an existing install), and
