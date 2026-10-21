@@ -710,6 +710,9 @@ components:
             Opaque digest of the identity and version of every row backing the
             cell. Send it back on a write; any insert, delete or edit of a
             backing row changes it.
+        market_id:
+          type: string
+          description: Present only on a market cell (in market_cells), naming the market whose row this is.
     BundleLevelPriceCell:
       type: object
       description: >-
@@ -721,8 +724,10 @@ components:
         differ or have no list or row for it (a market whose region supports the
         currency counts). subscription_price is the plan-less subscription
         row; plan_overrides are read-only plan-scoped rows, which win for their
-        plan. lock_token digests every expected market slot.
-      required: [pricing_tier_id, currency_code, price, compare_at_price, subscription_price, cv, qv, creditable_points, lock_token, markets_in_sync, out_of_sync_market_ids, plan_overrides]
+        plan. lock_token digests every expected market slot. markets holds each
+        participating market's own figures and lock_token, for editing one
+        market on its own (market_id on a write).
+      required: [pricing_tier_id, currency_code, price, compare_at_price, subscription_price, cv, qv, creditable_points, lock_token, markets_in_sync, out_of_sync_market_ids, plan_overrides, markets]
       additionalProperties: false
       properties:
         pricing_tier_id:
@@ -772,6 +777,40 @@ components:
             format: uuid
         markets_in_sync:
           type: boolean
+        markets:
+          type: array
+          items:
+            type: object
+            required: [market_id, market_name, price, compare_at_price, subscription_price, cv, qv, creditable_points, lock_token]
+            additionalProperties: false
+            properties:
+              market_id:
+                type: string
+                format: uuid
+              market_name:
+                type: [string, 'null']
+              price:
+                type: [string, 'null']
+                format: decimal
+              compare_at_price:
+                type: [string, 'null']
+                format: decimal
+              subscription_price:
+                type: [string, 'null']
+                format: decimal
+              cv:
+                type: [string, 'null']
+                format: decimal
+              qv:
+                type: [string, 'null']
+                format: decimal
+              creditable_points:
+                type: [integer, 'null']
+              lock_token:
+                type: string
+                description: >-
+                  Opaque digest of this market's rows alone. Send it back with
+                  market_id on a per-market write.
     BundlePriceItem:
       type: object
       description: >-
@@ -798,6 +837,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BundlePriceCell'
+        market_cells:
+          type: array
+          description: >-
+            Present only when the target has market rows. Each is a complete cell of its own for the market named
+            by market_id, replacing the cell of the same price type and currency in cells for that market.
+          items:
+            $ref: '#/components/schemas/BundlePriceCell'
+        markets_in_sync:
+          type: boolean
+          description: Present with market_cells; false while any market row exists.
+        collapse_tokens:
+          type: array
+          description: >-
+            Present with market_cells. One entry per price type and currency that has market rows: the lock_token a
+            same_in_every_market cell must send. It covers the market-less row and every market row.
+          items:
+            type: object
+            required: [pricing_tier_id, currency_code, lock_token]
+            additionalProperties: false
+            properties:
+              pricing_tier_id:
+                type: string
+              currency_code:
+                type: string
+              lock_token:
+                type: [string, 'null']
         read_fields:
           type: array
           description: >-
@@ -835,6 +900,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BundlePriceCell'
+        market_cells:
+          type: array
+          description: >-
+            Present only when the target has market rows. Each is a complete cell of its own for the market named
+            by market_id, replacing the cell of the same price type and currency in cells for that market.
+          items:
+            $ref: '#/components/schemas/BundlePriceCell'
+        markets_in_sync:
+          type: boolean
+          description: Present with market_cells; false while any market row exists.
+        collapse_tokens:
+          type: array
+          description: >-
+            Present with market_cells. One entry per price type and currency that has market rows: the lock_token a
+            same_in_every_market cell must send. It covers the market-less row and every market row.
+          items:
+            type: object
+            required: [pricing_tier_id, currency_code, lock_token]
+            additionalProperties: false
+            properties:
+              pricing_tier_id:
+                type: string
+              currency_code:
+                type: string
+              lock_token:
+                type: [string, 'null']
         items:
           type: array
           items:
@@ -890,9 +981,30 @@ components:
                 type: string
                 minLength: 3
                 maxLength: 3
+              market_id:
+                type: [string, 'null']
+                description: >-
+                  Bundle cells: writes that market's row alone, from that market's own figures, and takes the
+                  market's lock_token from the cell's markets; accepted while the markets differ. A market that does
+                  not take part in the price type and currency is refused (market_invalid). Group and item cells: the
+                  id of one of the company's markets; the cell then reads and writes that market's own row, which
+                  replaces the market-less row for the market whole (a new market row is completed from the row it
+                  overrides). Another company's market, or one that does not carry the currency, is a 422
+                  (market_invalid). Omitted or null addresses the market-less row (every market of the currency, for
+                  a bundle cell).
               lock_token:
                 type: [string, 'null']
-                description: The cell's lock_token as read; null or absent for a cell that does not exist yet.
+                description: >-
+                  The cell's lock_token as read (the market's lock_token when market_id is
+                  sent); null or absent for a cell that does not exist yet.
+              same_in_every_market:
+                type: [boolean, 'null']
+                description: >-
+                  Group and item cells only, without market_id. When true, deletes the market rows of this target,
+                  price type and currency and writes the market-less row. Send the collapse_tokens entry
+                  of the target for this price type and currency as lock_token (the market-less cell's own token
+                  while no market row exists); a market row added, removed or edited since the read makes it a 409.
+                  Not allowed in the same batch as a market cell for the same coordinate.
               price:
                 type: [number, string, 'null']
                 description: >-
@@ -943,9 +1055,29 @@ components:
         bundle:
           anyOf:
           - type: object
-            required: [variant_id, cells, read_fields, read_roles]
+            required: [variant_id, cells, markets, read_fields, read_roles]
             additionalProperties: false
             properties:
+              markets:
+                type: array
+                description: >-
+                  The company's markets by position with the currencies each sells, so a
+                  currency with no stored bundle price still offers its markets for a
+                  per-market write.
+                items:
+                  type: object
+                  required: [market_id, market_name, currency_codes]
+                  additionalProperties: false
+                  properties:
+                    market_id:
+                      type: string
+                      format: uuid
+                    market_name:
+                      type: [string, 'null']
+                    currency_codes:
+                      type: array
+                      items:
+                        type: string
               read_fields:
                 type: array
                 description: >-
@@ -2691,6 +2823,28 @@ components:
           type: [object, 'null']
         last_imported_at:
           type: [string, 'null']
+          format: date-time
+    TiktokCreatorMapping:
+      description: An admin's mapping of one TikTok creator to a company member
+        on the company's TikTok connection.
+      type: object
+      properties:
+        id:
+          type: integer
+        creator_handle:
+          type: string
+          description: The creator's TikTok handle, normalized (no leading `@`, lowercase).
+        creator_user_id:
+          type: [string, 'null']
+          description: TikTok's stable creator_user_id, when known.
+        member_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
           format: date-time
     MetaConnection:
       description: A company's link to one Meta Business account's Commerce
@@ -14378,6 +14532,20 @@ paths:
                     lock_token: 5b0f6c2a9d4e8f13a7c1e0b92d6f4a58c3e7b1d90a2f6c4e8b5d3a1f7c9e0b24
                     markets_in_sync: true
                     out_of_sync_market_ids: []
+                    markets:
+                    - market_id: 0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c41
+                      market_name: Default
+                      price: '149.00'
+                      compare_at_price: '179.00'
+                      subscription_price: '134.10'
+                      cv: '60.00'
+                      qv: '60.00'
+                      creditable_points: 15
+                      lock_token: 3a9c1e7f5b2d8046c1e9a7b3d5f20846ae1c9b7d3f5a2e0846c1b9d7a5f3e2c0
+                  markets:
+                  - market_id: 0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c41
+                    market_name: Default
+                    currency_codes: [USD]
                   read_fields: [price, cv, qv, creditable_points]
                   read_roles:
                     0198b2c4-5d1e-7a3f-8b6c-2f4d9e1a7c30:
@@ -14454,7 +14622,9 @@ paths:
         price types write rows only. A bundle-level cell is written to the
         master variant's row in every market that takes part in its currency.
         A cell whose lock_token is stale (or a cell with no token that now
-        exists) is a 409 and nothing is written. A target or price type
+        exists) is a 409 and nothing is written. A figure the bundle's current
+        saved pricing mode does not read is preserved when omitted or null; a
+        changed value for it is a 409 with reason mode_changed. A target or price type
         outside this bundle and company is a 422. Responds with the fresh
         grid. Requires admin tier, products.update (a droplet installation
         needs the products scope AND the permission through its role) and the
@@ -14553,7 +14723,11 @@ paths:
             One or more cells are stale (error.details.error is stale; details.indices
             lists them when known), or another writer of this bundle's prices held the
             product's price lock past the wait limit (error.details.error is
-            bundle_price_busy). Re-read the grid and retry. Nothing was written.
+            bundle_price_busy), or the bundle's pricing mode changed since the grid was
+            read (error.details.error is stale and details.reason is mode_changed;
+            details.cells lists each cell index with the fields the saved mode no longer
+            reads, and details.pricing_enabled is the current mode). Re-read the grid and
+            retry. Nothing was written.
           content:
             application/json:
               schema:
@@ -14563,8 +14737,11 @@ paths:
             Invalid parameters, a cell the bundle cannot take (details.cells lists each
             refused cell by index with an error code such as target_not_found,
             price_type_invalid, field_invalid, price_required,
-            out_of_sync_requires_full_cell or legacy_json_unmappable -- a Retail or
-            Wholesale figure that has no exact legacy JSON home), the bundle_pricing
+            out_of_sync_requires_full_cell, legacy_json_unmappable -- a Retail or
+            Wholesale figure that has no exact legacy JSON home,
+            market_row_missing -- a market has no one-time price row and the saved mode
+            does not read the price, or legacy_price_unseedable -- the group's legacy
+            fixed_price cannot be stored as the new row's price), the bundle_pricing
             capability off, or the product is not a bundle. Nothing was written.
           content:
             application/json:
@@ -40561,11 +40738,19 @@ paths:
     get:
       operationId: admin_v202506_tiktok_connection_get
       summary: Get the company's TikTok Shop connection
-      description: One connection per company, no `:id` in the URL. Never exposes
+      description: No `:id` in the URL; a company with several connections selects one with `connection_id`. Never exposes
         the encrypted OAuth tokens — only identity, status, expiry, and last_error.
       tags: [tiktok]
       security:
       - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       responses:
         '200':
           description: Success
@@ -40612,7 +40797,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -40638,11 +40823,19 @@ paths:
         to TikTok in the background, so repeating a request is safe.
         Requires a company admin token with the company_settings.update permission,
         and also warehouses.update when `fluid_warehouse_id` is sent (droplet tokens
-        cannot send it). Returns the
+        cannot send it). Droplet tokens also cannot send `house_member_id` (set or clear). Returns the
         updated connection.
       tags: [tiktok]
       security:
       - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       requestBody:
         required: true
         content:
@@ -40650,10 +40843,15 @@ paths:
             example:
               tiktok_warehouse_id: '7302198465731028741'
               fluid_warehouse_id: 12
+              connection_id: 3342
               house_member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
             schema:
               type: object
               properties:
+                connection_id:
+                  type: integer
+                  minimum: 1
+                  description: Id of the company's TikTok connection to configure. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active). It may also be sent as a query parameter.
                 tiktok_warehouse_id:
                   type: string
                 house_member_id:
@@ -40705,13 +40903,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is authenticated but is not a company admin, lacks the company_settings.update permission, or sent `fluid_warehouse_id` without also holding the warehouses.update permission (a droplet token is always refused when it sends `fluid_warehouse_id`).
+          description: The caller is authenticated but is not a company admin, lacks the company_settings.update permission, or sent `fluid_warehouse_id` without also holding the warehouses.update permission (a droplet token is always refused when it sends `fluid_warehouse_id` or `house_member_id`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -40736,6 +40934,14 @@ paths:
       tags: [tiktok]
       security:
       - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       responses:
         '200':
           description: Success
@@ -40782,7 +40988,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -40917,6 +41123,14 @@ paths:
       tags: [tiktok]
       security:
       - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       responses:
         '200':
           description: Success
@@ -40981,7 +41195,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -41018,6 +41232,13 @@ paths:
       security:
       - bearer_auth: []
       parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       - name: parent_id
         in: query
         required: false
@@ -41100,7 +41321,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -41135,6 +41356,13 @@ paths:
       security:
       - bearer_auth: []
       parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       - name: filter[attribution_state]
         in: query
         required: false
@@ -41229,13 +41457,263 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
           description: Invalid filter[attribution_state] or filter[commerce_order_id] value, or invalid page[cursor].
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/tiktok/creator-mappings:
+    get:
+      operationId: admin_v202506_tiktok_creator_mappings_get
+      x-fluid-audience: company
+      summary: List the company's TikTok creator mappings
+      description: Lists the creator-to-member mappings on the company's TikTok connection, newest first.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
+      - name: page[cursor]
+        in: query
+        required: false
+        description: Cursor token for pagination (from meta.pagination in the response).
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Number of records per page (max 100).
+        schema:
+          type: integer
+          default: 25
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                creator_mappings:
+                - id: 318
+                  creator_handle: creed-bratton
+                  creator_user_id: '7493028561047391138'
+                  member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
+                  created_at: '2026-10-20T16:42:11.000Z'
+                  updated_at: '2026-10-20T16:42:11.000Z'
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-20T16:42:11Z'
+                  pagination:
+                    cursor: eyJpZCI6MzE4fQ
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+              schema:
+                type: object
+                properties:
+                  creator_mappings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TiktokCreatorMapping'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the orders.view permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid page[cursor] or page[limit].
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      operationId: admin_v202506_tiktok_creator_mappings_post
+      x-fluid-audience: company
+      summary: Map a TikTok creator to a member
+      description: Maps a TikTok creator (from the unmatched list at `GET /tiktok/orders`)
+        to an active member of the company. Mapping the same creator again, by handle or
+        creator_user_id, replaces the earlier mapping. Later orders from the creator are
+        credited to the member, and a background job moves the creator's open orders on the
+        connection (not yet shipped, cancelled or refunded) to the member when they carry
+        house credit or no credit; an order with any other rep or attribution is never changed.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
+              creator_handle: '@Creed-Bratton'
+              creator_user_id: '7493028561047391138'
+              connection_id: 3342
+            schema:
+              type: object
+              required: [member_id, creator_handle]
+              properties:
+                connection_id:
+                  type: integer
+                  minimum: 1
+                  description: Id of the company's TikTok connection to map the creator on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+                member_id:
+                  type: string
+                  format: uuid
+                  description: Id of the active company member to credit.
+                creator_handle:
+                  type: string
+                  description: The creator's TikTok handle; a leading `@` and case are ignored.
+                creator_user_id:
+                  type: [string, 'null']
+                  description: TikTok's stable creator_user_id, when known.
+              additionalProperties: false
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              example:
+                creator_mapping:
+                  id: 318
+                  creator_handle: creed-bratton
+                  creator_user_id: '7493028561047391138'
+                  member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
+                  created_at: '2026-10-20T16:42:11.000Z'
+                  updated_at: '2026-10-20T16:42:11.000Z'
+                status: 201
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-20T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  creator_mapping:
+                    $ref: '#/components/schemas/TiktokCreatorMapping'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the orders.update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: The request is invalid, or `member_id` is not an active member of this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/tiktok/creator-mappings/{id}:
+    delete:
+      operationId: admin_v202506_tiktok_creator_mapping_delete
+      x-fluid-audience: company
+      summary: Delete a TikTok creator mapping
+      description: Stops future orders from the creator matching the member. Orders
+        already re-attributed keep their credit.
+      tags: [tiktok]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                creator_mapping:
+                  id: 318
+                  creator_handle: creed-bratton
+                  creator_user_id: '7493028561047391138'
+                  member_id: '0198f3a2-7c41-7d2e-9b5a-3e1f4a6c8d90'
+                  created_at: '2026-10-20T16:42:11.000Z'
+                  updated_at: '2026-10-20T16:42:11.000Z'
+                status: 200
+                meta:
+                  request_uuid: 8b4e2f71-3c9a-4d6e-b1f0-5a7c9e2d4b18
+                  timestamp: '2026-10-20T16:42:11Z'
+              schema:
+                type: object
+                properties:
+                  creator_mapping:
+                    $ref: '#/components/schemas/TiktokCreatorMapping'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the orders.update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company, or `id` does not match a mapping on this connection.
           content:
             application/json:
               schema:
@@ -41255,6 +41733,13 @@ paths:
       security:
       - bearer_auth: []
       parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       - name: filter[product_id]
         in: query
         required: false
@@ -41341,7 +41826,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -41360,6 +41845,14 @@ paths:
       tags: [tiktok]
       security:
       - bearer_auth: []
+      parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       requestBody:
         required: true
         content:
@@ -41453,7 +41946,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company.
           content:
             application/json:
               schema:
@@ -41506,6 +41999,13 @@ paths:
       security:
       - bearer_auth: []
       parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       - name: id
         in: path
         required: true
@@ -41572,7 +42072,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop, or `id` does not match a listing on this connection.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company, or `id` does not match a listing on this connection.
           content:
             application/json:
               schema:
@@ -41612,6 +42112,13 @@ paths:
       security:
       - bearer_auth: []
       parameters:
+      - name: connection_id
+        in: query
+        required: false
+        description: Id of the company's TikTok connection to act on. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+        schema:
+          type: integer
+          minimum: 1
       - name: id
         in: path
         required: true
@@ -41661,7 +42168,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop, or `id` does not match a listing on this connection.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company, or `id` does not match a listing on this connection.
           content:
             application/json:
               schema:
@@ -41687,6 +42194,20 @@ paths:
         required: true
         schema:
           type: integer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            example:
+              connection_id: 3342
+            schema:
+              type: object
+              properties:
+                connection_id:
+                  type: integer
+                  minimum: 1
+                  description: Id of the company's TikTok connection the listing belongs to. Omit it to use the primary connection (the oldest active one, or the most recent one when none is active).
+              additionalProperties: false
       responses:
         '200':
           description: Success
@@ -41734,7 +42255,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '404':
-          description: The company has never connected a TikTok Shop, or `id` does not match a listing on this connection.
+          description: The company has never connected a TikTok Shop, or `connection_id` does not match a TikTok connection of this company, or `id` does not match a listing on this connection.
           content:
             application/json:
               schema:
