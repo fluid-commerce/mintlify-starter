@@ -4,7 +4,7 @@ info:
   title: Fluid Company API v2026-10 — Droplets
   version: 2026-10
   description: |-
-    Your company's droplets on v2026-10: the catalog your company can install from, the droplets your company publishes, and installing one.
+    Your company's droplets on v2026-10: the catalog your company can install from, the droplets your company publishes, and installing, changing and uninstalling one.
 
     ## Authentication
 
@@ -28,6 +28,14 @@ info:
 
     `GET /droplet-installations` returns every droplet your company has installed with just its uuid, title and logo, for navigation menus and other places shown on every page. Open one with `GET /droplets/{uuid}`.
 
+    ## Managing an installation
+
+    `GET /droplet-installations/{uuid}` reads one installation with its droplet, role and scopes. `PATCH` changes its role or scopes, and `DELETE` uninstalls it: the droplet's credentials are revoked and its uninstall webhook is sent.
+
+    ## Who installed your droplet
+
+    `GET /droplets/{droplet_uuid}/installations` lists the companies that have installed a droplet your company publishes, each named by its uuid.
+
     ## Describing a droplet
 
     A droplet is described like the rest of the app's resources: a `title`, a one-line `summary` for its marketplace card, a longer `description` for its details page (HTML: paragraphs, headings, lists, links), a `logo_url`, and `features`, each a `title` with an optional `image_url` or `video_url`. Upload media to your company's DAM first and use the URLs it gives you.
@@ -40,6 +48,9 @@ info:
 
     - A droplet is flat: `title`, `summary`, `description`, `logo_url` and `features` replace the `name` and `settings` object, and a feature is its `title` and media.
     - `filter[ownership]=owned` replaces `GET /api/droplets/company_droplets`.
+    - `publisher` carries the publishing company's `uuid`, not its integer id.
+    - A droplet's installations are read by their own uuid at `/droplet-installations/{uuid}`, and `PATCH` there does not need `active`.
+    - Listing who installed your droplet answers 404, not 401, when the droplet is not your company's.
     - `PATCH` changes only what you send.
     - `DELETE` is refused while another company has the droplet installed.
     - Publishing goes through marketplace review rather than an `active` or `publicly_available` flag.
@@ -165,8 +176,11 @@ components:
       - owned
       - installed
       - publisher
+      - mist_apps
+      - app_extensions
       - categories
       - embed_url
+      - client_id
       - requested_scopes
       - summary
       - description
@@ -217,13 +231,31 @@ components:
         publisher:
           type: object
           required:
+          - uuid
           - name
           properties:
+            uuid:
+              type:
+              - string
+              - 'null'
+              format: uuid
+              description: The publishing company's uuid.
             name:
               type:
               - string
               - 'null'
           description: The company that publishes the droplet.
+        mist_apps:
+          type: array
+          description: The Mist apps that serve this droplet, newest first. Empty for a droplet not built in Mist. Only apps
+            of the publishing company are listed, and an app being deleted or archived is left out.
+          items:
+            $ref: '#/components/schemas/CompanyDropletMistApp'
+        app_extensions:
+          type: array
+          description: The extensions the droplet ships, such as a theme extension.
+          items:
+            $ref: '#/components/schemas/CompanyDropletAppExtension'
         status:
           type: string
           enum:
@@ -258,12 +290,82 @@ components:
           - string
           - 'null'
           description: Where the droplet renders inside Fluid admin.
+        client_id:
+          type:
+          - string
+          - 'null'
+          description: The droplet's OAuth client id. Not a secret; a full-page embed sends it to mint a session token. Null
+            when the droplet has no OAuth client.
+        egress_proxy_requested:
+          type: boolean
+          description: The publisher asked for the droplet's traffic to leave through Fluid's egress proxy. Present only for
+            a root admin, a company admin, or a company API token, so an admin sees it before installing.
+        egress_proxy_enabled:
+          type: boolean
+          description: A Fluid root admin recorded the egress grant. Present to the same callers as `egress_proxy_requested`.
         created_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+    CompanyDropletMistApp:
+      type: object
+      description: A Mist app that serves the droplet.
+      required:
+      - id
+      - name
+      - slug
+      - public_url
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The Mist app's id, as the Mist API names it.
+        name:
+          type:
+          - string
+          - 'null'
+          description: The name the Mist app's owner gave it.
+        slug:
+          type: string
+          description: Six-character short id that the app's repository and URL carry.
+          example: 3bed85
+        public_url:
+          type:
+          - string
+          - 'null'
+    CompanyDropletAppExtension:
+      type: object
+      description: An extension the droplet ships.
+      required:
+      - extension_type
+      - name
+      - version
+      - status
+      properties:
+        extension_type:
+          type: string
+          enum:
+          - theme
+        name:
+          type: string
+        version:
+          type:
+          - string
+          - 'null'
+        status:
+          type: string
+          enum:
+          - draft
+          - publishing
+          - published
+          - error
+        error_message:
+          type:
+          - string
+          - 'null'
+          description: Why publishing the extension failed. Only on a droplet your company publishes, read one at a time.
     CompanyDropletDetail:
       description: A droplet, with the endpoints only its publisher sees.
       allOf:
@@ -285,6 +387,25 @@ components:
             - string
             - 'null'
             description: Where widget capability calls are served from. Publisher only.
+          data_url:
+            type:
+            - string
+            - 'null'
+            description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Publisher only.
+          lifecycle_contract_version:
+            type: string
+            enum:
+            - v1
+            - v2
+            description: Which install and uninstall webhook contract the droplet speaks. Publisher only.
+          pending_requested_scopes:
+            type:
+            - array
+            - 'null'
+            items:
+              type: string
+            description: The full scope list waiting on marketplace review after a published droplet asked for new scopes,
+              or null. Publisher only.
     CompanyDropletListResponse:
       type: object
       description: A page of droplets.
@@ -568,16 +689,51 @@ components:
       required:
       - uuid
       - droplet_uuid
+      - droplet
       - status
       - scopes
       - effective_scopes
       - created_at
+      - updated_at
       properties:
         uuid:
           type: string
           description: The installation's public identifier.
         droplet_uuid:
           type: string
+        droplet:
+          type: object
+          description: The droplet installed.
+          required:
+          - uuid
+          - title
+          - logo_url
+          properties:
+            uuid:
+              type: string
+            title:
+              type:
+              - string
+              - 'null'
+            logo_url:
+              type:
+              - string
+              - 'null'
+        role:
+          description: The role the droplet acts with, or null. Present only when you have the `roles.view` permission.
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - id
+            - name
+            properties:
+              id:
+                type: integer
+              name:
+                type:
+                - string
+                - 'null'
         status:
           type: string
           enum:
@@ -597,9 +753,13 @@ components:
         created_at:
           type: string
           format: date-time
+          description: When it was installed.
+        updated_at:
+          type: string
+          format: date-time
     CompanyDropletInstallationResponse:
       type: object
-      description: The new installation.
+      description: One installation.
       required:
       - droplet_installation
       - status
@@ -749,6 +909,119 @@ components:
               items:
                 type: string
                 pattern: ^[A-Z]{3}$
+    CompanyDropletPublishedInstallation:
+      type: object
+      description: Another company's installation of a droplet your company publishes.
+      required:
+      - uuid
+      - status
+      - created_at
+      - company
+      properties:
+        uuid:
+          type: string
+          description: The installation's public identifier.
+        status:
+          type: string
+          enum:
+          - active
+          - pending_uninstall
+          description: '`pending_uninstall` while the droplet''s uninstall webhook is being handled.'
+        created_at:
+          type: string
+          format: date-time
+          description: When the company installed the droplet.
+        company:
+          type: object
+          description: The company that installed it.
+          required:
+          - uuid
+          - name
+          - active
+          properties:
+            uuid:
+              type: string
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+            active:
+              type: boolean
+              description: Whether the company's account is active.
+    CompanyDropletPublishedInstallationListResponse:
+      type: object
+      description: A page of a droplet's installations.
+      required:
+      - droplet_installations
+      - status
+      - meta
+      properties:
+        droplet_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletPublishedInstallation'
+        status:
+          type: integer
+          example: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletCategory:
+      type: object
+      required:
+      - slug
+      - name
+      - description
+      properties:
+        slug:
+          type: string
+          description: Names the category on a droplet, in `categories` on a write, and in `filter[category]`.
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+          description: What kinds of droplet the category holds.
+    CompanyDropletCategoryListResponse:
+      type: object
+      required:
+      - droplet_categories
+      - status
+      - meta
+      properties:
+        droplet_categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletCategory'
+        status:
+          type: integer
+          example: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletInstallationUpdateRequest:
+      type: object
+      required:
+      - installation
+      properties:
+        installation:
+          type: object
+          description: Only the keys sent change.
+          properties:
+            role_id:
+              type:
+              - integer
+              - 'null'
+              description: The role the droplet acts with. Null clears it.
+            scopes:
+              type: array
+              items:
+                type: string
+              description: Scopes to grant, within what the droplet requests. Replaces the list.
+            active:
+              type: boolean
+              description: '`false` uninstalls an active installation after any other change is saved, as `DELETE` does.
+                `true` changes nothing: an installation being removed cannot be reactivated.'
     CompanyDropletInstallRequest:
       type: object
       properties:
@@ -940,7 +1213,10 @@ paths:
                   - slug: orders-shipping
                     name: Orders & Shipping
                   publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Pied Piper Apps
+                  mist_apps: []
+                  app_extensions: []
                   status: published
                   owned: false
                   installed: true
@@ -948,6 +1224,9 @@ paths:
                   - orders
                   service_operational_countries: null
                   embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  client_id: drp_client_ordersync7k2m
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
                 status: 200
@@ -1084,7 +1363,10 @@ paths:
                   - slug: sales-conversion
                     name: Sales & Conversion
                   publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-1f2e3d4c5b6a
                     name: Acme Wellness
+                  mist_apps: []
+                  app_extensions: []
                   status: draft
                   owned: true
                   installed: false
@@ -1095,9 +1377,15 @@ paths:
                   - USA
                   - CAN
                   embed_url: https://wholesale.acme.example/fluid
+                  client_id: drp_client_wholesale9x2k
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
                   install_webhook_url: https://wholesale.acme.example/fluid/installed
                   uninstall_webhook_url: https://wholesale.acme.example/fluid/uninstalled
                   widget_data_url: null
+                  data_url: null
+                  lifecycle_contract_version: v2
+                  pending_requested_scopes: null
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
                 status: 201
@@ -1205,7 +1493,10 @@ paths:
                   - slug: orders-shipping
                     name: Orders & Shipping
                   publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Pied Piper Apps
+                  mist_apps: []
+                  app_extensions: []
                   status: published
                   owned: false
                   installed: true
@@ -1213,6 +1504,9 @@ paths:
                   - orders
                   service_operational_countries: null
                   embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  client_id: drp_client_ordersync7k2m
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
                 status: 200
@@ -1257,7 +1551,18 @@ paths:
                   - slug: sales-conversion
                     name: Sales & Conversion
                   publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-1f2e3d4c5b6a
                     name: Acme Wellness
+                  mist_apps:
+                  - id: 0199e0a4-5c1f-7b42-9a3e-3bed85a1c2d4
+                    name: Wholesale Pricing app
+                    slug: 3bed85
+                    public_url: https://acme-3bed85.wecommerce.dev
+                  app_extensions:
+                  - extension_type: theme
+                    name: Wholesale price badges
+                    version: 1.2.0
+                    status: published
                   status: draft
                   owned: true
                   installed: true
@@ -1268,9 +1573,15 @@ paths:
                   - USA
                   - CAN
                   embed_url: https://wholesale.acme.example/fluid
+                  client_id: drp_client_wholesale9x2k
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
                   install_webhook_url: https://wholesale.acme.example/fluid/installed
                   uninstall_webhook_url: https://wholesale.acme.example/fluid/uninstalled
                   widget_data_url: null
+                  data_url: null
+                  lifecycle_contract_version: v2
+                  pending_requested_scopes: null
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
                 status: 200
@@ -1467,6 +1778,103 @@ paths:
       schema:
         type: string
       example: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+    get:
+      operationId: companyDropletPublishedInstallationsIndex
+      summary: List the companies that installed your droplet
+      description: |-
+        The companies that have installed a droplet your company publishes, newest first, a page at a time. Installations already uninstalled are left out; one being uninstalled reads `pending_uninstall`. Each company is named by its uuid.
+
+        Only the droplet's publisher can list them. For any other company, and for a droplet that does not exist, the answer is 404, so it never confirms a private droplet. (`GET /api/droplets/{uuid}/companies`, which this replaces, answers 401 instead.)
+
+        Needs the `droplets.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`. Do not construct or decode it.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Installations per page. Default 25, maximum 100.
+      responses:
+        '200':
+          description: A page of installations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishedInstallationListResponse'
+              example:
+                droplet_installations:
+                - uuid: dri_9Pq4nVx2bKt7mRw3
+                  status: active
+                  created_at: '2026-10-14T09:41:27Z'
+                  company:
+                    uuid: 0190b3c4-2d5e-7f60-8a1b-9c2d3e4f5a6b
+                    name: Zennoa Naturals
+                    active: true
+                - uuid: dri_3Hk8wQz5cLm1vTy6
+                  status: pending_uninstall
+                  created_at: '2026-09-30T18:05:12Z'
+                  company:
+                    uuid: 0190a9f8-6e7d-7c5b-9a4f-3e2d1c0b9a87
+                    name: Globex Wellness
+                    active: true
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJjcmVhdGVkX2F0IjoiMjAyNi0wOS0zMFQxODowNToxMloiLCJpZCI6OTEyfQ
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: An invalid limit or cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    page:
+                      limit:
+                      - must be less than or equal to 100
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
     post:
       operationId: companyDropletInstall
       summary: Install a droplet
@@ -1492,12 +1900,20 @@ paths:
                 droplet_installation:
                   uuid: dri_7Hc2kWq9mNz4pLx8
                   droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
                   status: active
+                  role:
+                    id: 4182
+                    name: Order Sync
                   scopes:
                   - orders
                   effective_scopes:
                   - orders
                   created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-18T15:32:08Z'
                 status: 201
                 meta:
                   request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
@@ -1598,6 +2014,281 @@ paths:
                     uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
                     title: Wholesale Pricing
                     logo_url: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/company/v2026-10/droplet-installations/{uuid}:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The installation's uuid, from `uuid` on an installation.
+      schema:
+        type: string
+      example: dri_7Hc2kWq9mNz4pLx8
+    get:
+      operationId: companyDropletInstallationShow
+      summary: Read a droplet installation
+      description: |-
+        One of your company's installations, in any status, with its droplet, scopes and, when you have the `roles.view` permission, its role. Credentials are never returned.
+
+        Needs the `droplets.view` permission. Replaces `GET /api/droplet_installations/{uuid}`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The installation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: active
+                  role:
+                    id: 4182
+                    name: Order Sync
+                  scopes:
+                  - orders
+                  - products
+                  effective_scopes:
+                  - orders
+                  - products
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+    patch:
+      operationId: companyDropletInstallationUpdate
+      summary: Change a droplet installation
+      description: |-
+        Changes the role or scopes of one of your company's installations. Only the keys you send change. Sending `active: false` then uninstalls it, as `DELETE` does: the droplet's credentials are revoked and its uninstall webhook is sent.
+
+        Needs the `droplets.update` permission, and `roles.update` to send `role_id`, as assigning a role to a member does. Replaces `PUT /api/droplet_installations/{uuid}`, where `active` was required on every call and `role_id` needed only `droplets.update`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyDropletInstallationUpdateRequest'
+            examples:
+              scopes:
+                summary: Narrow the scopes
+                value:
+                  installation:
+                    scopes:
+                    - orders
+              role:
+                summary: Change the role
+                value:
+                  installation:
+                    role_id: 4182
+      responses:
+        '200':
+          description: Updated, or uninstalling when `active` was false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: active
+                  role:
+                    id: 4182
+                    name: Order Sync
+                  scopes:
+                  - orders
+                  effective_scopes:
+                  - orders
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: Invalid parameters, a role your company does not have, or scopes the droplet may not request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Role not found
+                  details:
+                    role_id:
+                    - not found
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+    delete:
+      operationId: companyDropletInstallationUninstall
+      summary: Uninstall a droplet
+      description: |-
+        Uninstalls one of your company's installations. Its API credentials are revoked and Fluid sends the droplet's uninstall webhook so it can clean up; the installation reads `pending_uninstall` until that finishes. Uninstalling again changes nothing, except for an installation the legacy `PUT /api/droplet_installations/{uuid}` left `pending_uninstall` without telling the droplet: its credentials are revoked and the uninstall webhook is sent then. If that webhook cannot be queued, its credentials stay revoked, the answer is 422, and calling again sends it.
+
+        Needs the `droplets.update` permission. Replaces `DELETE /api/droplet_installations/{uuid}`, and returns the whole installation rather than only its identifiers.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Uninstalling.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: pending_uninstall
+                  role:
+                    id: 4182
+                    name: Order Sync
+                  scopes:
+                  - orders
+                  effective_scopes:
+                  - orders
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: The droplet could not be told it was uninstalled. Its credentials stay revoked; call again to send the webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The droplet could not be told it was uninstalled; try again
+                  details:
+                    installation:
+                    - notification_failed
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+  /api/company/v2026-10/droplet-categories:
+    get:
+      operationId: companyDropletCategoriesIndex
+      summary: List droplet categories
+      description: |-
+        Every marketplace category, in the order they were added. Use a category's `slug` in `categories` when you create or update a droplet, and in `filter[category]` when you list droplets. Not paginated.
+
+        Needs the `droplets.view` permission. Replaces `GET /api/droplet_categories`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The categories.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletCategoryListResponse'
+              example:
+                droplet_categories:
+                - slug: orders-shipping
+                  name: Orders & Shipping
+                  description: Order management, Shipping rate calculators, Fulfillment solutions, Tracking and delivery notifications,
+                    Returns management
+                - slug: finance-accounting
+                  name: Finance & Accounting
+                  description: Tax calculators, Accounting integrations, Invoice management, Payment processors
                 status: 200
                 meta:
                   request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
