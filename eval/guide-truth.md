@@ -2758,3 +2758,76 @@ text rendering, malformed/rejected results, and ignored component continuation
 after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
 and auth monitoring correctness belong to the SDK's independently reviewed tests;
 the docs tests do not simulate deployment or claim instant server revocation.
+
+## Pending Mist widget workflow follow-up (2026-10-19)
+
+Prepared against the recorded Fluid source snapshots below, not a published
+desktop release. The guide explicitly marks
+all three additions pending and preserves existing manual setup/handoff paths.
+Dependency installation is a writable project tool with exact fresh approval,
+lifecycle/pnpmfile-hook execution disabled, no build-verification claim, npm/pnpm
+ownership, refusals for unsupported/conflicting
+locks, and no direct-tool bypass. Local Portal source registration validates the
+active company, canonical workspace descendant and generated marker files; it
+is not remote creation/activation or script execution. Structured handoffs carry
+six explicit sections rather than source conversation history and never enlarge
+authority. The pending source-only project guard uses the supported Run preview
+and company-bound Publish widgets action; CLI deploy including dry-run and opaque
+dev/exec wrappers are controlled refusals. Generic terminal commands are explicitly
+separated from the Mist agent workflow, never a bypass. Initial snapshots inspected
+before these hardenings:
+
+- Fluid PR27130 (dependency approval and structured handoffs):
+  `c74ee1ffd7bde86b9cf7512ab1304c17b1059f03`, committed 2026-10-19T15:43:42Z.
+- Fluid PR27131 (explicit local import and discovery):
+  `de67d65a11bd217cfee9705c706e8fc9e244ff20`, committed 2026-10-19T15:44:13Z.
+- Fluid PR27132 (related capability diagnostics):
+  `caa4f490373c746f5ee8f6b46fd4265f25884c01`, committed 2026-10-19T15:42:29Z.
+
+These immutable references document the inspected source, not passing code
+reviews/CI, desktop release or deployment. Later implementation fixes do not
+retroactively change these snapshots. Confirm the installed release exposes
+the documented feature before declaring it available.
+
+Hardened contract snapshots supporting this policy follow-up:
+
+- Fluid PR27130: `5b182be16b0f7b295438ae49be2f471f6888fb8c`, committed
+  2026-10-19T16:21:26Z; behavior source is
+  `ec34b074960bc9faea7bd21d4fb1b2d4ab8bb314`, committed 2026-10-19T16:20:54Z.
+- Fluid PR27131: `db31cc52ee656874f1642ed747680fe32883b069`, committed
+  2026-10-19T16:19:49Z.
+
+The hardened contract disables lifecycle scripts and pnpmfile hooks, checks the
+exact final spawn snapshot, and requires separately authorized supported
+build/validation rather than automatic post-install execution. Source-only
+preview uses Run/direct `fluid portal dev --skip-pull`; direct deploy, including
+dry-run, and opaque wrappers are refused in favor of the supported publication
+control. These are immutable inspected source references, not an assertion of
+passing remote CI, an automated review score, or a desktop release/deployment.
+
+Further pending hardening: dependency preparation uses a private approved metadata
+snapshot on macOS/Linux, rejects unsupported dependency graphs, and publishes only
+if origin metadata and installation identity remain unchanged; rollback is not
+a cross-file operating-system transaction. Final dependency source reference is
+`23324d951e3ab5c46d15a31d8e5163f40e30bebc` (Fluid PR27130), committed
+2026-10-19T16:51:02Z. Guarded outputs are package metadata and `node_modules`;
+approved package-manager cache/store writes are expected. Local preview/validation
+environment source is `bc10323d4f07201a41e6f51e15fe5edec7af6b8c`
+(Fluid PR27131), committed 2026-10-19T16:53:28Z: disposable
+configuration directories and no inherited Mist/provider credentials or saved CLI
+profile. Project code still runs; this is not an OS sandbox. These are source
+contracts, not release, remote-CI or current automated-score assertions.
+
+The later published installer source `52c681118b9f555e3d503536ce92d10c172fc9ba`
+(Fluid PR27130; behavior commit `ecc4cf6a9e51042c21fa89974855d77f495e082b`)
+adds the strict manager-entrypoint and process-crash recovery policies described
+in troubleshooting. Analytics additions and lifecycle-install retries have no
+approval exception. Recognized recovery outputs may be restored; newer edits
+retain backups and refuse continuation. No power-loss/OS-transaction or desktop
+release claim follows from this source reference.
+
+The subsequent published source `7628484a13f49a2c77ecef2d27bcaf12d229aa5a`
+(Fluid PR27131), committed 2026-10-19T18:20:11Z, supports the pending local
+Git-read restrictions and isolated typed-publication config/build/detection
+subprocess guidance. Project code still executes; this source reference proves
+neither an operating-system sandbox nor passing remote review/CI or release.
