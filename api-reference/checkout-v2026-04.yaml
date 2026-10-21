@@ -1090,6 +1090,186 @@ components:
           - type: 'null'
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
+    SubscriptionProfilePaymentLabel:
+      description: |
+        The payment method an autoship profile renews on, named for display
+        ("Visa 4242"). It carries no PayPal vault id or id token, no card
+        expiry and no billing address.
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - payment_type
+      - details
+      properties:
+        id:
+          type: integer
+        payment_type:
+          description: The kind of payment method, such as `Credit Card` or `PayPal`.
+          type: string
+        details:
+          type: object
+          additionalProperties: false
+          required:
+          - card_brand
+          - last_four
+          properties:
+            card_brand:
+              description: The card network, such as `Visa`. `null` for a payment
+                method that is not a card.
+              type:
+              - string
+              - 'null'
+            last_four:
+              description: The card's last four digits. `null` for a payment method
+                that is not a card.
+              type:
+              - string
+              - 'null'
+    SubscriptionProfileItemQuote:
+      description: |
+        What an item would take on when it joins an autoship profile: the
+        profile's plan cadence, address, card and next bill date, and the price
+        one unit renews at.
+      type: object
+      additionalProperties: false
+      required:
+      - outcome
+      - alignments
+      - next_bill_date
+      - billing_interval
+      - billing_interval_unit
+      - address
+      - payment_method
+      - item
+      - confirmation
+      properties:
+        outcome:
+          description: |
+            `ok` when the item has the same facts as the profile on its own.
+            `align_required` when joining gives it profile facts it would not
+            have on its own; the add then needs `confirmation`.
+          type: string
+          enum:
+          - ok
+          - align_required
+        alignments:
+          description: The profile facts the item takes that it would not have on
+            its own. In practice `date`, and `preferred_shipping_method` when the
+            profile has one. Empty when `outcome` is `ok`.
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - field
+            - alignable
+            properties:
+              field:
+                type: string
+                enum:
+                - date
+                - address
+                - volume_rep
+                - preferred_shipping_method
+                - auto_apply_points
+                - payment_method
+                - cadence
+                - timezone
+              alignable:
+                description: Whether the item can take the profile's value.
+                type: boolean
+        next_bill_date:
+          description: The date the item first bills and ships, with the profile's
+            next order.
+          type: string
+          format: date
+        billing_interval:
+          description: The plan interval the item shares with the profile.
+          type: integer
+        billing_interval_unit:
+          description: The unit of `billing_interval`.
+          type: string
+          enum:
+          - day
+          - week
+          - month
+          - year
+        address:
+          description: The shipping address the item takes from the profile.
+          anyOf:
+          - "$ref": "#/components/schemas/CheckoutSubscriptionAddress"
+          - type: 'null'
+        payment_method:
+          description: The payment method the item takes from the profile.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfilePaymentLabel"
+          - type: 'null'
+        item:
+          type: object
+          additionalProperties: false
+          required:
+          - variant_id
+          - label
+          - quantity
+          - price
+          - total
+          - currency_code
+          properties:
+            variant_id:
+              type: integer
+            label:
+              description: The product title. Empty string when the product is gone.
+              type: string
+            quantity:
+              type: integer
+            price:
+              description: Decimal string. What each renewal charges for one unit.
+              type: string
+            total:
+              description: Decimal string. `price` times `quantity`.
+              type: string
+            currency_code:
+              description: ISO 4217 code of `price` and `total`.
+              type: string
+        confirmation:
+          description: A signed token that binds every term above. It is valid for
+            one hour, and only the add for the same customer accepts it.
+          type: string
+    SubscriptionProfileItemPreviewResponse:
+      description: What joining an autoship profile would change for an item.
+      type: object
+      additionalProperties: false
+      required:
+      - quote
+      - meta
+      properties:
+        quote:
+          "$ref": "#/components/schemas/SubscriptionProfileItemQuote"
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+    SubscriptionProfileItemAddResponse:
+      description: |
+        The autoship profile after an item joined it, and the new item's token.
+        `profile` is `null` only when the profile cannot be derived after the
+        add.
+      type: object
+      additionalProperties: false
+      required:
+      - profile
+      - subscription_token
+      - meta
+      properties:
+        profile:
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfile"
+          - type: 'null'
+        subscription_token:
+          description: The token of the subscription the add created, or created
+            on the first request with the same `request_key`.
+          type: string
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
     SubscriptionProfileErrorResponse:
       description: |
         A refused profile write. Nothing was written. `meta.code` names the
@@ -1130,7 +1310,18 @@ components:
                 `item_would_not_rejoin`: the skipped item would not land on the
                 profile's next date. Other values come from the address, payment
                 method, date and billing-cycle checks the subscription writes
-                share.
+                share. On the item add, `quote_changed` (409): the profile's date,
+                address, card or plan or the item's price changed since the preview,
+                or the confirmation is expired or is for other terms; preview
+                again. 422: `confirmation_required` (the preview's outcome is
+                `align_required`, so the add needs its `confirmation`);
+                `join_refused` (`errors.refusals` lists the reasons: `currency`,
+                `country`, `tax_pricing_mode`, `shipping_pricing_mode`,
+                `digital`, `customer`, `member`, `plan_not_offered`);
+                `item_unavailable`; `item_not_created` (`errors` carry the
+                subscription create errors); `request_key_reused` (the
+                `request_key` added another item); `address_required`;
+                `invalid_variant` (`variant_id` not found for the company).
               type: string
     SubscriptionShowResponse:
       description: |
@@ -25341,6 +25532,270 @@ paths:
         '422':
           description: Invalid parameters, or the change was refused. Nothing was
             written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/checkout/v2026-04/subscription-profiles/items/preview":
+    post:
+      x-fluid-audience: company
+      summary: Preview an item for an autoship profile
+      tags:
+      - subscription-profiles
+      operationId: checkout_v2026_04_preview_subscription_profile_item
+      description: |
+        Prices a recurring item for an autoship profile and says what joining it
+        changes, without adding it. The item takes the profile's plan, address,
+        card and next bill date. `quote.outcome` is `ok` when the item would have
+        the same facts on its own, and `align_required` when joining changes at
+        least one of them; `quote.alignments` lists those facts. Nothing is
+        written.
+
+        Send `quote.confirmation` to the add as `confirmation`. It binds every
+        term in the quote, so the add refuses with `quote_changed` when any of
+        them changed in between.
+
+        Requires a customer bearer token. The profile is the one whose members
+        are exactly `subscription_tokens`. Returns `404` when a token is not the
+        customer's or Subscription Pro does not offer autoship profiles to the
+        company, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the item cannot
+        join (the reason is in `meta.code`), and `401` when unauthenticated.
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              variant_id: 4821
+              quantity: 2
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - variant_id
+              - quantity
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                variant_id:
+                  description: The variant to add. It must belong to the company.
+                  type: integer
+                quantity:
+                  description: How many units each renewal ships.
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: What joining the profile would change, and the confirmation
+            the add takes back.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileItemPreviewResponse"
+              example:
+                quote:
+                  outcome: align_required
+                  alignments:
+                  - field: date
+                    alignable: true
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  address:
+                    id: 3310
+                    name: Michael Scott
+                    address1: 1725 Slough Avenue
+                    address2:
+                    address3:
+                    city: Scranton
+                    state: PA
+                    subdivision_code: US-PA
+                    postal_code: '18505'
+                    country_code: US
+                    phone:
+                    country_num_code: 840
+                    default: true
+                  payment_method:
+                    id: 7702
+                    payment_type: Credit Card
+                    details:
+                      card_brand: Visa
+                      last_four: '4242'
+                  item:
+                    variant_id: 4821
+                    label: Dunder Mifflin Toner Cartridge
+                    quantity: 2
+                    price: '90.0'
+                    total: '180.0'
+                    currency_code: USD
+                  confirmation: eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdDVG9KYzNWaWFtVmpkQ0lMY0hKbGRtbGxkdz09In19
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '404':
+          description: Not found, or autoship profiles are off for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the item cannot join the profile.
+            Nothing was written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/checkout/v2026-04/subscription-profiles/items":
+    post:
+      x-fluid-audience: company
+      summary: Add an item to an autoship profile
+      tags:
+      - subscription-profiles
+      operationId: checkout_v2026_04_add_subscription_profile_item
+      description: |
+        Adds a recurring item to the autoship profile. It first bills and ships
+        with the profile's next order, at the price one unit renews at. The
+        response carries the profile after the add and the new item's
+        `subscription_token`. Nothing is charged now.
+
+        When the preview's `quote.outcome` is `align_required`, send its
+        `quote.confirmation` as `confirmation`; without it the add refuses with
+        `confirmation_required`. The add refuses with `quote_changed` when the
+        profile's date, address, card or plan, or the item's price, changed
+        since the preview, or when the confirmation is expired or is for other
+        terms. Preview again and ask the customer to confirm.
+
+        Generate one `request_key` per add and send it again on a retry. A retry
+        with the same `request_key` answers `201` with the same
+        `subscription_token` and adds nothing. A `request_key` that added
+        another item is refused with `request_key_reused`.
+
+        Requires a customer bearer token. The profile is the one whose members
+        are exactly `subscription_tokens`. Returns `404` when a token is not the
+        customer's or Subscription Pro does not offer autoship profiles to the
+        company, `409` when the profile or the quote changed (the reason is in
+        `meta.code`), `422` when the item cannot join (the reason is in
+        `meta.code`), and `401` when unauthenticated.
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              variant_id: 4821
+              quantity: 2
+              request_key: 6f0d1c52-3b7e-4c1a-9a55-2e8f7d3b9c14
+              confirmation: eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdDVG9KYzNWaWFtVmpkQ0lMY0hKbGRtbGxkdz09In19
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - variant_id
+              - quantity
+              - request_key
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                variant_id:
+                  description: The variant to add. It must belong to the company.
+                  type: integer
+                quantity:
+                  description: How many units each renewal ships.
+                  type: integer
+                  minimum: 1
+                request_key:
+                  description: Identifies this add. The client generates one per add
+                    and sends it again on a retry.
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                confirmation:
+                  description: The `quote.confirmation` from the preview of these
+                    terms. Required when the preview's outcome is `align_required`.
+                  type: string
+      responses:
+        '201':
+          description: The item was added, or an earlier request with the same
+            `request_key` already added it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileItemAddResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                  - subscription_token: sb_9Xc5Bn3Qa6Zs2Ye7Df1Wk
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                subscription_token: sb_9Xc5Bn3Qa6Zs2Ye7Df1Wk
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '404':
+          description: Not found, or autoship profiles are off for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile or the quote changed since the client read it.
+            Nothing was written; preview again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the item cannot join the profile.
+            Nothing was written.
           content:
             application/json:
               schema:
