@@ -62,6 +62,11 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Search the app store first.** When someone wants a new capability, `GET /api/company/v2026-10/droplets?q=<the outcome, in plain words>` returns the droplets their company can install, most relevant first. If one fits, offer to install it (`POST /api/company/v2026-10/droplets/{uuid}/installations`, after they approve) instead of building a one-off.
 - **Fill in the listing of a droplet you create.** Write a one-line `summary`, an HTML `description` of what it really does, a `logo_url`, and `features` (a `title` with a screenshot `image_url` or a `video_url` each) with `PATCH /api/company/v2026-10/droplets/{uuid}`. A droplet with an empty listing is hard to find: https://docs.fluid.app/guides/creating-droplets
 
+## Ads
+
+- **Facebook and Instagram ads:** connect Meta once with `fluid channels connect meta --open`; the one login grants catalog, WhatsApp and ads access. Then choose the ad account the company advertises from: `GET /api/v202506/company/ads/meta/ad-accounts` lists the ad accounts and Pages Meta shared, and `PUT /api/v202506/company/ads/meta/ad-account` saves the choice, using only ids from that list: https://docs.fluid.app/setup/sales-channel-meta#choose-the-ad-account-for-ads
+- **Fluid doesn't create or launch campaigns, and Google Ads can't be connected yet.** Write the ads, then the user creates the campaign, paused, in their own Meta Ads Manager or Google Ads account, which bills them. Never say an ad is live.
+
 ## Platform pitfalls
 
 - **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
