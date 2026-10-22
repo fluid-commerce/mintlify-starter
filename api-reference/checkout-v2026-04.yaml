@@ -1679,6 +1679,7 @@ components:
             - points_enabled
             - renewal_bundle
             - profile
+            - cancel_flow
             properties:
               points_enabled:
                 type: boolean
@@ -1688,6 +1689,8 @@ components:
                 anyOf:
                 - "$ref": "#/components/schemas/SubscriptionProfile"
                 - type: 'null'
+              cancel_flow:
+                "$ref": "#/components/schemas/SubscriptionCancelFlow"
     SubscriptionUpdateResponse:
       description: |
         The updated subscription, plus which subscriptions the write covered and
@@ -2701,6 +2704,27 @@ components:
                 the cart and apply again if the email changes back.
               example:
               - WELCOME10
+    CancelReasonOption:
+      description: One customer cancel reason, in the order to show it.
+      type: object
+      additionalProperties: false
+      required: [code, labels]
+      properties:
+        code: { type: string, description: A customer reason code. }
+        labels:
+          type: object
+          description: The merchant's label per locale. Empty when the merchant set none; show the client's own label then.
+          additionalProperties: { type: string }
+    SubscriptionCancelFlow:
+      type: object
+      additionalProperties: false
+      required: [enabled, reasons]
+      properties:
+        enabled: { type: boolean, description: Whether to run the Subscription Pro cancel flow instead of the plain cancel. }
+        reasons:
+          type: array
+          description: The plain cancel's reason picker, in order. Empty while the picker is not released.
+          items: { "$ref": "#/components/schemas/CancelReasonOption" }
     CancellationSessionResponse:
       type: object
       additionalProperties: false
@@ -2730,16 +2754,7 @@ components:
         reasons:
           type: array
           description: The reasons to show, in order.
-          items:
-            type: object
-            additionalProperties: false
-            required: [code, labels]
-            properties:
-              code: { type: string }
-              labels:
-                type: object
-                description: The merchant's label per locale.
-                additionalProperties: { type: string }
+          items: { "$ref": "#/components/schemas/CancelReasonOption" }
         reason_code: { type: [string, 'null'] }
         reason_text: { type: [string, 'null'] }
         offers:
@@ -3214,6 +3229,21 @@ components:
                 When several programs cover the subscription, this describes the
                 one whose held tier prices the next order, else the oldest.
               "$ref": "#/components/schemas/SubscriptionTenure"
+            cancel_flow:
+              description: |
+                Which cancel dialog the customer gets. Show-only; the show
+                response requires it via SubscriptionShowResponse.
+
+                `enabled` is true when Subscription Pro runs its cancel flow for
+                the company (Pro active, the `subscription-pro-cancel-flow`
+                release flag on, the merchant setting on). The client then opens
+                a cancellation session, which lists its own reasons. A flag that
+                fails to evaluate reads false.
+
+                `reasons` are the plain cancel's reason picker, in order. Empty
+                until the `subscription-cancel-reason-picker` release flag is on
+                for the company. Send the chosen code as `reason_code` on cancel.
+              "$ref": "#/components/schemas/SubscriptionCancelFlow"
             subscription_discounts:
               type: array
               description: Active first-class discount attachments on this subscription.
@@ -28174,6 +28204,13 @@ paths:
                       label: VIP
                       discount_label: 15%
                       orders_to_go: 2
+                  cancel_flow:
+                    enabled: false
+                    reasons:
+                    - code: too_expensive
+                      labels: {}
+                    - code: other
+                      labels: {}
                 meta:
                   request_id: d2e8b4a6-1f93-4c57-8b0e-6a4d2c9f1e75
                   timestamp: '2026-09-30T15:14:52Z'
@@ -28206,6 +28243,22 @@ paths:
         it is otherwise: see that property for the permitted set. A bundle write is
         atomic across the renewal bundle and can return `409` when the bundle
         cannot be read stably.
+
+        Setting `status` to `cancelled` cancels the subscription as the cancel
+        endpoint does. It stamps `cancelled_at`, clears dunning, removes
+        applicable discount attachments, adds the cancellation note and sends the
+        `subscription_cancelled` webhook. It does not send the cancellation
+        email. A company admin records `cancellation_reason_code`
+        `merchant_initiated`. Any other caller records `unknown`.
+
+        Setting `status` to any other value on a cancelled subscription
+        reactivates it as the reactivate endpoint does, then applies the
+        requested status. It clears `cancelled_at` and the cancellation reason,
+        clears dunning, restores the discount attachments the cancellation
+        removed, adds the reactivation note and sends the
+        `subscription_reactivated` webhook. It does not send the resumed email.
+        A plan that is inactive or a variant that is no longer available returns
+        `422`.
       security:
       - bearer_auth: []
       parameters:

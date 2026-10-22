@@ -23346,6 +23346,117 @@ components:
           type: array
           items: { "$ref": "#/components/schemas/SubscriptionProfileGroup" }
         meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionMilestoneItem:
+      description: A Subscription Pro milestone item of a subscription, from the milestone grant ledger.
+      type: object
+      additionalProperties: false
+      required: [id, subscription_token, source, status, deferral_reason, rule_id, rule_name, occurrence_key, item_key,
+                 variant_id, variant_title, main_variant_id, substituted, quantity, unit_price, currency_code,
+                 volume_policy, removable, order_id, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        subscription_token:
+          type: string
+        source:
+          type: string
+          enum: [rule, manual, retention_offer]
+          description: rule for a milestone rule's gift, manual for a one-time item an admin added.
+        status:
+          type: string
+          enum: [planned, on_order, fulfilled, deferred, skipped_out_of_stock, voided]
+          description: >-
+            planned and deferred are owed to a coming order. on_order is on an unpaid order. fulfilled is on
+            a paid order. skipped_out_of_stock and voided are final.
+        deferral_reason:
+          type: [string, "null"]
+          enum: [gate_closed, out_of_stock, null]
+          description: Why a deferred item moved to the next order. Null unless deferred.
+        rule_id:
+          type: [integer, "null"]
+          description: The milestone rule, or null for a one-time item.
+        rule_name:
+          type: [string, "null"]
+        occurrence_key:
+          type: string
+          description: The occurrence the item is for, such as order:4, anniversary:1 or manual:<uuid>.
+        item_key:
+          type: string
+        variant_id:
+          type: integer
+          description: The variant planned or sent.
+        variant_title:
+          type: [string, "null"]
+        main_variant_id:
+          type: integer
+          description: The variant the item was for; differs from variant_id when a fallback stood in.
+        substituted:
+          type: boolean
+          description: Whether a fallback variant stood in for the main one.
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: string
+          description: The price of one unit, a decimal string in currency_code. 0 for a gift.
+        currency_code:
+          type: string
+          description: The subscription's currency.
+        volume_policy:
+          type: string
+          enum: [zero, catalog]
+          description: zero earns no CV or QV. catalog earns the variant's catalog volume.
+        removable:
+          type: boolean
+          description: Whether an admin can remove the item now (a one-time item still owed, while no renewal is being built).
+        order_id:
+          type: [integer, "null"]
+          description: The order that carries the item, once it is on one.
+        created_at:
+          type: string
+          format: date-time
+          description: When the item was planned.
+        updated_at:
+          type: string
+          format: date-time
+    SubscriptionMilestoneItemsResponse:
+      type: object
+      additionalProperties: false
+      required: [milestone_items, meta]
+      properties:
+        milestone_items:
+          type: array
+          items: { "$ref": "#/components/schemas/SubscriptionMilestoneItem" }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionMilestoneItemResponse:
+      type: object
+      additionalProperties: false
+      required: [milestone_item, meta]
+      properties:
+        milestone_item: { "$ref": "#/components/schemas/SubscriptionMilestoneItem" }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionMilestoneItemCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [variant_id]
+      properties:
+        variant_id:
+          type: integer
+          description: The variant to send. It must belong to the company.
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+        pricing:
+          type: string
+          enum: [catalog, gift]
+          default: catalog
+          description: catalog charges the variant's one-time price in the subscription's market; gift is free.
+        volume_policy:
+          type: string
+          enum: [zero, catalog]
+          description: Whether the line earns the variant's catalog volume. Defaults to catalog for catalog pricing and zero for a gift.
     CompanySubscriptionDiscountListResponse:
       type: object
       required:
@@ -32927,7 +33038,7 @@ paths:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
     patch:
       summary: Update a company contact
-      description: "Updates a company contact. Send the fields under `contact`; `first_name` and `last_name` are required on every update. Omitting `status` keeps the current status. Send `affiliate` with a rep's `email` or `id` to reassign the contact, or an empty `affiliate` to unassign it. Requires a company admin token with permission to update contacts. Returns 404 when the contact does not exist and 422 with validation errors when the update is invalid."
+      description: "Updates a company contact. Send the fields under `contact`; `first_name` and `last_name` are required on every update. Omitting `status` keeps the current status. Omit `affiliate` to keep the current owner. Send `affiliate` with a rep's `email` or `id` to reassign the contact. Send `null` or an empty `affiliate` to unassign the rep and clear the owner. An `affiliate` whose `email` or `id` matches no rep counts as empty. On a contact whose `affiliate` is `null`, a `null` or empty `affiliate` keeps the current owner. Requires a company admin token with permission to update contacts. Returns 404 when the contact does not exist and 422 with validation errors when the update is invalid."
       tags:
       - company-contacts
       operationId: company_v0_update_company_contact
@@ -53396,7 +53507,25 @@ paths:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
     put:
       summary: Update a subscription
-      description: Update a subscription
+      description: |-
+        Update a subscription.
+
+        Setting `status` to `cancelled` cancels the subscription as the cancel
+        endpoint does. It stamps `cancelled_at`, clears dunning, removes applicable
+        discount attachments, adds the cancellation note and sends the
+        `subscription_cancelled` webhook. It does not send the cancellation email.
+        A company admin or a back-office caller (a droplet or machine token)
+        records `cancellation_reason_code` `merchant_initiated`, as on the cancel
+        endpoint. Any other caller records `unknown`.
+
+        Setting `status` to any other value on a cancelled subscription
+        reactivates it as the reactivate endpoint does, then applies the
+        requested status. It clears `cancelled_at` and the cancellation reason,
+        clears dunning, restores the discount attachments the cancellation
+        removed, adds the reactivation note and sends the
+        `subscription_reactivated` webhook. It does not send the resumed email.
+        A plan that is inactive or a variant that is no longer available returns
+        `422`.
       tags:
       - subscriptions
       operationId: commerce_v0_update_subscription
@@ -55514,6 +55643,225 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/milestone_items":
+    get:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 8.3)."
+      summary: List the milestone items of a subscription's coming orders
+      description: >-
+        The Subscription Pro milestone items owed to the subscription's coming orders (planned or
+        deferred) and those on its unpaid order (on_order), oldest first: rule gifts and one-time items
+        an admin added. Requires the `subscriptions` view permission and an admin, and the
+        milestone_items feature to work for the company: Subscription Pro active, the release flag on
+        and the merchant setting on. Responses are not cached.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_list_subscription_milestone_items
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionMilestoneItemsResponse"
+              example:
+                milestone_items:
+                - id: 5521
+                  subscription_token: sb_8f2c1d9e7a
+                  source: manual
+                  status: planned
+                  deferral_reason: null
+                  rule_id: null
+                  rule_name: null
+                  occurrence_key: manual:6a1f0c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b
+                  item_key: manual:6a1f0c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b
+                  variant_id: 9012
+                  variant_title: Classic Watch
+                  main_variant_id: 9012
+                  substituted: false
+                  quantity: 1
+                  unit_price: '0.00'
+                  currency_code: USD
+                  volume_policy: zero
+                  removable: true
+                  order_id: null
+                  created_at: '2026-10-11T09:12:44Z'
+                  updated_at: '2026-10-11T09:12:44Z'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions view permission, or the milestone_items
+            feature does not work for the company. A closed feature names the failed check in
+            errors.error: subscription_pro_inactive, release_flag_unavailable, release_flag_off,
+            setting_off or legacy_renewal_lane.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 8.3)."
+      summary: Add a one-time item to a subscription's next order
+      description: >-
+        Plans a one-time item on the subscription's next renewal order. The server sets the price:
+        catalog is the variant's one-time price in the subscription's market and currency at the tier
+        the subscription bills at, read now; gift is free. The client never sends an amount. The item
+        lands on the next sealed renewal order once. When it is out of stock it waits one order, then is
+        skipped. Requires the `subscriptions` update permission and an admin, and the milestone_items
+        feature to work for the company.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_add_subscription_milestone_item
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionMilestoneItemCreateRequest"
+            example:
+              variant_id: 9012
+              quantity: 1
+              pricing: gift
+              volume_policy: zero
+      responses:
+        '201':
+          description: The planned item
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionMilestoneItemResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the
+            milestone_items feature does not work for the company (errors.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: >-
+            The subscription's next order is being built now (errors.error billing_in_progress), so the item
+            could not reach it. Try again later.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: >-
+            Invalid values, or a refusal named in errors.error: subscription_ended (the subscription is
+            cancelled), invalid_milestone_item (the variant is not the company's, or is physical on a
+            subscription that ships nothing) or price_unavailable (catalog pricing, and the variant has no
+            price in the subscription's market and currency).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscriptions/{token}/milestone_items/{id}":
+    delete:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 8.3)."
+      summary: Remove a one-time item from a subscription's next order
+      description: >-
+        Voids a one-time item an admin added while it is still owed to a coming order. The grant stays
+        in the ledger as voided. Rule gifts cannot be removed here. Requires the `subscriptions` update
+        permission and an admin, and the milestone_items feature to work for the company.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_remove_subscription_milestone_item
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: The voided item
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionMilestoneItemResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the
+            milestone_items feature does not work for the company (errors.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription or item not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The subscription's next order is being built now (errors.error billing_in_progress). Try again later.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Not a one-time item still owed to a coming order (errors.error not_removable).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/subscriptions/{token}/orders":
     get:
       summary: Show orders created from the subscription
