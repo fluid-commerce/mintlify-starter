@@ -2443,6 +2443,94 @@ components:
         max_grants_per_subscription:
           type: [integer, "null"]
           minimum: 1
+    SubscriptionProRetentionFlowReason:
+      type: object
+      additionalProperties: false
+      required: [code, hidden, labels]
+      properties:
+        code:
+          type: string
+          enum: [too_expensive, too_much_product, too_frequent, not_seeing_results, did_not_like_product, switching_brand, shipping_or_delivery_issue, taking_a_break, moving_or_life_change, other]
+          description: A customer cancellation reason code.
+        hidden: { type: boolean, description: Whether customers do not see the reason. }
+        labels:
+          type: object
+          description: The merchant's label per locale (for example en, es, pt-BR). A client shows its own label for a locale that has none.
+          additionalProperties: { type: string, minLength: 1, maxLength: 100 }
+    SubscriptionProRetentionFlowOffer:
+      type: object
+      additionalProperties: false
+      required: [type, terms]
+      properties:
+        type:
+          type: string
+          enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support]
+        terms:
+          type: object
+          additionalProperties: false
+          description: The merchant's terms for the offer type. Each type takes only its own terms.
+          properties:
+            days: { type: integer, minimum: 7, maximum: 60, description: "delay: days to move the next order by" }
+            subscription_plan_id: { type: integer, minimum: 1, description: "change_frequency: the plan to move to" }
+            variant_ids:
+              type: array
+              minItems: 1
+              maxItems: 50
+              items: { type: integer, minimum: 1 }
+              description: "swap: the variants a customer may swap to; a subscription sees those of its own product"
+            months: { type: integer, minimum: 1, maximum: 3, description: "pause: months to pause" }
+            percentage: { type: integer, minimum: 1, maximum: 100, description: "discount: percent off" }
+            duration: { type: string, enum: [once, repeating], description: "discount: one order, or duration_cycles orders" }
+            duration_cycles: { type: integer, minimum: 2, maximum: 12, description: "discount: orders a repeating discount applies to" }
+            url: { type: string, format: uri, maxLength: 2048, description: "contact_support: the https link to the merchant's support page" }
+    SubscriptionProRetentionFlowDocument:
+      type: object
+      required: [reasons, offers_by_reason]
+      properties:
+        reasons:
+          type: array
+          items: { "$ref": "#/components/schemas/SubscriptionProRetentionFlowReason" }
+          description: Every customer reason code once, in the order customers see them.
+        offers_by_reason:
+          type: object
+          description: Customer reason code to the save offers it shows, at most two of distinct types.
+          additionalProperties:
+            type: array
+            maxItems: 2
+            items: { "$ref": "#/components/schemas/SubscriptionProRetentionFlowOffer" }
+    SubscriptionProRetentionFlowResponse:
+      type: object
+      additionalProperties: false
+      required: [retention_flow, offer_types, status, meta]
+      properties:
+        retention_flow:
+          allOf:
+          - "$ref": "#/components/schemas/SubscriptionProRetentionFlowDocument"
+          - type: object
+            required: [version, default]
+            properties:
+              version: { type: integer, minimum: 0, description: The published version, 0 for the default flow. }
+              default: { type: boolean, description: Whether the company has not published a flow yet. }
+        offer_types:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, monetary, saves, available]
+            properties:
+              type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support] }
+              monetary: { type: boolean, description: Whether the offer costs the merchant money. A customer who accepted one gets no other for the cooldown. }
+              saves: { type: boolean, description: Whether accepting the offer keeps the subscription. contact_support only links to support. }
+              available: { type: boolean, description: Whether a flow may use the type yet. }
+        status: { type: integer, enum: [200, 201] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionProRetentionFlowRequest:
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionProRetentionFlowDocument"
+      - type: object
+        required: [expected_version]
+        properties:
+          expected_version: { type: integer, minimum: 0, description: The version the flow was read at, 0 for the default flow. }
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return
         one or more of these fields depending on the controller path.
@@ -5054,6 +5142,155 @@ paths:
           description: >-
             The rule's checkout gift discount could not be written (for example persistence_failed).
             Nothing changed; retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/retention_flow":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Show the company's cancel flow
+      description: >-
+        The cancel flow the company's customers see: every customer reason code in order, whether it
+        is hidden and its label per locale, and the save offers each reason shows. A company that never
+        published a flow reads the default flow, version 0, which shows only offers that cost the
+        merchant nothing. offer_types lists every offer type, whether it costs the merchant money,
+        whether accepting it keeps the subscription, and whether a flow may use it yet. Answers 404
+        while the company cannot use the cancel flow, with the failed check in details.error
+        (subscription_pro_inactive, release_flag_unavailable, release_flag_off or setting_off).
+        Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_retention_flow
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionFlowResponse"
+              example:
+                retention_flow:
+                  version: 0
+                  default: true
+                  reasons:
+                  - { code: too_expensive, hidden: false, labels: {} }
+                  - { code: too_much_product, hidden: false, labels: {} }
+                  offers_by_reason:
+                    too_much_product:
+                    - { type: skip_next, terms: {} }
+                    - { type: delay, terms: { days: 30 } }
+                offer_types:
+                - { type: skip_next, monetary: false, saves: true, available: true }
+                - { type: discount, monetary: true, saves: true, available: true }
+                - { type: free_gift, monetary: true, saves: true, available: false }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: >-
+            The company cannot use the cancel flow. details.error names the failed check:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off or setting_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Publish the next version of the company's cancel flow
+      description: >-
+        Publishes the whole flow as the next version. Published versions never change, so each
+        cancellation session can name the version it ran. The request names the version it read (0 for
+        the default flow); a publish on top of a newer version is refused with 409
+        (stale_retention_flow). reasons must list each customer reason code exactly once and show at
+        least one. Each reason shows at most two offers of distinct types, and each offer's terms must
+        suit its type: delay {days 7-60}, change_frequency {subscription_plan_id}, swap {variant_ids, 1-50},
+        pause {months 1-3}, discount {percentage 1-100, duration once, or repeating with duration_cycles
+        2-12}, contact_support {url, https}, skip_next {}. free_gift is refused with offer_type_unavailable
+        until milestone items exist. An offer naming a plan or variant the company does not have is
+        refused with unknown_offer_reference. Answers 404 while the company cannot use the cancel flow,
+        as GET does.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_publish_subscription_pro_retention_flow
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionProRetentionFlowRequest"
+            example:
+              expected_version: 0
+              reasons:
+              - { code: too_expensive, hidden: false, labels: { en: Too expensive, es: Demasiado caro } }
+              - { code: too_much_product, hidden: false, labels: {} }
+              - { code: too_frequent, hidden: false, labels: {} }
+              - { code: not_seeing_results, hidden: false, labels: {} }
+              - { code: did_not_like_product, hidden: false, labels: {} }
+              - { code: switching_brand, hidden: true, labels: {} }
+              - { code: shipping_or_delivery_issue, hidden: false, labels: {} }
+              - { code: taking_a_break, hidden: false, labels: {} }
+              - { code: moving_or_life_change, hidden: false, labels: {} }
+              - { code: other, hidden: false, labels: {} }
+              offers_by_reason:
+                too_expensive:
+                - { type: discount, terms: { percentage: 20, duration: repeating, duration_cycles: 3 } }
+                - { type: skip_next, terms: {} }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionFlowResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company cannot use the cancel flow (details.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The flow changed since it was read (stale_retention_flow). Read it again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: >-
+            The flow is invalid (invalid_retention_flow, with errors keyed by path), uses an offer type
+            that is not available yet (offer_type_unavailable), or names a plan or variant the company
+            does not have (unknown_offer_reference).
           content:
             application/json:
               schema:
