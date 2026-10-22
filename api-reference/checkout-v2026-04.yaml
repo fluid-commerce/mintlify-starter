@@ -92,6 +92,7 @@ tags:
 - name: subscriptions
   description: Manage subscriptions — pause, resume, skip, cancel, reactivate, retry,
     and failed-cycle waivers.
+  x-fluid-section: Checkout
 - name: subscription-manage-link
   description: The subscriptions a manage link reaches. The bearer is the link's
     scoped token (`sml_...`, from the `manage_url` of the subscription_upcoming_renewal
@@ -2700,6 +2701,96 @@ components:
                 the cart and apply again if the email changes back.
               example:
               - WELCOME10
+    CancellationSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [cancellation_session, meta]
+      properties:
+        cancellation_session:
+          "$ref": "#/components/schemas/CancellationSession"
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+    CancellationSession:
+      description: One pass through the Subscription Pro cancel flow. The server decides every step.
+      type: object
+      additionalProperties: false
+      required: [id, outcome, cancel_now_allowed, expires_at, retention_flow_version, reasons, reason_code, reason_text, offers, accepted_offer_id]
+      properties:
+        id: { type: string, format: uuid }
+        outcome:
+          type: string
+          enum: [open, saved, cancelled, abandoned]
+          description: open until the customer accepts an offer (saved) or cancels; abandoned after 30 minutes without either.
+        cancel_now_allowed:
+          type: boolean
+          enum: [true]
+          description: Always true. Show a cancel control on every step.
+        expires_at: { type: string, format: date-time, description: When an open session stops taking offers. }
+        retention_flow_version: { type: integer, minimum: 0, description: The merchant's flow version the session runs, 0 for the default flow. }
+        reasons:
+          type: array
+          description: The reasons to show, in order.
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, labels]
+            properties:
+              code: { type: string }
+              labels:
+                type: object
+                description: The merchant's label per locale.
+                additionalProperties: { type: string }
+        reason_code: { type: [string, 'null'] }
+        reason_text: { type: [string, 'null'] }
+        offers:
+          type: array
+          maxItems: 2
+          items: { "$ref": "#/components/schemas/CancellationOffer" }
+        accepted_offer_id: { type: [string, 'null'] }
+    CancellationOffer:
+      type: object
+      additionalProperties: false
+      required: [offer_id, type, terms, saves, preview]
+      properties:
+        offer_id: { type: string, description: Server-issued; accept the offer with it. }
+        type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, contact_support] }
+        terms:
+          type: object
+          description: The merchant's terms for the offer type, for example percentage and duration for discount, days for delay, months for pause, url for contact_support.
+        saves: { type: boolean, description: Whether accepting keeps the subscription. contact_support only links to support and cannot be accepted. }
+        preview:
+          type: [object, 'null']
+          additionalProperties: false
+          description: The next order after the offer. Null for contact_support.
+          required: [next_bill_date, next_order_total, currency]
+          properties:
+            next_bill_date: { type: [string, 'null'], format: date }
+            next_order_total: { type: [string, 'null'], description: The next order's amount as a decimal string, or null when the platform cannot state it in advance. }
+            currency: { type: [string, 'null'] }
+        variant_options:
+          type: array
+          description: For swap, the variants the customer may choose.
+          items:
+            type: object
+            additionalProperties: false
+            required: [variant_id, title]
+            properties:
+              variant_id: { type: integer }
+              title: { type: [string, 'null'] }
+    CancellationReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, description: One of the reason codes the session lists. }
+        reason_text: { type: [string, 'null'], maxLength: 500, description: Free text, only with reason_code other. }
+    CancellationOfferAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [offer_id]
+      properties:
+        offer_id: { type: string }
+        variant_id: { type: [integer, 'null'], description: For swap, one of the offer's variant_options. }
     SubscriptionCancelRequest:
       type: object
       additionalProperties: false
@@ -29152,6 +29243,366 @@ paths:
                 "$ref": "#/components/schemas/ErrorResponse"
         '404':
           description: Not Found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/subscriptions/{subscription_token}/cancellation-sessions":
+    post:
+      summary: Start a cancel flow session
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_create_cancellation_session
+      x-fluid-audience: company
+      description: |
+        Starts the Subscription Pro cancel flow on the customer's own subscription. The
+        response lists the reasons the merchant shows, in order, with the merchant's label per
+        locale; a client shows its own label for a locale with none. Only the customer who owns
+        the subscription may call it. Every response carries `cancel_now_allowed: true`, and
+        `cancel` works at every step. Returns `404` while the company cannot use the Subscription Pro cancel flow (`errors.code` is subscription_pro_inactive, release_flag_unavailable, release_flag_off or setting_off), or when the subscription is not the
+        customer's; `422` when the subscription is already cancelled (`subscription_cancelled`).
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: subscription_token
+        in: path
+        required: true
+        description: Subscription token
+        schema:
+          type: string
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CancellationSessionResponse"
+              example:
+                cancellation_session:
+                  id: 0199c6a4-5b2e-7d41-9f3a-2c8e1b7d4a60
+                  outcome: open
+                  cancel_now_allowed: true
+                  expires_at: '2026-10-10T15:30:00Z'
+                  retention_flow_version: 3
+                  reasons:
+                  - { code: too_expensive, labels: { en: Too expensive } }
+                  - { code: taking_a_break, labels: {} }
+                  reason_code: too_expensive
+                  reason_text: null
+                  offers:
+                  - offer_id: rof_4kq9Zt2LmX8vB1nR7cWy
+                    type: discount
+                    terms: { percentage: 20, duration: once }
+                    saves: true
+                    preview: { next_bill_date: '2026-11-03', next_order_total: '27.0', currency: USD }
+                  accepted_offer_id: null
+                meta:
+                  request_id: 6d2f8a4c-3e1b-4c97-a5d0-9b4e2f7c1a38
+                  timestamp: '2026-10-10T15:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The caller is not the subscription's customer
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Not Found, or the cancel flow is not available
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The subscription is already cancelled
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/subscriptions/{subscription_token}/cancellation-sessions/{id}/reason":
+    post:
+      summary: Give the reason for cancelling
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_give_cancellation_reason
+      x-fluid-audience: company
+      description: |
+        Records the customer's reason and returns the save offers it earns: at most two, each
+        with a server-issued `offer_id` and a preview of the next order date and amount. The
+        amount is null when the platform cannot state it in advance. Monetary offers are left
+        out while the customer is within the merchant's cooldown, on any of their subscriptions.
+        The reason is given once: the same reason again returns the same offers, another is
+        refused with `409` (`reason_already_given`). A session past its 30 minutes returns
+        `409` (`session_expired`). While the cancel flow is off, the reason is recorded and no
+        offer is shown. Returns `422` for a reason the flow does not show.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: subscription_token
+        in: path
+        required: true
+        description: Subscription token
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        description: Cancellation session id
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/CancellationReasonRequest"
+            example:
+              reason_code: too_expensive
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CancellationSessionResponse"
+              example:
+                cancellation_session:
+                  id: 0199c6a4-5b2e-7d41-9f3a-2c8e1b7d4a60
+                  outcome: open
+                  cancel_now_allowed: true
+                  expires_at: '2026-10-10T15:30:00Z'
+                  retention_flow_version: 3
+                  reasons:
+                  - { code: too_expensive, labels: { en: Too expensive } }
+                  - { code: taking_a_break, labels: {} }
+                  reason_code: too_expensive
+                  reason_text: null
+                  offers:
+                  - offer_id: rof_4kq9Zt2LmX8vB1nR7cWy
+                    type: discount
+                    terms: { percentage: 20, duration: once }
+                    saves: true
+                    preview: { next_bill_date: '2026-11-03', next_order_total: '27.0', currency: USD }
+                  accepted_offer_id: null
+                meta:
+                  request_id: 6d2f8a4c-3e1b-4c97-a5d0-9b4e2f7c1a38
+                  timestamp: '2026-10-10T15:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The caller is not the subscription's customer
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: The session ended, expired, or already has a reason
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: Invalid reason
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/subscriptions/{subscription_token}/cancellation-sessions/{id}/accept":
+    post:
+      summary: Accept a save offer
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_accept_cancellation_offer
+      x-fluid-audience: company
+      description: |
+        Carries out one offer the session showed and keeps the subscription (`outcome:
+        saved`). A swap offer needs the `variant_id` of one of its `variant_options`. Accepting
+        the same offer again returns the first result. Returns `404` (`offer_not_found`) for an
+        offer the session did not show; `409` when the session ended or expired; `422` with
+        `offer_unavailable` when the cancel flow is off or the customer accepted a monetary
+        offer within the cooldown, `offer_not_acceptable` for a contact_support offer, or the
+        refusal of the action the offer runs. A refused offer leaves the session open.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: subscription_token
+        in: path
+        required: true
+        description: Subscription token
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        description: Cancellation session id
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/CancellationOfferAcceptRequest"
+            example:
+              offer_id: rof_4kq9Zt2LmX8vB1nR7cWy
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CancellationSessionResponse"
+              example:
+                cancellation_session:
+                  id: 0199c6a4-5b2e-7d41-9f3a-2c8e1b7d4a60
+                  outcome: open
+                  cancel_now_allowed: true
+                  expires_at: '2026-10-10T15:30:00Z'
+                  retention_flow_version: 3
+                  reasons:
+                  - { code: too_expensive, labels: { en: Too expensive } }
+                  - { code: taking_a_break, labels: {} }
+                  reason_code: too_expensive
+                  reason_text: null
+                  offers:
+                  - offer_id: rof_4kq9Zt2LmX8vB1nR7cWy
+                    type: discount
+                    terms: { percentage: 20, duration: once }
+                    saves: true
+                    preview: { next_bill_date: '2026-11-03', next_order_total: '27.0', currency: USD }
+                  accepted_offer_id: null
+                meta:
+                  request_id: 6d2f8a4c-3e1b-4c97-a5d0-9b4e2f7c1a38
+                  timestamp: '2026-10-10T15:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The caller is not the subscription's customer
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: The session ended or expired
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The offer is unavailable or could not be applied
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/subscriptions/{subscription_token}/cancellation-sessions/{id}/cancel":
+    post:
+      summary: Cancel through the session
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_cancel_through_cancellation_session
+      x-fluid-audience: company
+      description: |
+        Cancels the subscription with the session's reason (`unknown` when none was given)
+        and sends the cancellation email, as the plain cancel does. Works whatever the state of
+        the cancel flow, including on a session past its 30 minutes. Cancelling again returns the
+        same session. Returns `409` (`session_closed`) once the session saved the subscription.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: subscription_token
+        in: path
+        required: true
+        description: Subscription token
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        description: Cancellation session id
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/CancellationSessionResponse"
+              example:
+                cancellation_session:
+                  id: 0199c6a4-5b2e-7d41-9f3a-2c8e1b7d4a60
+                  outcome: open
+                  cancel_now_allowed: true
+                  expires_at: '2026-10-10T15:30:00Z'
+                  retention_flow_version: 3
+                  reasons:
+                  - { code: too_expensive, labels: { en: Too expensive } }
+                  - { code: taking_a_break, labels: {} }
+                  reason_code: too_expensive
+                  reason_text: null
+                  offers:
+                  - offer_id: rof_4kq9Zt2LmX8vB1nR7cWy
+                    type: discount
+                    terms: { percentage: 20, duration: once }
+                    saves: true
+                    preview: { next_bill_date: '2026-11-03', next_order_total: '27.0', currency: USD }
+                  accepted_offer_id: null
+                meta:
+                  request_id: 6d2f8a4c-3e1b-4c97-a5d0-9b4e2f7c1a38
+                  timestamp: '2026-10-10T15:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The caller is not the subscription's customer
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: The session already saved the subscription
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The subscription could not be cancelled
           content:
             application/json:
               schema:

@@ -2201,6 +2201,239 @@ components:
             milestone_items: { type: boolean }
         reminder_lead_days: { type: integer, minimum: 1, maximum: 14 }
         retention_offer_cooldown_days: { type: integer, minimum: 30, maximum: 730 }
+    TenureTierInput:
+      type: object
+      required: [from, label]
+      description: One tier of a ladder, as the merchant sends it. A key not listed here is ignored.
+      properties:
+        from:
+          type: integer
+          minimum: 1
+          description: >-
+            The paid order or month the tier starts at, inclusive. At least 2 on paid_orders, because the
+            checkout order is order 1, and at least 1 on months_subscribed. Tiers ascend by from.
+        to:
+          type: integer
+          description: >-
+            Optional. When sent it must equal the next tier's from, and the top tier sends none. A tier
+            always ends where the next one starts.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: The tier's name, shown to the merchant.
+        percentage_value:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Percent off, above 0 and at most 100, with at most 2 decimals. Send exactly one of percentage_value or flat_value.
+        flat_value:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Amount off in the subscription's currency, above 0 and below 100000000, with at most 2 decimals.
+    TenureProgramRequest:
+      type: object
+      additionalProperties: false
+      required: [name, axis]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255, description: The program's name. }
+        axis:
+          type: string
+          enum: [paid_orders, months_subscribed]
+          description: What tenure counts. It never changes after the program is created.
+        scope:
+          type: string
+          enum: [all, plans, products]
+          default: all
+          description: Which subscriptions the program covers.
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: The company's subscription plan ids for a plans scope, or product ids for a products scope. Empty for all.
+    TenureProgramPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [tiers, scope, scope_ids, apply_to_volume]
+      properties:
+        tiers:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { "$ref": "#/components/schemas/TenureTierInput" }
+          description: The ladder, ascending by from.
+        scope: { type: string, enum: [all, plans, products], description: Which subscriptions the program covers once published. }
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: Empty for all, otherwise the company's plan or product ids.
+        apply_to_volume: { type: boolean, description: Whether the tier discounts reduce volume as well as price. }
+    TenureProgramPreviewCounts:
+      type: object
+      additionalProperties: false
+      required: [current_version_id, moves_up, moves_down, stays]
+      properties:
+        current_version_id:
+          type: [integer, 'null']
+          description: The version in force when the counts were made. Null before the first publish.
+        moves_up: { type: integer, minimum: 0, description: Subscriptions that would get a higher tier, or a first tier. }
+        moves_down:
+          type: integer
+          minimum: 0
+          description: >-
+            Subscriptions that would get a lower tier or lose their tier. They keep the old tier until
+            their next renewal.
+        stays: { type: integer, minimum: 0, description: Everyone else in scope, including subscriptions that earn no tier. }
+    TenureProgramPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [tiers, scope, scope_ids, apply_to_volume, previewed]
+      properties:
+        tiers:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { "$ref": "#/components/schemas/TenureTierInput" }
+          description: The ladder, ascending by from.
+        scope: { type: string, enum: [all, plans, products], description: Which subscriptions the program covers once published. }
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: Empty for all, otherwise the company's plan or product ids.
+        apply_to_volume: { type: boolean, description: Whether the tier discounts reduce volume as well as price. }
+        previewed:
+          allOf:
+          - "$ref": "#/components/schemas/TenureProgramPreviewCounts"
+          description: >-
+            The counts the preview returned for this same ladder and scope. The publish counts again and is
+            refused with 409 (preview_stale) when they differ.
+    TenureProgramArchiveRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        discounts:
+          type: string
+          enum: [keep, remove_at_next_renewal]
+          default: keep
+          description: >-
+            keep leaves the tier discounts subscriptions hold, so each keeps its tier while the tier's range
+            fits. remove_at_next_renewal keeps each until the subscription's next renewal, which still
+            prices it, and then removes it (removed_reason tenure_program_archived).
+    TenureProgramTier:
+      type: object
+      additionalProperties: false
+      required: [from, to, label, discount_type, percentage_value, flat_value]
+      properties:
+        from: { type: integer, description: The paid order or month the tier starts at, inclusive. }
+        to:
+          type: [integer, 'null']
+          description: Where the tier ends, exclusive. It is the next tier's from, and null on the top tier.
+        label:
+          type: [string, 'null']
+          description: The tier's name. Null only for a version written without labels.
+        discount_type: { type: string, enum: [percentage, flat], description: Whether the tier takes a percent or an amount off. }
+        percentage_value: { type: [string, 'null'], description: Percent off as a decimal string. Null on a flat tier. }
+        flat_value: { type: [string, 'null'], description: Amount off as a decimal string. Null on a percentage tier. }
+    TenureProgramVersion:
+      type: object
+      additionalProperties: false
+      required: [id, version, created_at, tiers]
+      properties:
+        id: { type: integer }
+        version: { type: integer, minimum: 1, description: The version number, counted from 1 for the program. }
+        created_at: { type: string, format: date-time }
+        tiers:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureProgramTier" }
+          description: The tiers in ascending order of from.
+    TenureProgram:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, axis, scope, scope_ids, apply_to_volume, archived_at, archive_discounts, current_version, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string, enum: [draft, active, archived] }
+        axis: { type: string, enum: [paid_orders, months_subscribed] }
+        scope: { type: string, enum: [all, plans, products] }
+        scope_ids: { type: array, items: { type: integer } }
+        apply_to_volume:
+          type: boolean
+          description: Whether the tier discounts of the version in force reduce volume. False before the first publish.
+        archived_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the program was archived. Null unless archived.
+        archive_discounts:
+          type: [string, 'null']
+          enum: [keep, remove_at_next_renewal, null]
+          description: >-
+            What the archive did with the tier discounts subscriptions hold. Null unless archived.
+        current_version:
+          oneOf:
+          - { "$ref": "#/components/schemas/TenureProgramVersion" }
+          - { type: 'null' }
+          description: The tiers in force. Null for a draft.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TenureProgramResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_program, status, meta]
+      properties:
+        tenure_program: { "$ref": "#/components/schemas/TenureProgram" }
+        status: { type: integer, enum: [200, 201] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    TenureProgramListResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_programs, status, meta]
+      properties:
+        tenure_programs:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureProgram" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    TenureStackingExample:
+      type: object
+      additionalProperties: false
+      required: [from, percentage_value, with_percentage_value, effective_percentage_value]
+      properties:
+        from: { type: integer, description: The percentage tier the example is about. }
+        percentage_value: { type: string, description: The tier's percent off. }
+        with_percentage_value: { type: string, description: The other percent discount it is stacked with. }
+        effective_percentage_value:
+          type: string
+          description: The total percent off when both apply. Percent discounts compound, so 10 and 10 give 19.
+    TenureProgramPreview:
+      type: object
+      additionalProperties: false
+      required: [current_version_id, moves_up, moves_down, stays, stacking_examples]
+      properties:
+        current_version_id:
+          type: [integer, 'null']
+          description: The version in force when previewed. Send it back with the counts when publishing.
+        moves_up: { type: integer, minimum: 0, description: Subscriptions that would get a higher tier, or a first tier. }
+        moves_down:
+          type: integer
+          minimum: 0
+          description: >-
+            Subscriptions that would get a lower tier or lose their tier. They keep the old tier until
+            their next renewal.
+        stays: { type: integer, minimum: 0, description: Everyone else in scope, including subscriptions that earn no tier. }
+        stacking_examples:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureStackingExample" }
+          description: One per percentage tier. A flat tier has none.
+    TenureProgramPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_program_preview, status, meta]
+      properties:
+        tenure_program_preview: { "$ref": "#/components/schemas/TenureProgramPreview" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
     SubscriptionProMilestoneItem:
       type: object
       additionalProperties: false
@@ -5291,6 +5524,474 @@ paths:
             The flow is invalid (invalid_retention_flow, with errors keyed by path), uses an offer type
             that is not available yet (offer_type_unavailable), or names a plan or variant the company
             does not have (unknown_offer_reference).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: List the company's tenure programs
+      description: >-
+        The company's Subscription Pro tenure programs, newest first, each with the tiers in force. Needs Subscription Pro to be active
+        (403 subscription_pro_inactive otherwise). Reading changes nothing. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_list_subscription_pro_tenure_programs
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramListResponse"
+              example:
+                tenure_programs:
+                - id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Subscription Pro is not active (subscription_pro_inactive), the caller is not an admin, or it lacks the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Start a tenure program
+      description: >-
+        Starts a draft program with no tiers. Tiers come with a publication. Needs the tenure pricing gate open, which means Subscription Pro is active,
+        its release flag is on, the merchant's setting is on, and no droplet already discounts subscription orders. A closed gate is 422 with
+        the failed check in error.details.error, one of subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+        droplet_tenure_conflict.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_create_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramRequest"
+            example:
+              name: Loyalty
+              axis: paid_orders
+              scope: all
+              scope_ids: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: draft
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: false
+                  archived_at: null
+                  archive_discounts: null
+                  current_version: null
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:00:00Z'
+                status: 201
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), or the tenure pricing gate is closed (subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or droplet_tenure_conflict)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Show a tenure program
+      description: >-
+        One program with the tiers in force. Needs Subscription Pro to be active (403 subscription_pro_inactive otherwise). Reading changes
+        nothing. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Subscription Pro is not active (subscription_pro_inactive), the caller is not an admin, or it lacks the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/versions/preview":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Preview a tenure publication
+      description: >-
+        Counts what publishing the proposed tiers and scope would move, without writing anything. moves_up are subscriptions that would get
+        a higher tier or a first tier. moves_down would get a lower tier or lose theirs, and keep the old tier until their next renewal.
+        stays is everyone else in scope. stacking_examples show the total percent off when each percentage tier stacks with another 10%
+        discount. Needs the tenure pricing gate open, like creating a program. A tier that breaks a ladder rule is 422 invalid_tier, with the
+        tier's 0-based index in error.details.index when one tier is at fault. A scope naming another company's plan or product, or
+        more than 500 ids, is 422 invalid. An archived program is 409 archived.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_preview_subscription_pro_tenure_program_publication
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramPublicationRequest"
+            example:
+              tiers:
+              - { from: 3, label: Silver, percentage_value: '10' }
+              - { from: 6, label: Gold, flat_value: '5.50' }
+              scope: all
+              scope_ids: []
+              apply_to_volume: true
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramPreviewResponse"
+              example:
+                tenure_program_preview:
+                  current_version_id: null
+                  moves_up: 12
+                  moves_down: 0
+                  stays: 40
+                  stacking_examples:
+                  - { from: 3, percentage_value: '10.0', with_percentage_value: '10.0', effective_percentage_value: '19.0' }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The program is archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), a tier breaks a ladder rule (invalid_tier), or the tenure pricing gate is closed (subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or droplet_tenure_conflict)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/versions":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Publish a tenure program version
+      description: >-
+        Publishes the proposed tiers and scope as the program's next version and puts it in force. The request carries the counts the
+        preview returned. The server counts again under the program lock and refuses with 409 preview_stale when anything differs, with
+        the current current_version_id, moves_up, moves_down and stays in error.details. Nothing is written then. An archived program is
+        409 archived. Every 422 the preview gives applies here too, and a request without previewed is 422. After the publish commits,
+        subscriptions move onto the new tiers in the background.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_publish_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramPublishRequest"
+            example:
+              tiers:
+              - { from: 3, label: Silver, percentage_value: '10' }
+              - { from: 6, label: Gold, flat_value: '5.50' }
+              scope: all
+              scope_ids: []
+              apply_to_volume: true
+              previewed:
+                current_version_id: null
+                moves_up: 12
+                moves_down: 0
+                stays: 40
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 201
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The counts changed since the preview (preview_stale), or the program is archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), a tier breaks a ladder rule (invalid_tier), the tenure pricing gate is closed, or previewed is missing
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/archive":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Archive a tenure program
+      description: >-
+        Ends the program. Subscriptions are no longer moved onto its tiers. Needs only Subscription Pro to be active, so a merchant whose
+        gate closed since can still archive (422 subscription_pro_inactive otherwise). With discounts keep, the default, subscriptions keep
+        the tier discount they hold. With remove_at_next_renewal each subscription keeps its tier discount until its next renewal, which
+        still prices it, and then loses it (removed_reason tenure_program_archived). An archived program is 409 archived.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_archive_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramArchiveRequest"
+            example:
+              discounts: remove_at_next_renewal
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: archived
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: '2026-10-10T15:00:00Z'
+                  archive_discounts: remove_at_next_renewal
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The program is already archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Subscription Pro is not active (subscription_pro_inactive), or discounts is not keep or remove_at_next_renewal
           content:
             application/json:
               schema:
