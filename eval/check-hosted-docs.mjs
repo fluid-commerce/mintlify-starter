@@ -362,6 +362,10 @@ const PUBLIC_SDK_V2025_06_PROSE_PAGES = new Set([
 // run, as an unsanctioned hit on the new slug: regenerate the map when that happens.
 const ADMIN_V2025_06_PAGES = new Map([
   ["admins/list-admins", "GET /api/v2025-06/admins"],
+  ["ads/clear-the-selected-meta-ad-account", "DELETE /api/v202506/company/ads/meta/ad-account"],
+  ["ads/get-the-selected-meta-ad-account", "GET /api/v202506/company/ads/meta/ad-account"],
+  ["ads/list-the-meta-ad-accounts-and-pages-the-connection-can-reach", "GET /api/v202506/company/ads/meta/ad-accounts"],
+  ["ads/select-the-meta-ad-account-to-advertise-from", "PUT /api/v202506/company/ads/meta/ad-account"],
   ["amazon/disconnect-the-companys-amazon-connection", "DELETE /api/v202506/amazon/connection"],
   ["amazon/get-the-companys-amazon-connection", "GET /api/v202506/amazon/connection"],
   ["amazon/list-the-companys-amazon-orders", "GET /api/v202506/amazon/orders"],
