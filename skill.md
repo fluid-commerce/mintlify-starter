@@ -65,7 +65,8 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 ## Ads
 
 - **Facebook and Instagram ads:** connect Meta once with `fluid channels connect meta --open`; the one login grants catalog, WhatsApp and ads access. Then choose the ad account the company advertises from: `GET /api/v202506/company/ads/meta/ad-accounts` lists the ad accounts and Pages Meta shared, and `PUT /api/v202506/company/ads/meta/ad-account` saves the choice, using only ids from that list: https://docs.fluid.app/setup/sales-channel-meta#choose-the-ad-account-for-ads
-- **Fluid doesn't create or launch campaigns, and Google Ads can't be connected yet.** Write the ads, then the user creates the campaign, paused, in their own Meta Ads Manager or Google Ads account, which bills them. Never say an ad is live.
+- **Google Ads:** the Google connection (`fluid channels connect google --open`) covers Merchant Center and Google Ads in one login. `GET /api/v202506/company/ads/google/ad-accounts` lists the Google Ads accounts it reaches, and `PUT /api/v202506/company/ads/google/ad-account` saves one that is enabled and not a manager account.
+- **Launching:** after the user approves the ads, `POST /api/v202506/company/ads/meta/launches` creates a paused Traffic campaign with up to five link ads, and `POST /api/v202506/company/ads/google/launches` creates a paused Search campaign with a responsive search ad. Fluid checks every line of copy first and refuses flagged copy (`claims_blocked`). Campaigns are always created paused in the merchant's own ad account, which bills them; the user switches them on in Ads Manager or Google Ads. Never say an ad is live.
 
 ## Platform pitfalls
 
