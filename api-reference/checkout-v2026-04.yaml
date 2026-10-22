@@ -2704,6 +2704,161 @@ components:
                 the cart and apply again if the email changes back.
               example:
               - WELCOME10
+    SubscriptionMilestoneOccurrence:
+      description: |
+        Which order a milestone item belongs to, for the client to word. `order`
+        is order `order_number` of the subscription, the checkout order being 1.
+        `anniversary` is the anniversary `months` whole months after the
+        subscription started. `one_time` is an item added for this customer,
+        such as a one-time item or a retention offer.
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - type
+        - order_number
+        properties:
+          type:
+            type: string
+            enum:
+            - order
+          order_number:
+            type: integer
+            minimum: 1
+      - type: object
+        additionalProperties: false
+        required:
+        - type
+        - months
+        properties:
+          type:
+            type: string
+            enum:
+            - anniversary
+          months:
+            type: integer
+            minimum: 1
+      - type: object
+        additionalProperties: false
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - one_time
+    SubscriptionMilestoneItem:
+      description: |
+        One milestone item and the order it belongs to. A customer never sees
+        the rule that gives it.
+      type: object
+      additionalProperties: false
+      required:
+      - product_title
+      - variant_title
+      - image_url
+      - quantity
+      - gift
+      - price_label
+      - occurrence
+      properties:
+        product_title:
+          type: string
+        variant_title:
+          description: The variant name; `null` when the variant has none.
+          type:
+          - string
+          - 'null'
+        image_url:
+          description: The variant's first image; `null` when it has none.
+          type:
+          - string
+          - 'null'
+        quantity:
+          type: integer
+          minimum: 1
+        gift:
+          description: Whether the item is free.
+          type: boolean
+        price_label:
+          description: |
+            The line price for the quantity in the subscription currency, such
+            as `$24.00`; `null` for a gift.
+          type:
+          - string
+          - 'null'
+        occurrence:
+          "$ref": "#/components/schemas/SubscriptionMilestoneOccurrence"
+    SubscriptionNextMilestone:
+      description: |
+        The nearest milestone after the next order and how far it is:
+        `orders_to_go` for an order milestone, `months_to_go` for an
+        anniversary. Exactly one is sent.
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - occurrence
+        - orders_to_go
+        - items
+        properties:
+          occurrence:
+            "$ref": "#/components/schemas/SubscriptionMilestoneOccurrence"
+          orders_to_go:
+            description: Orders from the next order until the milestone order.
+            type: integer
+            minimum: 1
+          items:
+            type: array
+            minItems: 1
+            items:
+              "$ref": "#/components/schemas/SubscriptionMilestoneItem"
+      - type: object
+        additionalProperties: false
+        required:
+        - occurrence
+        - months_to_go
+        - items
+        properties:
+          occurrence:
+            "$ref": "#/components/schemas/SubscriptionMilestoneOccurrence"
+          months_to_go:
+            description: Whole months, at least 1, from the next bill date until the order that grants the anniversary.
+            type: integer
+            minimum: 1
+          items:
+            type: array
+            minItems: 1
+            items:
+              "$ref": "#/components/schemas/SubscriptionMilestoneItem"
+    SubscriptionMilestones:
+      description: |
+        The milestone items that come with the subscription's next order and
+        the next milestone after it. Only items the customer may see appear:
+        an announced rule's items and items added for this customer. A
+        surprise rule's items stay hidden until their order.
+      type: object
+      additionalProperties: false
+      required:
+      - upcoming
+      - next_milestone
+      properties:
+        upcoming:
+          description: |
+            The items the next order adds, in the order the renewal adds them.
+            Stock is checked when the order bills, so an item can arrive as the
+            merchant's stand-in variant or wait for a later order.
+          type: array
+          items:
+            "$ref": "#/components/schemas/SubscriptionMilestoneItem"
+        next_milestone:
+          description: |
+            The nearest milestone within the 120 orders after the next order;
+            `null` when none is ahead. Its `items` are every announced item that
+            order adds, each with its own occurrence.
+          anyOf:
+          - type: 'null'
+          - "$ref": "#/components/schemas/SubscriptionNextMilestone"
     CancelReasonOption:
       description: One customer cancel reason, in the order to show it.
       type: object
@@ -2798,6 +2953,15 @@ components:
       required: [reason_code]
       properties:
         reason_code: { type: string, description: One of the reason codes the session lists. }
+        reason_text: { type: [string, 'null'], maxLength: 500, description: Free text, only with reason_code other. }
+    CancellationSessionCancelRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        The reason a customer picked without asking for offers. Recorded with no offers, in place
+        of any reason the session has, so the session lists only offers the customer saw.
+      properties:
+        reason_code: { type: [string, 'null'], description: One of the reason codes the session lists. }
         reason_text: { type: [string, 'null'], maxLength: 500, description: Free text, only with reason_code other. }
     CancellationOfferAcceptRequest:
       type: object
@@ -3096,7 +3260,7 @@ components:
           # the write actions use :with_associations_and_active_subscription_discounts;
           # show uses :with_associations_and_customer_extended). No listed field
           # is `if:`-gated, so each is always emitted by all three views. `tenure`
-          # is `if:`-gated and show-only, so it stays optional.
+          # and `milestones` are `if:`-gated and show-only, so they stay optional.
           # subscription_discounts / renewal_discount_total / baked_discounts /
           # next_order / shipping_fee / shipping_fee_for_display / order_id are
           # absent from at least one view and stay optional.
@@ -3203,6 +3367,19 @@ components:
                         type: string
                       auto_apply_points:
                         type: boolean
+            milestones:
+              description: |
+                The Subscription Pro milestone items that come with the next order
+                and the next milestone after it. Show-only, and optional: present
+                only when Subscription Pro milestone items are on for the company
+                (Pro active, release flag `subscription-pro-milestone-items` on,
+                merchant setting on, sealed renewal billing) and an item or a
+                milestone is ahead for a subscription that will renew. Otherwise
+                the key is absent.
+
+                `upcoming` covers the whole next order, so a subscription that
+                renews with others lists the items they add too.
+              "$ref": "#/components/schemas/SubscriptionMilestones"
             profile:
               description: |
                 The autoship profile this subscription belongs to. Show-only; the
@@ -28192,6 +28369,32 @@ paths:
                       label: Dunder Mifflin 20lb Copy Paper
                       status: active
                       auto_apply_points: false
+                  milestones:
+                    upcoming:
+                    - product_title: Dunder Mifflin Mug
+                      variant_title: White
+                      image_url: https://cdn.example.com/mug.png
+                      quantity: 1
+                      gift: true
+                      price_label: null
+                      occurrence:
+                        type: order
+                        order_number: 6
+                    next_milestone:
+                      occurrence:
+                        type: anniversary
+                        months: 12
+                      months_to_go: 7
+                      items:
+                      - product_title: Dunder Mifflin Watch
+                        variant_title: null
+                        image_url: null
+                        quantity: 1
+                        gift: true
+                        price_label: null
+                        occurrence:
+                          type: anniversary
+                          months: 12
                   profile: null
                   tenure:
                     axis: paid_orders
@@ -29585,6 +29788,13 @@ paths:
         and sends the cancellation email, as the plain cancel does. Works whatever the state of
         the cancel flow, including on a session past its 30 minutes. Cancelling again returns the
         same session. Returns `409` (`session_closed`) once the session saved the subscription.
+
+        A customer who picks a reason and cancels without asking for offers sends the reason
+        here instead of calling the reason step, so the session records no offers they did not
+        see. The reason replaces one the session already has, and clears that reason's offers,
+        because a customer who sends it never got the reason step's response. Returns `422`
+        (`invalid_cancellation_reason`) for a reason the session does not list, or for
+        `reason_text` without a `reason_code`.
       security:
       - bearer_auth: []
       parameters:
@@ -29601,6 +29811,14 @@ paths:
         schema:
           type: string
           format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/CancellationSessionCancelRequest"
+            example:
+              reason_code: too_expensive
       responses:
         '200':
           description: Success
@@ -29655,7 +29873,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
         '422':
-          description: The subscription could not be cancelled
+          description: The reason is invalid, or the subscription could not be cancelled
           content:
             application/json:
               schema:
