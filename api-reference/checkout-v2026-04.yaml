@@ -2880,6 +2880,67 @@ components:
           type: array
           description: The plain cancel's reason picker, in order. Empty while the picker is not released.
           items: { "$ref": "#/components/schemas/CancelReasonOption" }
+    WinBackOfferResponse:
+      type: object
+      additionalProperties: false
+      required: [win_back_offer, meta]
+      properties:
+        win_back_offer:
+          "$ref": "#/components/schemas/WinBackOffer"
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+    WinBackOffer:
+      description: >-
+        The Subscription Pro win-back offer a win-back email links to: a discount for reactivating
+        a cancelled subscription. Carries what the subscription is, never the customer, an address or
+        a saved card.
+      type: object
+      additionalProperties: false
+      required: [state, expires_at, offer, company, subscription]
+      properties:
+        state:
+          type: string
+          enum: [available, accepted, expired, unavailable]
+          description: >-
+            available until the customer takes it (accepted) or it ends (expired). unavailable when the
+            subscription is no longer in the cancellation the email answered, the merchant turned the cancel
+            flow off, or the customer took another money-off offer within the merchant's cooldown.
+        expires_at: { type: string, format: date-time, description: When the offer ends, the end of a day in the subscription's timezone. }
+        offer:
+          type: object
+          additionalProperties: false
+          required: [type, percentage, duration, duration_cycles]
+          properties:
+            type: { type: string, enum: [discount] }
+            percentage: { type: integer, minimum: 1, maximum: 100, description: Percent off. }
+            duration: { type: string, enum: [once, repeating], description: The next order, or the next duration_cycles orders. }
+            duration_cycles: { type: [integer, "null"], minimum: 2, maximum: 12, description: The orders a repeating discount applies to. }
+        company:
+          type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string }
+        subscription:
+          type: object
+          additionalProperties: false
+          required: [status, product_title, variant_title, quantity, price, currency, next_bill_date]
+          properties:
+            status: { type: string, description: cancelled until the offer is taken, then active. }
+            product_title: { type: [string, "null"] }
+            variant_title: { type: [string, "null"] }
+            quantity: { type: integer }
+            price: { type: [string, "null"], description: The unit price before the offer, as a decimal string. }
+            currency: { type: [string, "null"], description: ISO 4217 code. }
+            next_bill_date: { type: [string, "null"], format: date, description: The next order date in the subscription's timezone, once reactivated. }
+    WinBackUnsubscribeResponse:
+      type: object
+      additionalProperties: false
+      required: [unsubscribed, meta]
+      properties:
+        unsubscribed: { type: boolean, enum: [true] }
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
     CancellationSessionResponse:
       type: object
       additionalProperties: false
@@ -25377,6 +25438,205 @@ paths:
                   timestamp: '2026-09-14T15:28:44Z'
         '401':
           description: Unauthorized
+  "/api/checkout/v2026-04/win-back-offer":
+    get:
+      summary: Show a win-back offer
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_show_win_back_offer
+      x-fluid-audience: company
+      description: >-
+        The win-back offer a Subscription Pro win-back email links to, and whether the customer can take
+        it now. Requires the win-back token from the email's link as the bearer, and accepts no other
+        credential: no customer session, no user token. The token works for 60 days after the email;
+        the offer itself ends at expires_at.
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The offer.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WinBackOfferResponse"
+              example:
+                win_back_offer:
+                  state: available
+                  expires_at: '2027-04-27T05:59:59Z'
+                  offer: { type: discount, percentage: 25, duration: once, duration_cycles: null }
+                  company: { name: Primex }
+                  subscription:
+                    status: cancelled
+                    product_title: Daily Greens
+                    variant_title: 30 servings
+                    quantity: 1
+                    price: '49.99'
+                    currency: USD
+                    next_bill_date: null
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2027-04-20T15:00:00Z'
+        '401':
+          description: The token is missing, invalid or expired, its offer does not exist, or the company no longer runs subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/win-back-offer/accept":
+    post:
+      summary: Take a win-back offer
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_accept_win_back_offer
+      x-fluid-audience: company
+      description: >-
+        Reactivates the cancelled subscription on its current plan and attaches the offer's discount, in
+        one step: a refused reactivation or discount changes nothing. The offer is single use. Returns 409
+        when it was already taken (win_back_offer_used), has expired (win_back_offer_expired), the
+        subscription is no longer in the cancellation the email answered (win_back_offer_ended), or it is
+        not available (offer_unavailable: the plan is no longer active, the merchant turned the cancel flow
+        off, or the customer took another money-off offer within the merchant's cooldown), or when another
+        change held the subscription (conflict, try again). Returns 422 when the reactivation or the
+        discount is refused, with the refusal in errors.code. Requires the win-back token as the bearer.
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The offer, taken.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WinBackOfferResponse"
+              example:
+                win_back_offer:
+                  state: accepted
+                  expires_at: '2027-04-27T05:59:59Z'
+                  offer: { type: discount, percentage: 25, duration: once, duration_cycles: null }
+                  company: { name: Primex }
+                  subscription:
+                    status: active
+                    product_title: Daily Greens
+                    variant_title: 30 servings
+                    quantity: 1
+                    price: '49.99'
+                    currency: USD
+                    next_bill_date: '2027-05-20'
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2027-04-20T15:00:00Z'
+        '401':
+          description: The token is missing, invalid or expired, its offer does not exist, or the company no longer runs subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: The offer was already taken, has expired, has ended, is not available, or the subscription was busy. errors.code names which.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The reactivation or the discount was refused. errors.code names the refusal.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/win-back-offer/unsubscribe":
+    post:
+      summary: Stop marketing email from a win-back email
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_unsubscribe_win_back_offer
+      x-fluid-audience: company
+      description: >-
+        Turns off marketing email from the merchant for the customer the win-back email went to, so no
+        other win-back email is sent. Works for as long as the token does, whatever the state of the
+        offer. Unsubscribing again succeeds. Requires the win-back token as the bearer.
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The customer no longer gets marketing email.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WinBackUnsubscribeResponse"
+              example:
+                unsubscribed: true
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2027-04-20T15:00:00Z'
+        '401':
+          description: The token is missing, invalid or expired, its offer does not exist, or the company no longer runs subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The customer record could not be updated.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/win-back-offer/unsubscribe/one-click":
+    post:
+      summary: One-click unsubscribe from a win-back email
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_one_click_unsubscribe_win_back_offer
+      x-fluid-audience: public
+      description: >-
+        The URL in a win-back email's `List-Unsubscribe` header (RFC 8058). A mail provider POSTs it
+        with the body `List-Unsubscribe=One-Click` and no session or Authorization header. Turns off
+        marketing email from the merchant for the customer the email went to, like the unsubscribe
+        page. Unsubscribing again succeeds. Takes only the one-click token from the `token` query
+        parameter; the page token is refused.
+      security: []
+      parameters:
+      - name: token
+        in: query
+        required: true
+        description: The one-click unsubscribe token from the email's `List-Unsubscribe` header.
+        schema:
+          type: string
+          pattern: "^swbu_"
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                List-Unsubscribe:
+                  type: string
+                  enum:
+                  - One-Click
+                  description: The value RFC 8058 has mail providers send.
+      responses:
+        '200':
+          description: The customer no longer gets marketing email.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WinBackUnsubscribeResponse"
+              example:
+                unsubscribed: true
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2027-04-20T15:00:00Z'
+        '401':
+          description: The token is missing, invalid, expired or not a one-click token, its offer does not exist for its member and company, or the company no longer runs subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: The customer record could not be updated.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
   "/api/checkout/v2026-04/subscription_bundles":
     get:
       summary: List subscription bundles
