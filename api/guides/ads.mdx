@@ -1,0 +1,88 @@
+---
+title: "Connect ad accounts and launch ads"
+sidebarTitle: "Ads"
+description: "Connect a company's Meta and Google Ads accounts, choose the account to advertise from, generate ad images, launch paused campaigns, and read their results."
+---
+
+These company operations let a script or an AI agent run ads for a merchant: connect Meta and Google, choose the ad account, make images, launch a campaign, and report on it. Mist uses them when a merchant asks it to run ads; the [Run ads with Mist](/help/mist/run-ads) help article describes that flow for merchants.
+
+Three rules hold for every launch:
+
+- **Every campaign is created paused** in the merchant's own ad account, which bills it. The merchant switches it on in Meta Ads Manager or Google Ads. Fluid never switches a campaign on and never handles ad spend.
+- **Fluid checks the copy before it sends anything.** A line that makes a claim the platforms reject, such as a health claim or a guaranteed result, blocks the whole launch.
+- **Fluid doesn't mirror campaigns.** It keeps a record of each launch and reads status and results live from Meta or Google when you ask.
+
+All of these operations take a company Bearer token (`Authorization: Bearer <token>`) for a company admin. Connecting, choosing an account and launching need the **Company settings** permission; generating images needs **Media**. Droplet installation tokens are refused.
+
+## 1. Connect Meta and Google
+
+One login per platform covers both commerce and ads:
+
+- **Meta:** [Start the Meta business-login connect flow](/api-reference/meta/start-the-meta-business-login-connect-flow) returns a sign-in `url`. The person who opens it logs in to Facebook and shares the business, catalog, ad account, Page and Instagram account. The business must own at least one product catalog. [Connect Meta](/setup/sales-channel-meta) walks the same flow with the Fluid CLI: `fluid channels connect meta --open`.
+- **Google:** [Start the Google Merchant Center connect flow](/api-reference/google/start-the-google-merchant-center-connect-flow) returns a sign-in `url`. The same Google sign-in grants Merchant Center and Google Ads access, and it needs a Merchant Center account. [Connect Google Merchant Center](/setup/sales-channel-google) walks it with `fluid channels connect google --open`.
+
+A person has to approve the login in a browser. Open the `url` for them, wait for them to say they're done, then read the connection once: [Get the company's Meta commerce connection](/api-reference/meta/get-the-companys-meta-commerce-connection) or [Get the company's Google Merchant Center connection](/api-reference/google/get-the-companys-google-merchant-center-connection). A test store can't connect.
+
+## 2. Choose the ad account
+
+Fluid launches only into the ad account the company chose. Read the choices live from the platform, then save one of them:
+
+| Step | Meta | Google |
+| --- | --- | --- |
+| List what the connection reaches | [List the Meta ad accounts and Pages the connection can reach](/api-reference/ads/list-the-meta-ad-accounts-and-pages-the-connection-can-reach) | [List the Google Ads accounts the connection can reach](/api-reference/ads/list-the-google-ads-accounts-the-connection-can-reach) |
+| Save the choice | [Select the Meta ad account to advertise from](/api-reference/ads/select-the-meta-ad-account-to-advertise-from) | [Select the Google Ads account to advertise from](/api-reference/ads/select-the-google-ads-account-to-advertise-from) |
+| Read it | [Get the selected Meta ad account](/api-reference/ads/get-the-selected-meta-ad-account) | [Get the selected Google Ads account](/api-reference/ads/get-the-selected-google-ads-account) |
+| Remove it | [Clear the selected Meta ad account](/api-reference/ads/clear-the-selected-meta-ad-account) | [Clear the selected Google Ads account](/api-reference/ads/clear-the-selected-google-ads-account) |
+
+On Meta, the choice is an ad account, the Facebook Page the ads run as and, optionally, the Instagram account linked to that Page. On Google, it's one Google Ads account that is enabled and isn't a manager account.
+
+Save only ids that the list returned. Fluid checks each id with the platform again before it saves, so an id typed in by hand or taken from another company fails. When an agent chooses for a merchant, show the merchant the list and let them pick.
+
+## 3. Get images (Meta only)
+
+Each Meta ad needs an https `image_url`. Use the product's own images where one fits the placement. When none does, generate one:
+
+1. [Generate ad images at an aspect ratio](/api-reference/ads/generate-ad-images-at-an-aspect-ratio) with a `prompt`, an `aspect_ratio` of `1:1`, `4:5`, `9:16` or `1.91:1`, and, to base the images on a product, its `product_id`. It returns `202` with a generation id.
+2. [Read an ad image generation](/api-reference/ads/read-an-ad-image-generation) until its status is `completed` or `failed`. Each completed image is saved to the company's media library, and its `url` is ready to use as an `image_url`.
+
+Generating images is charged to the company's AI credits. An agent should ask the merchant before it generates. A generation result expires after an hour; the saved images don't.
+
+## 4. Launch
+
+Send the approved copy to [Launch a paused Meta campaign](/api-reference/ads/launch-a-paused-meta-campaign) or [Launch a paused Google Search campaign](/api-reference/ads/launch-a-paused-google-search-campaign). Both return `201` with the launch record and the platform's ids.
+
+- **Meta** creates a Traffic campaign, one ad set and one to five link ads, all paused.
+- **Google** creates a budget, a Search campaign, one ad group and one responsive search ad, with the campaign paused. Google applies it all at once, so a refused launch creates nothing.
+
+The `daily_budget` is in the ad account's minor currency units, such as cents for USD. Fluid adds UTM tags to the `link_url`, and the `utm_campaign` names the campaign in Fluid's own reports.
+
+**Retry safely with `idempotency_key`.** Send a key that identifies the approved ads, such as a hash of them. If a request times out and you send it again with the same key, you get the first launch back instead of a second campaign. If that first launch hasn't finished, you get `409` with `launch_in_progress`: check the ad account for the campaign before you launch again with a new key.
+
+Never tell a merchant an ad is live after a launch. It's paused until they switch it on, and the platform may still review it.
+
+## 5. Read results
+
+[List the company's ads launches](/api-reference/ads/list-the-companys-ads-launches) and [List the company's Google ads launches](/api-reference/ads/list-the-companys-google-ads-launches) return the launch records, newest first.
+
+For one launch's results, call [Read a Meta launch's campaign results](/api-reference/ads/read-a-meta-launchs-campaign-results) or [Read a Google launch's campaign results](/api-reference/ads/read-a-google-launchs-campaign-results). Fluid reads them live from the platform: the campaign's current status, spend, impressions, clicks, click-through rate and cost per click, for the days from `since` to `until`. Without dates, the range runs from the launch date to today.
+
+## Errors
+
+Failures put a machine-readable type in `error.details.type`. Branch on the type, not on the message.
+
+| Type | Status | What to do |
+| --- | --- | --- |
+| `missing_ads_permission` | `422` | The login didn't grant ads access. Connect again and keep ads access switched on. |
+| `unknown_ad_account`, `unknown_page`, `unknown_instagram_account` | `422` | The platform no longer lists that id for this connection. List the accounts again. |
+| `inactive_ad_account` | `422` | The account is disabled, closed or not enabled. Choose another. |
+| `manager_ad_account` | `422` | A Google manager account can't run ads. Choose an account under it. |
+| `no_ad_account` | `404` | No ad account is chosen. Do step 2. |
+| `not_connected` | `409` | The connection is disconnected or expired. Connect again. |
+| `launch_in_progress` | `409` | A launch with this `idempotency_key` hasn't finished. Check the ad account before you launch again. |
+| `claims_blocked` | `422` | The copy failed the claims check, and nothing was sent. `error.details` lists the `violations`. Rewrite those lines and launch again. |
+| `claims_check_unavailable` | `503` | The claims check couldn't run, and nothing was sent. Retry. |
+| `unsupported_country` | `422` | Google has no location for a country in `countries`. |
+| `invalid_range` | `422` | `since` is after `until`. Fix the dates. |
+| `no_campaign` | `422` | The launch failed before it created a campaign, so it has no results. |
+
+When the platform refuses a launch, the response is `502` and `error.details.launch_id` names the failed launch record. On Meta, any campaign parts created before the failure stay in the ad account, all paused.
