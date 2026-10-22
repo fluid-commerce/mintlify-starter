@@ -40,6 +40,10 @@ info:
 
     A droplet is described like the rest of the app's resources: a `title`, a one-line `summary` for its marketplace card, a longer `description` for its details page (HTML: paragraphs, headings, lists, links), a `logo_url`, and `features`, each a `title` with an optional `image_url` or `video_url`. Upload media to your company's DAM first and use the URLs it gives you.
 
+    ## Publishing a droplet
+
+    Only Fluid publishes a droplet to the public marketplace. When a draft or internal droplet is ready, `POST /droplets/{droplet_uuid}/publish-request` asks Fluid to review it; the droplet keeps its status, and keeps working for the stores that use it, until Fluid decides. Asking again while a request waits returns the same request, and `DELETE` withdraws it. Fluid publishes the droplet when it approves, or emails why it didn't; `latest_publish_review` on the droplet shows where the request stands, with the reason once rejected. Every move back to the marketplace, such as after Fluid unlists a droplet, is asked for the same way. Check `publish_review_available` first: while it is false, these endpoints answer 404.
+
     ## Webhook secret
 
     Fluid signs the webhooks and data requests it sends your droplet with its webhook secret. No droplet response carries it. `POST /droplets/{uuid}/webhook-secret-rotations` generates a new one and returns it once; the old one stops being used immediately.
@@ -58,7 +62,7 @@ info:
     - `PATCH` changes only what you send.
     - `status` replaces the `active` and `publicly_available` flags, with the same rules: anyone with `droplets.update` can take a droplet offline (`draft`) or back into service (`internal`); publishing, or unlisting a published droplet, needs a Fluid root admin.
     - `DELETE` is refused while another company has the droplet installed.
-    - Publishing goes through marketplace review rather than an `active` or `publicly_available` flag.
+    - Publishing goes through marketplace review (`POST /droplets/{droplet_uuid}/publish-request`) rather than an `active` or `publicly_available` flag.
   contact:
     email: support@fluid.app
   license:
@@ -451,6 +455,16 @@ components:
                 - 'null'
                 format: date-time
                 description: When Fluid approved or rejected it; null while pending.
+          latest_publish_review:
+            description: Your latest request for Fluid to publish the droplet, pending, approved or rejected, with the reason
+              once rejected; null when it never asked, or after withdrawing. Publisher only.
+            oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CompanyDropletPublishRequest'
+          publish_review_available:
+            type: boolean
+            description: True when your company can ask Fluid to publish its droplets (`POST /droplets/{droplet_uuid}/publish-request`).
+              Publisher only.
           latest_governance_action:
             type:
             - object
@@ -1214,6 +1228,65 @@ components:
           example: 201
         meta:
           $ref: '#/components/schemas/Meta'
+    CompanyDropletPublishRequest:
+      type: object
+      description: A request for Fluid to publish the droplet to the public marketplace.
+      required:
+      - id
+      - state
+      - status_before
+      - reason
+      - requested_at
+      - decided_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - withdrawn
+          - superseded
+          description: '`pending` waits on Fluid. `approved` published the droplet; `rejected` left it as it was, with `reason`.
+            `withdrawn` you took back, and `superseded` Fluid settled another way, such as publishing or suspending the droplet
+            directly.'
+        status_before:
+          type: string
+          enum:
+          - draft
+          - internal
+          description: The droplet's status when it asked.
+        reason:
+          type:
+          - string
+          - 'null'
+          description: Why Fluid did not publish it; null unless rejected.
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When it was approved, rejected, withdrawn or superseded; null while pending.
+    CompanyDropletPublishRequestResponse:
+      type: object
+      description: One request to publish a droplet.
+      required:
+      - publish_request
+      - status
+      - meta
+      properties:
+        publish_request:
+          $ref: '#/components/schemas/CompanyDropletPublishRequest'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
     CompanyDropletInstallationUpdateRequest:
       type: object
       required:
@@ -1660,6 +1733,8 @@ paths:
                   lifecycle_contract_version: v2
                   pending_requested_scopes: null
                   latest_scope_review: null
+                  latest_publish_review: null
+                  publish_review_available: true
                   latest_governance_action: null
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
@@ -1864,6 +1939,8 @@ paths:
                   lifecycle_contract_version: v2
                   pending_requested_scopes: null
                   latest_scope_review: null
+                  latest_publish_review: null
+                  publish_review_available: true
                   latest_governance_action: null
                   created_at: '2026-09-08T16:20:44Z'
                   updated_at: '2026-10-02T09:12:30Z'
@@ -2115,6 +2192,135 @@ paths:
                 meta:
                   request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-20T15:32:08Z'
+  /api/company/v2026-10/droplets/{droplet_uuid}/publish-request:
+    parameters:
+    - name: droplet_uuid
+      in: path
+      required: true
+      description: The uuid of a draft or internal droplet your company publishes.
+      schema:
+        type: string
+      example: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+    post:
+      operationId: companyDropletPublishRequestCreate
+      summary: Ask Fluid to publish a droplet
+      description: |-
+        Asks Fluid to put a draft or internal droplet your company publishes in the public marketplace. Fluid's reviewers are told; the droplet keeps its status, and keeps working for the stores that use it, until a reviewer decides. Approving publishes it. Rejecting leaves it as it is, and the requester is emailed why; the reason also shows in the droplet's `latest_publish_review`.
+
+        Asking while a request already waits returns that request with 200 and tells no one again; a new request is 201. A droplet that is published, suspended or archived cannot ask (409). Another company's droplet, and every droplet while `publish_review_available` is false, is a 404.
+
+        Needs the `droplets.update` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: The new request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishRequestResponse'
+              example:
+                publish_request:
+                  id: 01a1507c-2222-7333-8444-555566667777
+                  state: pending
+                  status_before: internal
+                  reason: null
+                  requested_at: '2026-10-21T18:04:12Z'
+                  decided_at: null
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+        '200':
+          description: The request already waiting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishRequestResponse'
+              example:
+                publish_request:
+                  id: 01a1507c-2222-7333-8444-555566667777
+                  state: pending
+                  status_before: internal
+                  reason: null
+                  requested_at: '2026-10-21T18:04:12Z'
+                  decided_at: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:10:40Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The droplet is not draft or internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Only a draft or internal droplet can ask to be published
+                  details:
+                    status:
+                    - is published
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+    delete:
+      operationId: companyDropletPublishRequestDestroy
+      summary: Withdraw a request to publish a droplet
+      description: |-
+        Withdraws the droplet's waiting request. The droplet stays as it is. 404 when no request waits.
+
+        Needs the `droplets.update` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '204':
+          description: Withdrawn.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid, or no request waiting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: No publish request is waiting
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+        '409':
+          description: The request was decided while you withdrew it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: This request was already approved
+                  details: {}
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
   /api/company/v2026-10/droplets/{droplet_uuid}/installations:
     parameters:
     - name: droplet_uuid
