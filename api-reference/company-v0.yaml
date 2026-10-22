@@ -11995,6 +11995,48 @@ components:
               - number
               - integer
               - 'null'
+    SubscriptionCancelRequest:
+      type: object
+      additionalProperties: false
+      description: Why the subscription is being cancelled. Both fields are optional.
+      properties:
+        reason_code:
+          type: [string, 'null']
+          description: |
+            A cancellation reason code. A company admin or a back-office caller
+            (a droplet or machine token) may send any code. Any other caller,
+            including a customer or rep token, may send only the customer codes
+            (`too_expensive`, `too_much_product`, `too_frequent`,
+            `not_seeing_results`, `did_not_like_product`, `switching_brand`,
+            `shipping_or_delivery_issue`, `taking_a_break`,
+            `moving_or_life_change`, `other`). Omitted or null records
+            `merchant_initiated` for a company admin or back-office caller and
+            `unknown` otherwise. A code the caller may not send returns `422`.
+          enum:
+          - too_expensive
+          - too_much_product
+          - too_frequent
+          - not_seeing_results
+          - did_not_like_product
+          - switching_brand
+          - shipping_or_delivery_issue
+          - taking_a_break
+          - moving_or_life_change
+          - other
+          - merchant_initiated
+          - support_request
+          - max_cycles_reached
+          - dunning_exhausted
+          - customer_deleted
+          - fraud
+          - unknown
+          - null
+          example: support_request
+        reason_text:
+          type: [string, 'null']
+          maxLength: 500
+          description: Free text, allowed only with `reason_code` `other`.
+          example: null
     BulkCancelSubscriptionsRequestBodyApplicationJsonSchema:
       type:
       - object
@@ -12011,6 +12053,45 @@ components:
             - integer
             - 'null'
           minItems: 1
+        reason_code:
+          type: [string, 'null']
+          description: |
+            One cancellation reason code recorded on every cancelled subscription.
+            A company admin or a back-office caller (a droplet or machine token)
+            may send any code. Any other caller, including a customer or rep
+            token, may send only the customer codes (`too_expensive`,
+            `too_much_product`, `too_frequent`, `not_seeing_results`,
+            `did_not_like_product`, `switching_brand`,
+            `shipping_or_delivery_issue`, `taking_a_break`,
+            `moving_or_life_change`, `other`). Omitted or null records
+            `merchant_initiated` for a company admin or back-office caller and
+            `unknown` otherwise. A code the caller may not send returns `422`
+            and cancels nothing.
+          enum:
+          - too_expensive
+          - too_much_product
+          - too_frequent
+          - not_seeing_results
+          - did_not_like_product
+          - switching_brand
+          - shipping_or_delivery_issue
+          - taking_a_break
+          - moving_or_life_change
+          - other
+          - merchant_initiated
+          - support_request
+          - max_cycles_reached
+          - dunning_exhausted
+          - customer_deleted
+          - fraud
+          - unknown
+          - null
+          example: merchant_initiated
+        reason_text:
+          type: [string, 'null']
+          maxLength: 500
+          description: Free text, allowed only with `reason_code` `other`.
+          example: null
     BulkRetrySubscriptionsRequestBody:
       description: The subscription tokens to retry.
       type: object
@@ -22246,6 +22327,16 @@ components:
               type: array
               items:
                 "$ref": "#/components/schemas/JsonValue"
+            cancellation_reason_code:
+              type:
+              - string
+              - 'null'
+              description: Why the subscription was cancelled, from the fixed reason taxonomy. Null while it is not cancelled.
+            cancellation_reason_text:
+              type:
+              - string
+              - 'null'
+              description: Free text recorded with reason code `other`.
             cancelled_at:
               type: 'null'
             company:
@@ -22789,6 +22880,445 @@ components:
       - meta
       - subscription
       additionalProperties: false
+    SubscriptionProfile:
+      description: |
+        The autoship profile this subscription belongs to: the subscriptions
+        that renew as one order and also share a payment method, a plan
+        cadence and a timezone, so they stay together after each shipment.
+        Derived from the subscriptions on every read and never stored.
+      type: object
+      additionalProperties: false
+      required:
+      - next_bill_date
+      - billing_interval
+      - billing_interval_unit
+      - members
+      properties:
+        next_bill_date:
+          description: The date every member bills next, in the members'
+            shared timezone.
+          type: string
+          format: date
+        billing_interval:
+          description: The plan interval every member shares.
+          type: integer
+        billing_interval_unit:
+          description: The unit of `billing_interval`.
+          type: string
+          enum:
+          - day
+          - week
+          - month
+          - year
+        members:
+          description: Every member, ascending by subscription id, including this
+            subscription. A profile has at least two.
+          type: array
+          minItems: 2
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - subscription_token
+            - label
+            - status
+            properties:
+              subscription_token:
+                type: string
+              label:
+                description: The member's product title. Empty string when the
+                  variant or its product is gone.
+                type: string
+              status:
+                type: string
+                enum:
+                - active
+                - paused
+    SubscriptionProfileWriteResponse:
+      description: |
+        The autoship profile after a profile write, or `null` when skipping one
+        item leaves fewer than two members together.
+      type: object
+      additionalProperties: false
+      required:
+      - profile
+      - meta
+      properties:
+        profile:
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfile"
+          - type: 'null'
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    SubscriptionProfileItemQuote:
+      description: |
+        What an item would take on when it joins an autoship profile: the
+        profile's plan cadence, address, card and next bill date, and the price
+        one unit renews at.
+      type: object
+      additionalProperties: false
+      required:
+      - outcome
+      - alignments
+      - next_bill_date
+      - billing_interval
+      - billing_interval_unit
+      - address
+      - payment_method
+      - item
+      - confirmation
+      properties:
+        outcome:
+          description: |
+            `ok` when the item has the same facts as the profile on its own.
+            `align_required` when joining gives it profile facts it would not
+            have on its own; the add then needs `confirmation`.
+          type: string
+          enum:
+          - ok
+          - align_required
+        alignments:
+          description: The profile facts the item takes that it would not have on
+            its own. In practice `date`, and `preferred_shipping_method` when the
+            profile has one. Empty when `outcome` is `ok`.
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - field
+            - alignable
+            properties:
+              field:
+                type: string
+                enum:
+                - date
+                - address
+                - volume_rep
+                - preferred_shipping_method
+                - auto_apply_points
+                - payment_method
+                - cadence
+                - timezone
+              alignable:
+                description: Whether the item can take the profile's value.
+                type: boolean
+        next_bill_date:
+          description: The date the item first bills and ships, with the profile's
+            next order.
+          type: string
+          format: date
+        billing_interval:
+          description: The plan interval the item shares with the profile.
+          type: integer
+        billing_interval_unit:
+          description: The unit of `billing_interval`.
+          type: string
+          enum:
+          - day
+          - week
+          - month
+          - year
+        address:
+          description: The shipping address the item takes from the profile.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfileAddress"
+          - type: 'null'
+        payment_method:
+          description: The payment method the item takes from the profile.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfilePaymentLabel"
+          - type: 'null'
+        item:
+          type: object
+          additionalProperties: false
+          required:
+          - variant_id
+          - label
+          - quantity
+          - price
+          - total
+          - currency_code
+          properties:
+            variant_id:
+              type: integer
+            label:
+              description: The product title. Empty string when the product is gone.
+              type: string
+            quantity:
+              type: integer
+            price:
+              description: Decimal string. What each renewal charges for one unit.
+              type: string
+            total:
+              description: Decimal string. `price` times `quantity`.
+              type: string
+            currency_code:
+              description: ISO 4217 code of `price` and `total`.
+              type: string
+        confirmation:
+          description: A signed token that binds every term above. It is valid for
+            one hour, and only the add for the same customer accepts it.
+          type: string
+    SubscriptionProfileItemPreviewResponse:
+      description: What joining an autoship profile would change for an item.
+      type: object
+      additionalProperties: false
+      required:
+      - quote
+      - meta
+      properties:
+        quote:
+          "$ref": "#/components/schemas/SubscriptionProfileItemQuote"
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    SubscriptionProfileItemAddResponse:
+      description: |
+        The autoship profile after an item joined it, and the new item's token.
+        `profile` is `null` only when the profile cannot be derived after the
+        add.
+      type: object
+      additionalProperties: false
+      required:
+      - profile
+      - subscription_token
+      - meta
+      properties:
+        profile:
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfile"
+          - type: 'null'
+        subscription_token:
+          description: The token of the subscription the add created, or created
+            on the first request with the same `request_key`.
+          type: string
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    SubscriptionProfileErrorResponse:
+      description: |
+        A refused profile write. Nothing was written. `meta.code` names the
+        reason on a `409` or a domain `422`; it is absent on a `404` and on a
+        `422` for invalid parameters.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              description: |
+                Why the write was refused. `profile_changed` (409): the tokens no
+                longer name one profile; `errors.subscription_tokens` lists the
+                profile's current members. `profile_would_change`: the change
+                would split the profile. `plan_not_offered`: an item's product
+                does not offer the plan. `skip_refused`: a member cannot skip.
+                `item_would_not_rejoin`: the skipped item would not land on the
+                profile's next date. Other values come from the address, payment
+                method, date and billing-cycle checks the subscription writes
+                share. On the item add, `quote_changed` (409): the profile's date,
+                address, card or plan or the item's price changed since the preview,
+                or the confirmation is expired or is for other terms; preview
+                again. 422: `confirmation_required` (the preview's outcome is
+                `align_required`, so the add needs its `confirmation`);
+                `join_refused` (`errors.refusals` lists the reasons: `currency`,
+                `country`, `tax_pricing_mode`, `shipping_pricing_mode`,
+                `digital`, `customer`, `member`, `plan_not_offered`);
+                `item_unavailable`; `item_not_created` (`errors` carry the
+                subscription create errors); `request_key_reused` (the
+                `request_key` added another item); `address_required`;
+                `invalid_variant` (`variant_id` not found for the company).
+              type: string
+    SubscriptionProfilePaymentLabel:
+      description: |
+        The payment method an autoship profile renews on, named for display
+        ("Visa 4242"). It carries no PayPal vault id or id token, no card
+        expiry and no billing address.
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - payment_type
+      - details
+      properties:
+        id:
+          type: integer
+        payment_type:
+          description: The kind of payment method, such as `Credit Card` or `PayPal`.
+          type: string
+        details:
+          type: object
+          additionalProperties: false
+          required:
+          - card_brand
+          - last_four
+          properties:
+            card_brand:
+              description: The card network, such as `Visa`. `null` for a payment
+                method that is not a card.
+              type:
+              - string
+              - 'null'
+            last_four:
+              description: The card's last four digits. `null` for a payment method
+                that is not a card.
+              type:
+              - string
+              - 'null'
+    SubscriptionProfileGroup:
+      description: |
+        A Subscription Pro autoship profile, or a shipping-together unit: the
+        subscriptions of one customer that renew as one order next time.
+        A profile's members also share a payment method, a plan cadence and a
+        timezone, so they stay together after each shipment. A
+        shipping-together unit's members differ on at least one of those, named
+        in `differences`, so they can split later. Derived from the
+        subscriptions on every read and never stored.
+      type: object
+      additionalProperties: false
+      required: [kind, differences, next_bill_date, address, members]
+      properties:
+        kind:
+          type: string
+          enum: [profile, shipping_together]
+        differences:
+          description: The facts the members disagree on. Empty for a profile.
+          type: array
+          items:
+            type: string
+            enum: [payment_method, cadence, timezone]
+        next_bill_date:
+          description: The date every member bills next, in each member's timezone.
+          type: string
+          format: date
+        address:
+          description: The shipping address every member shares, or null when none is stored.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfileAddress"
+          - type: 'null'
+        members:
+          description: Every member, ascending by subscription id. A group has at least two.
+          type: array
+          minItems: 2
+          items:
+            "$ref": "#/components/schemas/SubscriptionProfileGroupMember"
+    SubscriptionProfileGroupMember:
+      type: object
+      additionalProperties: false
+      required: [subscription_token, label, variant_title, status, quantity, billing_interval, billing_interval_unit, timezone,
+                 payment_method]
+      properties:
+        subscription_token:
+          type: string
+        label:
+          description: The product title. Empty string when the variant or its product is gone.
+          type: string
+        variant_title:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [active, paused]
+        quantity:
+          type: [integer, 'null']
+        billing_interval:
+          description: The plan interval.
+          type: integer
+        billing_interval_unit:
+          type: string
+          enum: [day, week, month, year]
+        timezone:
+          description: The IANA timezone the member bills in.
+          type: string
+        payment_method:
+          description: The payment method the member renews on, or null when it has none.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfilePaymentMethod"
+          - type: 'null'
+    SubscriptionProfilePaymentMethod:
+      type: object
+      additionalProperties: false
+      required: [id, source, card_brand, last_four]
+      properties:
+        id:
+          type: integer
+        source:
+          description: The kind of payment method, such as card or paypal.
+          type: [string, 'null']
+        card_brand:
+          description: The card brand, such as Visa. Null when it is not a card or the brand is unknown.
+          type: [string, 'null']
+        last_four:
+          description: The last four digits of the card. Null when unknown.
+          type: [string, 'null']
+    SubscriptionProfileAddress:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: [integer, 'null']
+        name:
+          type: [string, 'null']
+        address1:
+          type: [string, 'null']
+        address2:
+          type: [string, 'null']
+        address3:
+          type: [string, 'null']
+        city:
+          type: [string, 'null']
+        state:
+          type: [string, 'null']
+        subdivision_code:
+          type: [string, 'null']
+        postal_code:
+          type: [string, 'null']
+        country_code:
+          type: [string, 'null']
+        phone:
+          type: [string, 'null']
+        country_num_code:
+          type: [integer, 'null']
+        default:
+          type: [boolean, 'null']
+    SubscriptionProfileGroupResponse:
+      type: object
+      additionalProperties: false
+      required: [profile_group, meta]
+      properties:
+        profile_group:
+          description: The profile or shipping-together unit the subscription is in, or null when it renews on its own.
+          anyOf:
+          - "$ref": "#/components/schemas/SubscriptionProfileGroup"
+          - type: 'null'
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionProfileGroupsResponse:
+      type: object
+      additionalProperties: false
+      required: [profile_groups, meta]
+      properties:
+        profile_groups:
+          description: The customer's profiles and shipping-together units, ascending by their first member's id.
+          type: array
+          items: { "$ref": "#/components/schemas/SubscriptionProfileGroup" }
+        meta: { "$ref": "#/components/schemas/Meta" }
     CompanySubscriptionDiscountListResponse:
       type: object
       required:
@@ -36649,7 +37179,7 @@ paths:
     post:
       operationId: company_v0_company_ranks_post
       summary: Create a rank
-      description: Adds a rank to the company's compensation plan. Requires a company admin token with permission to update ranks. Returns 400 when a rank with the same `external_id` already exists and 422 when `name` or `external_id` is missing.
+      description: Adds a rank to the company's compensation plan. Requires a company admin token with permission to update ranks. Returns 400 when a rank with the same `external_id` or `name` already exists and 422 when `name` or `external_id` is missing.
       tags:
       - company
       requestBody:
@@ -36690,6 +37220,16 @@ paths:
                 meta:
                   request_id: 9c4e2b7a-51d3-4f8e-a6b0-3d1f72c85e14
                   timestamp: '2026-09-14T15:42:07Z'
+        '400':
+          description: Duplicate `external_id` or `name` in the company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                errors:
+                  external_id:
+                  - "Rank with external id 'RANK-ARM' already exists"
         '401':
           description: Unauthorized
           content:
@@ -36752,6 +37292,26 @@ paths:
                 meta:
                   request_id: 9c4e2b7a-51d3-4f8e-a6b0-3d1f72c85e14
                   timestamp: '2026-09-14T15:42:07Z'
+        '404':
+          description: Rank not found in the company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                errors:
+                  rank:
+                  - Rank with id 814 does not exist
+        '422':
+          description: The `name` or `external_id` is already taken by another rank
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                errors:
+                  rank:
+                  - Name is already taken
         '401':
           description: Unauthorized
           content:
@@ -52109,6 +52669,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardForbiddenResponse"
+        '422':
+          description: The tokens are empty or the reason is invalid. Nothing is cancelled.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       requestBody:
         content:
           application/json:
@@ -53081,7 +53647,7 @@ paths:
     post:
       summary: Cancel a subscription
       description: >-
-        Cancels the subscription and emails the customer a cancellation notice. Returns the cancelled subscription. Requires a Bearer token with the `subscriptions` update permission; a customer token may cancel the customer's own subscriptions. Returns 404 when the subscription is not visible to the caller.
+        Cancels the subscription and emails the customer a cancellation notice. The optional body records the cancellation reason, returned as `cancellation_reason_code` and `cancellation_reason_text` on the subscription. Returns the cancelled subscription. Requires a Bearer token with the `subscriptions` update permission; a customer token may cancel the customer's own subscriptions. Returns 404 when the subscription is not visible to the caller.
       tags:
       - subscriptions
       operationId: commerce_v0_cancel_subscription
@@ -53093,6 +53659,14 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionCancelRequest"
+            example:
+              reason_code: support_request
       responses:
         '200':
           description: Success
@@ -53126,6 +53700,8 @@ paths:
                   bundled_items: []
                   bundled_subscriptions: []
                   cancelled_at: '2026-09-30T13:25:09Z'
+                  cancellation_reason_code: support_request
+                  cancellation_reason_text: null
                   company:
                     id: 1405
                     name: Dunder Mifflin Paper Company
@@ -53343,6 +53919,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '422':
+          description: The reason is invalid for the caller. Nothing is cancelled.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
   "/api/subscriptions/{token}/discounts":
     get:
       summary: List subscription discount history
@@ -53454,6 +54036,1432 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscriptions/profiles":
+    get:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Beside the existing unversioned /api/subscriptions list that the fluid-admin customer page reads with customer_id; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: List a customer's autoship profiles
+      description: >-
+        The Subscription Pro autoship profiles and shipping-together units of one customer, ascending by
+        their first member's id. Subscriptions that renew on their own are not listed. Requires the
+        `subscriptions` view permission and an admin, and the autoship_profiles feature to work for the
+        company: Subscription Pro active, the release flag on, the merchant setting on and subscription
+        bundling on. A customer of another company lists nothing. Responses are not cached.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_list_subscription_profiles
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: customer_id
+        in: query
+        required: true
+        description: The customer, as the subscriptions list's customer_id filter reads it.
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileGroupsResponse"
+              example:
+                profile_groups:
+                - kind: profile
+                  differences: []
+                  next_bill_date: '2026-11-03'
+                  address:
+                    id: 48213
+                    name: Dana Whitfield
+                    address1: 12 Main St
+                    address2: null
+                    address3: null
+                    city: Salt Lake City
+                    state: UT
+                    subdivision_code: UT
+                    postal_code: '84101'
+                    country_code: US
+                    phone: '+18015550147'
+                    country_num_code: 840
+                    default: true
+                  members:
+                  - subscription_token: sb_8f2c1d9e7a
+                    label: Daily Greens
+                    variant_title: 30 servings
+                    status: active
+                    quantity: 1
+                    billing_interval: 1
+                    billing_interval_unit: month
+                    timezone: America/Denver
+                    payment_method:
+                      id: 77120
+                      source: card
+                      card_brand: Visa
+                      last_four: '4242'
+                  - subscription_token: sb_3b7e0a41c6
+                    label: Collagen Peptides
+                    variant_title: Unflavored
+                    status: active
+                    quantity: 2
+                    billing_interval: 1
+                    billing_interval_unit: month
+                    timezone: America/Denver
+                    payment_method:
+                      id: 77120
+                      source: card
+                      card_brand: Visa
+                      last_four: '4242'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions view permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: customer_id is missing, or is not one integer.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscriptions/{token}/profile":
+    get:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Get the autoship profile of a subscription
+      description: >-
+        The Subscription Pro autoship profile the subscription belongs to, or the shipping-together unit it
+        bills in when its members differ on payment method, cadence or timezone. Null when the subscription
+        renews on its own, is cancelled, or has no owner. Requires the `subscriptions` view permission and an
+        admin, and the autoship_profiles feature to work for the company: Subscription Pro active, the
+        release flag on, the merchant setting on and subscription bundling on. Responses are not cached.
+      tags:
+      - subscriptions
+      operationId: commerce_v0_get_subscription_profile
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileGroupResponse"
+              example:
+                profile_group:
+                  kind: shipping_together
+                  differences:
+                  - payment_method
+                  next_bill_date: '2026-11-03'
+                  address:
+                    id: 48213
+                    name: Dana Whitfield
+                    address1: 12 Main St
+                    address2: null
+                    address3: null
+                    city: Salt Lake City
+                    state: UT
+                    subdivision_code: UT
+                    postal_code: '84101'
+                    country_code: US
+                    phone: '+18015550147'
+                    country_num_code: 840
+                    default: true
+                  members:
+                  - subscription_token: sb_8f2c1d9e7a
+                    label: Daily Greens
+                    variant_title: 30 servings
+                    status: active
+                    quantity: 1
+                    billing_interval: 1
+                    billing_interval_unit: month
+                    timezone: America/Denver
+                    payment_method:
+                      id: 77120
+                      source: card
+                      card_brand: Visa
+                      last_four: '4242'
+                  - subscription_token: sb_3b7e0a41c6
+                    label: Collagen Peptides
+                    variant_title: Unflavored
+                    status: paused
+                    quantity: 2
+                    billing_interval: 1
+                    billing_interval_unit: month
+                    timezone: America/Denver
+                    payment_method:
+                      id: 77388
+                      source: card
+                      card_brand: American Express
+                      last_four: '1005'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions view permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription not found in the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscriptions/{token}/profile/reschedule":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Reschedule an autoship profile
+      tags:
+      - subscriptions
+      operationId: commerce_v0_reschedule_subscription_profile
+      description: |
+        Moves every member of the autoship profile to one new next bill date. The
+        date must be today or later and within each member's bill-date cap.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              next_bill_date: '2026-11-03'
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - next_bill_date
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                next_bill_date:
+                  type: string
+                  format: date
+                  description: The date every member bills next, in the members' shared timezone.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-11-03'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/change-address":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Change an autoship profile's address
+      tags:
+      - subscriptions
+      operationId: commerce_v0_change_address_subscription_profile
+      description: |
+        Ships every member of the autoship profile to one saved address the
+        customer owns. The address must be in the profile's country. The next bill
+        date does not change.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              address_id: 73018
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - address_id
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                address_id:
+                  type: integer
+                  description: A saved address of the authenticated customer.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/change-payment-method":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Change an autoship profile's payment method
+      tags:
+      - subscriptions
+      operationId: commerce_v0_change_payment_method_subscription_profile
+      description: |
+        Charges every member of the autoship profile to one saved payment method
+        the customer owns. Each member fires its own `subscription_updated` event.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              payment_method_id: 61842
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - payment_method_id
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                payment_method_id:
+                  type: integer
+                  description: A saved payment method of the authenticated customer.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/change-frequency":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Change an autoship profile's frequency
+      tags:
+      - subscriptions
+      operationId: commerce_v0_change_frequency_subscription_profile
+      description: |
+        Moves every member of the autoship profile to one subscription plan. Every
+        member's product must offer the plan (`plan_not_offered` otherwise). The
+        next bill date and every price stay as they are.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              subscription_plan_id: 418
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - subscription_plan_id
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                subscription_plan_id:
+                  type: integer
+                  description: A subscription plan every member's product offers.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 2
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/skip":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Skip an autoship profile's next shipment
+      tags:
+      - subscriptions
+      operationId: commerce_v0_skip_subscription_profile
+      description: |
+        Skips the next shipment of every member, so the whole profile moves one
+        interval. When any member cannot skip (`skip_refused`), nothing is skipped.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-11-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/skip-item":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Skip one item of an autoship profile once
+      tags:
+      - subscriptions
+      operationId: commerce_v0_skip_item_subscription_profile
+      description: |
+        Skips the next shipment of one member only. That item leaves the profile
+        for one interval and rejoins it on the date the other members bill after
+        their next renewal. The response carries the profile the other members
+        still form, or `null` when fewer than two of them remain.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              subscription_token: 'sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn'
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - subscription_token
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                subscription_token:
+                  type: string
+                  description: The member to skip. It must be one of `subscription_tokens`.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/pause":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Pause an autoship profile
+      tags:
+      - subscriptions
+      operationId: commerce_v0_pause_subscription_profile
+      description: |
+        Pauses every member until one resume date, so the profile resumes together.
+        The date must be after today and within each member's bill-date cap.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              resume_on: '2026-12-14'
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - resume_on
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                resume_on:
+                  type: string
+                  format: date
+                  description: The date billing resumes for every member.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-12-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: paused
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: paused
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/resume":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Resume an autoship profile
+      tags:
+      - subscriptions
+      operationId: commerce_v0_resume_subscription_profile
+      description: |
+        Resumes every paused member on the profile's next bill date. Members that
+        are already active stay as they are.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileWriteResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was
+            written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/items/preview":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Preview an item for an autoship profile
+      tags:
+      - subscriptions
+      operationId: commerce_v0_preview_subscription_profile_item
+      description: |
+        Prices a recurring item for an autoship profile and says what joining it
+        changes, without adding it. The item takes the profile's plan, address,
+        card and next bill date. `quote.outcome` is `ok` when the item would have
+        the same facts on its own, and `align_required` when joining changes at
+        least one of them; `quote.alignments` lists those facts. Nothing is
+        written.
+
+        Send `quote.confirmation` to the add as `confirmation`. It binds every
+        term in the quote, so the add refuses with `quote_changed` when any of
+        them changed in between.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              variant_id: 4821
+              quantity: 2
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - variant_id
+              - quantity
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                variant_id:
+                  description: The variant to add. It must belong to the company.
+                  type: integer
+                quantity:
+                  description: How many units each renewal ships.
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: What joining the profile would change, and the confirmation
+            the add takes back.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileItemPreviewResponse"
+              example:
+                quote:
+                  outcome: align_required
+                  alignments:
+                  - field: date
+                    alignable: true
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  address:
+                    id: 3310
+                    name: Michael Scott
+                    address1: 1725 Slough Avenue
+                    address2:
+                    address3:
+                    city: Scranton
+                    state: PA
+                    subdivision_code: US-PA
+                    postal_code: '18505'
+                    country_code: US
+                    phone:
+                    country_num_code: 840
+                    default: true
+                  payment_method:
+                    id: 7702
+                    payment_type: Credit Card
+                    details:
+                      card_brand: Visa
+                      last_four: '4242'
+                  item:
+                    variant_id: 4821
+                    label: Dunder Mifflin Toner Cartridge
+                    quantity: 2
+                    price: '90.0'
+                    total: '180.0'
+                    currency_code: USD
+                  confirmation: eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdDVG9KYzNWaWFtVmpkQ0lMY0hKbGRtbGxkdz09In19
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile changed since the client read it. Nothing was
+            written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the item cannot join the profile.
+            Nothing was written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/subscriptions/{token}/profile/items":
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8)."
+      summary: Add an item to an autoship profile
+      tags:
+      - subscriptions
+      operationId: commerce_v0_add_subscription_profile_item
+      description: |
+        Adds a recurring item to the autoship profile. It first bills and ships
+        with the profile's next order, at the price one unit renews at. The
+        response carries the profile after the add and the new item's
+        `subscription_token`. Nothing is charged now.
+
+        When the preview's `quote.outcome` is `align_required`, send its
+        `quote.confirmation` as `confirmation`; without it the add refuses with
+        `confirmation_required`. The add refuses with `quote_changed` when the
+        profile's date, address, card or plan, or the item's price, changed
+        since the preview, or when the confirmation is expired or is for other
+        terms. Preview again and ask the customer to confirm.
+
+        Generate one `request_key` per add and send it again on a retry. A retry
+        with the same `request_key` answers `201` with the same
+        `subscription_token` and adds nothing. A `request_key` that added
+        another item is refused with `request_key_reused`.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: A subscription of the customer whose profile changes.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+              - sb_7Qm2VxK9pRtL4wNc8HzJdF
+              - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              variant_id: 4821
+              quantity: 2
+              request_key: 6f0d1c52-3b7e-4c1a-9a55-2e8f7d3b9c14
+              confirmation: eyJfcmFpbHMiOnsibWVzc2FnZSI6IkJBaDdDVG9KYzNWaWFtVmpkQ0lMY0hKbGRtbGxkdz09In19
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - subscription_tokens
+              - variant_id
+              - quantity
+              - request_key
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read
+                    them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                variant_id:
+                  description: The variant to add. It must belong to the company.
+                  type: integer
+                quantity:
+                  description: How many units each renewal ships.
+                  type: integer
+                  minimum: 1
+                request_key:
+                  description: Identifies this add. The client generates one per add
+                    and sends it again on a retry.
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                confirmation:
+                  description: The `quote.confirmation` from the preview of these
+                    terms. Required when the preview's outcome is `align_required`.
+                  type: string
+      responses:
+        '201':
+          description: The item was added, or an earlier request with the same
+            `request_key` already added it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileItemAddResponse"
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 1
+                  billing_interval_unit: month
+                  members:
+                  - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                    label: Dunder Mifflin 20lb Copy Paper
+                    status: active
+                  - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                  - subscription_token: sb_9Xc5Bn3Qa6Zs2Ye7Df1Wk
+                    label: Dunder Mifflin Toner Cartridge
+                    status: active
+                subscription_token: sb_9Xc5Bn3Qa6Zs2Ye7Df1Wk
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles
+            feature does not work for the company. A closed feature names the failed check in errors.error:
+            subscription_pro_inactive, release_flag_unavailable, release_flag_off, setting_off or
+            bundle_subscriptions_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '409':
+          description: The profile or the quote changed since the client read it.
+            Nothing was written; preview again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+        '422':
+          description: Invalid parameters, or the item cannot join the profile.
+            Nothing was written.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
   "/api/subscriptions/{token}/orders":
     get:
       summary: Show orders created from the subscription
