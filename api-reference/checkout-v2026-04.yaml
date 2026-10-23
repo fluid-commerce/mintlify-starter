@@ -1040,10 +1040,36 @@ components:
       additionalProperties: false
       required:
       - disclosure
+      - sms_consent
+      - sequence
       - meta
       properties:
         disclosure:
           "$ref": "#/components/schemas/SmsConsentDisclosure"
+        sms_consent:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The choice the cart holds, `null` when the cart holds none. Show the box checked only for an opt-in whose `disclosure_version` is the current `disclosure.version`.
+          required:
+          - opted_in
+          - phone
+          - disclosure_version
+          properties:
+            opted_in:
+              type: boolean
+              description: Whether the customer agreed to receive recurring subscription texts.
+            phone:
+              type: string
+              description: The phone number in E.164 form.
+            disclosure_version:
+              type: string
+              description: The version of the disclosure the choice was recorded against.
+        sequence:
+          type: integer
+          minimum: 0
+          description: The highest write number this consent applied from a page, `0` when none. Number the next write above it.
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
     SmsConsentRequest:
@@ -1062,11 +1088,28 @@ components:
         disclosure_version:
           type: string
           description: The version of the disclosure the customer saw, from the GET on the same path.
+        sequence:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: |
+            The page's number for this write. Number each write higher than the
+            last one the page sent and higher than the `sequence` of the last
+            response, starting above the `sequence` from the GET on the same path.
+            A write applies only when its number is higher than the highest one
+            applied; at an equal number a decline still replaces an opt-in. A
+            number more than 1000 above the highest one applied is not applied
+            either, so a page that guessed a far-off number cannot lock the
+            choice: the response carries the `sequence` that stands. A
+            write without a number applies only while no numbered write has been
+            applied.
     CartSmsConsentResponse:
       type: object
       additionalProperties: false
       required:
       - sms_consent
+      - applied
+      - sequence
       - meta
       properties:
         sms_consent:
@@ -1082,6 +1125,13 @@ components:
             phone:
               type: string
               description: The phone number in E.164 form.
+        applied:
+          type: boolean
+          description: False when the write was out of the page's order and changed nothing. `sms_consent` is then the choice that stands.
+        sequence:
+          type: integer
+          minimum: 0
+          description: The highest write number this consent applied from a page, `0` when none. Number the next write above it.
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
     SubscriptionSmsConsentResponse:
@@ -1090,6 +1140,7 @@ components:
       required:
       - sms_consent
       - disclosure
+      - sequence
       - meta
       properties:
         sms_consent:
@@ -1115,6 +1166,10 @@ components:
               description: The phone's choice, or null when none is on record.
         disclosure:
           "$ref": "#/components/schemas/SmsConsentDisclosure"
+        sequence:
+          type: integer
+          minimum: 0
+          description: The highest write number this consent applied from a page, `0` when none. Number the next write above it.
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
     SmsConsentRefusalResponse:
@@ -18177,9 +18232,18 @@ paths:
         Returns the current disclosure a shopper must see before agreeing to
         recurring subscription texts from the cart's company: its `version` and
         its rendered `text`, with the company name and the terms and privacy
-        links filled in. Show the `text` next to an unchecked checkbox and send
-        its `version` back with the shopper's choice. The response never carries
-        the stored choice, a phone number, an IP address or a user agent.
+        links filled in. Send its `version` back with the shopper's choice, and
+        number the next choice above `sequence`.
+
+        `sms_consent` is the choice the cart holds from an earlier `PUT`, or
+        `null` when the cart holds none. The checkout copies that choice into
+        the company's consent record, so a page that reloads must show it: a
+        cart with no choice shows an unchecked checkbox, an opt-in whose
+        `disclosure_version` is the current `version` shows it checked, and a
+        decline shows it unchecked. An opt-in recorded against an older
+        `disclosure_version` is for text the shopper no longer sees. Replace it
+        with a decline through `PUT`, or the checkout copies it. The phone is
+        in E.164 form. The response never carries an IP address or a user agent.
 
         Returns `404` when Subscription Pro text reminders are not available to
         the cart's company. The `404` is the same as for an unknown cart token.
@@ -18192,17 +18256,22 @@ paths:
           type: string
       responses:
         '200':
-          description: The current disclosure
+          description: The current disclosure and the choice the cart holds
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/SmsConsentDisclosureResponse"
               example:
+                sms_consent:
+                  opted_in: true
+                  phone: '+14155552671'
+                  disclosure_version: 2026-10-draft-1
                 disclosure:
                   version: 2026-10-draft-1
                   text: I agree to get recurring automated texts about your subscription from Dunder Mifflin Alerts, up to 3/day.
                     Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.
                     Terms https://dundermifflin.example/terms-conditions Privacy https://dundermifflin.example/privacy-policy
+                sequence: 2
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
@@ -18221,16 +18290,24 @@ paths:
       x-fluid-audience: public
       description: |
         Keeps the shopper's choice about recurring subscription texts on the
-        cart. Each call replaces the previous choice, so the last one before
-        checkout wins. When the checkout creates subscriptions, the choice is
+        cart. Each call replaces the previous choice, so the shopper's last
+        choice before checkout wins. The last choice is the one the page
+        numbered highest in `sequence`, not the request that arrived last: a
+        write out of order answers `200` with `applied: false` and the choice
+        that stands, so a stalled opt-in that arrives after a later decline
+        changes nothing. When the checkout creates subscriptions, the choice is
         copied into the company's consent record with the disclosure text the
         shopper saw, their IP address and their user agent. A shopper who
-        unchecks the box is recorded as declined, and a decline never opts a
-        phone out. The choice is separate from `sms_marketing`, which this call
-        never changes.
+        unchecks the box is recorded as declined. A decline made before the
+        checkout creates the subscriptions opts no phone out. A decline made
+        after the copy withdraws the opt-in that the copy made from this cart's
+        choice, and only that one: it never opts out a phone that opted in
+        elsewhere or changed its consent after the copy. The choice is separate
+        from `sms_marketing`, which this call never changes.
 
-        Send `opted_in`, the `phone` the shopper typed, and the
-        `disclosure_version` from `GET` on this path. Only US and Canadian phone
+        Send `opted_in`, the `phone` the shopper typed, the
+        `disclosure_version` from `GET` on this path, and the write's
+        `sequence`. Only US and Canadian phone
         numbers are accepted. The response repeats the choice with the phone in
         E.164 form and never carries the IP address or user agent.
 
@@ -18262,6 +18339,7 @@ paths:
               opted_in: true
               phone: "(415) 555-2671"
               disclosure_version: 2026-10-draft-1
+              sequence: 3
       responses:
         '200':
           description: The choice was recorded
@@ -18273,6 +18351,8 @@ paths:
                 sms_consent:
                   opted_in: true
                   phone: '+14155552671'
+                applied: true
+                sequence: 3
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
@@ -32796,7 +32876,8 @@ paths:
         `sms_consent.phone` is that phone in E.164 form: the customer's phone,
         or the member's phone when the subscription has no customer. It is null
         when there is no US or Canadian phone. `sms_consent.status` is `opted_in` or `opted_out`, or
-        null when the phone has no choice on record.
+        null when the phone has no choice on record. Number the next change
+        above `sequence`.
 
         Requires the bearer token of the customer who owns the subscription. A
         manage link token (`sml_...`), an operator or a machine token gets
@@ -32828,6 +32909,7 @@ paths:
                   text: I agree to get recurring automated texts about your subscription from Dunder Mifflin Alerts, up to 3/day.
                     Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.
                     Terms https://dundermifflin.example/terms-conditions Privacy https://dundermifflin.example/privacy-policy
+                sequence: 2
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
@@ -32859,6 +32941,16 @@ paths:
         Only US and Canadian phone numbers are accepted, and the response gives
         the phone in E.164 form.
 
+        Changes apply in the order the page numbered them in `sequence`, not
+        the order they arrive. A change out of order answers `200` with
+        `applied: false` and the choice that stands, so a stalled opt-in that
+        arrives after a later opt-out changes nothing. `sequence` numbers
+        changes to the phone the GET returns. On another phone an opt-out
+        applies as that phone's newest change, and an opt-in applies only
+        while that phone has no numbered change yet (otherwise `applied` is
+        false). A STOP reply or a carrier
+        opt-out is not numbered and always applies by its time.
+
         Requires the bearer token of the customer who owns the subscription. A
         manage link token (`sml_...`) is not accepted, because that link travels
         to merchant systems and must never write opt-in evidence. Returns `404`
@@ -32887,6 +32979,7 @@ paths:
               opted_in: true
               phone: "(415) 555-2671"
               disclosure_version: 2026-10-draft-1
+              sequence: 3
       responses:
         '200':
           description: The choice was recorded
@@ -32898,6 +32991,8 @@ paths:
                 sms_consent:
                   opted_in: true
                   phone: '+14155552671'
+                applied: true
+                sequence: 3
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
