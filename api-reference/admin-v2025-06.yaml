@@ -18,6 +18,12 @@ info:
 servers:
 - url: https://api.fluid.app
 tags:
+- name: payments-reports
+  description: >-
+    Report on a company's payments over a period: transaction volume and
+    amount, gateway latency, and approval and error rates, overall or per
+    payment account.
+  x-fluid-section: Payments
 - name: feature-flags
   description: >-
     Read and change a company's feature flags, and, for root admins, read the
@@ -3295,6 +3301,108 @@ components:
           type: string
           format: date-time
       required: [id, provider, ad_account_id, connection_status, created_at]
+      additionalProperties: false
+    AdsInsights:
+      type: object
+      required: [campaign_status, since, until, spend, impressions, clicks]
+      properties:
+        campaign_status:
+          type: [string, 'null']
+          description: The platform's campaign status, such as PAUSED, ACTIVE (Meta) or ENABLED (Google).
+        since:
+          type: string
+          format: date
+        until:
+          type: string
+          format: date
+        currency:
+          type: [string, 'null']
+          description: The ad account's ISO currency.
+        spend:
+          type: string
+          description: Amount spent in the range, a decimal in the ad account's currency.
+        impressions:
+          type: integer
+        clicks:
+          type: integer
+        ctr:
+          type: [number, 'null']
+          description: Clicks per impression as a percentage; null before any impression.
+        cpc:
+          type: [string, 'null']
+          description: Spend per click, a decimal; null before any click.
+      additionalProperties: false
+    AdsImageGeneration:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, failed]
+        images:
+          type: array
+          description: Present when completed.
+          items:
+            type: object
+            properties:
+              asset_id:
+                type: integer
+              url:
+                type: [string, 'null']
+                description: The image's DAM URL; use it as a launch's image_url.
+              mime_type:
+                type: [string, 'null']
+            additionalProperties: false
+        error:
+          type: string
+          description: Present when failed.
+      additionalProperties: false
+    AdsLaunch:
+      description: One ads launch — the paused campaign Fluid created on the ad platform, with its ids and claims-check result. Results live in the platform.
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [meta, google]
+        status:
+          type: string
+          enum: [claims_blocked, creating, paused, failed]
+          description: '`paused`: created and paused, ready to switch on. `failed`: a platform call failed; ids created before it are kept. `claims_blocked`: refused by the claims check before any platform call.'
+        name:
+          type: string
+        utm_campaign:
+          type: string
+        platform_campaign_id:
+          type: [string, 'null']
+        platform_ad_set_id:
+          type: [string, 'null']
+        platform_ad_ids:
+          type: array
+          items:
+            type: string
+        platform_creative_ids:
+          type: array
+          items:
+            type: string
+          description: Meta ad creative ids, kept even when the ad for a creative failed.
+        created_at:
+          type: string
+          format: date-time
+        claims_check:
+          type: object
+          additionalProperties: true
+        failure:
+          type: [object, 'null']
+          additionalProperties: true
+        manage_url:
+          type: [string, 'null']
+          description: Ads Manager link to the campaign, where the merchant reviews it and switches it on.
+      required: [id, provider, status, name, utm_campaign, platform_ad_ids, created_at, claims_check]
       additionalProperties: false
     GoogleDiscoveredAdAccount:
       description: A Google Ads customer account the connection's token can reach, read live from Google.
@@ -29365,6 +29473,814 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/meta/launches:
+    get:
+      operationId: admin_v202506_company_ads_meta_launches_get
+      x-fluid-audience: company
+      summary: List the company's ads launches
+      description: The campaigns Fluid launched for this company, newest first
+        (up to 50), each with its platform ids, status and claims-check result.
+        Campaign results live in the ad platform. Requires a company admin with
+        company_settings.view.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                launches:
+                - id: 01923f4a-7c2e-7b91-a5d3-6e8f0b4c2a19
+                  provider: meta
+                  status: paused
+                  name: Fall mug launch
+                  utm_campaign: fall-mug-launch
+                  platform_campaign_id: '120210000000000001'
+                  platform_ad_set_id: '120210000000000002'
+                  platform_ad_ids:
+                  - '120210000000000003'
+                  platform_creative_ids:
+                  - '120210000000000004'
+                  created_at: '2026-10-22T17:05:00Z'
+                  claims_check:
+                    summary: No policy issues found.
+                    violations: []
+                    blocking: false
+                  failure: null
+                  manage_url: https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=1029384756&selected_campaign_ids=120210000000000001
+                status: 200
+                meta:
+                  request_id: 9c2e4f1a-6b3d-4a8e-b5c7-1d0f3e2a9b84
+                  timestamp: '2026-10-22T17:05:00Z'
+              schema:
+                type: object
+                properties:
+                  launches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdsLaunch'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.view permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      operationId: admin_v202506_company_ads_meta_launches_post
+      x-fluid-audience: company
+      summary: Launch a paused Meta campaign
+      description: Creates, in the company's selected Meta ad account, a Traffic
+        campaign with one ad set and one ad per entry in `ads`, all paused, so
+        nothing spends until the merchant switches it on in Ads Manager. Every
+        line of copy first passes a claims check (health, income, testimonial
+        and body-image rules); a critical or high finding refuses the launch
+        with no Meta call. The landing URL gets `utm_source=facebook`,
+        `utm_medium=paid_social` and `utm_campaign`. Requires a company admin
+        with company_settings.update.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              name: Fall mug launch
+              daily_budget: 2000
+              countries: [US]
+              age_min: 18
+              link_url: https://shop.example.com/products/fall-mug
+              utm_campaign: fall-mug-launch
+              ads:
+              - primary_text: Our fall mug keeps coffee hot through your morning.
+                headline: The fall mug is back
+                description: Free shipping over $50
+                call_to_action: SHOP_NOW
+                image_url: https://cdn.example.com/fall-mug-1x1.jpg
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: The campaign name in Ads Manager.
+                daily_budget:
+                  type: integer
+                  minimum: 100
+                  description: Daily budget in the ad account's minor currency units (cents for USD).
+                countries:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[A-Z]{2}$'
+                  description: ISO 3166-1 alpha-2 country codes to target.
+                age_min:
+                  type: integer
+                  minimum: 18
+                  maximum: 65
+                  description: Minimum age to target; defaults to 18.
+                link_url:
+                  type: string
+                  format: uri
+                  description: The https landing page; Fluid adds the UTM tags.
+                utm_campaign:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9_-]*$'
+                  description: The campaign name in Fluid's campaigns report.
+                idempotency_key:
+                  type: string
+                  maxLength: 100
+                  description: Optional. A key the caller picks for this launch, such as a hash of the approved pack. Sending the same key again returns the first launch with this key instead of creating another campaign.
+                ads:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  items:
+                    type: object
+                    properties:
+                      primary_text:
+                        type: string
+                      headline:
+                        type: string
+                      description:
+                        type: [string, 'null']
+                      call_to_action:
+                        type: string
+                        enum: [SHOP_NOW, LEARN_MORE, SIGN_UP, GET_OFFER, ORDER_NOW]
+                      image_url:
+                        type: string
+                        format: uri
+                    required: [primary_text, headline, call_to_action, image_url]
+              required: [name, daily_budget, countries, link_url, utm_campaign, ads]
+      responses:
+        '201':
+          description: Created. The campaign, ad set and ads exist on Meta, all paused. With an `idempotency_key` already used, the first launch with that key is returned and nothing new is created.
+          content:
+            application/json:
+              example:
+                launch:
+                  id: 01923f4a-7c2e-7b91-a5d3-6e8f0b4c2a19
+                  provider: meta
+                  status: paused
+                  name: Fall mug launch
+                  utm_campaign: fall-mug-launch
+                  platform_campaign_id: '120210000000000001'
+                  platform_ad_set_id: '120210000000000002'
+                  platform_ad_ids:
+                  - '120210000000000003'
+                  platform_creative_ids:
+                  - '120210000000000004'
+                  created_at: '2026-10-22T17:05:00Z'
+                  claims_check:
+                    summary: No policy issues found.
+                    violations: []
+                    blocking: false
+                  failure: null
+                  manage_url: https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=1029384756&selected_campaign_ids=120210000000000001
+                status: 201
+                meta:
+                  request_id: 9c2e4f1a-6b3d-4a8e-b5c7-1d0f3e2a9b84
+                  timestamp: '2026-10-22T17:05:00Z'
+              schema:
+                type: object
+                properties:
+                  launch:
+                    $ref: '#/components/schemas/AdsLaunch'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.update permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No Meta ad account is selected (`no_ad_account`). The failure type is in `error.details.type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The Meta connection is disconnected or expired (`not_connected`). Or a launch with this `idempotency_key` is still being created (`launch_in_progress`, with `launch_id`); check the ad account before launching again with a new key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid parameters, or the copy fails the claims check (`claims_blocked`, with `violations` and `launch_id` in `error.details`; nothing was sent to Meta).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: Meta refused a call. `error.details.launch_id` names the launch record, which keeps any ids created before the failure, all paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The claims check could not run (`claims_check_unavailable`); nothing was sent to Meta. Retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/google/launches:
+    get:
+      operationId: admin_v202506_company_ads_google_launches_get
+      x-fluid-audience: company
+      summary: List the company's Google ads launches
+      description: The Google campaigns Fluid launched for this company, newest
+        first (up to 50), each with its Google ids, status and claims-check
+        result. Campaign results live in Google Ads. Requires a company admin
+        with company_settings.view.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                launches:
+                - id: 01923f4a-7c2e-7b91-a5d3-6e8f0b4c2a1a
+                  provider: google
+                  status: paused
+                  name: Fall mug search
+                  utm_campaign: fall-mug-search
+                  platform_campaign_id: '21000000001'
+                  platform_ad_set_id: '151000000001'
+                  platform_ad_ids:
+                  - 151000000001~690000000001
+                  platform_creative_ids: []
+                  created_at: '2026-10-22T18:10:00Z'
+                  claims_check:
+                    summary: No policy issues found.
+                    violations: []
+                    blocking: false
+                  failure: null
+                  manage_url: https://ads.google.com/aw/campaigns?campaignId=21000000001
+                status: 200
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  launches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdsLaunch'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.view permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      operationId: admin_v202506_company_ads_google_launches_post
+      x-fluid-audience: company
+      summary: Launch a paused Google Search campaign
+      description: Creates, in the company's selected Google Ads account and in
+        one atomic request, a budget, a paused Search campaign (Maximize clicks,
+        Google Search and search partners) targeting the countries, one ad group,
+        one responsive search ad and the optional phrase-match keywords. Every
+        headline and description first passes the claims check; a critical or
+        high finding refuses the launch with no Google call. The landing URL
+        gets `utm_source=google`, `utm_medium=cpc` and `utm_campaign`. Requires a
+        company admin with company_settings.update.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              name: Fall mug search
+              daily_budget: 2000
+              countries: [US]
+              link_url: https://shop.example.com/products/fall-mug
+              utm_campaign: fall-mug-search
+              headlines: [The Fall Mug Is Back, Keeps Coffee Hot for Hours, Free Shipping Over $50]
+              descriptions: [Our fall mug keeps your coffee hot all morning., Order today and get free shipping on orders over $50.]
+              keywords: [insulated coffee mug, fall coffee mug]
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: The campaign name in Google Ads; unique in the account.
+                daily_budget:
+                  type: integer
+                  minimum: 100
+                  description: Daily budget in the account's minor currency units (cents for USD).
+                countries:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[A-Z]{2}$'
+                  description: ISO 3166-1 alpha-2 country codes to target.
+                link_url:
+                  type: string
+                  format: uri
+                  description: The https landing page; Fluid adds the UTM tags.
+                utm_campaign:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9_-]*$'
+                  description: The campaign name in Fluid's campaigns report.
+                idempotency_key:
+                  type: string
+                  maxLength: 100
+                  description: Optional. A key the caller picks for this launch, such as a hash of the approved pack. Sending the same key again returns the first launch with this key instead of creating another campaign.
+                headlines:
+                  type: array
+                  minItems: 3
+                  maxItems: 15
+                  items:
+                    type: string
+                    maxLength: 30
+                descriptions:
+                  type: array
+                  minItems: 2
+                  maxItems: 4
+                  items:
+                    type: string
+                    maxLength: 90
+                keywords:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
+                    maxLength: 80
+                  description: Phrase-match keywords for the ad group.
+              required: [name, daily_budget, countries, link_url, utm_campaign, headlines, descriptions]
+      responses:
+        '201':
+          description: Created. The budget, campaign, ad group and ad exist in Google Ads; the campaign is paused. With an `idempotency_key` already used, the first launch with that key is returned and nothing new is created.
+          content:
+            application/json:
+              example:
+                launch:
+                  id: 01923f4a-7c2e-7b91-a5d3-6e8f0b4c2a1a
+                  provider: google
+                  status: paused
+                  name: Fall mug search
+                  utm_campaign: fall-mug-search
+                  platform_campaign_id: '21000000001'
+                  platform_ad_set_id: '151000000001'
+                  platform_ad_ids:
+                  - 151000000001~690000000001
+                  platform_creative_ids: []
+                  created_at: '2026-10-22T18:10:00Z'
+                  claims_check:
+                    summary: No policy issues found.
+                    violations: []
+                    blocking: false
+                  failure: null
+                  manage_url: https://ads.google.com/aw/campaigns?campaignId=21000000001
+                status: 201
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  launch:
+                    $ref: '#/components/schemas/AdsLaunch'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.update permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No Google Ads account is selected (`no_ad_account`). The failure type is in `error.details.type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The Google connection is disconnected, expired or its access was revoked (`not_connected`). Or a launch with this `idempotency_key` is still being created (`launch_in_progress`, with `launch_id`); check the ad account before launching again with a new key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid parameters, a country with no Google location (`unsupported_country`), or the copy fails the claims check (`claims_blocked`, with `violations` and `launch_id` in `error.details`; nothing was sent to Google).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: Google Ads refused the request; Google applies it atomically, so nothing was created. `error.details.launch_id` names the failed launch record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The claims check could not run (`claims_check_unavailable`); nothing was sent to Google. Retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/meta/launches/{id}/insights:
+    get:
+      operationId: admin_v202506_company_ads_meta_launches_id_insights_get
+      x-fluid-audience: company
+      summary: Read a Meta launch's campaign results
+      description: The launched campaign's current status and its spend,
+        impressions and clicks over a date range, read live from Meta in one
+        request. Fluid stores none of it. `since` defaults to the launch date
+        and `until` to today. Requires a company admin with
+        company_settings.view.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The launch id.
+      - name: since
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: The first day, inclusive (YYYY-MM-DD).
+      - name: until
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: The last day, inclusive (YYYY-MM-DD).
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                insights:
+                  campaign_status: ACTIVE
+                  since: '2026-10-15'
+                  until: '2026-10-22'
+                  currency: USD
+                  spend: '12.5'
+                  impressions: 1000
+                  clicks: 40
+                  ctr: 4.0
+                  cpc: '0.31'
+                status: 200
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  insights:
+                    $ref: '#/components/schemas/AdsInsights'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.view permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No Meta launch with this id at this company (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The Meta connection is disconnected or expired (`not_connected`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid dates, `since` after `until` (`invalid_range`), or a launch that created no campaign (`no_campaign`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: Meta refused the request. The failure type is in `error.details.type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/google/launches/{id}/insights:
+    get:
+      operationId: admin_v202506_company_ads_google_launches_id_insights_get
+      x-fluid-audience: company
+      summary: Read a Google launch's campaign results
+      description: The launched campaign's current status and its spend,
+        impressions and clicks over a date range, read live from Google in one
+        request. Fluid stores none of it. `since` defaults to the launch date
+        and `until` to today. Requires a company admin with
+        company_settings.view.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The launch id.
+      - name: since
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: The first day, inclusive (YYYY-MM-DD).
+      - name: until
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: The last day, inclusive (YYYY-MM-DD).
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                insights:
+                  campaign_status: ENABLED
+                  since: '2026-10-15'
+                  until: '2026-10-22'
+                  currency: USD
+                  spend: '12.5'
+                  impressions: 1000
+                  clicks: 40
+                  ctr: 4.0
+                  cpc: '0.31'
+                status: 200
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  insights:
+                    $ref: '#/components/schemas/AdsInsights'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the company_settings.view permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No Google launch with this id at this company (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The Google connection is disconnected or expired (`not_connected`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid dates, `since` after `until` (`invalid_range`), or a launch that created no campaign (`no_campaign`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: Google refused the request. The failure type is in `error.details.type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/images:
+    post:
+      operationId: admin_v202506_company_ads_images_post
+      x-fluid-audience: company
+      summary: Generate ad images at an aspect ratio
+      description: Queues the generation of 1 to 4 ad images at a placement's
+        aspect ratio (`1:1`, `4:5`, `9:16` or `1.91:1`), conditioned on a
+        product's images and details or a reference image when given. Each
+        finished image is saved to the company's DAM, tagged `ai-generated`
+        and `ads`, and its DAM URL can be used as a launch's `image_url`. Poll
+        the generation with GET; results are kept for an hour. Generation is
+        billed to the company's AI gateway key. Requires a company admin with
+        media.update.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt, aspect_ratio]
+              properties:
+                prompt:
+                  type: string
+                  maxLength: 2000
+                  description: The scene to generate.
+                aspect_ratio:
+                  type: string
+                  enum: ['1:1', '4:5', '9:16', '1.91:1']
+                  description: 1:1 feed, 4:5 Instagram and Facebook feed, 9:16 Stories and Reels, 1.91:1 link and landscape placements.
+                product_id:
+                  type: integer
+                  description: Optional. A product of this company whose images and details the images are based on.
+                reference_image_url:
+                  type: string
+                  description: Optional https image to base the images on.
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 4
+                  default: 1
+            example:
+              prompt: The fall mug on a cafe table in morning light
+              aspect_ratio: '4:5'
+              product_id: 12
+              count: 2
+      responses:
+        '202':
+          description: Accepted. The generation is queued; poll it with GET.
+          content:
+            application/json:
+              example:
+                generation:
+                  id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+                  status: pending
+                status: 202
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  generation:
+                    $ref: '#/components/schemas/AdsImageGeneration'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the media.update permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid parameters, an unsupported aspect ratio, or a `product_id` that isn't one of this company's products.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v202506/company/ads/images/{id}:
+    get:
+      operationId: admin_v202506_company_ads_images_id_get
+      x-fluid-audience: company
+      summary: Read an ad image generation
+      description: The state of a generation started with POST — `pending`,
+        `completed` with each image's DAM asset id and URL, or `failed` with an
+        error. Requires a company admin with media.update.
+      tags: [ads]
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The generation id POST returned.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              example:
+                generation:
+                  id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+                  status: completed
+                  images:
+                  - asset_id: 9001
+                    url: https://ik.imagekit.io/fluid/ad-image-1.png
+                    mime_type: image/png
+                status: 200
+                meta:
+                  request_id: 4e8a2c6f-1b9d-4f3a-a7e5-0c2d8b6f1a93
+                  timestamp: '2026-10-22T18:10:00Z'
+              schema:
+                type: object
+                properties:
+                  generation:
+                    $ref: '#/components/schemas/AdsImageGeneration'
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '401':
+          description: No valid bearer token was provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but is not a company admin, or lacks the media.update permission, or is a droplet installation token (always refused).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No generation with this id for this company, or it expired after an hour.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/v202506/meta/catalog_listings:
     get:
       operationId: admin_v202506_meta_catalog_listings_get
@@ -35072,6 +35988,170 @@ paths:
           description: Validation failed
           content:
             application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - bearer_auth: []
+  /api/v202506/company/payments/payment-account-approval-rates:
+    get:
+      operationId: admin_v2025_06_company_payments_payment_account_approval_rates_get
+      x-fluid-audience: company
+      summary: List the approval rate of each payment account
+      description: >-
+        Returns how many payments each of the company's payment accounts
+        approved and declined over a reporting period, with the approval rate
+        (approved / (approved + declined) x 100, rounded to two decimals). Only
+        gateway decisions count: a payment with status `success` is approved and
+        one with status `declined` is declined. Errors, pending and expired
+        payments, and recorded cash payments, are not counted. A payment account
+        with no approved or declined payment in the period is left out of the
+        list, so a missing account means no traffic, not a 0% or 100% rate.
+        Results are always limited to the caller's company. Requires a company
+        admin Bearer token with the `payment_accounts.view` permission.
+      tags: [payments-reports]
+      parameters:
+      - name: period
+        in: query
+        required: true
+        description: Reporting period to count over. `last_24_hours` runs
+          from the start of the hour 24 hours ago to the end of the current
+          hour; `last_7_days` and `last_30_days` from the start of the day that
+          many days ago to the end of today; `last_month` and `last_year` are
+          the previous calendar month and year. Use `custom` with `start_date`
+          and `end_date` for any other window.
+        schema:
+          type: string
+          enum: [last_24_hours, last_7_days, last_30_days, last_month, last_year, custom]
+        example: last_7_days
+      - name: start_date
+        in: query
+        required: false
+        description: ISO 8601 start of a `custom` period. Required when `period`
+          is `custom`; must be before `end_date`.
+        schema:
+          type: string
+          format: date-time
+        example: '2026-10-01T00:00:00Z'
+      - name: end_date
+        in: query
+        required: false
+        description: ISO 8601 end of a `custom` period. Required when `period`
+          is `custom`.
+        schema:
+          type: string
+          format: date-time
+        example: '2026-10-08T00:00:00Z'
+      responses:
+        '200':
+          description: The approved and declined counts of each payment account that made a gateway decision in the period.
+          content:
+            application/json:
+              example:
+                payment_accounts:
+                - payment_account_id: 272
+                  approved: 412
+                  declined: 31
+                  approval_rate: 93.0
+                - payment_account_id: 318
+                  approved: 57
+                  declined: 9
+                  approval_rate: 86.36
+                period:
+                  from: '2026-10-15T00:00:00Z'
+                  to: '2026-10-22T23:59:59Z'
+                  interval: daily
+                meta:
+                  request_id: c0a8012e-7f3b-4d6a-9e21-5b8d4f2a6c17
+                  timestamp: '2026-10-22T14:15:22Z'
+              schema:
+                type: object
+                required: [payment_accounts, period]
+                properties:
+                  payment_accounts:
+                    type: array
+                    description: One entry per payment account with at least one
+                      approved or declined payment in the period, ordered by
+                      `payment_account_id`.
+                    items:
+                      type: object
+                      required: [payment_account_id, approved, declined, approval_rate]
+                      properties:
+                        payment_account_id:
+                          type: integer
+                          description: The payment account's ID, as returned by
+                            `available_providers` and on each transaction's
+                            `payment_account`.
+                        approved:
+                          type: integer
+                          description: Payments with status `success` in the period.
+                        declined:
+                          type: integer
+                          description: Payments with status `declined` in the period.
+                        approval_rate:
+                          type: number
+                          description: Approved share of approved plus declined,
+                            as a percentage rounded to two decimals.
+                      additionalProperties: false
+                  period:
+                    type: object
+                    description: The window that was counted.
+                    properties:
+                      from:
+                        type: string
+                        format: date-time
+                      to:
+                        type: string
+                        format: date-time
+                      interval:
+                        type: string
+                        description: The default time-series interval for the
+                          period. This report is not bucketed, so it is
+                          informational only.
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+        '400':
+          description: A `custom` period is missing `start_date` or `end_date`, or `start_date` is not before `end_date`.
+          content:
+            application/json:
+              example:
+                error_message: bad request
+                errors:
+                  period:
+                  - start_date and end_date are required for custom period
+                meta:
+                  request_id: bdf66adb-9730-476d-beb8-e823b1e8c518
+                  timestamp: '2026-10-22T14:15:22Z'
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No valid Bearer token was provided.
+          content:
+            application/json:
+              example:
+                message: Invalid credentials.
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company admin, or their role lacks the `payment_accounts.view` permission.
+          content:
+            application/json:
+              example:
+                error: Not authorized.
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: '`period` is missing or not one of the allowed values.'
+          content:
+            application/json:
+              example:
+                error_message: Invalid parameters
+                errors:
+                  period:
+                  - is missing
+                meta:
+                  request_id: 90011e07-89e4-400e-bfc5-4423a9373a7a
+                  timestamp: '2026-10-22T14:15:22Z'
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
       security:
