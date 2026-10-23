@@ -811,6 +811,7 @@ components:
       type: object
       required:
       - generated_at
+      - window_hours
       - installation
       - history
       - sections
@@ -818,6 +819,9 @@ components:
         generated_at:
           type: string
           format: date-time
+        window_hours:
+          type: integer
+          description: The trailing window `sections.metrics` and `sections.webhook_health` cover.
         installation:
           $ref: '#/components/schemas/CompanyDropletStatusInstallation'
         history:
@@ -867,6 +871,20 @@ components:
           type: string
           format: date-time
           description: For an uninstalled installation, when it last changed, which is when it was uninstalled.
+    CompanyDropletStatusStateSignal:
+      type: object
+      required:
+      - state
+      - observed_at
+      properties:
+        state:
+          type: string
+          description: The signal's state; `unknown` when the reading is stale or absent.
+        observed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
     CompanyDropletStatusError:
       type: object
       description: Why a section could not be read. A fixed category and sentence, never a provider's own text.
@@ -906,6 +924,10 @@ components:
       - deployment
       - install_status
       - lifecycle
+      - health
+      - metrics
+      - webhook_health
+      - app_hosts
       - reconcile
       - connect
       properties:
@@ -1028,6 +1050,168 @@ components:
                           updated_at:
                             type: string
                             format: date-time
+        health:
+          description: The installation's health rollup, with its verdict and signals including the circuit breaker.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required:
+                  - verdict
+                  - signals
+                  properties:
+                    verdict:
+                      type: string
+                      enum: [healthy, degraded, failing, idle, unknown]
+                      description: This installation's callback verdict worsened by its circuit breaker, from the health rollup and independent of `window_hours`. A stale or missing rollup reads `unknown`.
+                    signals:
+                      type: object
+                      required: [callback, breaker, lifecycle]
+                      properties:
+                        callback:
+                          type: object
+                          required: [verdict]
+                          properties:
+                            verdict:
+                              type: string
+                              enum: [healthy, degraded, failing, idle, unknown]
+                        breaker:
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+                        lifecycle:
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+        metrics:
+          description: Every callback of this installation together over `window_hours`; unavailable when New Relic cannot be read.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [window_hours, request_count, failure_count, timeout_count, failure_rate, average_ms, worst_p95_ms, max_ms]
+                  properties:
+                    window_hours:
+                      type: integer
+                    request_count:
+                      type: integer
+                    failure_count:
+                      type: integer
+                    timeout_count:
+                      type: integer
+                    failure_rate:
+                      type: number
+                    average_ms:
+                      type: [number, 'null']
+                    worst_p95_ms:
+                      type: [number, 'null']
+                    max_ms:
+                      type: [number, 'null']
+        webhook_health:
+          description: The installation's ordinary event webhooks, kept apart from lifecycle delivery.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [window_hours, verdict, webhooks, deliveries, recent_failures, shared_events]
+                  properties:
+                    window_hours:
+                      type: integer
+                    verdict:
+                      type: string
+                      enum: [none, ambiguous, healthy, attention, failing]
+                      description: '`none` when the installation has no webhooks. `ambiguous` when every event it takes is shared with another of your webhooks, so no delivery can be attributed to it. `failing` when its last three settled deliveries failed or under 80% of settled deliveries succeeded.'
+                    webhooks:
+                      type: object
+                      required: [total, active, events]
+                      properties:
+                        total:
+                          type: integer
+                        active:
+                          type: integer
+                        events:
+                          type: array
+                          items:
+                            type: string
+                    deliveries:
+                      type: object
+                      required: [total, succeeded, failed, pending, success_rate, capped]
+                      properties:
+                        total:
+                          type: integer
+                        succeeded:
+                          type: integer
+                        failed:
+                          type: integer
+                        pending:
+                          type: integer
+                        success_rate:
+                          type: [number, 'null']
+                        capped:
+                          type: boolean
+                          description: True when the window held more deliveries than were counted.
+                    recent_failures:
+                      type: array
+                      items:
+                        type: object
+                        required: [id, event, status, at]
+                        properties:
+                          id:
+                            type: string
+                          event:
+                            type: string
+                          status:
+                            type: [string, 'null']
+                          at:
+                            type: string
+                            format: date-time
+                    shared_events:
+                      type: array
+                      items:
+                        type: string
+                      description: Events another active webhook of your company also takes. Deliveries are matched by event name, so these counts may include the other webhook's deliveries.
+        app_hosts:
+          description: Which of your company's webhooks deliver to the Mist app's hosts; unavailable unless you hold `mist.code`.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [hosted, hosts, webhooks, shared_events, capped]
+                  properties:
+                    hosted:
+                      type: boolean
+                    hosts:
+                      type: array
+                      items:
+                        type: string
+                    webhooks:
+                      type: array
+                      items:
+                        type: object
+                        required: [event, active, url]
+                        properties:
+                          event:
+                            type: [string, 'null']
+                          active:
+                            type: boolean
+                          url:
+                            type: [string, 'null']
+                            description: Origin and path only.
+                    shared_events:
+                      type: array
+                      items:
+                        type: string
+                    capped:
+                      type: boolean
+                      description: True when your company has more webhooks than were matched.
         reconcile:
           description: Not built yet. Always `available` false.
           $ref: '#/components/schemas/CompanyDropletStatusSection'
@@ -2454,6 +2638,16 @@ paths:
       x-fluid-audience: company
       security:
       - bearer_auth: []
+      parameters:
+      - name: window_hours
+        in: query
+        required: false
+        description: The trailing window in hours, 1 to 168, for `sections.metrics` and `sections.webhook_health`. Defaults to 24.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 168
+        example: 24
       responses:
         '200':
           description: The installation's status.
@@ -2464,6 +2658,7 @@ paths:
               example:
                 droplet_status:
                   generated_at: '2026-10-18T15:32:08Z'
+                  window_hours: 24
                   installation:
                     uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
                     status: active
@@ -2491,6 +2686,60 @@ paths:
                       error: null
                       data:
                         deliveries: []
+                    health:
+                      available: true
+                      error: null
+                      data:
+                        verdict: healthy
+                        signals:
+                          callback:
+                            verdict: healthy
+                          breaker:
+                            state: closed
+                            observed_at: '2026-10-18T15:31:00Z'
+                          lifecycle:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                    metrics:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        request_count: 120
+                        failure_count: 0
+                        timeout_count: 0
+                        failure_rate: 0.0
+                        average_ms: 84.2
+                        worst_p95_ms: 190.0
+                        max_ms: 410.0
+                    webhook_health:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        verdict: none
+                        webhooks:
+                          total: 0
+                          active: 0
+                          events: []
+                        deliveries:
+                          total: 0
+                          succeeded: 0
+                          failed: 0
+                          pending: 0
+                          success_rate: null
+                          capped: false
+                        recent_failures: []
+                        shared_events: []
+                    app_hosts:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        hosts: []
+                        webhooks: []
+                        shared_events: []
+                        capped: false
                     reconcile:
                       available: false
                       error: null
@@ -2509,6 +2758,8 @@ paths:
           $ref: '#/components/responses/StatusForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
   /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations:
     parameters:
     - name: uuid
@@ -3350,6 +3601,16 @@ paths:
       x-fluid-audience: company
       security:
       - bearer_auth: []
+      parameters:
+      - name: window_hours
+        in: query
+        required: false
+        description: The trailing window in hours, 1 to 168, for `sections.metrics` and `sections.webhook_health`. Defaults to 24.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 168
+        example: 24
       responses:
         '200':
           description: The installation's status.
@@ -3360,6 +3621,7 @@ paths:
               example:
                 droplet_status:
                   generated_at: '2026-10-18T15:32:08Z'
+                  window_hours: 24
                   installation:
                     uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
                     status: active
@@ -3387,6 +3649,60 @@ paths:
                       error: null
                       data:
                         deliveries: []
+                    health:
+                      available: true
+                      error: null
+                      data:
+                        verdict: healthy
+                        signals:
+                          callback:
+                            verdict: healthy
+                          breaker:
+                            state: closed
+                            observed_at: '2026-10-18T15:31:00Z'
+                          lifecycle:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                    metrics:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        request_count: 120
+                        failure_count: 0
+                        timeout_count: 0
+                        failure_rate: 0.0
+                        average_ms: 84.2
+                        worst_p95_ms: 190.0
+                        max_ms: 410.0
+                    webhook_health:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        verdict: none
+                        webhooks:
+                          total: 0
+                          active: 0
+                          events: []
+                        deliveries:
+                          total: 0
+                          succeeded: 0
+                          failed: 0
+                          pending: 0
+                          success_rate: null
+                          capped: false
+                        recent_failures: []
+                        shared_events: []
+                    app_hosts:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        hosts: []
+                        webhooks: []
+                        shared_events: []
+                        capped: false
                     reconcile:
                       available: false
                       error: null
@@ -3405,6 +3721,8 @@ paths:
           $ref: '#/components/responses/StatusForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
   /api/company/v2026-10/droplet-categories:
     get:
       operationId: companyDropletCategoriesIndex
