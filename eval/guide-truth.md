@@ -2345,6 +2345,19 @@ One product claim comes from the requester, not the implementation, and is open 
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
 **Settings → Billing**. Nothing in the code gates going live on a card.
 
+**CLI signup and product create (2026-10-22, ENG-2404).** Step 1 installs the CLI first and
+signs up with `fluid signup` (`@fluid-app/fluid-cli` 0.1.121 and later), which makes the same
+`POST /api/company` call once and prints `company.id`, `company.fluidShop` and the two
+`fluid login` steps. `api/agent-signup.mdx` points to it and keeps the raw call. Step 5's
+product row names `fluid products create` (`@fluid-app/fluid-cli-products` 0.1.0, added to
+the install line), which prices one master variant and leaves the product a draft unless
+`--publish`. Both were checked against the fluid monorepo's `packages/cli/core` and
+`packages/cli/products` at the published versions. Step 8 still walks through the test order
+by API: `fluid payments test-order` lands in the payments plugin and is named here once it
+is on npm. In `api/guides/headless-commerce.mdx`, the set-address example now sends `name`:
+the v2026-04 address endpoint permits `name` and drops `first_name` and `last_name`
+(`carts_controller.rb` `address_params`); claim `headless-091`.
+
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`

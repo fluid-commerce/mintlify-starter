@@ -108,7 +108,9 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 
 Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
 
-- **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. Or `FLUID_TOKEN=<token> fluid login`.
+- **Sign up** (https://docs.fluid.app/api/agent-launch#step-1-sign-up-confirm-the-email-and-sign-in): `fluid signup --email <email> --first-name <first> --last-name <last> --company-name <name> --subdomain <subdomain> --yes --json`. With the merchant's consent only; it creates a real company.
+- **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.
+- **Products** (https://docs.fluid.app/api/agent-launch#step-5-set-up-the-catalog-and-store-settings): `fluid products create --title <title> --price <price> --yes`, from `@fluid-app/fluid-cli-products`, once signed in. The product stays a draft unless `--publish`.
 
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
