@@ -1218,6 +1218,26 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/Meta"
+    FailureEnvelopeResponse:
+      description: The API's failure envelope for a client error. `data.error` carries the message.
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - data
+      properties:
+        status:
+          type: string
+          enum:
+          - fail
+        data:
+          type: object
+          additionalProperties: false
+          required:
+          - error
+          properties:
+            error:
+              "$ref": "#/components/schemas/ErrorMessage"
     UnauthorizedResponse:
       type: object
       properties:
@@ -1627,6 +1647,7 @@ components:
               type: integer
             handling_fee:
               type: number
+              minimum: 0
             default:
               type: boolean
             tax_business_id:
@@ -1734,6 +1755,7 @@ components:
               type: integer
             handling_fee:
               type: number
+              minimum: 0
             default:
               type: boolean
             tax_business_id:
@@ -2125,25 +2147,27 @@ components:
           description: Whether the merchant turned this feature on.
         available:
           type: boolean
+          deprecated: true
           description: >-
-            Whether Fluid offers this feature to the company: Subscription Pro is active and the
-            feature's release flag is on. The admin shows the feature's setting only while true.
+            Equals subscription_pro.active. Kept for older clients.
         enabled:
           type: boolean
           description: >-
-            Whether the feature works now: available, turned on, and its precondition met.
+            Whether the feature works now: Subscription Pro is active, the feature is turned on, and its precondition is met.
         precondition_failure:
           type: [string, "null"]
-          enum: [bundle_subscriptions_off, no_verified_sms_sender, legacy_renewal_lane, null]
+          enum: [bundle_subscriptions_off, no_verified_sms_sender, sms_disclosure_unpublished, legacy_renewal_lane, null]
           description: >-
             What the company must have before the feature can work, or null. bundle_subscriptions_off
             means subscription bundling is off (autoship_profiles). no_verified_sms_sender means the
-            company has no verified SMS sender (sms_reminders). legacy_renewal_lane means renewals
-            do not bill on the sealed renewal lane (milestone_items).
+            company has no verified SMS sender (sms_reminders). sms_disclosure_unpublished means the
+            SMS consent disclosure is not reviewed by counsel yet, so no company can use the feature
+            (sms_reminders). legacy_renewal_lane means renewals do not bill on the sealed renewal lane
+            (milestone_items).
     SubscriptionProSettings:
       type: object
       additionalProperties: false
-      required: [active, lock_version, reminder_lead_days, retention_offer_cooldown_days, features]
+      required: [active, lock_version, reminder_lead_days, annual_notice_days, retention_offer_cooldown_days, features]
       properties:
         active:
           type: boolean
@@ -2156,6 +2180,11 @@ components:
           type: integer
           minimum: 1
           maximum: 14
+        annual_notice_days:
+          type: integer
+          minimum: 15
+          maximum: 90
+          description: Days before a yearly renewal that the annual renewal notice goes out.
         retention_offer_cooldown_days:
           type: integer
           minimum: 30
@@ -2163,7 +2192,7 @@ components:
         features:
           type: object
           additionalProperties: false
-          required: [autoship_profiles, cancel_flow, renewal_webhook, sms_reminders, tenure_pricing, milestone_items]
+          required: [autoship_profiles, cancel_flow, renewal_webhook, sms_reminders, tenure_pricing, milestone_items, annual_renewal_notice]
           properties:
             autoship_profiles: { "$ref": "#/components/schemas/SubscriptionProFeature" }
             cancel_flow: { "$ref": "#/components/schemas/SubscriptionProFeature" }
@@ -2171,6 +2200,12 @@ components:
             sms_reminders: { "$ref": "#/components/schemas/SubscriptionProFeature" }
             tenure_pricing: { "$ref": "#/components/schemas/SubscriptionProFeature" }
             milestone_items: { "$ref": "#/components/schemas/SubscriptionProFeature" }
+            annual_renewal_notice:
+              allOf:
+              - "$ref": "#/components/schemas/SubscriptionProFeature"
+              description: >-
+                The annual renewal notice: an email, and a text when sms_reminders also works, sent
+                annual_notice_days before a subscription with a term of a year or longer renews.
     SubscriptionProSettingsResponse:
       type: object
       additionalProperties: false
@@ -2199,8 +2234,243 @@ components:
             sms_reminders: { type: boolean }
             tenure_pricing: { type: boolean }
             milestone_items: { type: boolean }
+            annual_renewal_notice: { type: boolean }
         reminder_lead_days: { type: integer, minimum: 1, maximum: 14 }
+        annual_notice_days: { type: integer, minimum: 15, maximum: 90 }
         retention_offer_cooldown_days: { type: integer, minimum: 30, maximum: 730 }
+    TenureTierInput:
+      type: object
+      required: [from, label]
+      description: One tier of a ladder, as the merchant sends it. A key not listed here is ignored.
+      properties:
+        from:
+          type: integer
+          minimum: 1
+          description: >-
+            The paid order or month the tier starts at, inclusive. At least 2 on paid_orders, because the
+            checkout order is order 1, and at least 1 on months_subscribed. Tiers ascend by from.
+        to:
+          type: integer
+          description: >-
+            Optional. When sent it must equal the next tier's from, and the top tier sends none. A tier
+            always ends where the next one starts.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: The tier's name, shown to the merchant.
+        percentage_value:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Percent off, above 0 and at most 100, with at most 2 decimals. Send exactly one of percentage_value or flat_value.
+        flat_value:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: Amount off in the subscription's currency, above 0 and below 100000000, with at most 2 decimals.
+    TenureProgramRequest:
+      type: object
+      additionalProperties: false
+      required: [name, axis]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255, description: The program's name. }
+        axis:
+          type: string
+          enum: [paid_orders, months_subscribed]
+          description: What tenure counts. It never changes after the program is created.
+        scope:
+          type: string
+          enum: [all, plans, products]
+          default: all
+          description: Which subscriptions the program covers.
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: The company's subscription plan ids for a plans scope, or product ids for a products scope. Empty for all.
+    TenureProgramPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [tiers, scope, scope_ids, apply_to_volume]
+      properties:
+        tiers:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { "$ref": "#/components/schemas/TenureTierInput" }
+          description: The ladder, ascending by from.
+        scope: { type: string, enum: [all, plans, products], description: Which subscriptions the program covers once published. }
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: Empty for all, otherwise the company's plan or product ids.
+        apply_to_volume: { type: boolean, description: Whether the tier discounts reduce volume as well as price. }
+    TenureProgramPreviewCounts:
+      type: object
+      additionalProperties: false
+      required: [current_version_id, moves_up, moves_down, stays]
+      properties:
+        current_version_id:
+          type: [integer, 'null']
+          description: The version in force when the counts were made. Null before the first publish.
+        moves_up: { type: integer, minimum: 0, description: Subscriptions that would get a higher tier, or a first tier. }
+        moves_down:
+          type: integer
+          minimum: 0
+          description: >-
+            Subscriptions that would get a lower tier or lose their tier. They keep the old tier until
+            their next renewal.
+        stays: { type: integer, minimum: 0, description: Everyone else in scope, including subscriptions that earn no tier. }
+    TenureProgramPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [tiers, scope, scope_ids, apply_to_volume, previewed]
+      properties:
+        tiers:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { "$ref": "#/components/schemas/TenureTierInput" }
+          description: The ladder, ascending by from.
+        scope: { type: string, enum: [all, plans, products], description: Which subscriptions the program covers once published. }
+        scope_ids:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+          description: Empty for all, otherwise the company's plan or product ids.
+        apply_to_volume: { type: boolean, description: Whether the tier discounts reduce volume as well as price. }
+        previewed:
+          allOf:
+          - "$ref": "#/components/schemas/TenureProgramPreviewCounts"
+          description: >-
+            The counts the preview returned for this same ladder and scope. The publish counts again and is
+            refused with 409 (preview_stale) when they differ.
+    TenureProgramArchiveRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        discounts:
+          type: string
+          enum: [keep, remove_at_next_renewal]
+          default: keep
+          description: >-
+            keep leaves the tier discounts subscriptions hold, so each keeps its tier while the tier's range
+            fits. remove_at_next_renewal keeps each until the subscription's next renewal, which still
+            prices it, and then removes it (removed_reason tenure_program_archived).
+    TenureProgramTier:
+      type: object
+      additionalProperties: false
+      required: [from, to, label, discount_type, percentage_value, flat_value]
+      properties:
+        from: { type: integer, description: The paid order or month the tier starts at, inclusive. }
+        to:
+          type: [integer, 'null']
+          description: Where the tier ends, exclusive. It is the next tier's from, and null on the top tier.
+        label:
+          type: [string, 'null']
+          description: The tier's name. Null only for a version written without labels.
+        discount_type: { type: string, enum: [percentage, flat], description: Whether the tier takes a percent or an amount off. }
+        percentage_value: { type: [string, 'null'], description: Percent off as a decimal string. Null on a flat tier. }
+        flat_value: { type: [string, 'null'], description: Amount off as a decimal string. Null on a percentage tier. }
+    TenureProgramVersion:
+      type: object
+      additionalProperties: false
+      required: [id, version, created_at, tiers]
+      properties:
+        id: { type: integer }
+        version: { type: integer, minimum: 1, description: The version number, counted from 1 for the program. }
+        created_at: { type: string, format: date-time }
+        tiers:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureProgramTier" }
+          description: The tiers in ascending order of from.
+    TenureProgram:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, axis, scope, scope_ids, apply_to_volume, archived_at, archive_discounts, current_version, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string, enum: [draft, active, archived] }
+        axis: { type: string, enum: [paid_orders, months_subscribed] }
+        scope: { type: string, enum: [all, plans, products] }
+        scope_ids: { type: array, items: { type: integer } }
+        apply_to_volume:
+          type: boolean
+          description: Whether the tier discounts of the version in force reduce volume. False before the first publish.
+        archived_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the program was archived. Null unless archived.
+        archive_discounts:
+          type: [string, 'null']
+          enum: [keep, remove_at_next_renewal, null]
+          description: >-
+            What the archive did with the tier discounts subscriptions hold. Null unless archived.
+        current_version:
+          oneOf:
+          - { "$ref": "#/components/schemas/TenureProgramVersion" }
+          - { type: 'null' }
+          description: The tiers in force. Null for a draft.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TenureProgramResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_program, status, meta]
+      properties:
+        tenure_program: { "$ref": "#/components/schemas/TenureProgram" }
+        status: { type: integer, enum: [200, 201] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    TenureProgramListResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_programs, status, meta]
+      properties:
+        tenure_programs:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureProgram" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    TenureStackingExample:
+      type: object
+      additionalProperties: false
+      required: [from, percentage_value, with_percentage_value, effective_percentage_value]
+      properties:
+        from: { type: integer, description: The percentage tier the example is about. }
+        percentage_value: { type: string, description: The tier's percent off. }
+        with_percentage_value: { type: string, description: The other percent discount it is stacked with. }
+        effective_percentage_value:
+          type: string
+          description: The total percent off when both apply. Percent discounts compound, so 10 and 10 give 19.
+    TenureProgramPreview:
+      type: object
+      additionalProperties: false
+      required: [current_version_id, moves_up, moves_down, stays, stacking_examples]
+      properties:
+        current_version_id:
+          type: [integer, 'null']
+          description: The version in force when previewed. Send it back with the counts when publishing.
+        moves_up: { type: integer, minimum: 0, description: Subscriptions that would get a higher tier, or a first tier. }
+        moves_down:
+          type: integer
+          minimum: 0
+          description: >-
+            Subscriptions that would get a lower tier or lose their tier. They keep the old tier until
+            their next renewal.
+        stays: { type: integer, minimum: 0, description: Everyone else in scope, including subscriptions that earn no tier. }
+        stacking_examples:
+          type: array
+          items: { "$ref": "#/components/schemas/TenureStackingExample" }
+          description: One per percentage tier. A flat tier has none.
+    TenureProgramPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [tenure_program_preview, status, meta]
+      properties:
+        tenure_program_preview: { "$ref": "#/components/schemas/TenureProgramPreview" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
     SubscriptionProMilestoneItem:
       type: object
       additionalProperties: false
@@ -2302,6 +2572,154 @@ components:
         created_at:
           type: string
           format: date-time
+    SubscriptionProMilestoneGrant:
+      description: One milestone grant from the ledger.
+      type: object
+      additionalProperties: false
+      required: [id, subscription_token, source, status, deferral_reason, rule_id, rule_name, occurrence_key, item_key,
+                 variant_id, variant_title, main_variant_id, substituted, quantity, unit_price, currency_code,
+                 volume_policy, removable, order_id, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        subscription_token:
+          type: string
+        source:
+          type: string
+          enum: [rule, manual, retention_offer]
+          description: rule for a milestone rule's gift, manual for a one-time item an admin added.
+        status:
+          type: string
+          enum: [planned, on_order, fulfilled, deferred, skipped_out_of_stock, voided]
+          description: >-
+            planned and deferred are owed to a coming order. on_order is on an unpaid order. fulfilled is on
+            a paid order. skipped_out_of_stock and voided are final.
+        deferral_reason:
+          type: [string, "null"]
+          enum: [gate_closed, out_of_stock, null]
+          description: Why a deferred item moved to the next order. Null unless deferred.
+        rule_id:
+          type: [integer, "null"]
+          description: The milestone rule, or null for a one-time item.
+        rule_name:
+          type: [string, "null"]
+        occurrence_key:
+          type: string
+          description: The occurrence the item is for, such as order:4, anniversary:1 or manual:<uuid>.
+        item_key:
+          type: string
+        variant_id:
+          type: integer
+          description: The variant planned or sent.
+        variant_title:
+          type: [string, "null"]
+        main_variant_id:
+          type: integer
+          description: The variant the item was for; differs from variant_id when a fallback stood in.
+        substituted:
+          type: boolean
+          description: Whether a fallback variant stood in for the main one.
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: string
+          description: The price of one unit, a decimal string in currency_code. 0 for a gift.
+        currency_code:
+          type: string
+          description: The subscription's currency.
+        volume_policy:
+          type: string
+          enum: [zero, catalog]
+          description: zero earns no CV or QV. catalog earns the variant's catalog volume.
+        removable:
+          type: boolean
+          description: Whether an admin can remove the item now (a one-time item still owed, while no renewal is being built).
+        order_id:
+          type: [integer, "null"]
+          description: The order that carries the item, once it is on one.
+        created_at:
+          type: string
+          format: date-time
+          description: When the item was planned.
+        updated_at:
+          type: string
+          format: date-time
+    SubscriptionProMilestoneStatusCounts:
+      description: Grants by their status now.
+      type: object
+      additionalProperties: false
+      required: [planned, on_order, fulfilled, deferred, skipped_out_of_stock, voided]
+      properties:
+        planned: { type: integer, minimum: 0 }
+        on_order: { type: integer, minimum: 0 }
+        fulfilled: { type: integer, minimum: 0 }
+        deferred: { type: integer, minimum: 0 }
+        skipped_out_of_stock: { type: integer, minimum: 0 }
+        voided: { type: integer, minimum: 0 }
+    SubscriptionProMilestoneReport:
+      type: object
+      additionalProperties: false
+      required: [from, to, summary, grants]
+      properties:
+        from: { type: string, format: date, description: The first day of the range (UTC). }
+        to: { type: string, format: date, description: The last day of the range (UTC), inclusive. }
+        summary:
+          type: object
+          additionalProperties: false
+          description: Counts over every grant in the range and filters, not only this page.
+          required: [total, by_status, by_source, deferred_by_reason, substitutions, by_rule]
+          properties:
+            total: { type: integer, minimum: 0 }
+            by_status: { "$ref": "#/components/schemas/SubscriptionProMilestoneStatusCounts" }
+            by_source:
+              type: object
+              additionalProperties: false
+              required: [rule, manual, retention_offer]
+              properties:
+                rule: { type: integer, minimum: 0 }
+                manual: { type: integer, minimum: 0 }
+                retention_offer: { type: integer, minimum: 0 }
+            deferred_by_reason:
+              type: object
+              additionalProperties: false
+              required: [gate_closed, out_of_stock]
+              properties:
+                gate_closed: { type: integer, minimum: 0 }
+                out_of_stock: { type: integer, minimum: 0 }
+            substitutions:
+              type: integer
+              minimum: 0
+              description: Rule grants a fallback variant stood in for.
+            by_rule:
+              type: array
+              description: Each rule with grants in the range, by rule id.
+              items:
+                type: object
+                additionalProperties: false
+                required: [rule_id, rule_name, total, by_status, substitutions]
+                properties:
+                  rule_id: { type: integer }
+                  rule_name: { type: string }
+                  total: { type: integer, minimum: 0 }
+                  by_status: { "$ref": "#/components/schemas/SubscriptionProMilestoneStatusCounts" }
+                  substitutions: { type: integer, minimum: 0 }
+        grants:
+          type: array
+          description: One page of the grants, newest first.
+          items: { "$ref": "#/components/schemas/SubscriptionProMilestoneGrant" }
+    SubscriptionProMilestoneReportResponse:
+      type: object
+      additionalProperties: false
+      required: [milestone_report, status, meta]
+      properties:
+        milestone_report: { "$ref": "#/components/schemas/SubscriptionProMilestoneReport" }
+        status: { type: integer, enum: [200] }
+        meta:
+          type: object
+          required: [pagination]
+          properties:
+            pagination: { "$ref": "#/components/schemas/BillingCreditMovementPagination" }
     SubscriptionProMilestoneRule:
       type: object
       additionalProperties: false
@@ -2443,6 +2861,119 @@ components:
         max_grants_per_subscription:
           type: [integer, "null"]
           minimum: 1
+    SubscriptionProRetentionFlowReason:
+      type: object
+      additionalProperties: false
+      required: [code, hidden, labels]
+      properties:
+        code:
+          type: string
+          enum: [too_expensive, too_much_product, too_frequent, not_seeing_results, did_not_like_product, switching_brand, shipping_or_delivery_issue, taking_a_break, moving_or_life_change, other]
+          description: A customer cancellation reason code.
+        hidden: { type: boolean, description: Whether customers do not see the reason. }
+        labels:
+          type: object
+          description: The merchant's label per locale (for example en, es, pt-BR). A client shows its own label for a locale that has none.
+          additionalProperties: { type: string, minLength: 1, maxLength: 100 }
+    SubscriptionProRetentionFlowOffer:
+      type: object
+      additionalProperties: false
+      required: [type, terms]
+      properties:
+        type:
+          type: string
+          enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support]
+        terms:
+          type: object
+          additionalProperties: false
+          description: The merchant's terms for the offer type. Each type takes only its own terms.
+          properties:
+            days: { type: integer, minimum: 7, maximum: 60, description: "delay: days to move the next order by" }
+            subscription_plan_id: { type: integer, minimum: 1, description: "change_frequency: the plan to move to" }
+            variant_ids:
+              type: array
+              minItems: 1
+              maxItems: 50
+              items: { type: integer, minimum: 1 }
+              description: "swap: the variants a customer may swap to; a subscription sees those of its own product"
+            months: { type: integer, minimum: 1, maximum: 3, description: "pause: months to pause" }
+            percentage: { type: integer, minimum: 1, maximum: 100, description: "discount: percent off" }
+            duration: { type: string, enum: [once, repeating], description: "discount: one order, or duration_cycles orders" }
+            duration_cycles: { type: integer, minimum: 2, maximum: 12, description: "discount: orders a repeating discount applies to" }
+            url: { type: string, format: uri, maxLength: 2048, description: "contact_support: the https link to the merchant's support page" }
+    SubscriptionProRetentionFlowWinBack:
+      type: object
+      additionalProperties: false
+      required: [enabled, days_after_cancel, expires_after_days, offer]
+      description: >-
+        The win-back email: a money-off offer sent days_after_cancel days after a customer cancels for a
+        customer reason, with a link that reactivates the subscription and attaches the discount. The
+        customer can take it until the end of the expires_after_days-th day after it was sent, in the
+        subscription's timezone. Only customers who opted in to marketing email get it, and a customer
+        in the money-off cooldown gets none.
+      properties:
+        enabled: { type: boolean, description: Whether the flow sends the email. }
+        days_after_cancel: { type: integer, minimum: 1, maximum: 90, description: Days from the cancellation to the email. }
+        expires_after_days: { type: integer, minimum: 1, maximum: 30, description: Days the offer stays open after the email. }
+        offer:
+          allOf:
+          - "$ref": "#/components/schemas/SubscriptionProRetentionFlowOffer"
+          - type: object
+            properties:
+              type: { type: string, enum: [discount], description: A win-back makes a discount offer only. }
+    SubscriptionProRetentionFlowDocument:
+      type: object
+      required: [reasons, offers_by_reason]
+      properties:
+        reasons:
+          type: array
+          items: { "$ref": "#/components/schemas/SubscriptionProRetentionFlowReason" }
+          description: Every customer reason code once, in the order customers see them.
+        offers_by_reason:
+          type: object
+          description: Customer reason code to the save offers it shows, at most two of distinct types.
+          additionalProperties:
+            type: array
+            maxItems: 2
+            items: { "$ref": "#/components/schemas/SubscriptionProRetentionFlowOffer" }
+        win_back:
+          description: The win-back email, or null when the flow sends none. A publish without it sends none.
+          oneOf:
+          - "$ref": "#/components/schemas/SubscriptionProRetentionFlowWinBack"
+          - type: "null"
+    SubscriptionProRetentionFlowResponse:
+      type: object
+      additionalProperties: false
+      required: [retention_flow, offer_types, status, meta]
+      properties:
+        retention_flow:
+          allOf:
+          - "$ref": "#/components/schemas/SubscriptionProRetentionFlowDocument"
+          - type: object
+            required: [version, default, win_back]
+            properties:
+              version: { type: integer, minimum: 0, description: The published version, 0 for the default flow. }
+              default: { type: boolean, description: Whether the company has not published a flow yet. }
+        offer_types:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, monetary, saves, available]
+            properties:
+              type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support] }
+              monetary: { type: boolean, description: Whether the offer costs the merchant money. A customer who accepted one gets no other for the cooldown. }
+              saves: { type: boolean, description: Whether accepting the offer keeps the subscription. contact_support only links to support. }
+              available: { type: boolean, description: Whether a flow may use the type yet. }
+        status: { type: integer, enum: [200, 201] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionProRetentionFlowRequest:
+      allOf:
+      - "$ref": "#/components/schemas/SubscriptionProRetentionFlowDocument"
+      - type: object
+        required: [expected_version]
+        properties:
+          expected_version: { type: integer, minimum: 0, description: The version the flow was read at, 0 for the default flow. }
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return
         one or more of these fields depending on the controller path.
@@ -4268,6 +4799,12 @@ components:
                   type:
                   - string
                   - 'null'
+        bound_to_other_owner:
+          type: boolean
+          description: Present only for droplet installation callers under read-scope
+            enforcement. True when the country is bound to a tax callback registration
+            another owner holds; tax_callback_registration_id and tax_callback_registration
+            are then null.
         require_gaiyo_shomen_in_enrollment:
           description: Gaiyo Shomen is a company overview document required for certain
             business transactions in Japan. When enabled, this setting mandates that
@@ -4402,6 +4939,116 @@ components:
           type: string
         value:
           type: boolean
+    SubscriptionProRetentionCounts:
+      type: object
+      required: [started, with_reason, open, saved, cancelled, abandoned, save_rate]
+      properties:
+        started: { type: integer, minimum: 0, description: Sessions started in the range. }
+        with_reason: { type: integer, minimum: 0, description: Sessions where the customer gave a reason. }
+        open: { type: integer, minimum: 0, description: Sessions still within their 30 minutes. }
+        saved: { type: integer, minimum: 0, description: Sessions that ended with an accepted offer. }
+        cancelled: { type: integer, minimum: 0 }
+        abandoned: { type: integer, minimum: 0, description: Sessions that ended without an outcome, including open ones past their 30 minutes. }
+        save_rate: { type: [number, 'null'], minimum: 0, maximum: 1, description: saved / with_reason, rounded to 4 places; null with no reason given. }
+    SubscriptionProRetentionExperiment:
+      type: object
+      required: [id, control_version, variant_version, variant_percent, started_at, stopped_at, running]
+      properties:
+        id: { type: integer }
+        control_version: { type: integer, minimum: 1, description: The published flow version most customers keep seeing. }
+        variant_version: { type: integer, minimum: 1, description: The published flow version under test. }
+        variant_percent: { type: integer, minimum: 1, maximum: 99, description: The share of customers who see the variant. }
+        started_at: { type: string, format: date-time }
+        stopped_at: { type: [string, 'null'], format: date-time }
+        running: { type: boolean }
+    SubscriptionProRetentionExperimentRequest:
+      type: object
+      additionalProperties: false
+      required: [control_version, variant_version, variant_percent]
+      properties:
+        control_version: { type: integer, minimum: 1, description: A published flow version. }
+        variant_version: { type: integer, minimum: 1, description: Another published flow version. }
+        variant_percent: { type: integer, minimum: 1, maximum: 99, description: The share of customers who see the variant. }
+    SubscriptionProRetentionExperimentResponse:
+      type: object
+      additionalProperties: false
+      required: [retention_experiment, status, meta]
+      properties:
+        retention_experiment: { "$ref": "#/components/schemas/SubscriptionProRetentionExperiment" }
+        status: { type: integer, enum: [200, 201] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionProRetentionExperimentsResponse:
+      type: object
+      additionalProperties: false
+      required: [retention_experiments, status, meta]
+      properties:
+        retention_experiments:
+          type: array
+          maxItems: 20
+          description: The latest experiments, newest first. The running one, if any, is the first.
+          items: { "$ref": "#/components/schemas/SubscriptionProRetentionExperiment" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
+    SubscriptionProRetentionReportResponse:
+      type: object
+      additionalProperties: false
+      required: [retention_report, status, meta]
+      properties:
+        retention_report:
+          type: object
+          additionalProperties: false
+          required: [from, to, sessions, reasons, offers, experiments]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+            sessions: { "$ref": "#/components/schemas/SubscriptionProRetentionCounts" }
+            reasons:
+              type: array
+              description: One row per reason given, most sessions first. cancelled is the cancellations for that reason.
+              items:
+                allOf:
+                - "$ref": "#/components/schemas/SubscriptionProRetentionCounts"
+                - type: object
+                  required: [reason_code]
+                  properties:
+                    reason_code: { type: string }
+            offers:
+              type: array
+              description: One row per offer type shown or accepted in the range.
+              items:
+                type: object
+                additionalProperties: false
+                required: [offer_type, shown, accepted, acceptance_rate]
+                properties:
+                  offer_type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support] }
+                  shown: { type: integer, minimum: 0, description: Times a reason step returned the offer to a customer. }
+                  accepted: { type: integer, minimum: 0 }
+                  acceptance_rate: { type: [number, 'null'], minimum: 0, maximum: 1, description: accepted / shown, rounded to 4 places. }
+            experiments:
+              type: array
+              description: Each experiment with sessions in the range, newest first, with both arms.
+              items:
+                allOf:
+                - "$ref": "#/components/schemas/SubscriptionProRetentionExperiment"
+                - type: object
+                  required: [arms, min_sample, sample_sufficient]
+                  properties:
+                    min_sample: { type: integer, description: Sessions with a reason each arm needs before its save rate means much. }
+                    sample_sufficient: { type: boolean, description: Whether every arm reached min_sample in the range. }
+                    arms:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      items:
+                        allOf:
+                        - "$ref": "#/components/schemas/SubscriptionProRetentionCounts"
+                        - type: object
+                          required: [arm, flow_version]
+                          properties:
+                            arm: { type: string, enum: [control, variant] }
+                            flow_version: { type: integer, minimum: 1 }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
 paths:
   "/api/settings/billing":
     get:
@@ -4666,7 +5313,7 @@ paths:
       summary: Show the company's Subscription Pro settings
       description: >-
         Whether Subscription Pro is active, the options, and per feature the merchant's setting,
-        whether Fluid offers it, whether it works, and the precondition the company does not meet.
+        whether it works, and the precondition the company does not meet.
         Reading changes nothing. Responses are not cached.
       tags:
       - subscription-pro
@@ -4685,14 +5332,16 @@ paths:
                   active: true
                   lock_version: 3
                   reminder_lead_days: 5
+                  annual_notice_days: 30
                   retention_offer_cooldown_days: 90
                   features:
                     autoship_profiles: { setting: false, available: true, enabled: false, precondition_failure: bundle_subscriptions_off }
                     cancel_flow: { setting: true, available: true, enabled: true, precondition_failure: null }
-                    renewal_webhook: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    sms_reminders: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    tenure_pricing: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    milestone_items: { setting: false, available: false, enabled: false, precondition_failure: null }
+                    renewal_webhook: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    sms_reminders: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    tenure_pricing: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    milestone_items: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    annual_renewal_notice: { setting: false, available: true, enabled: false, precondition_failure: null }
                 status: 200
                 meta:
                   request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
@@ -4715,9 +5364,8 @@ paths:
       summary: Change the company's Subscription Pro settings
       description: >-
         Turns features on or off and sets options. Refused while Subscription Pro is not active
-        (subscription_pro_inactive). Turning a feature on is refused when Fluid does not offer it
-        to the company (feature_unavailable) or the company does not meet its precondition
-        (precondition_failed, with the feature and the reason in details). Turning a feature off
+        (subscription_pro_inactive). Turning a feature on is refused when the company does not meet
+        its precondition (precondition_failed, with the feature and the reason in details). Turning a feature off
         is always allowed. The request names the lock_version it read, and a change on top of a
         newer one is refused with 409 (stale_settings). Returns the settings as GET does.
       tags:
@@ -4736,6 +5384,7 @@ paths:
               features:
                 cancel_flow: true
               reminder_lead_days: 5
+              annual_notice_days: 30
               retention_offer_cooldown_days: 90
       responses:
         '200':
@@ -4749,14 +5398,16 @@ paths:
                   active: true
                   lock_version: 3
                   reminder_lead_days: 5
+                  annual_notice_days: 30
                   retention_offer_cooldown_days: 90
                   features:
                     autoship_profiles: { setting: false, available: true, enabled: false, precondition_failure: bundle_subscriptions_off }
                     cancel_flow: { setting: true, available: true, enabled: true, precondition_failure: null }
-                    renewal_webhook: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    sms_reminders: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    tenure_pricing: { setting: false, available: false, enabled: false, precondition_failure: null }
-                    milestone_items: { setting: false, available: false, enabled: false, precondition_failure: null }
+                    renewal_webhook: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    sms_reminders: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    tenure_pricing: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    milestone_items: { setting: false, available: true, enabled: false, precondition_failure: null }
+                    annual_renewal_notice: { setting: false, available: true, enabled: false, precondition_failure: null }
                 status: 200
                 meta:
                   request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
@@ -4781,8 +5432,127 @@ paths:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: >-
-            Invalid values, Subscription Pro is not active (subscription_pro_inactive), the feature
-            is not offered (feature_unavailable), or its precondition is not met (precondition_failed)
+            Invalid values, Subscription Pro is not active (subscription_pro_inactive), or the feature's
+            precondition is not met (precondition_failed)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/milestone_report":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/settings on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Report the company's milestone items
+      description: >-
+        The milestone grant ledger for grants written in a range of days (UTC; a grant is written when it
+        comes due): counts by status, source, deferral reason and rule, the substitutions, and one cursor
+        page of the grants, newest first. Statuses are the grants' statuses now, so a grant deferred once
+        and delivered later counts as fulfilled. Needs the milestone_items feature to work for the
+        company. Reading changes nothing. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_milestone_report
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: The first day (UTC). Defaults to 29 days before to.
+        schema: { type: string, format: date }
+      - name: to
+        in: query
+        required: false
+        description: The last day (UTC), inclusive. Defaults to today. At most 365 days after from, so the range covers at most 366 days.
+        schema: { type: string, format: date }
+      - name: rule_id
+        in: query
+        required: false
+        description: Only the grants of this rule.
+        schema: { type: integer }
+      - name: status
+        in: query
+        required: false
+        schema: { type: string, enum: [planned, on_order, fulfilled, deferred, skipped_out_of_stock, voided] }
+      - name: source
+        in: query
+        required: false
+        schema: { type: string, enum: [rule, manual, retention_offer] }
+      - name: page[cursor]
+        in: query
+        required: false
+        description: The cursor of the page to read; left out is the newest page.
+        schema: { type: string }
+      - name: page[limit]
+        in: query
+        required: false
+        description: Grants per page.
+        schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProMilestoneReportResponse"
+              example:
+                milestone_report:
+                  from: '2026-10-01'
+                  to: '2026-10-31'
+                  summary:
+                    total: 3
+                    by_status: { planned: 1, on_order: 0, fulfilled: 1, deferred: 0, skipped_out_of_stock: 1, voided: 0 }
+                    by_source: { rule: 2, manual: 1, retention_offer: 0 }
+                    deferred_by_reason: { gate_closed: 0, out_of_stock: 0 }
+                    substitutions: 1
+                    by_rule:
+                    - rule_id: 41
+                      rule_name: Anniversary watch
+                      total: 2
+                      by_status: { planned: 0, on_order: 0, fulfilled: 1, deferred: 0, skipped_out_of_stock: 1, voided: 0 }
+                      substitutions: 1
+                  grants:
+                  - id: 5523
+                    subscription_token: sb_8f2c1d9e7a
+                    source: rule
+                    status: fulfilled
+                    deferral_reason: null
+                    rule_id: 41
+                    rule_name: Anniversary watch
+                    occurrence_key: anniversary:1
+                    item_key: 3f1c2a9e-5b7d-4e8f-9a1b-2c3d4e5f6a7b
+                    variant_id: 9013
+                    variant_title: Classic Watch, silver
+                    main_variant_id: 9012
+                    substituted: true
+                    quantity: 1
+                    unit_price: '0.00'
+                    currency_code: USD
+                    volume_policy: zero
+                    removable: false
+                    order_id: 771204
+                    created_at: '2026-10-03T06:00:12Z'
+                    updated_at: '2026-10-03T06:02:40Z'
+                status: 200
+                meta:
+                  pagination: { cursor: null, limit: 25, prev_cursor: null, next_cursor: null }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: >-
+            Not an admin, missing the orders.settings or subscriptions.view permission (a role needs both), a droplet without both the settings and orders
+            scopes (orders covers subscription reads), or the milestone_items feature does not work for the company. A closed feature names
+            the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid filters, a range of more than 366 days or ending before it starts, or an invalid cursor.
           content:
             application/json:
               schema:
@@ -4796,7 +5566,7 @@ paths:
         Every Subscription Pro milestone rule of the company, oldest first, with the version in force.
         A milestone rule gives configured items on a subscription's first order, Nth order, every Nth
         order or anniversary. Needs the milestone_items feature to work for the company: Subscription
-        Pro active, the release flag on and the merchant setting on. Reading changes nothing. Responses
+        Pro active and the merchant setting on. Reading changes nothing. Responses
         are not cached.
       tags:
       - subscription-pro
@@ -4850,8 +5620,7 @@ paths:
           description: >-
             Not an admin, missing the orders.settings permission, a droplet without the settings
             scope, or the milestone_items feature does not work for the company. A closed feature names
-            the failed check in error.details.error: subscription_pro_inactive, release_flag_unavailable,
-            release_flag_off or setting_off.
+            the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.
           content:
             application/json:
               schema:
@@ -4899,8 +5668,7 @@ paths:
           description: >-
             Not an admin, missing the orders.settings permission, a droplet without the settings
             scope, or the milestone_items feature does not work for the company. A closed feature names
-            the failed check in error.details.error: subscription_pro_inactive, release_flag_unavailable,
-            release_flag_off or setting_off.
+            the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.
           content:
             application/json:
               schema:
@@ -4966,8 +5734,7 @@ paths:
           description: >-
             Not an admin, missing the orders.settings permission, a droplet without the settings
             scope, or the milestone_items feature does not work for the company. A closed feature names
-            the failed check in error.details.error: subscription_pro_inactive, release_flag_unavailable,
-            release_flag_off or setting_off.
+            the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.
           content:
             application/json:
               schema:
@@ -5032,8 +5799,7 @@ paths:
           description: >-
             Not an admin, missing the orders.settings permission, a droplet without the settings
             scope, or the milestone_items feature does not work for the company. A closed feature names
-            the failed check in error.details.error: subscription_pro_inactive, release_flag_unavailable,
-            release_flag_off or setting_off.
+            the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.
           content:
             application/json:
               schema:
@@ -5048,6 +5814,631 @@ paths:
           description: >-
             The rule's checkout gift discount could not be written (for example persistence_failed).
             Nothing changed; retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/retention_flow":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Show the company's cancel flow
+      description: >-
+        The cancel flow the company's customers see: every customer reason code in order, whether it
+        is hidden and its label per locale, and the save offers each reason shows. A company that never
+        published a flow reads the default flow, version 0, which shows only offers that cost the
+        merchant nothing. offer_types lists every offer type, whether it costs the merchant money,
+        whether accepting it keeps the subscription, and whether a flow may use it yet. Answers 404
+        while the company cannot use the cancel flow, with the failed check in details.error
+        (subscription_pro_inactive or setting_off).
+        Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_retention_flow
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionFlowResponse"
+              example:
+                retention_flow:
+                  version: 0
+                  default: true
+                  reasons:
+                  - { code: too_expensive, hidden: false, labels: {} }
+                  - { code: too_much_product, hidden: false, labels: {} }
+                  offers_by_reason:
+                    too_much_product:
+                    - { type: skip_next, terms: {} }
+                    - { type: delay, terms: { days: 30 } }
+                  win_back: null
+                offer_types:
+                - { type: skip_next, monetary: false, saves: true, available: true }
+                - { type: discount, monetary: true, saves: true, available: true }
+                - { type: free_gift, monetary: true, saves: true, available: false }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: >-
+            The company cannot use the cancel flow. details.error names the failed check:
+            subscription_pro_inactive or setting_off.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Publish the next version of the company's cancel flow
+      description: >-
+        Publishes the whole flow as the next version. Published versions never change, so each
+        cancellation session can name the version it ran. The request names the version it read (0 for
+        the default flow); a publish on top of a newer version is refused with 409
+        (stale_retention_flow). reasons must list each customer reason code exactly once and show at
+        least one. Each reason shows at most two offers of distinct types, and each offer's terms must
+        suit its type: delay {days 7-60}, change_frequency {subscription_plan_id}, swap {variant_ids, 1-50},
+        pause {months 1-3}, discount {percentage 1-100, duration once, or repeating with duration_cycles
+        2-12}, contact_support {url, https}, skip_next {}. free_gift is refused with offer_type_unavailable
+        until milestone items exist. An offer naming a plan or variant the company does not have is
+        refused with unknown_offer_reference. The optional win_back names the days from a cancellation to
+        the win-back email (1-90), the days its offer stays open (1-30) and a discount offer; a publish
+        without win_back keeps the published flow's win_back, and win_back null sends no win-back email. Answers 404 while the company cannot use the cancel
+        flow, as GET does.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_publish_subscription_pro_retention_flow
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionProRetentionFlowRequest"
+            example:
+              expected_version: 0
+              reasons:
+              - { code: too_expensive, hidden: false, labels: { en: Too expensive, es: Demasiado caro } }
+              - { code: too_much_product, hidden: false, labels: {} }
+              - { code: too_frequent, hidden: false, labels: {} }
+              - { code: not_seeing_results, hidden: false, labels: {} }
+              - { code: did_not_like_product, hidden: false, labels: {} }
+              - { code: switching_brand, hidden: true, labels: {} }
+              - { code: shipping_or_delivery_issue, hidden: false, labels: {} }
+              - { code: taking_a_break, hidden: false, labels: {} }
+              - { code: moving_or_life_change, hidden: false, labels: {} }
+              - { code: other, hidden: false, labels: {} }
+              offers_by_reason:
+                too_expensive:
+                - { type: discount, terms: { percentage: 20, duration: repeating, duration_cycles: 3 } }
+                - { type: skip_next, terms: {} }
+              win_back:
+                enabled: true
+                days_after_cancel: 14
+                expires_after_days: 7
+                offer: { type: discount, terms: { percentage: 25, duration: once } }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionFlowResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company cannot use the cancel flow (details.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The flow changed since it was read (stale_retention_flow). Read it again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: >-
+            The flow is invalid (invalid_retention_flow, with errors keyed by path), uses an offer type
+            that is not available yet (offer_type_unavailable), or names a plan or variant the company
+            does not have (unknown_offer_reference).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: List the company's tenure programs
+      description: >-
+        The company's Subscription Pro tenure programs, newest first, each with the tiers in force. Needs Subscription Pro to be active
+        (403 subscription_pro_inactive otherwise). Reading changes nothing. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_list_subscription_pro_tenure_programs
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramListResponse"
+              example:
+                tenure_programs:
+                - id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Subscription Pro is not active (subscription_pro_inactive), the caller is not an admin, or it lacks the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Start a tenure program
+      description: >-
+        Starts a draft program with no tiers. Tiers come with a publication. Needs the tenure pricing gate open, which means Subscription Pro is active,
+        the merchant's setting is on, and no droplet already discounts subscription orders. A closed gate is 422 with
+        the failed check in error.details.error, one of subscription_pro_inactive, setting_off or
+        droplet_tenure_conflict.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_create_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramRequest"
+            example:
+              name: Loyalty
+              axis: paid_orders
+              scope: all
+              scope_ids: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: draft
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: false
+                  archived_at: null
+                  archive_discounts: null
+                  current_version: null
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:00:00Z'
+                status: 201
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), or the tenure pricing gate is closed (subscription_pro_inactive, setting_off or droplet_tenure_conflict)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Show a tenure program
+      description: >-
+        One program with the tiers in force. Needs Subscription Pro to be active (403 subscription_pro_inactive otherwise). Reading changes
+        nothing. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Subscription Pro is not active (subscription_pro_inactive), the caller is not an admin, or it lacks the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/versions/preview":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Preview a tenure publication
+      description: >-
+        Counts what publishing the proposed tiers and scope would move, without writing anything. moves_up are subscriptions that would get
+        a higher tier or a first tier. moves_down would get a lower tier or lose theirs, and keep the old tier until their next renewal.
+        stays is everyone else in scope. stacking_examples show the total percent off when each percentage tier stacks with another 10%
+        discount. Needs the tenure pricing gate open, like creating a program. A tier that breaks a ladder rule is 422 invalid_tier, with the
+        tier's 0-based index in error.details.index when one tier is at fault. A scope naming another company's plan or product, or
+        more than 500 ids, is 422 invalid. An archived program is 409 archived.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_preview_subscription_pro_tenure_program_publication
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramPublicationRequest"
+            example:
+              tiers:
+              - { from: 3, label: Silver, percentage_value: '10' }
+              - { from: 6, label: Gold, flat_value: '5.50' }
+              scope: all
+              scope_ids: []
+              apply_to_volume: true
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramPreviewResponse"
+              example:
+                tenure_program_preview:
+                  current_version_id: null
+                  moves_up: 12
+                  moves_down: 0
+                  stays: 40
+                  stacking_examples:
+                  - { from: 3, percentage_value: '10.0', with_percentage_value: '10.0', effective_percentage_value: '19.0' }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The program is archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), a tier breaks a ladder rule (invalid_tier), or the tenure pricing gate is closed (subscription_pro_inactive, setting_off or droplet_tenure_conflict)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/versions":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Publish a tenure program version
+      description: >-
+        Publishes the proposed tiers and scope as the program's next version and puts it in force. The request carries the counts the
+        preview returned. The server counts again under the program lock and refuses with 409 preview_stale when anything differs, with
+        the current current_version_id, moves_up, moves_down and stays in error.details. Nothing is written then. An archived program is
+        409 archived. Every 422 the preview gives applies here too, and a request without previewed is 422. After the publish commits,
+        subscriptions move onto the new tiers in the background.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_publish_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramPublishRequest"
+            example:
+              tiers:
+              - { from: 3, label: Silver, percentage_value: '10' }
+              - { from: 6, label: Gold, flat_value: '5.50' }
+              scope: all
+              scope_ids: []
+              apply_to_volume: true
+              previewed:
+                current_version_id: null
+                moves_up: 12
+                moves_down: 0
+                stays: 40
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: active
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: null
+                  archive_discounts: null
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 201
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The counts changed since the preview (preview_stale), or the program is archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid values (invalid), a tier breaks a ladder rule (invalid_tier), the tenure pricing gate is closed, or previewed is missing
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/tenure_programs/{id}/archive":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session; the plan fixes this path (doc/plans/subscription-pro.md, section 3.3). A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Archive a tenure program
+      description: >-
+        Ends the program. Subscriptions are no longer moved onto its tiers. Needs only Subscription Pro to be active, so a merchant whose
+        gate closed since can still archive (422 subscription_pro_inactive otherwise). With discounts keep, the default, subscriptions keep
+        the tier discount they hold. With remove_at_next_renewal each subscription keeps its tier discount until its next renewal, which
+        still prices it, and then loses it (removed_reason tenure_program_archived). An archived program is 409 archived.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_archive_subscription_pro_tenure_program
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The tenure program's id.
+        schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/TenureProgramArchiveRequest"
+            example:
+              discounts: remove_at_next_renewal
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TenureProgramResponse"
+              example:
+                tenure_program:
+                  id: 41
+                  name: Loyalty
+                  status: archived
+                  axis: paid_orders
+                  scope: all
+                  scope_ids: []
+                  apply_to_volume: true
+                  archived_at: '2026-10-10T15:00:00Z'
+                  archive_discounts: remove_at_next_renewal
+                  current_version:
+                    id: 77
+                    version: 1
+                    created_at: '2026-10-10T14:05:31Z'
+                    tiers:
+                    - { from: 3, to: 6, label: Silver, discount_type: percentage, percentage_value: '10.0', flat_value: null }
+                    - { from: 6, to: null, label: Gold, discount_type: flat, percentage_value: null, flat_value: '5.5' }
+                  created_at: '2026-10-10T14:00:00Z'
+                  updated_at: '2026-10-10T14:05:31Z'
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such program in this company
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The program is already archived (archived)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Subscription Pro is not active (subscription_pro_inactive), or discounts is not keep or remove_at_next_renewal
           content:
             application/json:
               schema:
@@ -8333,8 +9724,10 @@ paths:
       operationId: settings_v0_delete_company
       description: Delete a specific company. This will soft delete the company and
         initiate background job for permanent delete. Accessible only by root admins.
-        A company with billing history, or with Mist AI usage or hosting history,
-        is never deleted; the request is refused and the company is left unchanged.
+        The company must be made inactive first. An active company, one with
+        billing history or Mist AI usage or hosting history, or one whose Mist AI
+        key has spend at Vercel or could not be read, is not deleted; the request
+        is refused and the company is left unchanged.
       parameters:
       - name: Authorization
         in: header
@@ -8361,7 +9754,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '422':
-          description: The company cannot be deleted, with the reason in errors.company. It has billing or Mist history a deletion keeps, Mist AI usage not yet accounted for, or a Mist AI key with spend at Vercel or that Vercel could not read.
+          description: The company cannot be deleted, with the reason in errors.company. It is active, has billing or Mist history a deletion keeps, Mist AI usage not yet accounted for, or a Mist AI key with spend at Vercel or that Vercel could not read.
           content:
             application/json:
               schema:
@@ -8791,7 +10184,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '403':
-          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused
+          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused; a Droplet installation may not bind, rebind or unbind a country's tax callback registration owned by another owner (another installation or the company)
           content:
             application/json:
               schema:
@@ -9010,7 +10403,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '403':
-          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused
+          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused; a Droplet installation may not bind, rebind or unbind a country's tax callback registration owned by another owner (another installation or the company)
           content:
             application/json:
               schema:
@@ -9149,7 +10542,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '403':
-          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused
+          description: Forbidden. Only a human member may set tax_quote_failure_policy; Droplet and API-key callers are refused; a Droplet installation may not bind, rebind or unbind a country's tax callback registration owned by another owner (another installation or the company)
           content:
             application/json:
               schema:
@@ -9216,6 +10609,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: Forbidden. A Droplet installation may not change or remove a country's tax callback registration owned by another owner (another installation or the company)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '404':
           description: Company country not found
           content:
@@ -9374,12 +10773,24 @@ paths:
                 meta:
                   request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
                   timestamp: '2026-09-14T15:32:08Z'
+        '400':
+          description: Missing or invalid language parameters
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/FailureEnvelopeResponse"
         '401':
           description: Unauthorized
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '404':
+          description: Language not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
       requestBody:
         content:
           application/json:
@@ -10023,3 +11434,258 @@ paths:
         required: true
         schema:
           type: string
+  "/api/subscription_pro/retention_experiments":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/retention_flow, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: List the company's cancel flow experiments
+      description: >-
+        The company's latest 20 experiments, newest first. At most one runs at a time, and it is the
+        first. Answers 404 while the company cannot use the cancel flow, with the failed check in
+        details.error (subscription_pro_inactive or setting_off). Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_list_subscription_pro_retention_experiments
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionExperimentsResponse"
+              example:
+                retention_experiments:
+                - { id: 12, control_version: 2, variant_version: 3, variant_percent: 50, started_at: '2026-10-01T09:00:00Z', stopped_at: null, running: true }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company cannot use the cancel flow (details.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/retention_flow, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Start a cancel flow experiment
+      description: >-
+        Splits the company's customers between two published flow versions. A customer's arm is the
+        first 8 bytes of SHA-256 of "company_id:experiment_id:member_id", mod 100, compared with
+        variant_percent, so a customer sees the same version in every session of the experiment. While
+        it runs, new sessions run the arm's version instead of the latest published one and record the
+        arm. Refused with 409 (experiment_running) while another experiment runs, and with 422 for
+        versions the company has not published (unknown_flow_version) or an invalid split
+        (invalid_experiment, or invalid parameters). Answers 404 while the company cannot use the
+        cancel flow.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_start_subscription_pro_retention_experiment
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionProRetentionExperimentRequest"
+            example:
+              control_version: 2
+              variant_version: 3
+              variant_percent: 50
+      responses:
+        '201':
+          description: Started
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionExperimentResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company cannot use the cancel flow (details.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: Another experiment is running (experiment_running). Stop it first.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: >-
+            Invalid parameters, a version the company has not published (unknown_flow_version), or an
+            invalid split (invalid_experiment), such as the same version twice.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/retention_experiments/{id}/stop":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/retention_flow, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Stop a cancel flow experiment
+      description: >-
+        Stops the running experiment for good. New sessions run the latest published flow again;
+        sessions already open keep their version. Refused with 409 (experiment_stopped) when it already
+        stopped. Answers 404 for an experiment of another company or while the company cannot use the
+        cancel flow.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_stop_subscription_pro_retention_experiment
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The experiment id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionExperimentResponse"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: No such experiment for the company (experiment_not_found), or the company cannot use the cancel flow.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '409':
+          description: The experiment already stopped (experiment_stopped).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/retention_report":
+    get:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/retention_flow, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Show the company's cancel flow report
+      description: >-
+        What the cancel flow did over a range of UTC days (default the last 30, at most 366). A session
+        counts on the day it started, and an open session past its 30 minutes counts as abandoned.
+        save_rate is saved sessions over sessions with a reason. An offer counts as shown when the reason
+        step returned it to the customer; a cancel that carried the reason shows none. Each experiment
+        with sessions in the range lists both arms with their sample sizes. Answers 404 while the
+        company cannot use the cancel flow. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_get_subscription_pro_retention_report
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: The first day (UTC), default 29 days before to
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: false
+        description: The last day (UTC), inclusive, default today
+        schema:
+          type: string
+          format: date
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionProRetentionReportResponse"
+              example:
+                retention_report:
+                  from: '2026-10-01'
+                  to: '2026-10-30'
+                  sessions: { started: 12, with_reason: 10, open: 0, saved: 4, cancelled: 6, abandoned: 2, save_rate: 0.4 }
+                  reasons:
+                  - { reason_code: too_expensive, started: 6, with_reason: 6, open: 0, saved: 3, cancelled: 3, abandoned: 0, save_rate: 0.5 }
+                  offers:
+                  - { offer_type: discount, shown: 6, accepted: 3, acceptance_rate: 0.5 }
+                  experiments:
+                  - id: 12
+                    control_version: 2
+                    variant_version: 3
+                    variant_percent: 50
+                    started_at: '2026-10-01T09:00:00Z'
+                    stopped_at: null
+                    running: true
+                    min_sample: 200
+                    sample_sufficient: false
+                    arms:
+                    - { arm: control, flow_version: 2, started: 6, with_reason: 5, open: 0, saved: 1, cancelled: 4, abandoned: 1, save_rate: 0.2 }
+                    - { arm: variant, flow_version: 3, started: 6, with_reason: 5, open: 0, saved: 3, cancelled: 2, abandoned: 1, save_rate: 0.6 }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet without the settings scope
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: The company cannot use the cancel flow (details.error names the failed check).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: Invalid dates, or to before from or more than 365 days after it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"

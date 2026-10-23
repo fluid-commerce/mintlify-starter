@@ -4250,6 +4250,119 @@ components:
       - type: string
       - "$ref": "#/components/schemas/ErrorBag"
       - type: 'null'
+    BraintreeCartTotalChangedError:
+      description: |
+        409 body of the Braintree create_payment authorization when the address or
+        tax refresh moved the total the buyer was shown. Nothing was charged;
+        `meta.cart` is the current total.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - error_code
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        error_code:
+          type: string
+          const: cart_total_changed
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                currency_code:
+                  type: string
+    CartHoldTotalChangedErrorResponse:
+      description: |
+        The address or tax refresh before a hold moved the total the shopper
+        was shown, so nothing was held. `meta.cart` is the current total.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total as a decimal string in the currency's major unit.
+                currency_code:
+                  type: string
+                  description: ISO 4217 code of the currency this total is in.
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the shopper agreed to, so nothing
@@ -6023,6 +6136,18 @@ components:
                     type: boolean
                   apple_pay_merchant_identifier:
                     type: 'null'
+                  google_pay:
+                    type: boolean
+                    description: Whether the checkout can offer Google Pay on this card account.
+                  google_pay_merchant_id:
+                    type: [string, 'null']
+                    description: The merchant's Google Pay merchant ID, for the PaymentDataRequest's merchantInfo. Present only when google_pay is true.
+                  google_pay_gateway:
+                    type: [string, 'null']
+                    description: The tokenization gateway for PAYMENT_GATEWAY tokenization (verygoodsecurity). Present only when google_pay is true.
+                  google_pay_gateway_merchant_id:
+                    type: [string, 'null']
+                    description: The gatewayMerchantId VGS issued the merchant. Present only when google_pay is true.
                   bogus_gateway:
                     type:
                     - boolean
@@ -12681,7 +12806,18 @@ paths:
           type: integer
       responses:
         '409':
-          "$ref": "#/components/responses/PaymentInProgressError"
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider
+            (`meta.code` = `payment_in_progress`), or an Affirm, Bread or Apple Pay hold
+            was refused because the address or tax refresh moved the total the buyer
+            was shown (`meta.code` = `cart_total_changed`; `meta.cart` carries the new
+            total). Nothing was held; read the cart and retry.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartHoldTotalChangedErrorResponse"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '201':
@@ -15472,6 +15608,26 @@ paths:
                   type: string
                   description: Set to `checkout_with_vault` when the front end
                     produced a checkout-with-vault nonce.
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required on an unpinned request (no `approved_amount`, no
+                    `paypal_flow`) while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             example:
               payment_account_id: 9d3f6b2a-4e71-4c8d-a0b5-e27c1f9a6d34
               payment_method_nonce: tokencc_bh_7xk2mq_9vrbt3_nwz8lp_yc4hd2_q6f
@@ -15511,13 +15667,14 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '409':
-          description: An authorization for this cart is already in progress, or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`)
+          description: An authorization for this cart is already in progress, a redirect payment is open at the provider (`meta.code` = `payment_in_progress`), or the address or tax refresh moved the total the buyer was shown (`meta.code` = `cart_total_changed`, `meta.cart` carries the new total)
           content:
             application/json:
               schema:
                 anyOf:
                 - "$ref": "#/components/schemas/StandardErrorResponse"
                 - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/BraintreeCartTotalChangedError"
         '503':
           description: Braintree gateway or auth error, or payment service temporarily
             unavailable
@@ -16271,9 +16428,39 @@ paths:
         required: true
         schema:
           type: boolean
+      - name: expected_total
+        in: query
+        required: false
+        description: |
+          The cart total the client showed the shopper, as a decimal string in
+          the cart currency's major unit (`"141.74"`). Requires `expected_currency`.
+          Required for a Fastlane (`payment_token_id`) or `apple_pay` order, which is
+          charged at create, while the company's quote-failure policy is enabled:
+          omitting it answers `422` before the cart is repriced. Optional, and
+          ignored, otherwise.
+        schema:
+          type: string
+          pattern: '^\d{1,12}(\.\d{1,5})?$'
+      - name: expected_currency
+        in: query
+        required: false
+        description: ISO 4217 code of the currency the shopper was shown. Requires
+          `expected_total`.
+        schema:
+          type: string
       responses:
         '409':
-          "$ref": "#/components/responses/PaymentInProgressError"
+          description: |
+            A redirect payment is open at the provider (`meta.code` =
+            `payment_in_progress`), or a Fastlane or Apple Pay order's refresh moved the
+            total the buyer was shown (`meta.code` = `cart_total_changed`, `meta.cart`
+            carries the new total). No order was created.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '201':
           description: Created
           content:

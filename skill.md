@@ -54,13 +54,21 @@ Customers use industry words for things Fluid names differently. Search the docs
 Some areas have more than one generation of endpoints, and search can rank an older one first.
 
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
-- **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
+- **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
 - **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
 
 ## Before you build a Droplet
 
 - **Search the app store first.** When someone wants a new capability, `GET /api/company/v2026-10/droplets?q=<the outcome, in plain words>` returns the droplets their company can install, most relevant first. If one fits, offer to install it (`POST /api/company/v2026-10/droplets/{uuid}/installations`, after they approve) instead of building a one-off.
 - **Fill in the listing of a droplet you create.** Write a one-line `summary`, an HTML `description` of what it really does, a `logo_url`, and `features` (a `title` with a screenshot `image_url` or a `video_url` each) with `PATCH /api/company/v2026-10/droplets/{uuid}`. A droplet with an empty listing is hard to find: https://docs.fluid.app/guides/creating-droplets
+
+## Ads
+
+- **Start here:** https://docs.fluid.app/api/guides/ads walks the whole flow (connect, choose the ad account, images, launch, results) with every failure type. https://docs.fluid.app/help/mist/run-ads is what the merchant sees; follow its order and wording.
+- **Facebook and Instagram ads:** connect Meta once with `fluid channels connect meta --open`; the one login grants catalog, WhatsApp and ads access. Then choose the ad account the company advertises from: `GET /api/v202506/company/ads/meta/ad-accounts` lists the ad accounts and Pages Meta shared, and `PUT /api/v202506/company/ads/meta/ad-account` saves the choice, using only ids from that list: https://docs.fluid.app/setup/sales-channel-meta#choose-the-ad-account-for-ads
+- **Google Ads:** the Google connection (`fluid channels connect google --open`) covers Merchant Center and Google Ads in one login. `GET /api/v202506/company/ads/google/ad-accounts` lists the Google Ads accounts it reaches, and `PUT /api/v202506/company/ads/google/ad-account` saves one that is enabled and not a manager account.
+- **Ad images:** when the product has no image at a placement's ratio, `POST /api/v202506/company/ads/images` with `prompt`, `aspect_ratio` (`1:1`, `4:5`, `9:16` or `1.91:1`) and `product_id` queues a generation billed to the company's AI credits; poll `GET /api/v202506/company/ads/images/{id}` until `completed`, and use each image's DAM `url` as a Meta ad's `image_url`. Ask before generating.
+- **Launching:** after the user approves the ads, `POST /api/v202506/company/ads/meta/launches` creates a paused Traffic campaign with up to five link ads, and `POST /api/v202506/company/ads/google/launches` creates a paused Search campaign with a responsive search ad. Fluid checks every line of copy first and refuses flagged copy (`claims_blocked`). Campaigns are always created paused in the merchant's own ad account, which bills them; the user switches them on in Ads Manager or Google Ads. Never say an ad is live. Send an `idempotency_key` (a hash of the approved ads) so a retry returns the first launch instead of a second campaign; `409` `launch_in_progress` means check the ad account before launching with a new key. Branch on `error.details.type`, never the message. To report how a launch is doing, `GET /api/v202506/company/ads/{meta,google}/launches/{id}/insights` returns its live status, spend, impressions, clicks, CTR and CPC for `since`/`until` (default: launch date to today).
 
 ## Platform pitfalls
 
@@ -99,6 +107,10 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 ## Fluid CLI
 
 Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
+
+- **Sign up** (https://docs.fluid.app/api/agent-launch#step-1-sign-up-confirm-the-email-and-sign-in): `fluid signup --email <email> --first-name <first> --last-name <last> --company-name <name> --subdomain <subdomain> --yes --json`. With the merchant's consent only; it creates a real company.
+- **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.
+- **Products** (https://docs.fluid.app/api/agent-launch#step-5-set-up-the-catalog-and-store-settings): `fluid products create --title <title> --price <price> --yes`, from `@fluid-app/fluid-cli-products`, once signed in. The product stays a draft unless `--publish`.
 
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.

@@ -15,7 +15,7 @@ Webhook management lives on the company surface. Call it against `https://api.fl
 
 ## Register a webhook
 
-Create a subscription with `POST /api/company/webhooks`. A subscription needs three things: the `resource` to watch, the `event` on that resource, and the `url` Fluid delivers to. You can also set `active`, the `http_method` Fluid uses to deliver, and an `auth_token` — a shared secret you use to verify deliveries.
+Create a subscription with `POST /api/company/webhooks`. A subscription needs three things: the `resource` to watch, the `event` on that resource, and the `url` Fluid delivers to. You can also set `active`, the `http_method` Fluid uses to deliver, and an `auth_token` — a legacy shared secret for verifying deliveries. Fluid also generates a separate `signing_secret`; see [Verify a delivery](#verify-a-delivery).
 
 ```bash
 curl -X POST "https://api.fluid.app/api/company/webhooks" \
@@ -102,15 +102,15 @@ In the body, the event data is keyed by the resource's own name — an order del
 
 ## Verify a delivery
 
-Set `auth_token` to a long, random secret when you register a webhook. Fluid uses it to sign every delivery. Every delivery carries `X-Fluid-Shop`, your shop identifier. When the webhook has an `auth_token`, each delivery also carries these headers:
+Fluid generates a `signing_secret` for every webhook and signs each delivery with it. The secret itself is never sent on a delivery. Read it from the create, show, or update response; the list response doesn't include it. A webhook created before signing secrets existed can return `null` until Fluid issues one.
 
-- `X-Fluid-Signature` — a hex HMAC-SHA256 of the request, keyed with your `auth_token`.
+Every delivery carries these headers:
+
+- `X-Fluid-Shop` — your shop identifier.
 - `X-Fluid-Timestamp` — the Unix time in seconds when Fluid signed the request.
-- `X-Fluid-Token` and `AUTH_TOKEN` — your raw `auth_token`.
+- `X-Fluid-Signature-V2` — a hex HMAC-SHA256 of the request, keyed with the webhook's `signing_secret`.
 
-Without an `auth_token`, a delivery is unsigned and you have nothing to verify it against, so always set one.
-
-Verify the signature: recompute a hex HMAC-SHA256, keyed with your `auth_token`, over the string `<X-Fluid-Timestamp>.<raw_request_body>`, then constant-time compare it to `X-Fluid-Signature`. Sign over the raw request body exactly as received; if you re-serialize the parsed JSON the bytes can change and the signature will not match.
+Verify the signature: recompute a hex HMAC-SHA256, keyed with your `signing_secret`, over the string `<X-Fluid-Timestamp>.<raw_request_body>`, then constant-time compare it to `X-Fluid-Signature-V2`. Sign over the raw request body exactly as received; if you re-serialize the parsed JSON the bytes can change and the signature will not match.
 
 ```javascript
 const crypto = require("crypto");
@@ -119,10 +119,10 @@ const crypto = require("crypto");
 app.post("/fluid/orders", (req, res) => {
   const rawBody = req.body; // Buffer/string of the exact bytes received
   const timestamp = req.headers["x-fluid-timestamp"];
-  const presented = req.headers["x-fluid-signature"] || "";
+  const presented = req.headers["x-fluid-signature-v2"] || "";
 
   const expected = crypto
-    .createHmac("sha256", process.env.FLUID_WEBHOOK_SECRET)
+    .createHmac("sha256", process.env.FLUID_WEBHOOK_SIGNING_SECRET)
     .update(`${timestamp}.${rawBody}`)
     .digest("hex");
 
@@ -137,9 +137,14 @@ app.post("/fluid/orders", (req, res) => {
 });
 ```
 
-If you don't verify the signature, the simpler alternative is to compare the `X-Fluid-Token` (or `AUTH_TOKEN`) header against your stored secret with a constant-time comparison. The signature is more robust because it also binds the timestamp and the exact body.
+### Legacy `auth_token` verification
 
-Use at least 32 random characters for the secret, and rotate it periodically — send a new `auth_token` to the update endpoint, then update the value your handler verifies against.
+Older integrations verify with the webhook's `auth_token`. When the webhook has an `auth_token`, each delivery also carries these headers, unchanged:
+
+- `X-Fluid-Signature` — the same HMAC-SHA256 over `<X-Fluid-Timestamp>.<raw_request_body>`, keyed with your `auth_token`.
+- `X-Fluid-Token` and `AUTH_TOKEN` — your raw `auth_token`.
+
+These headers carry the `auth_token` itself, so anyone who sees one delivery holds the key to forge `X-Fluid-Signature`. Verify `X-Fluid-Signature-V2` instead. If you still rely on `auth_token`, use at least 32 random characters, and rotate it periodically: send a new `auth_token` to the update endpoint, then update the value your handler verifies against.
 
 ## Handle and respond
 

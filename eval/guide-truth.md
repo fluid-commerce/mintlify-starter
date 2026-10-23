@@ -1850,13 +1850,18 @@ Phase 006 design in fluid `features/member-storefront` (sealed screens, a
 member identity bridge for droplets) is Draft; the guide claims none of it.
 
 **Scoped exception — the upload API.** At the user's explicit request, the
-guide documents the agent flow without the admin: `PUT /api/droplets/{uuid}`
-with `droplet.extension_zip_url`, polling `app_extensions[].status`, `POST
-/api/droplet_installations`, and `GET /api/application_theme_templates` for
-`extension_uri`. This overrides "no extension upload HTTP payload is restated"
-above for this guide only, in the same way as the navigation menus exception.
-None of these unversioned endpoints is in a synced spec, so the claims are
-semantic. Evidence: `Api::Droplets::{Create,Update,Show}Action`,
+guide documents the agent flow without the admin: `PATCH
+/api/company/v2026-10/droplets/{uuid}` with `droplet.extension_zip_url`, polling
+`droplet.app_extensions[].status` on `GET /api/company/v2026-10/droplets/{uuid}`,
+`POST /api/company/v2026-10/droplets/{droplet_uuid}/installations`, and `GET
+/api/application_theme_templates` for `extension_uri`. This overrides "no
+extension upload HTTP payload is restated" above for this guide only, in the same
+way as the navigation menus exception. The droplet steps moved from the
+unversioned `/api/droplets` and `/api/droplet_installations` endpoints to the
+synced `company-droplets-v2026-10` spec (fluid #27614, #27645), so the guide has a
+`guideSpecs` entry for that spec and its droplet claims are mechanical; the theme
+template step is still unsynced and semantic. Original evidence for the
+unversioned flow: `Api::Droplets::{Create,Update,Show}Action`,
 `Droplet::ExtensionImporter`, `UrlSecurity`, `AppExtension` (status enum),
 `AppExtensionBlueprint` (`error_message` on the owner view),
 `Api::DropletInstallations::CreateAction` (409 on an existing install), and
@@ -2339,6 +2344,19 @@ The channel guided setups cover connecting accounts the merchant already has.
 One product claim comes from the requester, not the implementation, and is open for
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
 **Settings → Billing**. Nothing in the code gates going live on a card.
+
+**CLI signup and product create (2026-10-22, ENG-2404).** Step 1 installs the CLI first and
+signs up with `fluid signup` (`@fluid-app/fluid-cli` 0.1.121 and later), which makes the same
+`POST /api/company` call once and prints `company.id`, `company.fluidShop` and the two
+`fluid login` steps. `api/agent-signup.mdx` points to it and keeps the raw call. Step 5's
+product row names `fluid products create` (`@fluid-app/fluid-cli-products` 0.1.0, added to
+the install line), which prices one master variant and leaves the product a draft unless
+`--publish`. Both were checked against the fluid monorepo's `packages/cli/core` and
+`packages/cli/products` at the published versions. Step 8 still walks through the test order
+by API: `fluid payments test-order` lands in the payments plugin and is named here once it
+is on npm. In `api/guides/headless-commerce.mdx`, the set-address example now sends `name`:
+the v2026-04 address endpoint permits `name` and drops `first_name` and `last_name`
+(`carts_controller.rb` `address_params`); claim `headless-091`.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
