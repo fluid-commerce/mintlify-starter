@@ -1,0 +1,138 @@
+---
+title: "Upload a private file"
+sidebarTitle: "Upload a private file"
+description: "Store a profile picture, contact photo, or other personal file and get its URL back, without adding it to your company's DAM."
+---
+
+Some files belong to a person, not to your company's library: a member's profile picture, a photo on a contact, an image attached to a support message. Uploading them to the DAM would put them in **Files**, where every admin can browse and reuse them.
+
+Private uploads store the file and return its URL, and that's all. No DAM asset or media item is created, so the file never appears in **Files**, the DAM picker, or the media list. You save the URL (or, for members, the upload id) wherever the file belongs.
+
+There are two routes on `upload.fluid.app`, one for each kind of token:
+
+| Route | Use it for | Token |
+| --- | --- | --- |
+| `POST https://upload.fluid.app/api/company/v2026-10/private-uploads` | Files your integration stores for the company, such as contact photos | A company token or a partner token whose role can update media |
+| `POST https://upload.fluid.app/api/member/v2026-10/private-uploads` | Files a member uploads for themselves, such as their own profile picture | The member's own Bearer token |
+
+<Info>
+  Neither route takes a company, member, or folder in the request. The owner always comes from the token, so a file can only land in the token's own company or member storage.
+</Info>
+
+## Before you start
+
+- **Use this host, not `api.fluid.app`.** The upload service runs on `upload.fluid.app`.
+- **Keep company and partner tokens on your server.** Never send either to a browser. A member route call can come from the member's own app or browser session, since it carries only that member's token.
+- **"Private" means out of the DAM, not access-controlled.** Each file gets a random, unguessable name, but anyone who has the URL can open it. Don't use private uploads for documents that need signed or expiring links.
+
+## Send the file
+
+Both routes take the same body. Send the file as `multipart/form-data`:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `file` | Yes | The file to upload. |
+| `fileName` | No | The file name, including its extension. Defaults to the file part's own filename. Fluid uses the extension to work out the file type when the part has none. |
+
+Or, if you already have the bytes in memory, send `application/json` with the file base64-encoded:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `data_uri` | One of these | A data URI, for example `data:image/png;base64,iVBORw0KGgo...`. |
+| `b64_json` | One of these | Raw base64. Send `mime_type` with it. |
+| `mime_type` | No | The file type for `b64_json`. Defaults to `image/png`. |
+| `fileName` | No | The file name, including its extension. Generated from the file type if you leave it out. |
+
+The stored name is always a random prefix plus a cleaned-up version of `fileName`, so two uploads of `headshot.jpg` never collide.
+
+## Set a member's profile picture
+
+A member uploads their photo with their own token:
+
+```bash
+curl -X POST "https://upload.fluid.app/api/member/v2026-10/private-uploads" \
+  -H "Authorization: Bearer <member_token>" \
+  -F "file=@headshot.jpg"
+```
+
+The response carries the stored file and an `upload_id`:
+
+```json
+{
+  "data": {
+    "url": "https://ik.imagekit.io/fluid/companies/0199a1b2-6c4e-7d21-9f30-8b7e1a2c3d4f/members/48213/uploads/images/Xk3p9QaB_headshot.jpg",
+    "file_id": "6718f0c2a9b3e41d7c5e2f90",
+    "file_path": "/companies/0199a1b2-6c4e-7d21-9f30-8b7e1a2c3d4f/members/48213/uploads/images/Xk3p9QaB_headshot.jpg",
+    "name": "Xk3p9QaB_headshot.jpg",
+    "size": 52114,
+    "mime_type": "image/jpeg",
+    "width": 800,
+    "height": 800,
+    "upload_id": "0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f",
+    "expires_at": "2026-10-24T18:39:05Z"
+  }
+}
+```
+
+Uploading only stores the file. To make it the member's picture, send `upload_id` as `avatar_upload_id` to [update the signed-in member](/api-reference/me/update-the-signed-in-member):
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/member/v2026-10/me" \
+  -H "Authorization: Bearer <member_token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "avatar_upload_id": "0199a3f2-5b0d-7c3a-8f09-2a1b0c9d8e7f" }'
+```
+
+Fluid checks that the stored file is really there and is an image before it sets the picture. Each `upload_id` works once, and must be used within an hour of `expires_at`.
+
+The member route accepts images, videos, PDFs, and presentations. Images can be up to 10 MB, videos 100 MB, and documents 25 MB.
+
+## Add a photo to a contact
+
+Your server uploads the photo with a company token:
+
+```bash
+curl -X POST "https://upload.fluid.app/api/company/v2026-10/private-uploads" \
+  -H "Authorization: Bearer <company_token>" \
+  -F "file=@dana-whitfield.jpg"
+```
+
+```json
+{
+  "data": {
+    "url": "https://ik.imagekit.io/fluid/1234/private/images/Rt7mW2qL_dana-whitfield.jpg",
+    "file_id": "6718f1d4b2c6a93e8f0d1a27",
+    "file_path": "/1234/private/images/Rt7mW2qL_dana-whitfield.jpg",
+    "name": "Rt7mW2qL_dana-whitfield.jpg",
+    "size": 38720,
+    "mime_type": "image/jpeg",
+    "width": 600,
+    "height": 600
+  }
+}
+```
+
+Save `url` on the record it belongs to. Nothing else refers to the file, so if you don't store the URL, the file is orphaned.
+
+The company route refuses SVG, HTML, XML, JavaScript, and executable files. Images can be up to 10 MB, videos 100 MB, audio 50 MB, and documents and other files 25 MB.
+
+## Errors
+
+Errors return `{ "error": "..." }`. When Fluid or the storage service refused the request, the body also carries their response under `details`.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The request is malformed: the wrong content type, invalid JSON, or no file. |
+| `401` | The `Authorization` header is missing, or the token isn't valid. A company token on the member route is a `401`. |
+| `403` | The token is valid but can't upload: a company token whose role can't update media, or a read-only member token. |
+| `413` | The request is larger than 100 MB. |
+| `422` | The file type isn't allowed, or the file is over its size limit. |
+| `502` | Fluid or the storage service failed. Nothing was saved to a record, so it's safe to retry. |
+
+Any other `4xx` from Fluid is passed back with its own status.
+
+## Related
+
+- [Upload a file to the DAM](/api/dam-upload) — for files that belong in the company library.
+- [Member APIs](/api/member-apis) — member tokens and the signed-in member.
+- [Authentication](/api/authentication) — company and partner tokens.
