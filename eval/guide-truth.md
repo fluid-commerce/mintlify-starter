@@ -2776,3 +2776,79 @@ text rendering, malformed/rejected results, and ignored component continuation
 after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
 and auth monitoring correctness belong to the SDK's independently reviewed tests;
 the docs tests do not simulate deployment or claim instant server revocation.
+
+## Drop zone placements, webhook latency, and the callbacks guide (2026-10-23)
+
+Gaps found while moving Mist expert skills into We-Bots knowledge. All facts below
+were verified against the fluid monorepo at `origin/main` on 2026-10-23.
+
+### Drop zones: rendered placements are now carried forward (supersedes part of CURRENT-2822)
+
+CURRENT-2822 declined to carry the old exhaustive location table forward, because the
+runtime placement constants can evolve and the management contract is unpublished.
+That reasoning still holds for the constants list, so the guide still does **not**
+publish it: `DropZoneConstants` accepts zones no Fluid page renders
+(`between_items_and_value`, `below_order_value`, `right_top`, `after_contact`,
+`after_shipping`, `after_payment`, `after_terms`, and checkout `above_order_details`).
+
+What changed is that the Mist CLI (`fluid mist attach --zone <page>__<zone>`) and the
+Mist desktop zone picker now ask authors to name a zone, so readers need the names.
+`api/guides/drop-zones.mdx` therefore lists only the zones a Fluid page actually
+renders, verified at their render sites: fluid-checkout `cart-view.tsx`,
+`guest-checkout.tsx`, `logged-in-checkout.tsx`, `fast-checkout-options.tsx`,
+`agreements.tsx`, `customer-shipping-addresses.tsx`, `customer-payment-methods.tsx`,
+`order-summary.tsx`, `order-confirmation.tsx`, and the fluid-admin product, order and
+customer detail pages. Column colours are Tailwind `bg-gray-50` / `bg-white` on the
+summary and form containers. Slideout-cart zones are named only as "pick them in
+Fluid Admin": no render site was found for them.
+
+The context table carries forward the URL parameters now verified in
+`components/drop-zones/drop-zone.tsx` (`token` = cart token on checkout, order token
+on order confirmation, plus `company_id` when present; appended with `?` as-is;
+HTTPS only) and the admin context token's shape from `DropZones::ContextTokenMinter`
+(HS256, 5 minutes, `company_id`, `entity_type`, `fluid_id`, `member_id` for
+customers). The cart-mutation authorization list from the old guide stays out.
+Height: `settings.height ?? 120`, resized by a `{type: "RESIZE", height}` postMessage
+from the embed's origin and frame, 0 < height < 10000, frame = height + 16.
+
+Accepted omission: how an embed verifies the admin context token. It is signed with
+a Fluid-held secret and no verification endpoint was found, so the guide says only
+"validate it on your server", as before.
+
+### Webhook delivery latency
+
+Deliveries are enqueued (`WebhookCallerJob`, queue `webhooks`; `Commerce::WebhookJob`,
+queue `commerce_webhooks`) and sent by workers. Wording ("usually seconds, can lag
+minutes under load") is Mike's decision; no number is published. **Retrigger** is
+verified: `POST /api/company/webhook_events/:id/retrigger`, admin Webhook Logs button
+on failed events, re-broadcasting to every active webhook for the event. The
+"one attempt, no retry" statement stays true for company webhook subscriptions.
+Accepted omission: droplet lifecycle webhooks (`Droplet::LifecycleWebhookJob`,
+`retry: 5`) and order archive transitions (`deliver_archive_transition`, at-least-once
+via `Commerce::DeliverOrderTransitionJob`, `retry: 10`) are retried, but they are not
+subscriptions this guide registers, so the guide doesn't list them.
+
+### Callbacks guide (`api/guides/callbacks.mdx`)
+
+Mapped to `webhooks-v0` (callback definitions, schemas, registrations) and
+`company-droplets-v2026-10` (droplet health). Decisions:
+
+- **No registration timeout.** `timeout_in_seconds` is a column, but create/update
+  don't accept it and dispatch never reads it. The 1..30 bound exists only in
+  fluid-admin's form schema. The limit is the definition's
+  `maximum_timeout_in_milliseconds`, capped at `MAX_TIMEOUT_IN_MILLISECONDS = 20_000`.
+  The guide says this and does not publish a per-definition table (definitions evolve).
+- **Failure is per caller.** `Callback::Client` never raises and never retries; it
+  classifies `timeout`, `http_error` (any non-2xx), `invalid_json`, `schema_invalid`.
+  Only behaviours verified at a caller are named: the tax strategy keeps the cart's
+  tax total; `validate_cart_discount` and `update_cart_address` fail open per their
+  definition YAML.
+- **Signature** from `generate_signed_headers`: HMAC-SHA256 over `timestamp.body`
+  keyed with the registration's `verification_token`; `X-Fluid-Callback-Token` also
+  carries the raw token.
+- `callbacks-033` (health `verdict`) is semantic: `installation` is a nullable
+  `oneOf`, which the mechanical checker doesn't traverse.
+- Upstream gap to flag: the health operation's 200 example shows `verdict: healthy`
+  with `failure_rate: 0.0125`, but `Droplet::Health::Classifier` returns `degraded`
+  at ≥ 0.01. The `webhook_events` list, show and retrigger operations and
+  `POST /api/callback/test` are not in `webhooks-v0`.
