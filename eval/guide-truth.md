@@ -2242,6 +2242,14 @@ stay hand-edited.
   is published. The page covers only server-side multipart file uploads with company or
   partner tokens. URL import is left out until its SSRF fix ships. The raw DAM asset
   endpoints are excluded from the sidebar.
+- **Private uploads** (2026-10-24) have a second hand-written page, `api/private-uploads.mdx`,
+  for the same service's `POST /api/company/v2026-10/private-uploads` and
+  `POST /api/member/v2026-10/private-uploads` (file-upload-serverless#8). Same exception
+  and reason as the DAM page: the upload service has no OpenAPI spec. The member example's
+  follow-up call, `PATCH /api/member/v2026-10/me` with `avatar_upload_id`, links to its
+  generated page instead of restating it. The page covers server-side company and partner
+  tokens and members' own tokens; `pub-` tokens are left out because the upload service
+  calls Fluid server to server, so a public token's domain allowlist is not applied there.
 
 ### Settings and admin specs synced (2026-09-30)
 
