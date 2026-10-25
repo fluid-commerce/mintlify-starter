@@ -200,7 +200,7 @@ components:
     OutboundMessage:
       type: object
       additionalProperties: false
-      description: A message sent through this API. The address itself is never returned.
+      description: A message sent through this API. History reads may include decrypted content for authorized viewers.
       required:
       - id
       - channel
@@ -216,6 +216,28 @@ components:
       - events
       - send_at
       properties:
+        source:
+          type: string
+          enum: [company_messages, we_bot_outreach]
+          description: Which outbound pipeline recorded the attempt. Present on history reads.
+        context:
+          type: object
+          additionalProperties: false
+          description: The bot playbook and subject when this was a playbook message. Empty for direct API sends.
+          properties:
+            bot_id:
+              type: string
+            playbook_key:
+              type: string
+            subject_type:
+              type: string
+            subject_id:
+              type: string
+        content_available:
+          type: boolean
+          description: Whether an original body snapshot exists. Older playbook messages may have metadata only; they are never re-rendered to invent historical content.
+        content:
+          $ref: '#/components/schemas/MessageContent'
         id:
           type: string
           format: uuid
@@ -298,6 +320,67 @@ components:
           - 'null'
           format: date-time
           description: When a scheduled message goes out.
+    MessageContent:
+      type: object
+      additionalProperties: false
+      description: Original message wording, decrypted for outbound_messages.view readers. Links and authentication credentials are redacted, including in nested push data and template parameters. The encrypted stored snapshot is unchanged. Internal sender metadata is excluded.
+      properties:
+        to:
+          type: string
+          description: The normalized recipient address used at send time, when this channel uses an address.
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        reply_to:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        url:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        template:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            language:
+              type: string
+            params:
+              type: array
+              items:
+                type: string
+    MessageHistoryResponse:
+      type: object
+      required: [messages, page, history_complete, status, meta]
+      properties:
+        history_complete:
+          type: boolean
+          description: False while older WeBot attempts in this company await import. An empty or partial page must not be treated as evidence that the person has not been contacted. This covers only the outbound pipelines documented here.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutboundMessage'
+        page:
+          type: object
+          additionalProperties: false
+          required: [next_cursor, has_more]
+          properties:
+            next_cursor:
+              type: [string, 'null']
+            has_more:
+              type: boolean
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
     MessageResponse:
       type: object
       required:
@@ -1458,21 +1541,10 @@ paths:
                     meta:
                       request_uuid: 00000000-0000-0000-0000-000000000000
                       timestamp: '2026-10-23T12:00:00Z'
-                channel_disabled:
-                  summary: The API isn't switched on
-                  value:
-                    error:
-                      code: channel_disabled
-                      message: The company messages API isn't switched on for this company yet.
-                      channel: email
-                    status: 422
-                    meta:
-                      request_uuid: 00000000-0000-0000-0000-000000000000
-                      timestamp: '2026-10-23T12:00:00Z'
   /api/company/v2026-10/messages/sms:
     post:
       operationId: companyMessagesSendSms
-      summary: Send a text message
+      summary: Send an SMS text message
       description: A text message, sent from the company's registered number. Needs `outbound_messages.sms`.
       tags:
       - outbound-messages
@@ -1607,23 +1679,12 @@ paths:
                     meta:
                       request_uuid: 00000000-0000-0000-0000-000000000000
                       timestamp: '2026-10-23T12:00:00Z'
-                channel_disabled:
-                  summary: The API isn't switched on
-                  value:
-                    error:
-                      code: channel_disabled
-                      message: The company messages API isn't switched on for this company yet.
-                      channel: email
-                    status: 422
-                    meta:
-                      request_uuid: 00000000-0000-0000-0000-000000000000
-                      timestamp: '2026-10-23T12:00:00Z'
   /api/company/v2026-10/messages/whatsapp:
     post:
       operationId: companyMessagesSendWhatsapp
       summary: Send a WhatsApp message
       description: 'A WhatsApp message: an approved template, or free text inside the 24-hour service window. Needs `outbound_messages.whatsapp`.
-        Fluid can''t send WhatsApp yet, so every request is refused (422 `whatsapp_not_configured`, or `channel_disabled`).'
+        Fluid can''t send WhatsApp yet, so every request is refused (422 `whatsapp_not_configured`).'
       tags:
       - outbound-messages
       x-fluid-audience: company
@@ -1956,18 +2017,15 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/RefusalResponse'
                 - $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                channel_disabled:
-                  summary: The API isn't switched on
-                  value:
-                    error:
-                      code: channel_disabled
-                      message: The company messages API isn't switched on for this company yet.
-                      channel: email
-                    status: 422
-                    meta:
-                      request_uuid: 00000000-0000-0000-0000-000000000000
-                      timestamp: '2026-10-23T12:00:00Z'
+              example:
+                error:
+                  code: no_reachable_channel
+                  message: None of this member's channels can be used right now.
+                  channel: preferred
+                status: 422
+                meta:
+                  request_uuid: 00000000-0000-0000-0000-000000000000
+                  timestamp: '2026-10-23T12:00:00Z'
   /api/company/v2026-10/messages/flow:
     post:
       operationId: companyMessagesSendFlow
@@ -2105,17 +2163,6 @@ paths:
                 - $ref: '#/components/schemas/RefusalResponse'
                 - $ref: '#/components/schemas/ErrorResponse'
               examples:
-                channel_disabled:
-                  summary: The API isn't switched on
-                  value:
-                    error:
-                      code: channel_disabled
-                      message: The company messages API isn't switched on for this company yet.
-                      channel: email
-                    status: 422
-                    meta:
-                      request_uuid: 00000000-0000-0000-0000-000000000000
-                      timestamp: '2026-10-23T12:00:00Z'
                 app_sender_disabled:
                   summary: An admin turned the app's sender off
                   value:
@@ -2133,11 +2180,132 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RefusalResponse'
+  /api/company/v2026-10/messages:
+    get:
+      operationId: companyMessagesIndex
+      summary: Search outbound message history by phone, email, contact or customer
+      description: >-
+        Check recent outreach before following up about an abandoned cart, purchase or subscription.
+        Returns this company's company-messages API and WeBot playbook attempts, newest first by created_at and id,
+        including context and delivery events. Fetch GET /api/company/v2026-10/messages/{id} for original decrypted content. Needs outbound_messages.view.
+        Name at most one of to, email, phone, contact_id, customer_id or member_id; other filters combine with AND.
+        Address filters match the actual destination; owner filters span the owner's channels and known addresses.
+        Refused attempts were not sent, scheduled attempts are waiting, accepted means queued, and sent means
+        handed to the transport. Read events.occurred_at to learn when a send or delivery happened;
+        created_at only records when the attempt was requested. Email delivered means the receiving server
+        accepted it; SMS delivered is carrier confirmation; push delivered means Expo reported handoff to
+        APNs or FCM. None proves the person read it. Flow records sent without a delivery receipt.
+        This is context for etiquette, not an atomic reservation; concurrent bots must still honor send rules.
+        Legacy mailers, other SMS paths and inbound messages are not included. Older WeBot playbook messages may have content_available=false; their delivery metadata is still returned.
+      tags: [outbound-messages]
+      x-fluid-audience: company
+      x-fluid-related:
+      - GET /api/company/v2026-10/messages/{id}
+      - POST /api/company/v2026-10/messages/email
+      - POST /api/company/v2026-10/messages/sms
+      - POST /api/company/v2026-10/messages/whatsapp
+      - POST /api/company/v2026-10/messages/push
+      parameters:
+      - name: to
+        in: query
+        description: "Exact email or phone number. Email is case-insensitive; phone numbers are normalized to E.164."
+        schema: {"type": "string", "maxLength": 320}
+      - name: email
+        in: query
+        description: "Alias for to, restricted to a valid email address."
+        schema: {"type": "string", "maxLength": 320}
+      - name: phone
+        in: query
+        description: "Alias for to, restricted to a valid phone number. Numbers without a country code are interpreted as US numbers."
+        schema: {"type": "string", "maxLength": 64}
+      - name: contact_id
+        in: query
+        description: "Contact numeric id or UUIDv7 in this company. Includes earlier bare-address sends to its known addresses."
+        schema: {"type": "string"}
+      - name: customer_id
+        in: query
+        description: "Legacy numeric customer id from the customers API. Includes its member history and bare-address sends to known addresses."
+        schema: {"type": "string"}
+      - name: member_id
+        in: query
+        description: "Member UUID in this company. Includes all channels and bare-address sends to known addresses."
+        schema: {"type": "string", "format": "uuid"}
+      - name: channel
+        in: query
+        description: "Restrict to one outbound channel."
+        schema: {"type": "string", "enum": ["email", "sms", "whatsapp", "push", "flow"]}
+      - name: status
+        in: query
+        description: "Latest recorded delivery state. accepted and scheduled do not mean sent; delivered is provider confirmation, not proof of reading."
+        schema: {"type": "string", "enum": ["accepted", "scheduled", "sent", "delivered", "failed", "refused"]}
+      - name: message_type
+        in: query
+        description: "Restrict to transactional or marketing attempts."
+        schema: {"type": "string", "enum": ["transactional", "marketing"]}
+      - name: query
+        in: query
+        description: "All normalized whole words must occur in the subject, body or template. Case-insensitive; ignores HTML markup. No substring, phrase or semantic matching. Returns 503 while historical content is still indexing."
+        schema: {"type": "string", "maxLength": 500}
+      - name: created_after
+        in: query
+        description: "Include attempts created at or after this time. This is the request time, not the delivery time."
+        schema: {"type": "string", "format": "date-time"}
+      - name: created_before
+        in: query
+        description: "Include attempts created before this time. Must be later than created_after."
+        schema: {"type": "string", "format": "date-time"}
+      - name: limit
+        in: query
+        description: "Page size, from 1 to 100; defaults to 25."
+        schema: {"type": "integer", "minimum": 1, "maximum": 100}
+      - name: cursor
+        in: query
+        description: "Opaque next_cursor from the previous page with the same filters. Malformed cursors return 422; a cursor for different filters may restart at the first page of the current query."
+        schema: {"type": "string", "maxLength": 4096}
+      responses:
+        '200':
+          description: Matching outbound attempts and the cursor for older attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageHistoryResponse'
+              example:
+                messages: []
+                history_complete: true
+                page: {next_cursor: null, has_more: false}
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks outbound_messages.view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: Filters are invalid or the cursor is malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Historical message text is still indexing. Retry later or omit query to read recipient history immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/messages/{id}:
     get:
       operationId: companyMessagesShow
       summary: Get a message and its delivery history
-      description: A message sent through this API, accepted or refused, with every delivery event. Needs `outbound_messages.view`.
+      description: A message sent through this API, accepted or refused, with every delivery event. Needs `outbound_messages.view`. Includes decrypted message wording with links and authentication credentials redacted.
       tags:
       - outbound-messages
       x-fluid-audience: company
