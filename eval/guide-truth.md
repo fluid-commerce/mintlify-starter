@@ -1959,7 +1959,7 @@ and compatible SDK release are available; no company is enabled by publishing
 the guide. This is an internal, unsynced member-session API, so its guide claims
 are semantic and verified against the implementation, Skooma integration tests,
 helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
-these claims at the unrelated public storefront API schema. The guide documents
+these claims at the unrelated public storefront API schema. The guide covers
 the section helper and receiving backend contract, without reproducing an
 endpoint reference. The existing widget guide's obsolete blanket statement that
 a backend cannot verify a viewing member is replaced with the gated flow.
@@ -2242,6 +2242,14 @@ stay hand-edited.
   is published. The page covers only server-side multipart file uploads with company or
   partner tokens. URL import is left out until its SSRF fix ships. The raw DAM asset
   endpoints are excluded from the sidebar.
+- **Private uploads** (2026-10-24) have a second hand-written page, `api/private-uploads.mdx`,
+  for the same service's `POST /api/company/v2026-10/private-uploads` and
+  `POST /api/member/v2026-10/private-uploads` (file-upload-serverless#8). Same exception
+  and reason as the DAM page: the upload service has no OpenAPI spec. The member example's
+  follow-up call, `PATCH /api/member/v2026-10/me` with `avatar_upload_id`, links to its
+  generated page instead of restating it. The page covers server-side company and partner
+  tokens and members' own tokens; `pub-` tokens are left out because the upload service
+  calls Fluid server to server, so a public token's domain allowlist is not applied there.
 
 ### Settings and admin specs synced (2026-09-30)
 
@@ -2852,3 +2860,41 @@ Mapped to `webhooks-v0` (callback definitions, schemas, registrations) and
   with `failure_rate: 0.0125`, but `Droplet::Health::Classifier` returns `degraded`
   at ≥ 0.01. The `webhook_events` list, show and retrigger operations and
   `POST /api/callback/test` are not in `webhooks-v0`.
+
+## Messaging and We-Bots guides — adoption record (2026-10-25)
+
+`api/guides/messaging.mdx` (prefix `messaging`) and `api/guides/we-bots.mdx`
+(prefix `we-bots`) map to arrays in `guideSpecs`: the messaging guide spans
+`company-messages-v2026-10`, `company-messaging-v2026-10`, `webhooks-v0`,
+`messaging-v1`, `member-messaging-v2026-10` and `company-v0`; the We-Bots guide
+spans `company-bots-v2026-10`, `company-bot-templates-v2026-10` and
+`company-messages-v2026-10`. Both guides link the `messaging-v1` operations by
+their generated pages and never type an `/api/v1/` path, per the `messaging-v1`
+exception.
+
+Durable decisions:
+
+- **Naming is a product fact.** "Flow" is the whole messaging center (the admin
+  **Messaging** screen and the app's **Messaging** tab); Today is the company
+  social feed inside it. The specs use "Flow" without defining it; the
+  definition comes from the product owner (`messaging-001`, `messaging-002`).
+- **A new bot starts with `use_ai` enabled.** `company-bots-v2026-10`'s
+  `info.description` and the bot manager agree; the **Create a bot** operation
+  description ("an empty grant and no capability enabled") is stale. Upstream
+  spec gap — the guide follows `info.description` (`we-bots` starter-capability
+  claim).
+- **The enrollment webhook payload** carries `member.id` and `sponsor.id`; this
+  was read from the payload builder, not the spec, so the claim is semantic.
+- **The droplet `messaging` scope** is the single opt-in droplet scope; the
+  spec's security scheme names it but no spec models droplet scopes, so the
+  claim is semantic.
+- **The Member messaging policy has an admin screen.** **Messaging** >
+  **Settings** > **Flow settings** > **Member messaging** edits the same policy,
+  and needs the members-manage permission to change it. The Help Center's
+  Messaging page documents it under **Flow settings**.
+- **We-Bots start trained on the Fluid knowledge base.** They ship with the
+  docs MCP and the expert skills; the product owner asked that the guide say no
+  more than that (`we-bots` knowledge-base claim).
+- **Today's benefits are product facts.** Posting never notifies anyone (the
+  Flow settings copy says so); the large-community rationale comes from the
+  product owner.
