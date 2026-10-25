@@ -6,8 +6,6 @@ info:
   description: |-
     The bots your company's admins own and steward. A bot is an agent that belongs to your company, acts through the Fluid API with a permission grant of its own, and never holds more than the admin who granted it.
 
-    Bots are being released company by company. Until bots are turned on for your company, every endpoint here answers 404.
-
     ## Authentication
 
     Sign in as an admin of your company and send the session token as `Authorization: Bearer <token>`. A bot belongs to a person, so company API tokens, partner tokens and droplet installation tokens are refused with 403. Reads need the `we_bots.view` permission; creating a bot needs `we_bots.create`, changing, pausing and resuming one needs `we_bots.update`, and deleting one needs `we_bots.delete`.
@@ -54,7 +52,7 @@ info:
 
     ### Sending to a webhook trigger
 
-    Send `POST` to the trigger's `config.inbound_url` (`https://api.fluid.app/webhooks/we-bots/{trigger_id}`) with a JSON object body of at most 64 KiB and three headers: `X-Fluid-Timestamp` (Unix seconds, within five minutes of now), `X-Fluid-Delivery-Id` (1 to 128 letters, digits, `_` or `-`, unique per delivery) and `X-Fluid-Signature-V2`, the hex HMAC-SHA256 of `"{timestamp}.{trigger_id}.{delivery_id}.{body}"` under the trigger's secret. A delivery that verifies answers 202 and starts one run of the bot with only the fields the trigger declares, each parsed to its type (send a `decimal` as a string or an integer: a JSON number with a fraction is dropped, never rounded); a delivery id received in the last 24 hours answers 200 and starts nothing; if Fluid cannot check that, it answers 503 and the sender should retry. Every refusal (an unknown or disabled trigger, a bad or stale signature, a missing or malformed delivery id, a body too large or not a JSON object, or bots off for your company) answers 404 with no body. Each trigger takes 60 deliveries a minute and each source IP 600; past that, 429. After a rotation the previous secret keeps verifying for one hour.
+    Send `POST` to the trigger's `config.inbound_url` (`https://api.fluid.app/webhooks/we-bots/{trigger_id}`) with a JSON object body of at most 64 KiB and three headers: `X-Fluid-Timestamp` (Unix seconds, within five minutes of now), `X-Fluid-Delivery-Id` (1 to 128 letters, digits, `_` or `-`, unique per delivery) and `X-Fluid-Signature-V2`, the hex HMAC-SHA256 of `"{timestamp}.{trigger_id}.{delivery_id}.{body}"` under the trigger's secret. A delivery that verifies answers 202 and starts one run of the bot with only the fields the trigger declares, each parsed to its type (send a `decimal` as a string or an integer: a JSON number with a fraction is dropped, never rounded); a delivery id received in the last 24 hours answers 200 and starts nothing; if Fluid cannot check that, it answers 503 and the sender should retry. Every refusal (an unknown or disabled trigger, a bad or stale signature, a missing or malformed delivery id, or a body too large or not a JSON object) answers 404 with no body. Each trigger takes 60 deliveries a minute and each source IP 600; past that, 429. After a rotation the previous secret keeps verifying for one hour.
 
     ## Autonomy
 
@@ -260,6 +258,7 @@ components:
       - status
       - paused_reason
       - permission_keys
+      - owner_permission_keys
       - granted_by_admin_id
       - granted_at
       - lock_version
@@ -300,7 +299,7 @@ components:
           - 'null'
           description: The avatar's background color.
         avatar_character:
-          description: The animated character the bot is drawn as, set by the template it was installed from; null for the emoji avatar.
+          description: The animated character the bot is drawn as, from the template it was installed from or the profile; null when none was chosen, and clients draw a steady one from the bot's id.
           oneOf:
           - $ref: '#/components/schemas/BotCharacter'
           - type: 'null'
@@ -329,6 +328,11 @@ components:
         permissions_limited:
           type: boolean
           description: Whether the owner limited the bot to `permission_keys`. False, the default, means the bot can do everything its owner can.
+        owner_permission_keys:
+          type: array
+          items:
+            type: string
+          description: The keys the owner holds now that a bot may hold, sorted. A run without a limit acts with all of them; a limit can name only these. Empty while the owner is unavailable.
         granted_by_admin_id:
           type: string
           format: uuid
@@ -441,6 +445,11 @@ components:
               - 'null'
               maxLength: 32
               description: The avatar's background color.
+            avatar_character:
+              description: The animated character the bot is drawn as, or null to clear it.
+              oneOf:
+              - $ref: '#/components/schemas/BotCharacter'
+              - type: 'null'
     BotCharacter:
       type: object
       additionalProperties: false
@@ -518,6 +527,11 @@ components:
               - 'null'
               maxLength: 32
               description: The avatar's background color.
+            avatar_character:
+              description: The animated character the bot is drawn as, or null to clear it.
+              oneOf:
+              - $ref: '#/components/schemas/BotCharacter'
+              - type: 'null'
             lock_version:
               type: integer
               minimum: 0
@@ -1084,7 +1098,7 @@ components:
           example: change_store
         tool_key:
           type: string
-          description: The bot's tool that makes the request.
+          description: The bot's tool that makes the request; `connection_call` for a tool of an outside connection, whose `inputs` are the tool's name and its arguments.
           example: update_order_status
         http_method:
           type: string
@@ -1304,7 +1318,6 @@ components:
       - instructions
       - model
       - capabilities
-      - connectors
       - limits
       properties:
         version:
@@ -1336,11 +1349,6 @@ components:
           items:
             type: string
           description: The capabilities the bot may use, from `GET /bots/{bot_id}/capabilities`, or null for every capability its grant covers (bots from before capabilities). A new bot starts with none.
-        connectors:
-          type: array
-          items:
-            $ref: '#/components/schemas/BotConnectorRef'
-          description: The sales-channel connectors whose data the bot may read, from `GET /bots/{bot_id}/connectors`. A new bot starts with none.
         limits:
           $ref: '#/components/schemas/BotLimits'
     BotSettingsResponse:
@@ -1389,12 +1397,6 @@ components:
               items:
                 type: string
               description: The complete list of capabilities to enable, from `GET /bots/{bot_id}/capabilities`, or null for every capability the grant covers. A list that enables anything must include `use_ai`, without which the bot cannot think or reply (`invalid_settings`). An unknown key is refused with `unknown_capability`.
-            connectors:
-              type: array
-              maxItems: 20
-              items:
-                $ref: '#/components/schemas/BotConnectorRef'
-              description: The complete list of sales-channel connectors to enable, from `GET /bots/{bot_id}/connectors`; an empty list turns every connector off. A provider your company has no connection to is refused with `unknown_connector`. The bot still needs the endpoint's permission to read the data.
             limits:
               type: object
               additionalProperties: false
@@ -1455,7 +1457,6 @@ components:
         - instructions
         - model
         - capabilities
-        - connectors
         - limits
         properties:
           name:
@@ -1489,11 +1490,6 @@ components:
             items:
               type: string
             description: The enabled capabilities after this change, or null for every capability.
-          connectors:
-            type: array
-            items:
-              $ref: '#/components/schemas/BotConnectorRef'
-            description: The enabled sales-channel connectors after this change.
           limits:
             $ref: '#/components/schemas/BotLimits'
     BotSettingsVersionResponse:
@@ -1582,35 +1578,6 @@ components:
           description: The HTTP status.
         meta:
           $ref: '#/components/schemas/Meta'
-    BotConnector:
-      type: object
-      description: A connected integration a bot could read your company's data through. Every connector is off for a bot until its owner enables it.
-      required:
-      - kind
-      - provider
-      - display_name
-      - connected
-      - enabled
-      properties:
-        kind:
-          type: string
-          enum:
-          - sales_channel
-          description: The connector kind. Sales channels are the only kind.
-        provider:
-          type: string
-          description: The sales channel, such as `amazon` or `tiktok`. One connector covers every connection to it.
-        display_name:
-          type:
-          - string
-          - 'null'
-          description: The name of the provider's main connection.
-        connected:
-          type: boolean
-          description: Whether any connection to the provider is connected now.
-        enabled:
-          type: boolean
-          description: Whether the bot's current settings let it read this provider's data.
     BotCatalogConnectorTool:
       type: object
       description: One tool of an app connector.
@@ -1645,6 +1612,7 @@ components:
       - description
       - tools
       - enabled
+      - configured
       - changed_by
       - changed_at
       properties:
@@ -1660,20 +1628,23 @@ components:
           enum:
           - app_connector
           - mcp_server
-          description: '`app_connector` for one of Fluid''s approved apps, `mcp_server` for remote MCP servers added by URL.'
+          description: '`app_connector` for one of Fluid''s approved apps, `mcp_server` for remote MCP servers added by URL. Linear is an app connector reached through Linear''s own MCP server, so its connections are `mcp_server` ones under the `linear` key.'
         provider:
           type: string
-          description: Whose account a connection acts as, such as `google`, `microsoft`, `github` or `mcp`.
+          description: Whose account a connection acts as, such as `google`, `microsoft`, `github`, `linear` or `mcp`.
         description:
           type: string
         tools:
           type: array
           items:
             $ref: '#/components/schemas/BotCatalogConnectorTool'
-          description: The connector's tools. Empty for remote MCP servers, whose tools are listed when one is connected.
+          description: The connector's tools. Empty for remote MCP servers and Linear, whose tools the server lists when one is connected.
         enabled:
           type: boolean
           description: Whether your company lets people connect it. App connectors are allowed and remote MCP servers are not until an admin chooses.
+        configured:
+          type: boolean
+          description: Whether Fluid's own app at the connector's provider is set up, so it can be connected now. Always true for remote MCP servers and Linear, which need no Fluid app. An app connector that is not configured is refused with `connector_not_configured`.
         changed_by:
           oneOf:
           - type: object
@@ -1746,7 +1717,7 @@ components:
           - write
           - send
           - delete
-          description: What the tool does outside Fluid. For an MCP server it comes from the server's hints; a tool not marked read-only or destructive is a write.
+          description: What the tool does outside Fluid. For an app connector it comes from Fluid's catalogue. For an MCP server it comes from the server's hints; a tool not marked read-only or destructive is a write.
         enabled:
           type: boolean
           description: Whether bots may use it. Every tool starts off.
@@ -1760,12 +1731,17 @@ components:
       - connector_key
       - name
       - mcp_host
+      - account_name
       - status
       - connected_by_admin_id
       - has_api_key
+      - auth
       - tools_refreshed_at
       - last_used_at
       - created_at
+      - connected_by
+      - can_disconnect
+      - can_disable
       - tools
       properties:
         id:
@@ -1784,7 +1760,7 @@ components:
           description: '`personal` for bots the connecting person owns or stewards, `company` for every bot in the company.'
         connector_key:
           type: string
-          description: The catalogue key, from `GET /bot-connectors`. `remote_mcp` for an MCP server.
+          description: The catalogue key, from `GET /bot-connectors`. `remote_mcp` for an MCP server added by URL, `linear` for Linear's MCP server.
         name:
           type: string
         mcp_host:
@@ -1792,6 +1768,11 @@ components:
           - string
           - 'null'
           description: The MCP server's host, or null for an app connector. The full URL is stored encrypted and never returned, since it can carry a token.
+        account_name:
+          type:
+          - string
+          - 'null'
+          description: The outside account an app connector acts as, such as the Gmail address or GitHub login, or null when the provider did not say and for an MCP server.
         status:
           type: string
           enum:
@@ -1799,6 +1780,7 @@ components:
           - broken
           - disabled
           - revoked
+          description: '`active` connections are used by bots. `broken` means the provider or server refused its grant; reconnect it. `disabled` means a company admin switched it off: bots stop using it on their next call, its secrets are kept, and an admin can enable it again. `revoked` connections are disconnected and never listed.'
         connected_by_admin_id:
           type: string
           format: uuid
@@ -1806,6 +1788,13 @@ components:
         has_api_key:
           type: boolean
           description: Whether an API key is stored. The key itself is never returned.
+        auth:
+          type: string
+          enum:
+          - oauth
+          - api_key
+          - none
+          description: How the connection is authorized. `oauth` connections hold tokens from the server's own sign-in or, for an app connector, its provider's, which Fluid refreshes; they are never returned.
         tools_refreshed_at:
           type:
           - string
@@ -1819,6 +1808,26 @@ components:
         created_at:
           type: string
           format: date-time
+        connected_by:
+          type: object
+          description: The admin who connected it. `name` is null once they are no longer an admin of the company.
+          required:
+          - id
+          - name
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+        can_disconnect:
+          type: boolean
+          description: Whether you may disconnect it, switch its tools or list them again. A personal connection only by the person who connected it; a company connection only by an admin who has `company_settings.update`.
+        can_disable:
+          type: boolean
+          description: Whether you may disable or enable it (`POST /bot-connections/{id}/disable`), which needs `company_settings.update`.
         tools:
           type: array
           items:
@@ -1832,6 +1841,21 @@ components:
       properties:
         bot_connection:
           $ref: '#/components/schemas/BotConnection'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BotConnectionAuthorizationResponse:
+      type: object
+      required:
+      - authorization_url
+      - status
+      - meta
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+          description: Where to send the person to sign in to the MCP server and consent. It is usable once, for ten minutes; afterwards the server returns them to Fluid, which stores the connection.
         status:
           type: integer
         meta:
@@ -1851,6 +1875,29 @@ components:
           type: integer
         meta:
           $ref: '#/components/schemas/Meta'
+    BotConnectionCompleteRequest:
+      type: object
+      description: What the OAuth callback handed to Fluid admin with `connect=finish`, posted back by the admin who started the connection.
+      required:
+      - state
+      - code
+      properties:
+        state:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          description: The `state` from the callback.
+        code:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          description: The `code` from the callback.
+        iss:
+          type:
+          - string
+          - 'null'
+          maxLength: 2048
+          description: The `iss` from the callback, when it carried one (RFC 9207). One naming another authorization server or provider is refused with `invalid_state`.
     BotConnectionCreateRequest:
       type: object
       required:
@@ -1862,15 +1909,18 @@ components:
           required:
           - kind
           - scope
-          - name
-          - url
           additionalProperties: false
           properties:
             kind:
               type: string
               enum:
               - mcp_server
-              description: Only `mcp_server` for now; app connectors connect through their provider's consent screen.
+              - app_connector
+              description: '`mcp_server` connects a remote MCP server by `name` and `url`. `app_connector` starts the sign-in of a catalogue connector named by `connector_key`, and takes no `name`, `url`, `auth` or `api_key`.'
+            connector_key:
+              type: string
+              maxLength: 64
+              description: With `kind` set to `app_connector`, the catalogue key from `GET /bot-connectors`, such as `gmail`, `google_calendar`, `outlook`, `github` or `linear`. Not allowed for an MCP server.
             scope:
               type: string
               enum:
@@ -1880,10 +1930,18 @@ components:
             name:
               type: string
               maxLength: 120
+              description: Required for an MCP server. An app connector is named after its connector.
             url:
               type: string
               maxLength: 2048
-              description: The server's https MCP endpoint. A private or internal address is refused.
+              description: Required for an MCP server, its https MCP endpoint. A private or internal address is refused.
+            auth:
+              type: string
+              enum:
+              - api_key
+              - oauth
+              default: api_key
+              description: '`api_key` connects now, with the optional `api_key`. `oauth` starts the server''s own sign-in and answers 202 with an `authorization_url`; it takes no `api_key`.'
             api_key:
               type:
               - string
@@ -1908,40 +1966,6 @@ components:
               items:
                 type: string
               description: The complete list of tool names to switch on; every other tool is switched off.
-    BotConnectorRef:
-      type: object
-      description: One enabled connector in a bot's settings.
-      required:
-      - kind
-      - provider
-      additionalProperties: false
-      properties:
-        kind:
-          type: string
-          enum:
-          - sales_channel
-          description: The connector kind. Only `sales_channel` for now.
-        provider:
-          type: string
-          description: The sales channel, such as `amazon`, `meta`, `tiktok`, `pinterest` or `google`.
-          example: amazon
-    BotConnectorListResponse:
-      type: object
-      required:
-      - connectors
-      - status
-      - meta
-      properties:
-        connectors:
-          type: array
-          items:
-            $ref: '#/components/schemas/BotConnector'
-          description: One connector per sales channel your company has connected.
-        status:
-          type: integer
-          description: The HTTP status.
-        meta:
-          $ref: '#/components/schemas/Meta'
     BotRun:
       type: object
       description: One attempt to run a bot, including a start that was refused.
@@ -2605,7 +2629,7 @@ components:
           example:
             message: Not authorized.
     NotFound:
-      description: No bot by that id that you own or steward, or bots are not turned on for your company.
+      description: No bot by that id that you own or steward.
       content:
         application/json:
           schema:
@@ -2618,22 +2642,8 @@ components:
             meta:
               request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
               timestamp: '2026-10-21T15:32:08Z'
-    FlagNotFound:
-      description: Bots are not turned on for your company.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error:
-              message: Not found
-              details: {}
-            status: 404
-            meta:
-              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-              timestamp: '2026-10-21T15:32:08Z'
     TriggerNotFound:
-      description: No bot by that id you own or steward, no trigger of it by that id, or bots are not turned on for your company.
+      description: No bot by that id you own or steward, or no trigger of it by that id.
       content:
         application/json:
           schema:
@@ -2701,6 +2711,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: steward
                   can_change_limit: false
@@ -2720,8 +2733,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
         '422':
           description: An invalid page limit or cursor.
           content:
@@ -2789,6 +2800,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -2803,8 +2817,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
         '422':
           description: Invalid parameters, or `company_roles_missing`.
           content:
@@ -2850,8 +2862,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
   /api/company/v2026-10/bots/{id}:
     parameters:
     - $ref: '#/components/parameters/BotId'
@@ -2896,6 +2906,9 @@ paths:
                       owner:
                         id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                         name: Patrick Reeves
+                      owner_permission_keys:
+                      - customers.view
+                      - orders.view
                       recipient_id: 4812
                       relationship: owner
                       can_change_limit: true
@@ -2959,6 +2972,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -3067,6 +3083,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -3123,6 +3142,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -3208,6 +3230,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
                     name: Patrick Reeves
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -3310,6 +3335,9 @@ paths:
                   owner:
                     id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                     name: Maya
+                  owner_permission_keys:
+                  - customers.view
+                  - orders.view
                   recipient_id: 4812
                   relationship: owner
                   can_change_limit: true
@@ -3459,7 +3487,6 @@ paths:
                   capabilities:
                   - list_orders
                   - use_ai
-                  connectors: []
                   limits:
                     budget:
                       daily_cents: 500
@@ -3478,7 +3505,7 @@ paths:
       operationId: companyBotSettingsUpdate
       summary: Change a bot's settings
       description: |-
-        Change the instructions, model, capabilities, connectors or limits of a bot you own or steward. Only the fields you send change. Send the `version` you read as `base_version`: if someone changed the settings since, the change is refused with `stale_settings` and nothing is written, so read them again.
+        Change the instructions, model, capabilities or limits of a bot you own or steward. Only the fields you send change. Send the `version` you read as `base_version`: if someone changed the settings since, the change is refused with `stale_settings` and nothing is written, so read them again.
 
         Every accepted change is a new version that records who made it and which fields changed. A run uses the version that was current when it started, so a change never reaches a run already going. A change that sets every field to the value it already has writes nothing and answers the current version.
 
@@ -3524,7 +3551,6 @@ paths:
                   capabilities:
                   - list_orders
                   - use_ai
-                  connectors: []
                   limits:
                     budget:
                       daily_cents: 500
@@ -3722,7 +3748,6 @@ paths:
                   capabilities:
                   - list_orders
                   - use_ai
-                  connectors: []
                   limits:
                     budget:
                       daily_cents: null
@@ -3736,7 +3761,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: No bot by that id that you own or steward, no version by that number, or bots are not turned on for your company.
+          description: No bot by that id that you own or steward, or no version by that number.
           content:
             application/json:
               schema:
@@ -3792,45 +3817,6 @@ paths:
                   available: false
                   missing_keys:
                   - orders.view
-                status: 200
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T09:15:00Z'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /api/company/v2026-10/bots/{bot_id}/connectors:
-    parameters:
-    - $ref: '#/components/parameters/NestedBotId'
-    get:
-      operationId: companyBotConnectorsIndex
-      summary: List a bot's connectors
-      description: |-
-        The sales channels your company has connected, such as Amazon or TikTok Shop, with whether a bot you own or steward may read each one's data. Every connector is off for every bot; enabling them arrives with the check that enforces them.
-
-        Needs the `we_bots.view` permission.
-      tags:
-      - bots
-      x-fluid-audience: company
-      security:
-      - bearer_auth: []
-      responses:
-        '200':
-          description: The connectors.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BotConnectorListResponse'
-              example:
-                connectors:
-                - kind: sales_channel
-                  provider: tiktok
-                  display_name: Primex US
-                  connected: true
-                  enabled: false
                 status: 200
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
@@ -4000,7 +3986,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: No bot by that id that you own or steward, no run of that bot by that id, or bots are not turned on for your company.
+          description: No bot by that id that you own or steward, or no run of that bot by that id.
           content:
             application/json:
               schema:
@@ -4822,14 +4808,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
   /api/company/v2026-10/bot-connectors:
     get:
       operationId: companyBotConnectorCatalogIndex
       summary: List the connectors bots can use
       description: |-
-        Every app connector in Fluid's catalogue (Gmail, Google Calendar, Outlook and GitHub) and remote MCP servers, with their tools and whether your company lets people connect them. App connectors are allowed until an admin turns one off; remote MCP servers are off until an admin turns them on.
+        Every app connector in Fluid's catalogue (Gmail, Google Calendar, Outlook, GitHub and Linear) and remote MCP servers, with their tools and whether your company lets people connect them. App connectors are allowed until an admin turns one off; remote MCP servers are off until an admin turns them on. Linear connects through Linear's own MCP server and has its own switch: allowing it allows no other MCP server, and allowing remote MCP servers does not allow it.
 
         Needs the `we_bots.view` permission.
       tags:
@@ -4856,6 +4840,17 @@ paths:
                     effect: read
                     description: Search the mailbox with Gmail's search syntax.
                   enabled: true
+                  configured: true
+                  changed_by:
+                  changed_at:
+                - key: linear
+                  name: Linear
+                  kind: app_connector
+                  provider: linear
+                  description: Find, create and update Linear issues, projects and comments through Linear's own MCP server, as the account that signs in.
+                  tools: []
+                  enabled: true
+                  configured: true
                   changed_by:
                   changed_at:
                 - key: remote_mcp
@@ -4865,6 +4860,7 @@ paths:
                   description: Servers added by URL whose tools are discovered when connected, each off until switched on.
                   tools: []
                   enabled: false
+                  configured: true
                   changed_by:
                   changed_at:
                 status: 200
@@ -4875,8 +4871,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
   /api/company/v2026-10/bot-connectors/{key}:
     parameters:
     - name: key
@@ -4926,6 +4920,17 @@ paths:
                     effect: read
                     description: Search the mailbox with Gmail's search syntax.
                   enabled: true
+                  configured: true
+                  changed_by:
+                  changed_at:
+                - key: linear
+                  name: Linear
+                  kind: app_connector
+                  provider: linear
+                  description: Find, create and update Linear issues, projects and comments through Linear's own MCP server, as the account that signs in.
+                  tools: []
+                  enabled: true
+                  configured: true
                   changed_by:
                   changed_at:
                 - key: remote_mcp
@@ -4935,6 +4940,7 @@ paths:
                   description: Servers added by URL whose tools are discovered when connected, each off until switched on.
                   tools: []
                   enabled: false
+                  configured: true
                   changed_by:
                   changed_at:
                 status: 200
@@ -4946,7 +4952,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: No connector by that key (`unknown_connector`), or bots are not turned on for your company.
+          description: No connector by that key (`unknown_connector`).
           content:
             application/json:
               schema:
@@ -4984,12 +4990,24 @@ paths:
       description: |-
         Every company connection and your own personal ones, with their tools. Revoked connections are left out.
 
-        Needs the `we_bots.view` permission.
+        With `all=true`, every connection in the company instead, other people's personal ones included, so an admin can see who connected what and disable it. Secrets are never returned either way.
+
+        Needs the `we_bots.view` permission, and `company_settings.update` for `all=true`.
       tags:
       - bots
       x-fluid-audience: company
       security:
       - bearer_auth: []
+      parameters:
+      - name: all
+        in: query
+        required: false
+        description: '`true` lists every connection in the company; needs `company_settings.update`.'
+        schema:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
       responses:
         '200':
           description: The connections.
@@ -5005,12 +5023,19 @@ paths:
                   connector_key: remote_mcp
                   name: Helpdesk
                   mcp_host: mcp.helpdesk.example
+                  account_name:
                   status: active
                   connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                   has_api_key: true
+                  auth: api_key
                   tools_refreshed_at: '2026-10-25T09:00:00.000Z'
                   last_used_at:
                   created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
                   tools:
                   - name: search_tickets
                     description: Find tickets.
@@ -5023,14 +5048,33 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
+          description: You lack `we_bots.view`, or asked for `all=true` without `company_settings.update` (`not_company_manager`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/ForbiddenError'
+              example:
+                error:
+                  message: Only an admin who manages company settings can see every connection
+                  details:
+                    type: not_company_manager
+                status: 403
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
     post:
       operationId: companyBotConnectionsCreate
-      summary: Connect a remote MCP server
+      summary: Connect a remote MCP server or an app connector
       description: |-
         Connect an MCP server by its https URL, with an optional API key. Fluid opens a session, lists the server's tools and stores them with every tool off; switch on the ones bots may use with `PATCH /bot-connections/{id}`. Your company must allow remote MCP servers (`PUT /bot-connectors/remote_mcp`), or the request is refused with `connector_disallowed`.
+
+        With `auth: oauth`, Fluid follows the MCP authorization spec instead: it finds the server's authorization server, registers itself as a client and answers 202 with an `authorization_url` (PKCE S256, with the server as the `resource`). Send the person there; after they consent, the server returns them to Fluid's callback, which stores the connection with its tools off and lands them on `/settings/bots` in Fluid admin. Fluid refreshes the tokens itself.
+
+        With `kind: app_connector` and a `connector_key` (Gmail, Google Calendar, Outlook or GitHub), Fluid answers 202 with the provider's `authorization_url` (Google, the Microsoft identity platform, or Fluid's GitHub App), asking only for the scopes the connector's tools need, with PKCE S256. After the person consents, the same callback stores the connection with the account it acts as and the catalogue tools whose scope they granted, every one off. Your company must allow the connector (`PUT /bot-connectors/{key}`), and Fluid's app at that provider must be set up (`configured` in `GET /bot-connectors`), or it is refused with `connector_not_configured`.
+
+        With `kind: app_connector` and `connector_key: linear`, Fluid connects Linear's own MCP server (`https://mcp.linear.app/mcp`) through its OAuth, exactly as `auth: oauth` does for a server added by URL: the 202 carries Linear's `authorization_url`, and the completed connection is an `mcp_server` with `connector_key: linear`, whose tools Linear's server lists, every one off. It needs your company to allow Linear, not remote MCP servers.
 
         Needs the `we_bots.update` permission.
       tags:
@@ -5044,13 +5088,30 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/BotConnectionCreateRequest'
-            example:
-              connection:
-                kind: mcp_server
-                scope: company
-                name: Helpdesk
-                url: https://mcp.helpdesk.example/mcp
-                api_key: hd_live_example
+            examples:
+              mcp_server:
+                summary: A remote MCP server with an API key
+                value:
+                  connection:
+                    kind: mcp_server
+                    scope: company
+                    name: Helpdesk
+                    url: https://mcp.helpdesk.example/mcp
+                    api_key: hd_live_example
+              app_connector:
+                summary: Gmail, through Google's sign-in
+                value:
+                  connection:
+                    kind: app_connector
+                    scope: personal
+                    connector_key: gmail
+              linear:
+                summary: Linear, through its own MCP server's sign-in
+                value:
+                  connection:
+                    kind: app_connector
+                    scope: personal
+                    connector_key: linear
       responses:
         '201':
           description: The connection, with its tools all off.
@@ -5066,12 +5127,19 @@ paths:
                   connector_key: remote_mcp
                   name: Helpdesk
                   mcp_host: mcp.helpdesk.example
+                  account_name:
                   status: active
                   connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                   has_api_key: true
+                  auth: api_key
                   tools_refreshed_at: '2026-10-25T09:00:00.000Z'
                   last_used_at:
                   created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
                   tools:
                   - name: search_tickets
                     description: Find tickets.
@@ -5081,10 +5149,22 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
+        '202':
+          description: With `auth` set to `oauth`, or for an app connector, the sign-in started. Nothing is stored until the person consents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotConnectionAuthorizationResponse'
+              example:
+                authorization_url: https://auth.helpdesk.example/authorize?response_type=code&client_id=fluid-1&code_challenge_method=S256
+                status: 202
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: You lack the permission, your company has not allowed remote MCP servers (`connector_disallowed`), or you asked for a company connection without `company_settings.update` (`not_connector`).
+          description: You lack the permission, your company has not allowed remote MCP servers, this app connector or Linear (`connector_disallowed`), or you asked for a company connection without `company_settings.update` (`not_connector`).
           content:
             application/json:
               schema:
@@ -5100,10 +5180,8 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
         '422':
-          description: The body is not valid, the URL is not https (`invalid_mcp_url`), the server turned the key down (`mcp_unauthorized`), or its address is private (`mcp_blocked`).
+          description: The body is not valid (an `api_key` with `auth` set to `oauth`, or an app connector with a `url`, included), the URL is not https (`invalid_mcp_url`), the server turned the key down (`mcp_unauthorized`), its address or its authorization server's is private (`mcp_blocked`), it offers no OAuth Fluid can use, such as no dynamic client registration or no PKCE S256 (`mcp_oauth_unsupported`), the `connector_key` is not an app connector (`unknown_connector`), or Fluid's app at its provider is not set up yet (`connector_not_configured`).
           content:
             application/json:
               schema:
@@ -5118,7 +5196,7 @@ paths:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
         '502':
-          description: The server could not be reached (`mcp_unreachable`) or did not answer MCP (`mcp_invalid`).
+          description: The server could not be reached (`mcp_unreachable`), did not answer MCP (`mcp_invalid`), published OAuth metadata naming another server or issuer (`mcp_oauth_invalid`), or its authorization server refused to register Fluid (`mcp_oauth_failed`).
           content:
             application/json:
               schema:
@@ -5128,6 +5206,165 @@ paths:
                   message: The MCP server could not be reached
                   details:
                     type: mcp_unreachable
+                status: 502
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+  /api/company/v2026-10/bot-connections/oauth/callback:
+    get:
+      operationId: companyBotConnectionsOAuthCallback
+      summary: Connection OAuth redirect target
+      description: |-
+        Where an MCP server's authorization server, or an app connector's provider, sends the person's browser after they consent to a connection started with `auth: oauth` or `kind: app_connector`. A browser arrives here, not an API client, so it takes no bearer token, and nothing here can tell whose browser it is. So the callback finishes nothing: it stores nothing, exchanges no code and does not use up the `state`. It hands the `state`, `code` and `iss` on to the bots page in Fluid admin, where the signed-in admin's own session posts them to `POST /bot-connections/oauth/complete`. Only the admin who started the connection can finish it there, so a consent URL sent to another person never puts their account on the starter's connection.
+
+        Every outcome is a 302 to Fluid admin.
+      tags:
+      - bots
+      x-fluid-audience: company
+      x-fluid-lint-exempt: "OAuth redirect target: the provider sends the person's browser here, so it can carry no bearer token and every outcome is a 302 to Fluid admin, never a 2xx. It stores nothing and does not consume the state; the signed-in starter finishes the connection with POST /bot-connections/oauth/complete."
+      security: []
+      parameters:
+      - name: code
+        in: query
+        required: false
+        description: The authorization code. Absent when the person declined.
+        schema:
+          type: string
+      - name: state
+        in: query
+        required: true
+        description: The state from the `authorization_url`.
+        schema:
+          type: string
+      - name: iss
+        in: query
+        required: false
+        description: The authorization server's issuer (RFC 9207), which Google sends. Passed on to the admin page, and checked when the connection is completed.
+        schema:
+          type: string
+      - name: error
+        in: query
+        required: false
+        description: The OAuth error, such as `access_denied`, when the person declined.
+        schema:
+          type: string
+      responses:
+        '302':
+          description: 'To Fluid admin. When the provider sent a code and a state, `Location` is `{origin}/settings/bots?connect=finish&state={state}&code={code}`, with `&iss={iss}` added when the provider sent one; the admin page then posts them to `POST /bot-connections/oauth/complete`. When the provider sent an `error` or no code it is `{origin}/settings/bots?connect=error&reason=consent_declined`, and with no state `reason=invalid_state`. Query keys are in alphabetical order. `origin` is `SALES_CHANNEL_CONNECT_RETURN_ORIGIN`, defaulting to `https://admin.fluid.app`. The body is empty.'
+          headers:
+            Location:
+              description: The Fluid admin page carrying what it needs to finish, or why it can't.
+              schema:
+                type: string
+                format: uri
+                example: https://admin.fluid.app/settings/bots?code=4%2F0AVG7fiQ&connect=finish&iss=https%3A%2F%2Faccounts.google.com&state=eyJfcmFpbHMiOnsiZGF0YSI6Ik
+  /api/company/v2026-10/bot-connections/oauth/complete:
+    post:
+      operationId: companyBotConnectionsOAuthComplete
+      summary: Finish a connection's OAuth
+      description: |-
+        Finish a connection started with `auth: oauth` or `kind: app_connector`, with the `state`, `code` and `iss` the OAuth callback handed to Fluid admin (`connect=finish`). Fluid uses up the `state` first, whoever sends it, and then refuses with `not_connector` unless you are the admin who started the connection, in the same company. So a consent URL sent to someone else can't be finished by them, and once they try, not by you either: start the connection again.
+
+        You must still be allowed to connect: `we_bots.update`, and for a company connection `company_settings.update`, both checked now, not when you started. Fluid then exchanges the code with its PKCE verifier and stores the connection with its tools all off: an MCP server's as it lists them, an app connector's from the catalogue, those whose scope you granted, with the account it acts as. The `state` works once, for ten minutes from the start.
+
+        Needs the `we_bots.update` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BotConnectionCompleteRequest'
+            example:
+              state: eyJfcmFpbHMiOnsiZGF0YSI6IklqWkRiR1JxVkdGd1VXeEtOSHB2VTFaTVJGaHNjVkUiLCJleHAiOiIyMDI2LTEwLTI1VDA5OjEwOjAwLjAwMFoiLCJwdXIiOiJ3ZV9ib3RzX21jcF9vYXV0aCJ9fQ==--4b2e1f
+              code: 4/0AVG7fiQ2h8kq
+              iss: https://accounts.google.com
+      responses:
+        '201':
+          description: The connection, with its tools all off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotConnectionResponse'
+              example:
+                bot_connection:
+                  id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a9a
+                  kind: app_connector
+                  scope: personal
+                  connector_key: google_calendar
+                  name: Google Calendar
+                  mcp_host:
+                  account_name: ana@primex.example
+                  status: active
+                  connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                  has_api_key: false
+                  auth: oauth
+                  tools_refreshed_at: '2026-10-25T09:00:00.000Z'
+                  last_used_at:
+                  created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
+                  tools:
+                  - name: google_calendar_list_events
+                    description: List events on the person's calendars.
+                    effect: read
+                    enabled: false
+                status: 201
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: You lack the permission; someone else started this connection, or it was started in another company (`not_connector`, and the state is used up); it is a company connection and you no longer hold `company_settings.update` (`not_connector`); or your company no longer allows remote MCP servers or this app connector (`connector_disallowed`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/ForbiddenError'
+              example:
+                error:
+                  message: Only the person who started this connection can finish it; start it again
+                  details:
+                    type: not_connector
+                status: 403
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '422':
+          description: The body is not valid; the state is unknown, expired, already used or came back from a different authorization server or provider (`invalid_state`); the authorization server or provider refused the code as invalid or expired (`mcp_oauth_rejected`, `connector_oauth_rejected`); the MCP server turned the token down (`mcp_unauthorized`) or its address is private (`mcp_blocked`); Fluid's app at the provider is no longer set up (`connector_not_configured`); none of the tools' scopes was granted (`connector_scopes_declined`); or the provider's address is private (`connector_blocked`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: This sign-in link is invalid, expired or already used
+                  details:
+                    type: invalid_state
+                status: 422
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '502':
+          description: The authorization server or provider failed the code exchange (`mcp_oauth_failed`, `connector_oauth_failed`) or could not be reached (`connector_unreachable`), or the MCP server could not be reached (`mcp_unreachable`) or did not answer MCP (`mcp_invalid`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The authorization server answered 400
+                  details:
+                    type: mcp_oauth_failed
                 status: 502
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
@@ -5178,12 +5415,19 @@ paths:
                   connector_key: remote_mcp
                   name: Helpdesk
                   mcp_host: mcp.helpdesk.example
+                  account_name:
                   status: active
                   connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                   has_api_key: true
+                  auth: api_key
                   tools_refreshed_at: '2026-10-25T09:00:00.000Z'
                   last_used_at:
                   created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
                   tools:
                   - name: search_tickets
                     description: Find tickets.
@@ -5213,7 +5457,7 @@ paths:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
         '404':
-          description: No connection by that id that you can see, or bots are not turned on for your company.
+          description: No connection by that id that you can see.
           content:
             application/json:
               schema:
@@ -5245,7 +5489,7 @@ paths:
       operationId: companyBotConnectionsDestroy
       summary: Disconnect
       description: |-
-        Delete the connection's secrets and tools. The record stays, as revoked, so who connected what stays on record.
+        Delete the connection's secrets and tools. The record stays, as revoked, so who connected what stays on record. An app connector's grant is also revoked at Google or GitHub; Microsoft offers apps no revocation, so its deleted tokens simply lapse.
 
         Needs the `we_bots.update` permission.
       tags:
@@ -5268,12 +5512,19 @@ paths:
                   connector_key: remote_mcp
                   name: Helpdesk
                   mcp_host: mcp.helpdesk.example
+                  account_name:
                   status: revoked
                   connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                   has_api_key: false
+                  auth: none
                   tools_refreshed_at: '2026-10-25T09:00:00.000Z'
                   last_used_at:
                   created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
                   tools: []
                 status: 200
                 meta:
@@ -5299,7 +5550,7 @@ paths:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
         '404':
-          description: No connection by that id that you can see, or bots are not turned on for your company.
+          description: No connection by that id that you can see.
           content:
             application/json:
               schema:
@@ -5323,9 +5574,11 @@ paths:
         format: uuid
     post:
       operationId: companyBotConnectionsRefreshTools
-      summary: List an MCP server's tools again
+      summary: List a connection's tools again
       description: |-
-        New tools start off, and tools the server no longer lists are dropped. The rest take the server's new description and schema and keep their switch, unless their effect changed (for example from `read` to `delete`): such a tool is switched off.
+        For an MCP server: new tools start off, and tools the server no longer lists are dropped. The rest take the server's new description and schema and keep their switch, unless their effect changed (for example from `read` to `delete`): such a tool is switched off.
+
+        For an app connector the tools are restated from Fluid's catalogue the same way, and none is added, since its scope may not have been granted.
 
         Needs the `we_bots.update` permission.
       tags:
@@ -5348,12 +5601,19 @@ paths:
                   connector_key: remote_mcp
                   name: Helpdesk
                   mcp_host: mcp.helpdesk.example
+                  account_name:
                   status: active
                   connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
                   has_api_key: true
+                  auth: api_key
                   tools_refreshed_at: '2026-10-25T09:00:00.000Z'
                   last_used_at:
                   created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: true
+                  can_disable: true
                   tools:
                   - name: search_tickets
                     description: Find tickets.
@@ -5383,7 +5643,7 @@ paths:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
         '404':
-          description: No connection by that id that you can see, or bots are not turned on for your company.
+          description: No connection by that id that you can see.
           content:
             application/json:
               schema:
@@ -5426,6 +5686,216 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-25T09:00:00Z'
+  /api/company/v2026-10/bot-connections/{id}/disable:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The connection's id.
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: companyBotConnectionsDisable
+      summary: Disable a connection
+      description: |-
+        Stop every bot using any connection in your company, someone else's personal one included, from its next call. Its secrets, tools and owner are kept, and it never becomes yours to use or disconnect; the person who connected it still sees it, marked `disabled`, and can disconnect it. An active or broken connection becomes `disabled`; a disabled one stays so.
+
+        Needs the `company_settings.update` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The connection, now disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotConnectionResponse'
+              example:
+                bot_connection:
+                  id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a99
+                  kind: mcp_server
+                  scope: personal
+                  connector_key: remote_mcp
+                  name: Helpdesk
+                  mcp_host: mcp.helpdesk.example
+                  account_name:
+                  status: disabled
+                  connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                  has_api_key: true
+                  auth: api_key
+                  tools_refreshed_at: '2026-10-25T09:00:00.000Z'
+                  last_used_at: '2026-10-25T10:12:00.000Z'
+                  created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: false
+                  can_disable: true
+                  tools:
+                  - name: search_tickets
+                    description: Find tickets.
+                    effect: read
+                    enabled: true
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No live connection by that id in your company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Connection not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+  /api/company/v2026-10/bot-connections/{id}/enable:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: The connection's id.
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: companyBotConnectionsEnable
+      summary: Enable a disabled connection
+      description: |-
+        Let bots use a disabled connection again: it becomes `active`. Any other connection is left as it is. One whose grant ended meanwhile is marked `broken` again on its next call.
+
+        Needs the `company_settings.update` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The connection, now active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotConnectionResponse'
+              example:
+                bot_connection:
+                  id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a99
+                  kind: mcp_server
+                  scope: personal
+                  connector_key: remote_mcp
+                  name: Helpdesk
+                  mcp_host: mcp.helpdesk.example
+                  account_name:
+                  status: active
+                  connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                  has_api_key: true
+                  auth: api_key
+                  tools_refreshed_at: '2026-10-25T09:00:00.000Z'
+                  last_used_at: '2026-10-25T10:12:00.000Z'
+                  created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: false
+                  can_disable: true
+                  tools:
+                  - name: search_tickets
+                    description: Find tickets.
+                    effect: read
+                    enabled: true
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No live connection by that id in your company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Connection not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+  /api/company/v2026-10/bots/{bot_id}/connections:
+    parameters:
+    - $ref: '#/components/parameters/NestedBotId'
+    get:
+      operationId: companyBotConnectionsForBot
+      summary: List the connections a bot can use
+      description: |-
+        The connections a bot you own or steward uses: company connections, and the personal ones of its owner and stewards. A person's personal connections drop out as soon as they stop being its owner or a steward, leave the company, are locked out or lose `we_bots.update`. Broken and disabled ones are listed with their status, though the bot does not use them; revoked ones are left out. `can_disconnect` is true only for the person who connected a personal connection, and for a company connection for an admin who has `company_settings.update`.
+
+        Needs the `we_bots.view` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The connections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotConnectionListResponse'
+              example:
+                bot_connections:
+                - id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a99
+                  kind: mcp_server
+                  scope: personal
+                  connector_key: remote_mcp
+                  name: Helpdesk
+                  mcp_host: mcp.helpdesk.example
+                  account_name:
+                  status: active
+                  connected_by_admin_id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                  has_api_key: true
+                  auth: api_key
+                  tools_refreshed_at: '2026-10-25T09:00:00.000Z'
+                  last_used_at: '2026-10-25T10:12:00.000Z'
+                  created_at: '2026-10-25T09:00:00.000Z'
+                  connected_by:
+                    id: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a2c
+                    name: Maya
+                  can_disconnect: false
+                  can_disable: true
+                  tools:
+                  - name: search_tickets
+                    description: Find tickets.
+                    effect: read
+                    enabled: true
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-25T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/company/v2026-10/bots/{bot_id}/approvals:
     parameters:
     - $ref: '#/components/parameters/NestedBotId'
@@ -5569,7 +6039,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: No approval by that id whose card's conversation you read while holding every permission its run used, or bots are not turned on for your company.
+          description: No approval by that id whose card's conversation you read while holding every permission its run used.
           content:
             application/json:
               schema:
@@ -5646,7 +6116,7 @@ paths:
                 - $ref: '#/components/schemas/ForbiddenError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No approval by that id whose card's conversation you read while holding every permission its run used, or bots are not turned on for your company.
+          description: No approval by that id whose card's conversation you read while holding every permission its run used.
           content:
             application/json:
               schema:
@@ -5733,7 +6203,7 @@ paths:
                 - $ref: '#/components/schemas/ForbiddenError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No approval by that id whose card's conversation you read while holding every permission its run used, or bots are not turned on for your company.
+          description: No approval by that id whose card's conversation you read while holding every permission its run used.
           content:
             application/json:
               schema:
@@ -6163,8 +6633,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/FlagNotFound'
   /api/company/v2026-10/bots/{bot_id}/documents/{kind}:
     parameters:
     - $ref: '#/components/parameters/NestedBotId'
@@ -6365,7 +6833,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          description: No bot by that id that you own or steward, bots are not turned on for your company, or the document has no such version (`unknown_version`).
+          description: No bot by that id that you own or steward, or the document has no such version (`unknown_version`).
           content:
             application/json:
               schema:
