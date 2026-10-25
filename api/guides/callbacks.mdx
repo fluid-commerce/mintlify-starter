@@ -1,0 +1,96 @@
+---
+title: "Answer callbacks from Fluid"
+sidebarTitle: "Callbacks"
+description: "Register an endpoint that Fluid calls while a cart, checkout or login is in progress, verify each call, answer within the time limit, and keep checkout working when your endpoint fails."
+---
+
+A callback lets your server take part in something Fluid is doing. When a cart needs its tax calculated, for example, Fluid calls your endpoint and uses your answer. Webhooks only tell you something happened. A callback waits for your reply.
+
+Most callbacks run while the shopper waits. A slow endpoint slows checkout down, so answer fast.
+
+## Find the callback you need
+
+Fluid publishes a catalog of callback definitions. Each definition names a moment, such as `update_cart_tax` or `cart_item_added`, and gives the request Fluid sends and the response it expects.
+
+List the catalog with `GET /api/callback/definitions`. Each definition has a `name`, a `description`, a `request_schema`, a `response_schema` and an `example_response`. To fetch one definition's schemas, call `GET /api/callback/schemas/{definition_name}`.
+
+```bash
+curl "https://api.fluid.app/api/callback/definitions" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+## Register your endpoint
+
+Create a registration with `POST /api/callback/registrations`. Send the `definition_name` and the `url` Fluid calls. You can also set `active` and `country_codes`, the countries the callback applies to. Leave `country_codes` empty to apply it everywhere.
+
+```bash
+curl -X POST "https://api.fluid.app/api/callback/registrations" \
+  -H "Authorization: Bearer <your_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "callback_registration": {
+      "definition_name": "update_cart_tax",
+      "url": "https://tax.dundermifflin.com/fluid/callbacks/cart-tax",
+      "active": true,
+      "country_codes": ["US"]
+    }
+  }'
+```
+
+A registration is addressed by its `uuid`. Each owner, such as your company or an installed droplet, can have one registration for each definition. A second one for the same definition returns `409`, so edit the one you have instead. In production, the `url` must use HTTPS.
+
+The response includes a `verification_token`. Store it on your server. You use it to check that a call came from Fluid.
+
+You can also manage callbacks in the admin. See [Callbacks](/help/admin/settings/callbacks) in the Help Center.
+
+## Verify each call
+
+Fluid signs every call with the registration's `verification_token`. Each call carries these headers:
+
+- `X-Fluid-Timestamp`: the Unix time in seconds when Fluid signed the call.
+- `X-Fluid-Signature`: a hex HMAC-SHA256 of `<X-Fluid-Timestamp>.<raw_request_body>`, keyed with your `verification_token`.
+
+Recompute the signature over the raw body exactly as you received it, then compare the two in constant time. It's the same check as for a webhook. See [Verify a delivery](/api/guides/webhooks#verify-a-delivery).
+
+The call also carries the token itself in `X-Fluid-Callback-Token`. Verify the signature, not that header, and keep both out of your logs.
+
+## Answer in time
+
+Fluid sets the time limit for each definition. It's never more than 20 seconds, and many checkout callbacks, such as `cart_item_added`, allow only 5 seconds. A registration has no time limit of its own. The **Timeout** field in the admin doesn't change it.
+
+Answer with a `2xx` status and a JSON object that matches the definition's `response_schema`. For `update_cart_tax`, that's the cart's new `tax_total`, with the tax for each line:
+
+```json
+{
+  "tax_total": 10.0,
+  "lines": [
+    { "item_id": "1", "tax": 6.0 },
+    { "item_id": "2", "tax": 4.0 }
+  ]
+}
+```
+
+The request body carries the definition's fields, such as `cart` and `change_type` for `update_cart_tax`. It also carries `callback_name`, `schema_version` and `schema_hash`, so you can tell which callback and schema version a call is for.
+
+## Plan for failure
+
+Fluid counts a call as failed when it times out, returns anything other than `2xx` (redirects too), returns a body that isn't JSON, or returns JSON that doesn't match the `response_schema`. Fluid doesn't retry a failed call.
+
+What happens next depends on the callback. A failed tax callback keeps the cart's current tax total. Some callbacks, such as `validate_cart_discount` and `update_cart_address`, fail open: the cart change goes ahead as if you had approved it. Each definition's `description` says how it behaves.
+
+Build your endpoint so a problem on your side never stops a sale:
+
+- **Answer from what you already have.** Don't call slow services while Fluid waits. Precompute or cache what you can.
+- **Set your own deadline below Fluid's.** If an upstream service is slow, return a safe answer in time rather than no answer.
+- **Don't fail closed by accident.** A `500` or a timeout isn't a "no". When you mean to refuse, refuse the way the definition's `response_schema` describes.
+
+## Check a droplet's callback health
+
+Each definition has a criticality. The highest is `checkout_blocking`: Fluid calls it inside a cart or checkout request, so your endpoint's response time adds to checkout's. Most cart callbacks, including tax, shipping and cart item changes, are `checkout_blocking`.
+
+If a droplet registers your callbacks, [Check a droplet's health](/api-reference/droplets/check-a-droplets-health) shows how they behaved over a recent window: the droplet's `criticality`, each registration's request, failure and timeout counts, and response times, and an overall `verdict`. Read `metrics_available` first. When it's `false`, the metrics aren't available for that window.
+
+## Next steps
+
+- Browse [List callback definitions](/api-reference/callback-definitions/list-callback-definitions) and [Create a callback registration](/api-reference/callback-registrations/create-a-callback-registration) for the full request and response schemas.
+- To receive events after they happen instead, see [Register and handle webhooks](/api/guides/webhooks).

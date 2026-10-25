@@ -52,3 +52,68 @@ try {
 ```
 
 Treat results as documented SDK values and do not assume undocumented fields are present. Handle unavailable, missing, partial, and malformed values without throwing during render. See [`PortalFunctionError`](/portal-widgets/reference/widget-worker-sdk/classes/PortalFunctionError) for the supported error codes.
+
+## Give a widget its own backend
+
+A widget has no server, database or secrets of its own. When it needs its own data model or API, put that in a server app, such as a [Mist app](/mist-apps/overview), which comes with hosting and a Postgres database. The widget then reaches the server through a portal function that your portal implements.
+
+The worker can't call the server directly. Even with [network access](/portal-widgets/widget-packages/network-access), a widget's requests to `fluid.app` addresses, including Mist app addresses, are blocked. So the call runs in the portal, which owns the handler.
+
+<Steps>
+  <Step title="Define the function">
+    Define it once, in a module that both the widget and the portal import. Inputs and outputs must be JSON values.
+
+    ```ts
+    // src/functions/attendance.ts
+    import { definePortalFunction } from "@fluid-app/portal-sdk/widgets/worker";
+
+    export const listAttendance = definePortalFunction<
+      { events: { name: string; attended: number }[] },
+      { month: string }
+    >({
+      capability: "company.event-attendance",
+      version: "1",
+      method: "list",
+    });
+    ```
+  </Step>
+  <Step title="Call it from the widget">
+    Add the function to the widget's `uses`, then call it like any other portal function.
+
+    ```ts
+    export const attendanceWidget = defineWidget({
+      name: "EventAttendance",
+      component: EventAttendance,
+      uses: [listAttendance],
+    });
+
+    // In the component
+    const { events } = await listAttendance({ month: "2026-10" });
+    ```
+  </Step>
+  <Step title="Implement it in the portal">
+    In the portal project's `src/main.tsx`, pass a handler for the function to `createPortal`. The handler calls your server.
+
+    ```tsx
+    import { createPortal, implementPortalFunction } from "@fluid-app/portal-sdk";
+    import { listAttendance } from "./functions/attendance";
+
+    createPortal({
+      remoteWidgets: {
+        functions: [
+          implementPortalFunction(listAttendance, async ({ month }) => {
+            const response = await fetch(
+              `https://event-attendance.mist.fluid.app/api/attendance?month=${month}`,
+            );
+            return response.json();
+          }),
+        ],
+      },
+    });
+    ```
+  </Step>
+</Steps>
+
+Keep secrets on the server, never in the portal code. Your server receives requests from the portal page, so it must allow your portal's address and check every request itself. See [Mist app authentication](/mist-apps/authentication).
+
+A custom function works only in a portal that implements it. This pattern suits a [company package](/portal-widgets/widget-packages/company-quickstart), whose widgets and portal live in the same project. In a portal without the handler, the call rejects with a `PortalFunctionError`, so render a useful unavailable state.
