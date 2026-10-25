@@ -1959,7 +1959,7 @@ and compatible SDK release are available; no company is enabled by publishing
 the guide. This is an internal, unsynced member-session API, so its guide claims
 are semantic and verified against the implementation, Skooma integration tests,
 helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
-these claims at the unrelated public storefront API schema. The guide documents
+these claims at the unrelated public storefront API schema. The guide covers
 the section helper and receiving backend contract, without reproducing an
 endpoint reference. The existing widget guide's obsolete blanket statement that
 a backend cannot verify a viewing member is replaced with the gated flow.
@@ -2784,3 +2784,41 @@ text rendering, malformed/rejected results, and ignored component continuation
 after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
 and auth monitoring correctness belong to the SDK's independently reviewed tests;
 the docs tests do not simulate deployment or claim instant server revocation.
+
+## Messaging and We-Bots guides — adoption record (2026-10-25)
+
+`api/guides/messaging.mdx` (prefix `messaging`) and `api/guides/we-bots.mdx`
+(prefix `we-bots`) map to arrays in `guideSpecs`: the messaging guide spans
+`company-messages-v2026-10`, `company-messaging-v2026-10`, `webhooks-v0`,
+`messaging-v1`, `member-messaging-v2026-10` and `company-v0`; the We-Bots guide
+spans `company-bots-v2026-10`, `company-bot-templates-v2026-10` and
+`company-messages-v2026-10`. Both guides link the `messaging-v1` operations by
+their generated pages and never type an `/api/v1/` path, per the `messaging-v1`
+exception.
+
+Durable decisions:
+
+- **Naming is a product fact.** "Flow" is the whole messaging center (the admin
+  **Messaging** screen and the app's **Messaging** tab); Today is the company
+  social feed inside it. The specs use "Flow" without defining it; the
+  definition comes from the product owner (`messaging-001`, `messaging-002`).
+- **A new bot starts with `use_ai` enabled.** `company-bots-v2026-10`'s
+  `info.description` and the bot manager agree; the **Create a bot** operation
+  description ("an empty grant and no capability enabled") is stale. Upstream
+  spec gap — the guide follows `info.description` (`we-bots` starter-capability
+  claim).
+- **The enrollment webhook payload** carries `member.id` and `sponsor.id`; this
+  was read from the payload builder, not the spec, so the claim is semantic.
+- **The droplet `messaging` scope** is the single opt-in droplet scope; the
+  spec's security scheme names it but no spec models droplet scopes, so the
+  claim is semantic.
+- **The Member messaging policy has an admin screen.** **Messaging** >
+  **Settings** > **Flow settings** > **Member messaging** edits the same policy,
+  and needs the members-manage permission to change it. The Help Center's
+  Messaging page documents it under **Flow settings**.
+- **We-Bots start trained on the Fluid knowledge base.** They ship with the
+  docs MCP and the expert skills; the product owner asked that the guide say no
+  more than that (`we-bots` knowledge-base claim).
+- **Today's benefits are product facts.** Posting never notifies anyone (the
+  Flow settings copy says so); the large-community rationale comes from the
+  product owner.
