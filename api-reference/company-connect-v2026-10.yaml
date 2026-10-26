@@ -1,0 +1,1183 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Company API v2026-10 — Connect
+  version: 2026-10
+  description: |-
+    Your company's Connect integrations on v2026-10: which back-office platforms (Exigo, Pillars, ByDesign, InfoTrax) are connected to your store, and how each one's syncs are doing.
+
+    ## Authentication
+
+    Send a company admin credential as `Authorization: Bearer <token>`: an admin session token or an API token for your company. Every endpoint needs the `droplets.view` permission, because a Connect integration is an installed droplet. The provider order endpoints also need `orders.view`, and the provider customer endpoints `members.view`, because they read that data. Droplet installation tokens are refused.
+
+    ## Responses
+
+    Every response wraps the resource under its own key with `status` and `meta`:
+
+    ```json
+    { "connect_integrations": [{ "uuid": "drp_…", "name": "Exigo" }], "status": 200, "meta": { "request_id": "…", "timestamp": "…" } }
+    ```
+
+    Errors use the same envelope with `error.message`, and `error.details.code` names the error: `not_found`, `connect_unconfigured`, `not_connected`, `backend_unavailable`, `backend_rejected` or `provider_totals_unsupported`. A 401 is a bare `{ "message": … }`.
+
+    ## Finding an integration
+
+    `GET /connect/integrations` lists every Connect integration your company has installed, each named by its droplet's `uuid`. It asks no other service, so it answers even when the integration service is down. `reachable: false` means Fluid has no API host configured for that integration, so its status cannot be read yet.
+
+    ## Reading an integration's status
+
+    `GET /connect/integrations/{uuid}/status?range=24h` returns the numbers the Connect sync dashboard shows for the same window: success rate, tier, records synced, failures, held, quarantined and skipped counts, and the top failure categories. Fluid passes the integration service's figures through unchanged and adds none of its own. Readings are cached for 60 seconds; `fetched_at` says when this one was taken. The status carries counts and category codes only, never error text or record ids.
+
+    ## Comparing with the provider
+
+    `GET /connect/integrations/{uuid}/provider/orders/totals` and `/provider/customers/totals` return how many records the provider (the commission engine) holds for a window, and for orders what they add up to per currency, next to Fluid's own count for the same window. `/provider/orders/reconciliation` and `/provider/customers/reconciliation` match the provider's ids against Fluid's `external_id`s, so a record stamped at different times by the two systems is never counted as missing. Windows default to the hour ending 30 minutes ago.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: connect
+  description: Your company's Connect integrations, their sync status, and how their records compare with the provider's.
+  x-fluid-section: Droplets
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: A company admin credential for your company. Droplet installation tokens are refused.
+  schemas:
+    Meta:
+      type: object
+      description: Response metadata included on every response body.
+      required:
+      - request_id
+      - timestamp
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CodedErrorResponse:
+      description: The error envelope with the error's code in `error.details.code`.
+      allOf:
+      - $ref: '#/components/schemas/ErrorResponse'
+      - type: object
+        properties:
+          error:
+            type: object
+            required:
+            - details
+            properties:
+              details:
+                type: object
+                required:
+                - code
+                properties:
+                  code:
+                    type: string
+                    enum:
+                    - not_found
+                    - connect_unconfigured
+                    - not_connected
+                    - backend_unavailable
+                    - backend_rejected
+                    - provider_totals_unsupported
+    UnauthorizedError:
+      type: object
+      description: Bare 401 body, a single `message` string, not the error envelope.
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          example: Invalid credentials.
+    ForbiddenError:
+      description: Bare 403 body, `{ error }` when a permission is missing or `{ message }` when the credential is not company-admin tier.
+      oneOf:
+      - type: object
+        required:
+        - error
+        properties:
+          error:
+            type: string
+            example: Not authorized.
+      - type: object
+        required:
+        - message
+        properties:
+          message:
+            type: string
+            example: Not authorized.
+    ConnectIntegration:
+      type: object
+      description: One Connect integration your company has installed.
+      required:
+      - uuid
+      - name
+      - platform
+      - installation_status
+      - reachable
+      properties:
+        uuid:
+          type: string
+          description: The integration's droplet uuid. Pass it to the status endpoint.
+          example: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+        name:
+          type: string
+          description: The droplet's name.
+          example: Exigo
+        platform:
+          type: string
+          description: The back-office platform, the droplet's name in lower case without spaces, such as `exigo`, `pillars`, `bydesign` or `infotrax`.
+          example: exigo
+        installation_status:
+          type: string
+          description: The installation's state. Only active installations are listed.
+          enum:
+          - active
+        reachable:
+          type: boolean
+          description: Whether Fluid has an API host configured for the integration. When false, its status answers 503 `connect_unconfigured`.
+    ConnectIntegrationListResponse:
+      type: object
+      description: Every Connect integration your company has installed.
+      required:
+      - connect_integrations
+      - status
+      - meta
+      properties:
+        connect_integrations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectIntegration'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ConnectSyncWindow:
+      type: object
+      description: |-
+        The dashboard's figures for one window, as the integration service computes them. Fields the service adds later pass through unchanged.
+      additionalProperties: true
+      properties:
+        sync_count:
+          type: integer
+          description: Syncs attempted in the window.
+        failure_count:
+          type: integer
+          description: Syncs that failed.
+        failure_rate:
+          type:
+          - number
+          - 'null'
+          description: Failed syncs as a percentage of syncs, or null with no syncs.
+        success_rate:
+          type:
+          - number
+          - 'null'
+          description: Successful syncs as a percentage of syncs, or null with no syncs.
+        tier:
+          type:
+          - string
+          - 'null'
+          description: The success rate's band against the company's thresholds, `healthy`, `good`, `below` or `attention`.
+        records_synced:
+          type: integer
+          description: Distinct records synced.
+        held_count:
+          type: integer
+          description: Syncs held for review.
+        quarantined_count:
+          type: integer
+          description: Records quarantined.
+        skipped_count:
+          type: integer
+          description: Syncs skipped by rule.
+        waiting_count:
+          type: integer
+          description: Syncs waiting on a dependency.
+        error_categories:
+          type: object
+          description: Failures per error category code.
+          additionalProperties:
+            type: integer
+        last_synced_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the last sync in the window finished.
+    ConnectSyncStats:
+      type: object
+      description: The integration service's sync statistics, passed through unchanged.
+      additionalProperties: true
+      properties:
+        today:
+          $ref: '#/components/schemas/ConnectSyncWindow'
+        last_24_hours:
+          $ref: '#/components/schemas/ConnectSyncWindow'
+        range_window:
+          $ref: '#/components/schemas/ConnectSyncWindow'
+        by_entity_group:
+          type: object
+          description: The same figures per entity group, such as orders or customers.
+          additionalProperties: true
+    ConnectFailureCategory:
+      type: object
+      description: One group of failures by entity type, direction and error category. Counts only, never error text or record ids.
+      additionalProperties: true
+      required:
+      - entity_type
+      - direction
+      - error_category
+      - count
+      properties:
+        entity_type:
+          type: string
+          description: The entity that failed to sync, such as `order` or `customer`.
+        direction:
+          type: string
+          description: Which way the sync ran, such as `inbound` or `outbound`.
+        error_category:
+          type: string
+          description: The error category code.
+        count:
+          type: integer
+          description: Failures in the group.
+        distinct_records:
+          type: integer
+          description: Distinct records among them.
+        kind:
+          type:
+          - string
+          - 'null'
+          description: The kind of failure.
+        actionable:
+          type:
+          - boolean
+          - 'null'
+          description: Whether a person can act on it.
+        oldest_updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: The oldest failure's last update.
+        newest_updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: The newest failure's last update.
+    ConnectStatus:
+      type: object
+      description: One Connect integration's sync status.
+      required:
+      - uuid
+      - name
+      - platform
+      - fetched_at
+      - integration
+      - stats
+      - failure_categories
+      properties:
+        uuid:
+          type: string
+          description: The integration's droplet uuid.
+        name:
+          type: string
+          description: The droplet's name.
+        platform:
+          type: string
+          description: The back-office platform, as in the list.
+        fetched_at:
+          type: string
+          format: date-time
+          description: When the integration service answered. Up to 60 seconds ago, since readings are cached.
+        integration:
+          type: object
+          description: The integration's own state on the integration service.
+          additionalProperties: true
+          properties:
+            initialized:
+              type: boolean
+              description: Whether the integration finished its first setup.
+            live_sync_state:
+              type:
+              - string
+              - 'null'
+              description: The live sync's state, such as `armed`.
+            platform:
+              type: string
+              description: The platform as the integration service names it.
+        stats:
+          $ref: '#/components/schemas/ConnectSyncStats'
+        failure_categories:
+          type: array
+          description: The top five failure groups for the window.
+          items:
+            $ref: '#/components/schemas/ConnectFailureCategory'
+    ConnectStatusResponse:
+      type: object
+      description: A Connect integration's sync status.
+      required:
+      - connect_status
+      - status
+      - meta
+      properties:
+        connect_status:
+          $ref: '#/components/schemas/ConnectStatus'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ProviderAmount:
+      type: object
+      description: The sum of order totals in one currency, in integer minor units. Currencies are never converted.
+      required:
+      - currency
+      - sum_cents
+      properties:
+        currency:
+          type:
+          - string
+          - 'null'
+          description: The ISO 4217 currency code, or null for Fluid orders stored without one.
+          example: USD
+        sum_cents:
+          type: integer
+          description: The sum in the currency's minor unit.
+          example: 1843250
+    FluidTotals:
+      type: object
+      description: Fluid's own records for the same window, read from Fluid's database.
+      required:
+      - count
+      - linked
+      properties:
+        count:
+          type: integer
+          description: Records created in Fluid inside the window. An imported record is stamped when it reached Fluid, not when the provider dated it.
+        linked:
+          type: integer
+          description: Of those, the records linked to a provider by `external_id`.
+        amounts:
+          type: array
+          description: Orders only. The per-currency sum of the Fluid orders' totals.
+          items:
+            $ref: '#/components/schemas/ProviderAmount'
+    ProviderTotals:
+      type: object
+      description: What the provider holds for a window, next to Fluid's own count for the same window.
+      required:
+      - entity
+      - since
+      - until
+      - count
+      - fluid
+      - computed_at
+      properties:
+        entity:
+          type: string
+          description: The entity counted.
+          enum:
+          - orders
+          - customers
+        since:
+          type: string
+          format: date-time
+          description: When the window opens, inclusive.
+        until:
+          type: string
+          format: date-time
+          description: When the window closes, exclusive.
+        count:
+          type: integer
+          description: The provider's records dated inside the window, by the provider's own order or customer date.
+        amounts:
+          type: array
+          description: Orders only. The provider's per-currency sum of order totals.
+          items:
+            $ref: '#/components/schemas/ProviderAmount'
+        fluid:
+          $ref: '#/components/schemas/FluidTotals'
+        computed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the integration service asked the provider. Answers are cached for up to 15 minutes.
+    ProviderTotalsResponse:
+      type: object
+      description: A provider's totals for a window.
+      required:
+      - provider_totals
+      - status
+      - meta
+      properties:
+        provider_totals:
+          $ref: '#/components/schemas/ProviderTotals'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ProviderReconciliationIds:
+      type: object
+      description: One page of each list of missing ids, sorted. Present only with `include=ids`.
+      required:
+      - page
+      - per_page
+      - missing_in_fluid
+      - missing_in_provider
+      - next_page
+      properties:
+        page:
+          type: integer
+          description: This page, from 1.
+        per_page:
+          type: integer
+          description: The most ids on a page, per list.
+        missing_in_fluid:
+          type: array
+          description: Provider record ids with no Fluid record.
+          items:
+            type: string
+        missing_in_provider:
+          type: array
+          description: Fluid `external_id`s the provider does not hold. Empty when `missing_in_provider` is null.
+          items:
+            type: string
+        next_page:
+          type:
+          - integer
+          - 'null'
+          description: The next page, or null on the last.
+    ProviderReconciliation:
+      type: object
+      description: The provider's record ids matched against Fluid's `external_id`s for one window. Counts only, unless `include=ids`.
+      required:
+      - entity
+      - since
+      - until
+      - provider_count
+      - matched
+      - missing_in_fluid
+      - missing_in_provider
+      - missing_in_provider_skipped
+      - truncated
+      - computed_at
+      properties:
+        entity:
+          type: string
+          description: The entity reconciled.
+          enum:
+          - orders
+          - customers
+        since:
+          type: string
+          format: date-time
+          description: When the window opens, inclusive.
+        until:
+          type: string
+          format: date-time
+          description: When the window closes, exclusive.
+        provider_count:
+          type: integer
+          description: Distinct provider records dated inside the window.
+        matched:
+          type: integer
+          description: Of those, the records Fluid holds by `external_id`, created at any time.
+        missing_in_fluid:
+          type: integer
+          description: Provider records dated inside the window that Fluid has no record of.
+        missing_in_provider:
+          type:
+          - integer
+          - 'null'
+          description: Records created in Fluid inside the window whose `external_id` the provider does not hold within two hours either side. Null when not computed; `missing_in_provider_skipped` says why.
+        missing_in_provider_skipped:
+          type:
+          - string
+          - 'null'
+          description: Why `missing_in_provider` is null. `import_only` when the integration does not export to the provider, `multiple_integrations` when the company has more than one Connect integration (an `external_id` does not say which one set it), `truncated` when the provider's widened list was cut short.
+          enum:
+          - import_only
+          - multiple_integrations
+          - truncated
+          - null
+        truncated:
+          type: boolean
+          description: True when either side held more than 20,000 ids, so the counts cover the first 20,000. Narrow the window.
+        computed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the integration service asked the provider. Answers are cached for up to 15 minutes.
+        ids:
+          $ref: '#/components/schemas/ProviderReconciliationIds'
+    ProviderReconciliationResponse:
+      type: object
+      description: A provider ID reconciliation for a window.
+      required:
+      - provider_reconciliation
+      - status
+      - meta
+      properties:
+        provider_reconciliation:
+          $ref: '#/components/schemas/ProviderReconciliation'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+  parameters:
+    ConnectIntegrationUuid:
+      name: uuid
+      in: path
+      required: true
+      description: The integration's droplet uuid, from `uuid` in the list.
+      schema:
+        type: string
+      example: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+    ProviderSince:
+      name: since
+      in: query
+      required: false
+      description: When the window opens, ISO 8601, inclusive. Defaults to one hour before `until`.
+      schema:
+        type: string
+        format: date-time
+      example: '2026-10-24T13:00:00Z'
+    ProviderUntil:
+      name: until
+      in: query
+      required: false
+      description: When the window closes, ISO 8601, exclusive. Defaults to 30 minutes ago.
+      schema:
+        type: string
+        format: date-time
+      example: '2026-10-24T14:00:00Z'
+    ProviderInclude:
+      name: include
+      in: query
+      required: false
+      description: '`ids` adds one page of the missing ids to the counts.'
+      schema:
+        type: string
+        enum:
+        - ids
+      example: ids
+    ProviderPage:
+      name: page
+      in: query
+      required: false
+      description: The page of missing ids, from 1, at most 1,000 ids per list. Only read with `include=ids`.
+      schema:
+        type: integer
+        minimum: 1
+      example: 1
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token. The body is a bare `{ message }`, not the error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+          example:
+            message: Invalid credentials.
+    Forbidden:
+      description: Not a company admin with `droplets.view` (bare body), or a droplet installation token (the error envelope).
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ForbiddenError'
+            - $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: Not authorized.
+    ConnectNotFound:
+      description: Not one of your company's Connect integrations.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              message: Connect integration not found
+              details:
+                code: not_found
+            status: 404
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    ConnectNotConnected:
+      description: The integration service has no record of this installation (`not_connected`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              message: The integration service has no record of this installation.
+              details:
+                code: not_connected
+            status: 409
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    ProviderInvalidWindow:
+      description: Invalid parameters, such as `since` after `until` or a window longer than the endpoint accepts.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Invalid parameters
+              details:
+                since:
+                - must be before until
+            status: 422
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    ProviderTotalsUnsupported:
+      description: The integration service cannot read this from the provider's platform yet (`provider_totals_unsupported`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              message: The integration service cannot read this from the provider.
+              details:
+                code: provider_totals_unsupported
+            status: 501
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    ConnectBackendFailed:
+      description: The integration service or the provider failed, took longer than 20 seconds or could not be reached (`backend_unavailable`), or the integration service refused the request (`backend_rejected`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              message: The integration service is unavailable.
+              details:
+                code: backend_unavailable
+            status: 502
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    ConnectUnconfigured:
+      description: Fluid has no API host configured for this integration (`connect_unconfigured`), so nothing was sent.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              message: No Connect API host is configured for this integration.
+              details:
+                code: connect_unconfigured
+            status: 503
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+paths:
+  /api/company/v2026-10/connect/integrations:
+    get:
+      operationId: companyConnectIntegrations
+      summary: List Connect integrations
+      description: |-
+        Every Connect integration your company has installed, with its droplet `uuid` and whether Fluid can reach it. Asks no other service.
+
+        Needs the `droplets.view` permission.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Your company's Connect integrations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectIntegrationListResponse'
+              example:
+                connect_integrations:
+                - uuid: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+                  name: Exigo
+                  platform: exigo
+                  installation_status: active
+                  reachable: true
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/company/v2026-10/connect/integrations/{uuid}/status:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The integration's droplet uuid, from `uuid` in the list.
+      schema:
+        type: string
+      example: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+    get:
+      operationId: companyConnectIntegrationStatus
+      summary: Read a Connect integration's status
+      description: |-
+        The Connect sync dashboard's figures for one integration and window: success rate and tier, records synced, held, quarantined and skipped counts, and the top five failure categories. Fluid passes the integration service's numbers through unchanged and caches each reading for 60 seconds.
+
+        A uuid that is not one of your company's Connect integrations is a 404. An integration with no configured API host is a 503 `connect_unconfigured`, and one the integration service has no record of is a 409 `not_connected`. When the integration service fails or refuses the request, the answer is a 502.
+
+        Needs the `droplets.view` permission.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: range
+        in: query
+        required: false
+        description: The window, `60m`, `24h`, `7d` or `30d`. Defaults to `24h`.
+        schema:
+          type: string
+          enum:
+          - 60m
+          - 24h
+          - 7d
+          - 30d
+        example: 24h
+      responses:
+        '200':
+          description: The integration's status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectStatusResponse'
+              example:
+                connect_status:
+                  uuid: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+                  name: Exigo
+                  platform: exigo
+                  fetched_at: '2026-10-24T15:32:08Z'
+                  integration:
+                    initialized: true
+                    live_sync_state: armed
+                    platform: exigo
+                  stats:
+                    last_24_hours:
+                      sync_count: 1200
+                      failure_count: 12
+                      failure_rate: 1.0
+                      success_rate: 99.0
+                      tier: healthy
+                      records_synced: 1150
+                      held_count: 2
+                      quarantined_count: 1
+                      skipped_count: 30
+                      waiting_count: 0
+                      error_categories:
+                        validation: 9
+                        timeout: 3
+                      last_synced_at: '2026-10-24T15:30:00Z'
+                  failure_categories:
+                  - entity_type: order
+                    direction: outbound
+                    error_category: validation
+                    count: 9
+                    distinct_records: 7
+                    kind: error
+                    actionable: true
+                    oldest_updated_at: '2026-10-23T18:02:11Z'
+                    newest_updated_at: '2026-10-24T14:47:51Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Not one of your company's Connect integrations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+              example:
+                error:
+                  message: Connect integration not found
+                  details:
+                    code: not_found
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '409':
+          description: The integration service has no record of this installation (`not_connected`). Finish setting the integration up, then read again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+              example:
+                error:
+                  message: The integration service has no record of this installation.
+                  details:
+                    code: not_connected
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '422':
+          description: Invalid parameters, such as an unknown `range`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    range:
+                    - 'must be one of: 60m, 24h, 7d, 30d'
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '502':
+          description: The integration service failed, timed out or could not be reached (`backend_unavailable`), or refused the request (`backend_rejected`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+              example:
+                error:
+                  message: The integration service is unavailable.
+                  details:
+                    code: backend_unavailable
+                status: 502
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '503':
+          description: Fluid has no API host configured for this integration (`connect_unconfigured`), so nothing was sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+              example:
+                error:
+                  message: No Connect API host is configured for this integration.
+                  details:
+                    code: connect_unconfigured
+                status: 503
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+  /api/company/v2026-10/connect/integrations/{uuid}/provider/orders/totals:
+    parameters:
+    - $ref: '#/components/parameters/ConnectIntegrationUuid'
+    get:
+      operationId: companyConnectProviderOrdersTotals
+      summary: Read provider order totals
+      description: |-
+        How many orders the provider (the commission engine) holds for a window and what they add up to per currency, as the integration service reads them from the provider, next to Fluid's own count for the same window under `fluid`.
+
+        The provider dates each record by its own order date, while Fluid stamps an imported record when it reached Fluid, so the two counts can differ near the window's edges. To find the records that really differ, read the reconciliation. Amounts are integer minor units per currency, never converted.
+
+        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`.
+
+        Needs `droplets.view` and `orders.view`.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - $ref: '#/components/parameters/ProviderSince'
+      - $ref: '#/components/parameters/ProviderUntil'
+      responses:
+        '200':
+          description: The provider's and Fluid's order totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderTotalsResponse'
+              example:
+                provider_totals:
+                  entity: orders
+                  since: '2026-10-24T13:00:00Z'
+                  until: '2026-10-24T14:00:00Z'
+                  count: 152
+                  amounts:
+                  - currency: USD
+                    sum_cents: 1843250
+                  fluid:
+                    count: 149
+                    linked: 147
+                    amounts:
+                    - currency: USD
+                      sum_cents: 1801990
+                  computed_at: '2026-10-24T14:31:02Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ConnectNotFound'
+        '409':
+          $ref: '#/components/responses/ConnectNotConnected'
+        '422':
+          $ref: '#/components/responses/ProviderInvalidWindow'
+        '501':
+          $ref: '#/components/responses/ProviderTotalsUnsupported'
+        '502':
+          $ref: '#/components/responses/ConnectBackendFailed'
+        '503':
+          $ref: '#/components/responses/ConnectUnconfigured'
+  /api/company/v2026-10/connect/integrations/{uuid}/provider/customers/totals:
+    parameters:
+    - $ref: '#/components/parameters/ConnectIntegrationUuid'
+    get:
+      operationId: companyConnectProviderCustomersTotals
+      summary: Read provider customer totals
+      description: |-
+        How many customers the provider (the commission engine) holds for a window, as the integration service reads them from the provider, next to Fluid's own count for the same window under `fluid`.
+
+        The provider dates each record by its own customer date, while Fluid stamps an imported record when it reached Fluid, so the two counts can differ near the window's edges. To find the records that really differ, read the reconciliation. Amounts are integer minor units per currency, never converted.
+
+        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`.
+
+        Needs `droplets.view` and `members.view`.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - $ref: '#/components/parameters/ProviderSince'
+      - $ref: '#/components/parameters/ProviderUntil'
+      responses:
+        '200':
+          description: The provider's and Fluid's customer totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderTotalsResponse'
+              example:
+                provider_totals:
+                  entity: customers
+                  since: '2026-10-24T13:00:00Z'
+                  until: '2026-10-24T14:00:00Z'
+                  count: 38
+                  fluid:
+                    count: 37
+                    linked: 37
+                  computed_at: '2026-10-24T14:31:02Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ConnectNotFound'
+        '409':
+          $ref: '#/components/responses/ConnectNotConnected'
+        '422':
+          $ref: '#/components/responses/ProviderInvalidWindow'
+        '501':
+          $ref: '#/components/responses/ProviderTotalsUnsupported'
+        '502':
+          $ref: '#/components/responses/ConnectBackendFailed'
+        '503':
+          $ref: '#/components/responses/ConnectUnconfigured'
+  /api/company/v2026-10/connect/integrations/{uuid}/provider/orders/reconciliation:
+    parameters:
+    - $ref: '#/components/parameters/ConnectIntegrationUuid'
+    get:
+      operationId: companyConnectProviderOrdersReconciliation
+      summary: Reconcile provider order ids
+      description: |-
+        Matches the provider's order ids against Fluid's `external_id`s for a window, so timing differences between the two systems never read as missing records.
+
+        Each provider order dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each order created in Fluid in the window is looked for among the provider's ids over the window widened by two hours on each side; those absent count toward `missing_in_provider`.
+
+        The window defaults to the hour ending 30 minutes ago, spans at most 24 hours, and must end at least 30 minutes ago so records still in flight are not counted. The response carries counts; add `include=ids` to page the missing ids, 1,000 per page. A window holding more than 20,000 ids answers `truncated: true` with counts over the first 20,000.
+
+        Needs `droplets.view` and `orders.view`.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - $ref: '#/components/parameters/ProviderSince'
+      - $ref: '#/components/parameters/ProviderUntil'
+      - $ref: '#/components/parameters/ProviderInclude'
+      - $ref: '#/components/parameters/ProviderPage'
+      responses:
+        '200':
+          description: The order reconciliation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderReconciliationResponse'
+              example:
+                provider_reconciliation:
+                  entity: orders
+                  since: '2026-10-24T13:00:00Z'
+                  until: '2026-10-24T14:00:00Z'
+                  provider_count: 152
+                  matched: 150
+                  missing_in_fluid: 2
+                  missing_in_provider: 1
+                  missing_in_provider_skipped: null
+                  truncated: false
+                  computed_at: '2026-10-24T14:31:02Z'
+                  ids:
+                    page: 1
+                    per_page: 1000
+                    missing_in_fluid:
+                    - '20481733'
+                    - '20481790'
+                    missing_in_provider:
+                    - '20481655'
+                    next_page: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ConnectNotFound'
+        '409':
+          $ref: '#/components/responses/ConnectNotConnected'
+        '422':
+          $ref: '#/components/responses/ProviderInvalidWindow'
+        '501':
+          $ref: '#/components/responses/ProviderTotalsUnsupported'
+        '502':
+          $ref: '#/components/responses/ConnectBackendFailed'
+        '503':
+          $ref: '#/components/responses/ConnectUnconfigured'
+  /api/company/v2026-10/connect/integrations/{uuid}/provider/customers/reconciliation:
+    parameters:
+    - $ref: '#/components/parameters/ConnectIntegrationUuid'
+    get:
+      operationId: companyConnectProviderCustomersReconciliation
+      summary: Reconcile provider customer ids
+      description: |-
+        Matches the provider's customer ids against Fluid's `external_id`s for a window, so timing differences between the two systems never read as missing records.
+
+        Each provider customer dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each customer created in Fluid in the window is looked for among the provider's ids over the window widened by two hours on each side; those absent count toward `missing_in_provider`.
+
+        The window defaults to the hour ending 30 minutes ago, spans at most 24 hours, and must end at least 30 minutes ago so records still in flight are not counted. The response carries counts; add `include=ids` to page the missing ids, 1,000 per page. A window holding more than 20,000 ids answers `truncated: true` with counts over the first 20,000.
+
+        Needs `droplets.view` and `members.view`.
+      tags:
+      - connect
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - $ref: '#/components/parameters/ProviderSince'
+      - $ref: '#/components/parameters/ProviderUntil'
+      - $ref: '#/components/parameters/ProviderInclude'
+      - $ref: '#/components/parameters/ProviderPage'
+      responses:
+        '200':
+          description: The customer reconciliation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderReconciliationResponse'
+              example:
+                provider_reconciliation:
+                  entity: customers
+                  since: '2026-10-24T13:00:00Z'
+                  until: '2026-10-24T14:00:00Z'
+                  provider_count: 152
+                  matched: 150
+                  missing_in_fluid: 2
+                  missing_in_provider: 1
+                  missing_in_provider_skipped: null
+                  truncated: false
+                  computed_at: '2026-10-24T14:31:02Z'
+                  ids:
+                    page: 1
+                    per_page: 1000
+                    missing_in_fluid:
+                    - '20481733'
+                    - '20481790'
+                    missing_in_provider:
+                    - '20481655'
+                    next_page: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ConnectNotFound'
+        '409':
+          $ref: '#/components/responses/ConnectNotConnected'
+        '422':
+          $ref: '#/components/responses/ProviderInvalidWindow'
+        '501':
+          $ref: '#/components/responses/ProviderTotalsUnsupported'
+        '502':
+          $ref: '#/components/responses/ConnectBackendFailed'
+        '503':
+          $ref: '#/components/responses/ConnectUnconfigured'
