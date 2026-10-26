@@ -19,8 +19,8 @@ info:
     bot reads those facts and computes its own results.
 
 
-    Sign in as an admin of your company (`bearer_auth`); the `bot-runs/current` endpoints take a bot''s run login (`bot_run_auth`)
-    instead.'
+    Sign in as an admin of your company (`bearer_auth`). A running bot calls the `runs/{run_id}` endpoints with its owner''s
+    login.'
   contact:
     email: support@fluid.app
   license:
@@ -39,10 +39,6 @@ components:
       type: http
       scheme: bearer
       description: The session token of an admin of your company.
-    bot_run_auth:
-      type: http
-      scheme: bearer
-      description: A bot's run login, minted for one run.
   parameters:
     TemplateKey:
       name: key
@@ -69,6 +65,15 @@ components:
       schema:
         type: string
       example: declined_subscription
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: The run's id. It must be a run of the bot.
+      schema:
+        type: string
+        format: uuid
+      example: 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b
     TouchId:
       name: id
       in: path
@@ -735,6 +740,20 @@ components:
             type: object
             additionalProperties: true
   responses:
+    RunNotFound:
+      description: No bot you own or steward by that id, or no run of it by that id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Run not found
+              details: {}
+            status: 404
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-22T15:32:08Z'
     Unauthorized:
       description: Missing or invalid bearer token.
       content:
@@ -754,14 +773,6 @@ components:
             - $ref: '#/components/schemas/ErrorResponse'
           example:
             error: Not authorized.
-    RunForbidden:
-      description: Not a bot's run login.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/BareForbidden'
-          example:
-            message: Only a running bot can call this
     NotFound:
       description: No such template, or no installed bot you own or steward by that id.
       content:
@@ -1251,20 +1262,23 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-22T15:32:08Z'
-  /api/company/v2026-10/bot-runs/current/playbook-subjects:
+  /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/playbook-subjects:
+    parameters:
+    - $ref: '#/components/parameters/BotId'
+    - $ref: '#/components/parameters/RunId'
     get:
       operationId: companyBotRunPlaybookSubjectsIndex
       summary: List a playbook's subjects
-      description: 'With a bot''s run login: the subjects a playbook may act on now, each assigned an arm by Fluid before
+      description: 'For a run of the bot: the subjects a playbook may act on now, each assigned an arm by Fluid before
         the bot sees it. Only treatment subjects are listed, as references with a touch id; held-out subjects are counted.
         A live playbook whose messages cannot be sent lists none and says why in `blockers`. One call reads at most 500
         matches, newest first; when matches remain, `next_cursor` is set and passing it as `cursor` reads on from there.
-        The run needs the playbook''s read permission.'
+        The caller needs the playbook''s read permission.'
       tags:
       - bot-templates
       x-fluid-audience: company
       security:
-      - bot_run_auth: []
+      - bearer_auth: []
       parameters:
       - name: playbook
         in: query
@@ -1353,9 +1367,18 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/RunForbidden'
+          description: Without `we_bots.view`, or (`permission_not_granted`) without the playbook's read permission.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/BareForbidden'
+                - $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Not authorized.
         '404':
-          description: The bot was not installed from a template, or it has no such playbook.
+          description: No bot you own or steward by that id, no run of it by that id, the bot was not installed from a template,
+            or it has no such playbook.
           content:
             application/json:
               schema:
@@ -1398,25 +1421,27 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-22T15:32:08Z'
-  /api/company/v2026-10/bot-runs/current/outreach:
+  /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/outreach:
+    parameters:
+    - $ref: '#/components/parameters/BotId'
+    - $ref: '#/components/parameters/RunId'
     post:
       operationId: companyBotRunOutreachCreate
       summary: Ask Fluid to message a customer
-      description: 'With a bot''s run login: ask Fluid to message the customer of a touch the run was given, with one allowed
+      description: 'For an open run of the bot: ask Fluid to message the customer of a touch the run was given, with one allowed
         lever and channel and typed slot references. The request declares `customer_outreach.create` (action class `message_customer`),
-        so the run''s grant and the owner''s autonomy mode decide first. Fluid then checks, in order, that the touch is in
+        so the caller needs that permission. Fluid then checks, in order, that the touch is in
         the treatment arm and unused, the playbook is on, the lever and channel are allowed, the customer still qualifies,
         the company can send from its own identity, and the customer has not opted out, is not blocked, has consent where
         needed and had no bot message within the playbook''s frequency. Shadow mode records the choice and sends nothing;
         outside the playbook''s quiet hours in the customer''s time zone the message is scheduled. Fluid renders the message
         from the template''s reviewed copy and adds every link. Send an `Idempotency-Key` header; a repeat answers the first
-        outcome. A retry of an approved call that sent nothing runs again on the approval it used, only with the identical
-        body and the same `Fluid-Bot-Approval`; any other body needs its own approval.'
+        outcome.'
       tags:
       - bot-templates
       x-fluid-audience: company
       security:
-      - bot_run_auth: []
+      - bearer_auth: []
       requestBody:
         required: true
         content:
@@ -1522,9 +1547,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/RunForbidden'
+          $ref: '#/components/responses/Forbidden'
         '404':
-          description: No such touch for this bot and playbook.
+          description: No bot you own or steward by that id, no run of it by that id, or no such touch for this bot and playbook.
           content:
             application/json:
               schema:
@@ -1539,14 +1564,11 @@ paths:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-22T15:32:08Z'
         '409':
-          description: The customer is held out, the touch was already used, or the gate refused a used or expired approval
-            (bare body, reason in `Fluid-Bot-Refusal`).
+          description: The run is not open (`run_closed`), the customer is held out, or the touch was already used.
           content:
             application/json:
               schema:
-                anyOf:
-                - $ref: '#/components/schemas/ErrorResponse'
-                - $ref: '#/components/schemas/BareForbidden'
+                $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
                   message: This customer is held out; the bot may not message them
@@ -1973,354 +1995,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-  /api/company/v2026-10/bot-runs/current/touches:
-    get:
-      operationId: companyBotRunTouchesIndex
-      summary: List the run's bot's touches
-      description: 'With a bot''s run login: the same touches with receipts and linkage facts, for the playbooks whose read
-        permission the run holds, so the bot can compute and report its own results. Reference-only: ids, statuses, times
-        and amounts, never a name or address.'
-      tags:
-      - bot-templates
-      x-fluid-audience: company
-      security:
-      - bot_run_auth: []
-      parameters:
-      - name: filter[playbook]
-        in: query
-        required: false
-        description: Only this playbook.
-        schema:
-          type: string
-      - name: filter[arm]
-        in: query
-        required: false
-        description: Only this arm.
-        schema:
-          type: string
-          enum:
-          - treatment
-          - holdout
-      - name: filter[status]
-        in: query
-        required: false
-        description: Only this status.
-        schema:
-          type: string
-      - name: from
-        in: query
-        required: false
-        description: Assigned at or after this time (ISO 8601); defaults to 30 days ago.
-        schema:
-          type: string
-          format: date-time
-      - name: to
-        in: query
-        required: false
-        description: Assigned before this time (ISO 8601); defaults to now.
-        schema:
-          type: string
-          format: date-time
-      - name: page[limit]
-        in: query
-        required: false
-        description: Touches per page, 1 to 100. Defaults to 25.
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-      - name: page[cursor]
-        in: query
-        required: false
-        description: A cursor from `meta.pagination`.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: A page of touches, newest first.
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                - touches
-                - status
-                - meta
-                properties:
-                  touches:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/TouchWithLinks'
-                  status:
-                    type: integer
-                  meta:
-                    allOf:
-                    - $ref: '#/components/schemas/Meta'
-                    - type: object
-                      required:
-                      - pagination
-                      properties:
-                        pagination:
-                          $ref: '#/components/schemas/Pagination'
-              example:
-                touches:
-                - id: 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a90
-                  bot_id: 0192f3c4-5a6b-7c8d-9e0f-1a2b3c4d5e6f
-                  playbook_key: declined_subscription
-                  subject_type: Commerce::Subscription
-                  subject_id: '481'
-                  episode_key: 481:1761091200
-                  arm: treatment
-                  status: sent
-                  refusal_reason: null
-                  lever: update_payment
-                  channel: email
-                  message_type: we_bot_subscription_save
-                  slots: {}
-                  run_id: 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a95
-                  approval_id: null
-                  delivery_state: sent
-                  provider_message_id: 0100019a-ses
-                  comms_event_id: null
-                  click_count: null
-                  template_version_id: 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a92
-                  assigned_at: '2026-10-22T15:32:08Z'
-                  scheduled_for: null
-                  requested_at: '2026-10-22T15:32:08Z'
-                  sent_at: '2026-10-22T15:32:08Z'
-                  delivered_at: '2026-10-22T15:32:08Z'
-                  first_opened_at: null
-                  bounced_at: null
-                  complained_at: null
-                  first_clicked_at: null
-                  window_ends_at: '2026-11-05T15:32:08Z'
-                  links:
-                  - kind: subscription_recovered
-                    order_id: 9012
-                    ordered_at: '2026-10-22T15:32:08Z'
-                    amount_in_base_cents: 4999
-                    financial_status: paid
-                status: 200
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-                  pagination:
-                    cursor: null
-                    limit: 25
-                    prev_cursor: null
-                    next_cursor: null
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/RunForbidden'
-        '404':
-          description: The bot was not installed from a template.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error:
-                  message: Not found
-                  details: {}
-                status: 404
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-        '422':
-          description: An invalid page limit or cursor.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error:
-                  message: Invalid parameters
-                  details: {}
-                status: 422
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-  /api/company/v2026-10/bot-runs/current/cohorts:
-    get:
-      operationId: companyBotRunCohortsShow
-      summary: Get a playbook's cohorts for the run
-      description: 'With a bot''s run login: a playbook''s cohort counts by holdout arm for the period, as the keeper route
-        returns them.'
-      tags:
-      - bot-templates
-      x-fluid-audience: company
-      security:
-      - bot_run_auth: []
-      parameters:
-      - name: playbook
-        in: query
-        required: true
-        description: The playbook key.
-        schema:
-          type: string
-        example: declined_subscription
-      - name: from
-        in: query
-        required: false
-        description: Assigned at or after this time (ISO 8601); defaults to 30 days ago.
-        schema:
-          type: string
-          format: date-time
-      - name: to
-        in: query
-        required: false
-        description: Assigned before this time (ISO 8601); defaults to now.
-        schema:
-          type: string
-          format: date-time
-      responses:
-        '200':
-          description: The cohort counts.
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                - cohorts
-                - status
-                - meta
-                properties:
-                  cohorts:
-                    $ref: '#/components/schemas/Cohorts'
-                  status:
-                    type: integer
-                  meta:
-                    $ref: '#/components/schemas/Meta'
-              example:
-                cohorts:
-                  playbook: declined_subscription
-                  from: '2026-09-22T15:32:08Z'
-                  to: '2026-10-22T15:32:08Z'
-                  treatment:
-                    subjects: 40
-                    messaged: 38
-                    with_linked_order: 9
-                    linked_by_kind:
-                      subscription_recovered: 9
-                  holdout:
-                    subjects: 5
-                    messaged: 0
-                    with_linked_order: 1
-                    linked_by_kind:
-                      subscription_recovered: 1
-                status: 200
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/RunForbidden'
-        '404':
-          description: The bot was not installed from a template.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error:
-                  message: Not found
-                  details: {}
-                status: 404
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-  /api/company/v2026-10/bot-runs/current/send-stats:
-    get:
-      operationId: companyBotRunSendStatsShow
-      summary: Get send counts for the run
-      description: 'With a bot''s run login: send counts per readable playbook for the period.'
-      tags:
-      - bot-templates
-      x-fluid-audience: company
-      security:
-      - bot_run_auth: []
-      parameters:
-      - name: from
-        in: query
-        required: false
-        description: Assigned at or after this time (ISO 8601); defaults to 30 days ago.
-        schema:
-          type: string
-          format: date-time
-      - name: to
-        in: query
-        required: false
-        description: Assigned before this time (ISO 8601); defaults to now.
-        schema:
-          type: string
-          format: date-time
-      responses:
-        '200':
-          description: The counts.
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                - send_stats
-                - status
-                - meta
-                properties:
-                  send_stats:
-                    $ref: '#/components/schemas/SendStats'
-                  status:
-                    type: integer
-                  meta:
-                    $ref: '#/components/schemas/Meta'
-              example:
-                send_stats:
-                  from: '2026-09-22T15:32:08Z'
-                  to: '2026-10-22T15:32:08Z'
-                  playbooks:
-                    declined_subscription:
-                      assigned: 45
-                      held_out: 5
-                      requested: 38
-                      sent: 37
-                      delivered: 36
-                      opened: 0
-                      clicked: 0
-                      bounced: 1
-                      complained: 0
-                      by_status:
-                        sent: 37
-                        refused: 2
-                      refused_by_reason:
-                        opted_out: 2
-                status: 200
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/RunForbidden'
-        '404':
-          description: The bot was not installed from a template.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error:
-                  message: Not found
-                  details: {}
-                status: 404
-                meta:
-                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
-                  timestamp: '2026-10-22T15:32:08Z'
-  /api/company/v2026-10/bot-runs/current/social-search:
+  /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/social-search:
+    parameters:
+    - $ref: '#/components/parameters/BotId'
+    - $ref: '#/components/parameters/RunId'
     post:
       operationId: companyBotRunSocialSearchCreate
       summary: Search public social posts
-      description: 'With a bot''s run login, while its bot''s `social_search` capability is on and its grant holds `mist.view`:
+      description: 'For an open run of the bot, while the bot''s `social_search` capability is on:
         search public TikTok, Instagram, YouTube or Pinterest posts by keyword, hashtag or account, through Fluid''s ScrapeCreators
         key. Fluid pages internally until it has `count` posts (at most 30) or has made 4 provider requests, drops duplicates,
         and answers each post trimmed to its platform, id, URL, author handle, text (at most 500 characters), posting time and
@@ -2331,7 +2013,7 @@ paths:
       - bot-templates
       x-fluid-audience: company
       security:
-      - bot_run_auth: []
+      - bearer_auth: []
       requestBody:
         required: true
         content:
@@ -2495,13 +2177,24 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Not a bot's run login, or the run is not offered social search (`Fluid-Bot-Refusal` is `capability_off`).
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/RunNotFound'
+        '409':
+          description: The run is not open (`run_closed`), or the run is not offered social search (`capability_off`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BareForbidden'
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                error: Social search is not switched on for this bot, or its grant lacks mist.view
+                error:
+                  message: Social search is not switched on for this bot
+                  details:
+                    type: capability_off
+                status: 409
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-22T15:32:08Z'
         '422':
           description: Invalid parameters, or a platform and mode ScrapeCreators does not offer (`bad_request`).
           content:
