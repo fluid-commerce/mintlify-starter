@@ -18,7 +18,7 @@ info:
     { "connect_integrations": [{ "uuid": "drp_…", "name": "Exigo" }], "status": 200, "meta": { "request_id": "…", "timestamp": "…" } }
     ```
 
-    Errors use the same envelope with `error.message`, and `error.details.code` names the error: `not_found`, `connect_unconfigured`, `not_connected`, `backend_unavailable`, `backend_rejected` or `provider_totals_unsupported`. A 401 is a bare `{ "message": … }`.
+    Errors use the same envelope with `error.message`, and `error.details.code` names the error: `not_found`, `connect_unconfigured`, `not_connected`, `backend_unavailable`, `backend_rejected`, `provider_totals_unsupported` or `entity_not_synced`. A 401 is a bare `{ "message": … }`.
 
     ## Finding an integration
 
@@ -110,6 +110,7 @@ components:
                     - backend_unavailable
                     - backend_rejected
                     - provider_totals_unsupported
+                    - entity_not_synced
     UnauthorizedError:
       type: object
       description: Bare 401 body, a single `message` string, not the error envelope.
@@ -522,7 +523,7 @@ components:
           type:
           - integer
           - 'null'
-          description: Records created in Fluid inside the window whose `external_id` the provider does not hold within two hours either side. Null when not computed; `missing_in_provider_skipped` says why.
+          description: Records created in Fluid inside the window whose `external_id` the provider does not hold. The integration service looks each one up in the provider by id, so the provider's own dates and timezone cannot cause a miss; for a platform with no id lookup, they are matched against the provider's records within two hours either side of the window. Null when not computed; `missing_in_provider_skipped` says why.
         missing_in_provider_skipped:
           type:
           - string
@@ -653,6 +654,33 @@ components:
             meta:
               request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
               timestamp: '2026-10-24T15:32:08Z'
+    ProviderConflict:
+      description: The integration service has no record of this installation (`not_connected`), or the integration's sync settings turn this entity off, so the provider's records are not expected in Fluid (`entity_not_synced`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          examples:
+            entity_not_synced:
+              value:
+                error:
+                  message: This integration does not sync this entity.
+                  details:
+                    code: entity_not_synced
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+            not_connected:
+              value:
+                error:
+                  message: The integration service has no record of this installation.
+                  details:
+                    code: not_connected
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
     ProviderInvalidWindow:
       description: Invalid parameters, such as `since` after `until` or a window longer than the endpoint accepts.
       content:
@@ -924,7 +952,7 @@ paths:
 
         The provider dates each record by its own order date, while Fluid stamps an imported record when it reached Fluid, so the two counts can differ near the window's edges. To find the records that really differ, read the reconciliation. Amounts are integer minor units per currency, never converted.
 
-        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`.
+        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`, and an entity the integration's sync settings turn off answers 409 `entity_not_synced`.
 
         Needs `droplets.view` and `orders.view`.
       tags:
@@ -969,7 +997,7 @@ paths:
         '404':
           $ref: '#/components/responses/ConnectNotFound'
         '409':
-          $ref: '#/components/responses/ConnectNotConnected'
+          $ref: '#/components/responses/ProviderConflict'
         '422':
           $ref: '#/components/responses/ProviderInvalidWindow'
         '501':
@@ -989,7 +1017,7 @@ paths:
 
         The provider dates each record by its own customer date, while Fluid stamps an imported record when it reached Fluid, so the two counts can differ near the window's edges. To find the records that really differ, read the reconciliation. Amounts are integer minor units per currency, never converted.
 
-        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`.
+        The window defaults to the hour ending 30 minutes ago and spans at most 31 days. A platform the integration service cannot read totals from yet answers 501 `provider_totals_unsupported`, and an entity the integration's sync settings turn off answers 409 `entity_not_synced`.
 
         Needs `droplets.view` and `members.view`.
       tags:
@@ -1028,7 +1056,7 @@ paths:
         '404':
           $ref: '#/components/responses/ConnectNotFound'
         '409':
-          $ref: '#/components/responses/ConnectNotConnected'
+          $ref: '#/components/responses/ProviderConflict'
         '422':
           $ref: '#/components/responses/ProviderInvalidWindow'
         '501':
@@ -1046,7 +1074,7 @@ paths:
       description: |-
         Matches the provider's order ids against Fluid's `external_id`s for a window, so timing differences between the two systems never read as missing records.
 
-        Each provider order dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each order created in Fluid in the window is looked for among the provider's ids over the window widened by two hours on each side; those absent count toward `missing_in_provider`.
+        Each provider order dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each order created in Fluid in the window is looked up in the provider by id, so the provider's own dates and timezone cannot cause a miss; those absent count toward `missing_in_provider`. A platform with no id lookup is checked against the provider's ids over the window widened by two hours on each side instead. An entity the integration's sync settings turn off answers 409 `entity_not_synced`.
 
         The window defaults to the hour ending 30 minutes ago, spans at most 24 hours, and must end at least 30 minutes ago so records still in flight are not counted. The response carries counts; add `include=ids` to page the missing ids, 1,000 per page. A window holding more than 20,000 ids answers `truncated: true` with counts over the first 20,000.
 
@@ -1100,7 +1128,7 @@ paths:
         '404':
           $ref: '#/components/responses/ConnectNotFound'
         '409':
-          $ref: '#/components/responses/ConnectNotConnected'
+          $ref: '#/components/responses/ProviderConflict'
         '422':
           $ref: '#/components/responses/ProviderInvalidWindow'
         '501':
@@ -1118,7 +1146,7 @@ paths:
       description: |-
         Matches the provider's customer ids against Fluid's `external_id`s for a window, so timing differences between the two systems never read as missing records.
 
-        Each provider customer dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each customer created in Fluid in the window is looked for among the provider's ids over the window widened by two hours on each side; those absent count toward `missing_in_provider`.
+        Each provider customer dated in the window is looked up in Fluid by `external_id` with no time limit; those Fluid has no record of count toward `missing_in_fluid`. For an integration that exports to the provider, each customer created in Fluid in the window is looked up in the provider by id, so the provider's own dates and timezone cannot cause a miss; those absent count toward `missing_in_provider`. A platform with no id lookup is checked against the provider's ids over the window widened by two hours on each side instead. An entity the integration's sync settings turn off answers 409 `entity_not_synced`.
 
         The window defaults to the hour ending 30 minutes ago, spans at most 24 hours, and must end at least 30 minutes ago so records still in flight are not counted. The response carries counts; add `include=ids` to page the missing ids, 1,000 per page. A window holding more than 20,000 ids answers `truncated: true` with counts over the first 20,000.
 
@@ -1172,7 +1200,7 @@ paths:
         '404':
           $ref: '#/components/responses/ConnectNotFound'
         '409':
-          $ref: '#/components/responses/ConnectNotConnected'
+          $ref: '#/components/responses/ProviderConflict'
         '422':
           $ref: '#/components/responses/ProviderInvalidWindow'
         '501':
