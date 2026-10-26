@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.4"
+  version: "1.5"
 ---
 
 # Fluid
@@ -55,7 +55,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
 - **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
-- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
+- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
 
 ## Before you build a Droplet
 
@@ -112,13 +112,14 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 - **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.
 - **Products** (https://docs.fluid.app/api/agent-launch#step-5-set-up-the-catalog-and-store-settings): `fluid products create --title <title> --price <price> --yes`, from `@fluid-app/fluid-cli-products`, once signed in. The product stays a draft unless `--publish`.
 
-- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`, `fluid theme crawl`. Which theme a push lands on: https://docs.fluid.app/themes/cli#choose-the-theme-a-command-uses
+- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme lint`, `fluid theme push`, `fluid theme crawl`. Which theme a push lands on: https://docs.fluid.app/themes/cli#choose-the-theme-a-command-uses
 - **MySite themes** (https://docs.fluid.app/themes/mysite-themes#work-on-a-theme-with-the-cli): `fluid mysite list`, `fluid mysite pull`, `fluid mysite dev`, `fluid mysite publish`. A publish changes every MySite on that theme at once.
 - **Media** (https://docs.fluid.app/api/dam-upload#upload-from-the-command-line): `fluid assets upload`.
+- **Guided setups** (https://docs.fluid.app/setup/overview): `fluid setup list`, `fluid setup show`, `fluid setup run`.
 - **Publishing live:** never publish a theme, MySite or portal unless the user asks for that publish: https://docs.fluid.app/guides/connect-ai-tools#keep-agents-from-publishing-on-their-own
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push` (`--yes --activate` without prompts: https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference#push-without-prompts), `fluid portal version`.
-- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
-- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet reinstall` (https://docs.fluid.app/mist-apps/troubleshooting#reinstall-a-droplet), `fluid mist droplet egress-proxy`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget push` (publish with this; it also records your source), `fluid widget publish`.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env list`, `fluid mist env set`, `fluid mist env unset`, `fluid mist env pull`, `fluid mist staging`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet reinstall` (https://docs.fluid.app/mist-apps/troubleshooting#reinstall-a-droplet), `fluid mist droplet egress-proxy`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
 
 ## Admin portal help
 
