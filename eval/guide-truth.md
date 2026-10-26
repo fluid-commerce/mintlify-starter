@@ -2370,6 +2370,14 @@ agreements as accepted by that buyer (`AGREEMENTS_NOT_ACCEPTED` without it); the
 (email, webhooks, inventory, sales reports until refunded); and `ORDER_OUTCOME_UNKNOWN` means
 check the admin before running it again. `skill.md` gets a matching Test order bullet.
 
+**Agreements before the flag (2026-10-26, ENG-2404, review of #188).** Step 8 and `skill.md`
+now run `test-order` without `--accept-agreements` first, so the agent sees the titles in the
+`AGREEMENTS_NOT_ACCEPTED` refusal and reads them to the merchant before rerunning with the
+flag; with `--yes` the confirmation that also names them is skipped. The refusal comes only
+when the store has required agreements (`test-order.ts` `agreements.length &&
+!opts.acceptAgreements`); with none, the first run places the order, and the guide says not to
+run the second.
+
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
