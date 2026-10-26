@@ -2374,6 +2374,26 @@ is on npm. In `api/guides/headless-commerce.mdx`, the set-address example now se
 the v2026-04 address endpoint permits `name` and drops `first_name` and `last_name`
 (`carts_controller.rb` `address_params`); claim `headless-091`.
 
+**CLI test order (2026-10-23, ENG-2404).** Step 8 now leads with `fluid payments test-order`
+(`@fluid-app/fluid-cli-payments` 0.1.148 and later, already in the install line), and keeps
+the headless guide's API walk-through for agents without the CLI or signed in with an API
+token. What it says was checked against the payments plugin's README "Test order" section and
+`packages/cli/payments/src` on the fluid monorepo's main: it refuses unless every payment
+method the cart offers is a Bogus test card on one payment account, and re-reads the cart
+before completing (`PAYMENT_ACCOUNT_CHANGED`); the buyer is the signed-in person, so a company
+API token gets `PERSON_SIGN_IN_REQUIRED`; `--accept-agreements` records the store's required
+agreements as accepted by that buyer (`AGREEMENTS_NOT_ACCEPTED` without it); the order is real
+(email, webhooks, inventory, sales reports until refunded); and `ORDER_OUTCOME_UNKNOWN` means
+check the admin before running it again. `skill.md` gets a matching Test order bullet.
+
+**Agreements before the flag (2026-10-26, ENG-2404, review of #188).** Step 8 and `skill.md`
+now run `test-order` without `--accept-agreements` first, so the agent sees the titles in the
+`AGREEMENTS_NOT_ACCEPTED` refusal and reads them to the merchant before rerunning with the
+flag; with `--yes` the confirmation that also names them is skipped. The refusal comes only
+when the store has required agreements (`test-order.ts` `agreements.length &&
+!opts.acceptAgreements`); with none, the first run places the order, and the guide says not to
+run the second.
+
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
