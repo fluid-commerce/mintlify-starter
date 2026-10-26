@@ -866,7 +866,9 @@ components:
           description: |
             Set to the parent category's id to nest this category; `null` (or omitted
             on create) makes it top-level. On update, set another id to re-parent it,
-            or `null` to promote it to the top level.
+            or `null` to promote it to the top level. The id must belong to the
+            authenticated company's store; otherwise, the request returns 422. On
+            update, the category's current `parent_id` is accepted when sent unchanged.
         position:
           type: integer
           description: |
@@ -880,6 +882,9 @@ components:
             opinion" and is treated as omitted, so it never erases a stored kind.
         application_theme_template_id:
           type: [integer, "null"]
+          description: |
+            Theme template to apply. The id must belong to the authenticated
+            company's store, otherwise the request returns 422.
         country_isos:
           type: array
           items:
@@ -1212,6 +1217,9 @@ components:
             at the boundary (auto-go-live) — no second write needed.
         application_theme_template_id:
           type: [integer, "null"]
+          description: |
+            Theme template to apply. The id must belong to the authenticated
+            company's store, otherwise the request returns 422.
         country_isos:
           type: array
           items:
@@ -1561,6 +1569,18 @@ components:
             product. Empty for non-bundle products.
           items:
             $ref: "#/components/schemas/ProductBundleGroup"
+        bundle_hidden_one_time_price:
+          type: [string, "null"]
+          description: >-
+            Present only for group- or part-priced bundles on the row-priced path; absent for
+            bundle-level pricing. Emitted whether or not recurring bundle pricing is enabled.
+            The unrounded one-time amount checkout charges for the hidden included groups,
+            which the shopper cannot see or change; add it to the shopper's selected visible
+            parts to reproduce the one-time checkout total. 0.0 when no hidden group
+            contributes. Null when a hidden customizable (dynamic) group makes the amount
+            selection-bound, or when it cannot be resolved; a client must not show a
+            visible-only total then. Hidden exclusive branches are left out, same as checkout.
+          example: "20.0"
     Product:
       description: |
         Public Product read shape — the storefront (unauthenticated)
@@ -2088,6 +2108,19 @@ components:
         sort_order:
           type: [integer, "null"]
           example: 1
+        bundle_plan_prices:
+          type: array
+          description: >-
+            Present only while recurring bundle pricing is enabled for the company. This
+            group's unrounded recurring share of the bundle price per offered subscription plan.
+          items:
+            $ref: '#/components/schemas/BundlePlanPrice'
+        bundle_plan_fallback_prices:
+          type: array
+          description: >-
+            Present only on dynamic groups while recurring bundle pricing is enabled for the company. The group's own fallback row price per offered subscription plan, unrounded and with the plan discount applied, which checkout charges for the group when at least one item is picked and the picked one-time sum is zero or less. Zero at Wholesale.
+          items:
+            $ref: '#/components/schemas/BundlePlanPrice'
         bundle_group_items:
           type: array
           items:
@@ -2102,6 +2135,25 @@ components:
               quantity:
                 type: [integer, "null"]
                 example: 1
+              bundle_plan_prices:
+                type: array
+                description: >-
+                  Present only while recurring bundle pricing is enabled for the company. This
+                  item's unrounded recurring share of the bundle price per offered subscription plan.
+                items:
+                  $ref: '#/components/schemas/BundlePlanPrice'
+
+    BundlePlanPrice:
+      type: object
+      description: A recurring price for one subscription plan, as an unrounded decimal string.
+      required: [subscription_plan_id, price]
+      properties:
+        subscription_plan_id:
+          type: integer
+          example: 4021
+        price:
+          type: string
+          example: '13.5'
 
     ProductCard:
       type: object
@@ -2704,6 +2756,26 @@ components:
                         that counts toward rank and qualification requirements.
                         Nullable: null stores 0. On create an omitted key stores
                         0 too; on update it leaves the existing value unchanged.
+                    pc_cv:
+                      type: [number, string]
+                      format: decimal
+                      example: "10"
+                      description: >-
+                        Wholesale Commissionable Volume (CV) — the CV credited
+                        when the item is bought at the wholesale price. NOT
+                        nullable. Omitting the key keeps an existing value;
+                        while the wholesale value is unset, saving the country
+                        (create or update) copies the retail `cv` into it.
+                    pc_qv:
+                      type: [number, string]
+                      format: decimal
+                      example: "10"
+                      description: >-
+                        Wholesale Qualifying Volume (QV) — the QV credited when
+                        the item is bought at the wholesale price. NOT
+                        nullable. Omitting the key keeps an existing value;
+                        while the wholesale value is unset, saving the country
+                        (create or update) copies the retail `qv` into it.
                     points:
                       type: integer
                       example: 100
@@ -4161,6 +4233,15 @@ components:
               id: { type: integer }
               relateable_type: { type: string }
               relateable_id: { type: integer }
+              relateable_slug:
+                type: [string, "null"]
+                description: |
+                  Slug of the item's related record. For relation types with a
+                  public JSON show endpoint, use this slug to fetch the record
+                  (for example `GET /api/v202604/media/{slug}` for `Medium`).
+                  `Promotion` items have no public JSON show endpoint.
+                  `null` when the record no longer exists.
+                example: why-our-paper-never-jams
               order: { type: integer }
     Playlist:
       description: |
@@ -6949,8 +7030,11 @@ paths:
       summary: Create a Product
       operationId: companyProductsCreate
       description: |
-        Token-authenticated; requires `storefront.update` (or legacy
-        `products.update` during the migration).
+        Token-authenticated; requires `storefront.update` or
+        `products.create`. Also requires `storefront.view` or `products.view`
+        when the payload names existing company records such as collections,
+        tags, category, label, theme template, subscription plans, bundled
+        variants, warehouses, DAM assets, or nested record ids.
 
         Nested records are written with `*_attributes` keys (for example
         `variants_attributes` and `images_attributes`). A variant MUST be
@@ -7605,7 +7689,8 @@ paths:
       summary: Destroy a Product
       operationId: companyProductsDestroy
       description: |
-        Token-authenticated. Soft-deletes the Product (Discard) and emits a
+        Token-authenticated; requires `storefront.update` or
+        `products.delete`. Soft-deletes the Product (Discard) and emits a
         `product.discarded` webhook post-commit so subscribers can react.
       security:
         - bearer_auth: []
@@ -11612,18 +11697,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
         "404":
           $ref: "#/components/responses/NotFound"
@@ -11966,18 +12055,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
                   custom_slug: true
                   owner: null
@@ -12071,18 +12164,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
                   custom_slug: true
                   owner: null

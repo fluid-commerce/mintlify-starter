@@ -1392,7 +1392,8 @@ paths:
         `complete_cart` step (`POST /api/checkout/v2026-04/carts/{cart_token}/complete`,
         Checkout endpoints reference) as its `payment_uuid` query parameter.
         Cart-token authenticated. Returns `422` for invalid parameters, a
-        zero-amount cart, or unsupported recurring Apple Pay; `404` when the cart is
+        zero-amount cart, unsupported recurring Apple Pay, or a Fastlane or Apple Pay
+        order with no `expected_total` while the quote-failure policy is enabled; `404` when the cart is
         not found; and `410` when the cart has already been processed or holds an authorized enrollment.
       tags:
       - paypal
@@ -1431,6 +1432,25 @@ paths:
                     switches the order to the Fastlane capture flow.
                 is_app_switch:
                   type: boolean
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required for a Fastlane or Apple Pay order (charged at create) while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             examples:
               standard:
                 summary: Standard PayPal order
@@ -1902,6 +1922,25 @@ paths:
                       type: string
                     country_code:
                       type: string
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             examples:
               pay:
                 summary: Authorize a Braintree transaction from a JS SDK nonce
@@ -1916,10 +1955,16 @@ paths:
             cart refuses writes until the charge resolves (`meta.code` =
             `payment_in_progress`). The provider collects the amount the charge
             opened with, and the order is built from this cart when it does.
+            It also answers a Braintree authorization whose address or tax refresh
+            moved the total the buyer was shown (`meta.code` = `cart_total_changed`;
+            `meta.cart` carries the new total). Nothing was charged; read the cart
+            and pay again.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '201':
           description: Transaction authorized
           content:
@@ -1952,7 +1997,8 @@ paths:
             authorization, a payment account that does not belong to the cart's
             company, gateway failure, or a line that cannot be priced for the
             buyer's member-type pricing tier (`meta.code` =
-            `strict_tier_line_refused`); no Braintree customer, vaulted method
+            `strict_tier_line_refused`), or no `expected_total` while the
+            quote-failure policy is enabled; no Braintree customer, vaulted method
             or authorization was created.
           content:
             application/json:

@@ -310,16 +310,13 @@ only needed when behavioral statements changed.
 `api/guides/headless-commerce.mdx` walks a flow that legitimately spans three
 published surfaces: product listing (`storefront-v2026-04`), the cart→order
 lifecycle (`checkout-v2026-04`), and card tokenization/3DS + wallets
-(`payments-v2026-04`). The mechanical checker resolves **one** spec per guide, so
-the guide is gated against `checkout-v2026-04` (its `guideSpecs` entry) and **all**
-its mechanical claims anchor there. The storefront and payments touchpoints are
+(`payments-v2026-04`). At Phase 9 the mechanical checker resolved **one** spec per
+guide, so the guide was gated against `checkout-v2026-04` alone and **all** its
+mechanical claims anchored there. The storefront and payments touchpoints were
 expressed as prose **cross-links** to their reference groups, deliberately
-token-light so the coverage lint stays satisfied against the checkout spec — the
-guide never emits a `/api/v202604/...` product path or a payments snake_case field
-as an asserted fact. This preserves the one-spec-per-guide model with no
-eval-harness change; if a future guide genuinely needs mechanical claims across
-multiple specs, extend `guideSpecs` to accept an array and resolve each claim
-against the spec that holds its anchor.
+token-light so the coverage lint stayed satisfied against the checkout spec. The
+array support below replaced that workaround; see the 2026-10-21 note for the
+guide's current mapping.
 
 **`guideSpecs` arrays (2026-10-07).** A `guideSpecs` value may now be an array of
 specs. Each claim validates against the first listed spec whose `paths` defines its
@@ -327,6 +324,15 @@ specs. Each claim validates against the first listed spec whose `paths` defines 
 fails. `guides/checkout-forms.mdx` maps to checkout, forms and settings, and
 `setup/open-a-country.mdx` to settings and forms. The self-test covers both the
 match and the fallback.
+
+**`headless-commerce` moved to an array (2026-10-21, ENG-2401).** The guide's
+"Place a test order" section gives the card steps as worked requests, so it now
+maps to checkout, `payments-v2026-04` (set the cart payment method) and
+`admin-v2025-06` (`tokenize_card`), and those claims anchor mechanically. The
+rest of the guide is unchanged: product listing and the wallet flows are still
+prose cross-links. `tokenize_card`'s spec lists `bearer_auth` while its own
+description and the controller take no authentication, so the guide's "needs no
+Bearer token" is a semantic claim (`headless-063`), not a mechanical `auth` one.
 
 ## Accepted omissions (deliberate — do not re-litigate without cause)
 
@@ -1391,7 +1397,8 @@ against the archive before publication. The redirect remains temporary per Phase
 
 ### The leakage exception is exact by page and marker
 
-`PUBLIC_SDK_V2025_06_PAGES` sanctions the 69 generated operation pages.
+`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption, 74 since
+the ENG-1186 refresh (mintlify-starter#151). Since ENG-2784 it maps each page to its operation.
 `PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
 the hand-written pages that must name the SDK's real version. Both sets forgive only the
 `v2025-06` / `v202506` marker.
@@ -1851,13 +1858,18 @@ Phase 006 design in fluid `features/member-storefront` (sealed screens, a
 member identity bridge for droplets) is Draft; the guide claims none of it.
 
 **Scoped exception — the upload API.** At the user's explicit request, the
-guide documents the agent flow without the admin: `PUT /api/droplets/{uuid}`
-with `droplet.extension_zip_url`, polling `app_extensions[].status`, `POST
-/api/droplet_installations`, and `GET /api/application_theme_templates` for
-`extension_uri`. This overrides "no extension upload HTTP payload is restated"
-above for this guide only, in the same way as the navigation menus exception.
-None of these unversioned endpoints is in a synced spec, so the claims are
-semantic. Evidence: `Api::Droplets::{Create,Update,Show}Action`,
+guide documents the agent flow without the admin: `PATCH
+/api/company/v2026-10/droplets/{uuid}` with `droplet.extension_zip_url`, polling
+`droplet.app_extensions[].status` on `GET /api/company/v2026-10/droplets/{uuid}`,
+`POST /api/company/v2026-10/droplets/{droplet_uuid}/installations`, and `GET
+/api/application_theme_templates` for `extension_uri`. This overrides "no
+extension upload HTTP payload is restated" above for this guide only, in the same
+way as the navigation menus exception. The droplet steps moved from the
+unversioned `/api/droplets` and `/api/droplet_installations` endpoints to the
+synced `company-droplets-v2026-10` spec (fluid #27614, #27645), so the guide has a
+`guideSpecs` entry for that spec and its droplet claims are mechanical; the theme
+template step is still unsynced and semantic. Original evidence for the
+unversioned flow: `Api::Droplets::{Create,Update,Show}Action`,
 `Droplet::ExtensionImporter`, `UrlSecurity`, `AppExtension` (status enum),
 `AppExtensionBlueprint` (`error_message` on the owner view),
 `Api::DropletInstallations::CreateAction` (409 on an existing install), and
@@ -1955,7 +1967,7 @@ and compatible SDK release are available; no company is enabled by publishing
 the guide. This is an internal, unsynced member-session API, so its guide claims
 are semantic and verified against the implementation, Skooma integration tests,
 helper lifecycle/browser tests, and raw-body HMAC backend tests. Do not point
-these claims at the unrelated public storefront API schema. The guide documents
+these claims at the unrelated public storefront API schema. The guide covers
 the section helper and receiving backend contract, without reproducing an
 endpoint reference. The existing widget guide's obsolete blanket statement that
 a backend cannot verify a viewing member is replaced with the gated flow.
@@ -2238,6 +2250,14 @@ stay hand-edited.
   is published. The page covers only server-side multipart file uploads with company or
   partner tokens. URL import is left out until its SSRF fix ships. The raw DAM asset
   endpoints are excluded from the sidebar.
+- **Private uploads** (2026-10-24) have a second hand-written page, `api/private-uploads.mdx`,
+  for the same service's `POST /api/company/v2026-10/private-uploads` and
+  `POST /api/member/v2026-10/private-uploads` (file-upload-serverless#8). Same exception
+  and reason as the DAM page: the upload service has no OpenAPI spec. The member example's
+  follow-up call, `PATCH /api/member/v2026-10/me` with `avatar_upload_id`, links to its
+  generated page instead of restating it. The page covers server-side company and partner
+  tokens and members' own tokens; `pub-` tokens are left out because the upload service
+  calls Fluid server to server, so a public token's domain allowlist is not applied there.
 
 ### Settings and admin specs synced (2026-09-30)
 
@@ -2340,6 +2360,19 @@ The channel guided setups cover connecting accounts the merchant already has.
 One product claim comes from the requester, not the implementation, and is open for
 confirmation on PR #90: a merchant can build and preview a store before adding a card at
 **Settings → Billing**. Nothing in the code gates going live on a card.
+
+**CLI signup and product create (2026-10-22, ENG-2404).** Step 1 installs the CLI first and
+signs up with `fluid signup` (`@fluid-app/fluid-cli` 0.1.121 and later), which makes the same
+`POST /api/company` call once and prints `company.id`, `company.fluidShop` and the two
+`fluid login` steps. `api/agent-signup.mdx` points to it and keeps the raw call. Step 5's
+product row names `fluid products create` (`@fluid-app/fluid-cli-products` 0.1.0, added to
+the install line), which prices one master variant and leaves the product a draft unless
+`--publish`. Both were checked against the fluid monorepo's `packages/cli/core` and
+`packages/cli/products` at the published versions. Step 8 still walks through the test order
+by API: `fluid payments test-order` lands in the payments plugin and is named here once it
+is on npm. In `api/guides/headless-commerce.mdx`, the set-address example now sends `name`:
+the v2026-04 address endpoint permits `name` and drops `first_name` and `last_name`
+(`carts_controller.rb` `address_params`); claim `headless-091`.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
@@ -2636,7 +2669,6 @@ concerns, the messaging participant rule, and the member move policy) and the el
   leaves it out, and `/api-reference/subscriptions/preview-a-failed-cycle-waiver` serves
   Checkout's operation. It needs a unique summary upstream.
 
-
 ### Common Droplet UUID queries and canonical receiver naming (pending deployment)
 
 The preferred query target is the existing public Droplet `uuid`, shared by
@@ -2671,6 +2703,39 @@ this guide supplies workflow and security guidance. Evidence:
 and [SDK UUID support](https://github.com/fluid-commerce/fluid/pull/27002)
 are separate browser prerequisites. These links establish intended behavior, not
 deployed availability or publication of the SDK 0.12.0 artifact.
+
+## Hosted docs checker realigned with the published API Reference (2026-10-15, ENG-2784)
+
+The 2026-09-30 API Reference regroup published more specs than the hosted checker
+(`eval/check-hosted-docs.mjs`) knew about, so its runs failed on decisions rather than on
+docs. These are now the checker's rules:
+
+- **The eight `auth-v0` prompts are retired.** The regroup stopped publishing the `auth-v0`
+  pages on purpose (auth, SSO, social sign-in, token exchange, MFA), so no page documents
+  those operations and every run failed them in both stages. Restore a prompt only if its
+  operation is published again.
+- **Optional auth is its own expectation.** `public_v2025_06_cart-checkout` declares
+  `security: [bearer_auth, {}]` since fluid#24276. A bearer token is accepted but not
+  required, so the prompt expects `optional`. The checker used to read any
+  `- bearer_auth: []` as required.
+- **`admin-v2025-06` and `members-v2025-06` generated pages** may carry their version
+  markers, as AGENTS.md already said. The checker lists the pages one by one, keyed to their
+  operations, and a unit test matches those operations to docs.json.
+- **49 more offset lists**, on `company-v0`, `messaging-v1`, `integrations-v0`,
+  `themes-v0` and `admin-v2025-06`, plus the Public SDK root themes list, were checked
+  against their Rails actions. Every one reads integer `page` / `per_page` and pages by
+  offset. Defaults run from 5 to 50 and most have no maximum. They are sanctioned page by
+  page, and AGENTS.md lists them as pagination exceptions.
+- **Not leaks, by exact page:**
+  - the `/api/v2025-06/tokens/` prefix, anywhere;
+  - `per_page` in the two `themes/navigation-menus` sentences about the website menus
+    list, and anywhere on `themes/query-parameters-and-caching` and `themes/theme-variables`;
+  - the exact phrases with which two generated pages compare themselves to their
+    `admin-v2025-06` counterpart: the v2026-04 company orders list and the `company-v0`
+    customers list. Any other version marker on either page still fails.
+- **Still failing on purpose:** `guides/widget-user-information` tells readers to call
+  `GET /api/v2025-06/users/by-public-id/{public_id}` in prose. AGENTS.md forbids that, and
+  the rep-facing `users` API is excluded from the sidebar.
 
 ## Portal worker Droplet bridge guide (2026-10-16)
 
@@ -2727,3 +2792,117 @@ text rendering, malformed/rejected results, and ignored component continuation
 after unmount. Receiver tests remain exact signed echo/no lookup. SDK transport
 and auth monitoring correctness belong to the SDK's independently reviewed tests;
 the docs tests do not simulate deployment or claim instant server revocation.
+
+## Drop zone placements, webhook latency, and the callbacks guide (2026-10-23)
+
+Gaps found while moving Mist expert skills into We-Bots knowledge. All facts below
+were verified against the fluid monorepo at `origin/main` on 2026-10-23.
+
+### Drop zones: rendered placements are now carried forward (supersedes part of CURRENT-2822)
+
+CURRENT-2822 declined to carry the old exhaustive location table forward, because the
+runtime placement constants can evolve and the management contract is unpublished.
+That reasoning still holds for the constants list, so the guide still does **not**
+publish it: `DropZoneConstants` accepts zones no Fluid page renders
+(`between_items_and_value`, `below_order_value`, `right_top`, `after_contact`,
+`after_shipping`, `after_payment`, `after_terms`, and checkout `above_order_details`).
+
+What changed is that the Mist CLI (`fluid mist attach --zone <page>__<zone>`) and the
+Mist desktop zone picker now ask authors to name a zone, so readers need the names.
+`api/guides/drop-zones.mdx` therefore lists only the zones a Fluid page actually
+renders, verified at their render sites: fluid-checkout `cart-view.tsx`,
+`guest-checkout.tsx`, `logged-in-checkout.tsx`, `fast-checkout-options.tsx`,
+`agreements.tsx`, `customer-shipping-addresses.tsx`, `customer-payment-methods.tsx`,
+`order-summary.tsx`, `order-confirmation.tsx`, and the fluid-admin product, order and
+customer detail pages. Column colours are Tailwind `bg-gray-50` / `bg-white` on the
+summary and form containers. Slideout-cart zones are named only as "pick them in
+Fluid Admin": no render site was found for them.
+
+The context table carries forward the URL parameters now verified in
+`components/drop-zones/drop-zone.tsx` (`token` = cart token on checkout, order token
+on order confirmation, plus `company_id` when present; appended with `?` as-is;
+HTTPS only) and the admin context token's shape from `DropZones::ContextTokenMinter`
+(HS256, 5 minutes, `company_id`, `entity_type`, `fluid_id`, `member_id` for
+customers). The cart-mutation authorization list from the old guide stays out.
+Height: `settings.height ?? 120`, resized by a `{type: "RESIZE", height}` postMessage
+from the embed's origin and frame, 0 < height < 10000, frame = height + 16.
+
+Accepted omission: how an embed verifies the admin context token. It is signed with
+a Fluid-held secret and no verification endpoint was found, so the guide says only
+"validate it on your server", as before.
+
+### Webhook delivery latency
+
+Deliveries are enqueued (`WebhookCallerJob`, queue `webhooks`; `Commerce::WebhookJob`,
+queue `commerce_webhooks`) and sent by workers. Wording ("usually seconds, can lag
+minutes under load") is Mike's decision; no number is published. **Retrigger** is
+verified: `POST /api/company/webhook_events/:id/retrigger`, admin Webhook Logs button
+on failed events, re-broadcasting to every active webhook for the event. The
+"one attempt, no retry" statement stays true for company webhook subscriptions.
+Accepted omission: droplet lifecycle webhooks (`Droplet::LifecycleWebhookJob`,
+`retry: 5`) and order archive transitions (`deliver_archive_transition`, at-least-once
+via `Commerce::DeliverOrderTransitionJob`, `retry: 10`) are retried, but they are not
+subscriptions this guide registers, so the guide doesn't list them.
+
+### Callbacks guide (`api/guides/callbacks.mdx`)
+
+Mapped to `webhooks-v0` (callback definitions, schemas, registrations) and
+`company-droplets-v2026-10` (droplet health). Decisions:
+
+- **No registration timeout.** `timeout_in_seconds` is a column, but create/update
+  don't accept it and dispatch never reads it. The 1..30 bound exists only in
+  fluid-admin's form schema. The limit is the definition's
+  `maximum_timeout_in_milliseconds`, capped at `MAX_TIMEOUT_IN_MILLISECONDS = 20_000`.
+  The guide says this and does not publish a per-definition table (definitions evolve).
+- **Failure is per caller.** `Callback::Client` never raises and never retries; it
+  classifies `timeout`, `http_error` (any non-2xx), `invalid_json`, `schema_invalid`.
+  Only behaviours verified at a caller are named: the tax strategy keeps the cart's
+  tax total; `validate_cart_discount` and `update_cart_address` fail open per their
+  definition YAML.
+- **Signature** from `generate_signed_headers`: HMAC-SHA256 over `timestamp.body`
+  keyed with the registration's `verification_token`; `X-Fluid-Callback-Token` also
+  carries the raw token.
+- `callbacks-033` (health `verdict`) is semantic: `installation` is a nullable
+  `oneOf`, which the mechanical checker doesn't traverse.
+- Upstream gap to flag: the health operation's 200 example shows `verdict: healthy`
+  with `failure_rate: 0.0125`, but `Droplet::Health::Classifier` returns `degraded`
+  at ≥ 0.01. The `webhook_events` list, show and retrigger operations and
+  `POST /api/callback/test` are not in `webhooks-v0`.
+
+## Messaging and We-Bots guides — adoption record (2026-10-25)
+
+`api/guides/messaging.mdx` (prefix `messaging`) and `api/guides/we-bots.mdx`
+(prefix `we-bots`) map to arrays in `guideSpecs`: the messaging guide spans
+`company-messages-v2026-10`, `company-messaging-v2026-10`, `webhooks-v0`,
+`messaging-v1`, `member-messaging-v2026-10` and `company-v0`; the We-Bots guide
+spans `company-bots-v2026-10`, `company-bot-templates-v2026-10` and
+`company-messages-v2026-10`. Both guides link the `messaging-v1` operations by
+their generated pages and never type an `/api/v1/` path, per the `messaging-v1`
+exception.
+
+Durable decisions:
+
+- **Naming is a product fact.** "Flow" is the whole messaging center (the admin
+  **Messaging** screen and the app's **Messaging** tab); Today is the company
+  social feed inside it. The specs use "Flow" without defining it; the
+  definition comes from the product owner (`messaging-001`, `messaging-002`).
+- **A new bot starts with `use_ai` enabled.** `company-bots-v2026-10`'s
+  `info.description` and the bot manager agree; the **Create a bot** operation
+  description ("an empty grant and no capability enabled") is stale. Upstream
+  spec gap — the guide follows `info.description` (`we-bots` starter-capability
+  claim).
+- **The enrollment webhook payload** carries `member.id` and `sponsor.id`; this
+  was read from the payload builder, not the spec, so the claim is semantic.
+- **The droplet `messaging` scope** is the single opt-in droplet scope; the
+  spec's security scheme names it but no spec models droplet scopes, so the
+  claim is semantic.
+- **The Member messaging policy has an admin screen.** **Messaging** >
+  **Settings** > **Flow settings** > **Member messaging** edits the same policy,
+  and needs the members-manage permission to change it. The Help Center's
+  Messaging page documents it under **Flow settings**.
+- **We-Bots start trained on the Fluid knowledge base.** They ship with the
+  docs MCP and the expert skills; the product owner asked that the guide say no
+  more than that (`we-bots` knowledge-base claim).
+- **Today's benefits are product facts.** Posting never notifies anyone (the
+  Flow settings copy says so); the large-community rationale comes from the
+  product owner.

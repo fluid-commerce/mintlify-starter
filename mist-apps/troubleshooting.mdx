@@ -59,8 +59,11 @@ Open the **Production** logs, then load the failing page again. The request's er
 
 If a change works locally but not live, check what differs in production:
 
-- **Data.** Production has its own database. Rows you created locally aren't there.
+- **Which app you're looking at.** The **Local** logs tab is your computer, and **Production** is the live app. Make sure you read the one that failed.
+- **The deployment.** A change reaches the live app only after you publish and its deployment is `ready`. Run `fluid mist deployments` to check. Until then, the live app still runs the previous version.
+- **Data.** Production has its own database. Locally, `npm run dev` uses an embedded database in the `local.db` folder. Rows you created locally aren't in production, and production rows aren't on your computer.
 - **Environment variables.** A variable in your `.env.local` must also be set on the app. See [Add your own environment variables](/mist-apps/hosting#add-your-own-environment-variables).
+- **Fluid context.** Fluid adds the installation reference and the session token only when it opens your page inside the Fluid admin. Locally, neither is there, so routes that need them fail. See [Local development](/mist-apps/authentication#local-development).
 - **Embedding.** A page that works on its own can still be blocked inside Fluid. See [The embed won't load](#the-embed-wont-load).
 
 If the first request after a quiet period is slow, check the app's **Compute** setting. **Standard serverless** sleeps between requests, so the first request waits for the app to start. **Fluid Compute** keeps it warm. See [Compute](/mist-apps/hosting#compute).
@@ -97,19 +100,73 @@ The template's webhook route returns these errors. Find the message in the produ
 | `401` "Missing X-Fluid-Signature header" | The request wasn't signed. Fluid signs every webhook, so the request didn't come from Fluid. |
 | `401` "Webhook timestamp too old" | The webhook is more than five minutes old, or it was replayed. Check that your server's clock is correct. |
 | `401` "Invalid signature" | Your code changed the body before the check, or used the wrong secret. Verify the raw body, exactly as received. |
+| `401` "Regular webhooks require an installation signature" | The company webhook wasn't created by your app's installation, so Fluid didn't sign it with the installation's secret. See [Webhooks your app didn't create](#webhooks-your-app-didnt-create). |
 | `401` "No active company for fluid_shop" | The company hasn't installed the droplet, or the install didn't finish. Check that `droplet.installed` reached the app. |
 | `202` with `"handled": false` | The webhook was accepted, but no handler is registered for it. Register one in `lib/handlers/index.ts`. |
 
 If installs never reach the app, run `fluid mist droplet repair`. It fixes the droplet's embed and lifecycle webhook URLs when they don't match the app.
 
-If repair doesn't fix it and the company's installation of the droplet is itself broken, `fluid mist droplet reinstall` repairs the URLs and replaces that installation. It works only on the droplet attached to the app, and it can't be undone:
+### Webhooks your app didn't create
+
+When a company installs your droplet, the template registers the company webhooks you turned on in `lib/config/droplet.config.ts`. It registers them with that installation's droplet installation token, so Fluid signs each delivery with the installation's webhook secret. That's the secret the template checks.
+
+A company webhook created any other way, for example in the admin or with a company API token, isn't tied to the installation. Fluid signs it with a different secret, or not at all. Every delivery then fails with "Invalid signature" or "Regular webhooks require an installation signature". Don't recreate your app's webhooks by hand. Let the app register them.
+
+### Audit and repair your app's webhooks
+
+<Steps>
+  <Step title="List what your app should receive">
+    In `lib/config/droplet.config.ts`, note each webhook that has `enabled: true`: its resource, its event, and the URL, which is your app's address plus `/api/webhooks`. Every entry starts with `enabled: false`.
+  </Step>
+  <Step title="List what Fluid has">
+    Call `GET /api/company/webhooks` for the company. Match each entry by resource, event and URL. Look for webhooks that are missing, that point at another address, or that your app didn't create.
+  </Step>
+  <Step title="Fix the config and publish">
+    Turn on the webhooks you need in `lib/config/droplet.config.ts`, then publish the app.
+  </Step>
+  <Step title="Remove webhooks created by hand">
+    Delete the company webhooks for your app's URL that your app didn't create, with `DELETE /api/company/webhooks/{id}` or on the [Webhooks](/help/admin/settings/webhooks) screen.
+  </Step>
+  <Step title="Reinstall the droplet">
+    Run `fluid mist droplet reinstall`. Fluid sends a fresh `droplet.installed`, and the app registers its webhooks again with the new installation's token. See [Reinstall a droplet](#reinstall-a-droplet).
+  </Step>
+  <Step title="Check the deliveries">
+    Query the app's `webhooks` table in [Databases](/help/mist/databases) to see what arrived, with any error. To resend a failed delivery, use **Retrigger** in [Webhook Logs](/help/admin/settings/webhook-logs). Retrigger sends the event to every active webhook subscribed to it, not only yours.
+  </Step>
+</Steps>
+
+## Reinstall a droplet
+
+If an install never finished, for example the app missed `droplet.installed` or its token exchange failed, reinstall the droplet. You don't need to uninstall it by hand first.
+
+`fluid mist droplet reinstall` replaces the company's installation in one step. Fluid uninstalls the old installation, creates a new one, moves the old installation's surfaces to it, and sends the app a fresh `droplet.installed`. It also fixes the droplet's embed and lifecycle webhook URLs first, as `fluid mist droplet repair` does.
+
+The old installation's credentials stop working, so the command needs your approval twice:
+
+<Steps>
+  <Step title="Preview the plan">
+    ```bash
+    fluid mist droplet reinstall 3bed85 --dry-run
+    ```
+
+    Check the droplet and installation UUIDs it prints.
+  </Step>
+  <Step title="Confirm within 15 minutes">
+    ```bash
+    fluid mist droplet reinstall 3bed85 --confirm
+    ```
+
+    A preview approves one reinstall. If it's older than 15 minutes, or the droplet, installation or URLs changed since, run `--dry-run` again. `--yes` doesn't approve a reinstall.
+  </Step>
+</Steps>
+
+The command prints JSON and follows the reinstall for up to 120 seconds. Change that with `--watch-timeout <seconds>`, up to 3600. Only `succeeded` means the reinstall is done. If the result is `still_running`, the reinstall is still going on Fluid's side. Follow it with the `--resume` command the result gives you, such as:
 
 ```bash
-fluid mist droplet reinstall --dry-run
-fluid mist droplet reinstall --confirm
+fluid mist droplet reinstall 3bed85 --resume <operation-id> --installation <installation-uuid>
 ```
 
-`--dry-run` shows the exact plan and changes nothing. `--confirm` runs the plan from your latest `--dry-run`, and only within 15 minutes of it; `--yes` doesn't approve it. The output is JSON. When the replacement is slow, the command returns `still_running` with the IDs to pass to `--resume` and `--installation` to keep watching it.
+Reinstalling needs the `mist.destroy` permission.
 
 Every webhook the app receives is saved in its `webhooks` table, with any error. Query it in [Databases](/help/mist/databases) to see what arrived.
 
