@@ -29,6 +29,7 @@ tags:
 - name: payments
   description: Cart-scoped payment method selection, VGS card tokenization, and
     3D Secure verification.
+  x-fluid-section: Payments
 - name: paypal
   description: PayPal checkout — client SDK token, order creation and
     authorization, and shipping-change callbacks.
@@ -230,12 +231,13 @@ components:
           "$ref": "#/components/schemas/Meta"
     AchRefusedResponse:
       description: |
-        The cart cannot pay by bank account (Stripe ACH), so the payment method
-        was not created. `meta.code` is the stable reason clients translate:
+        The cart cannot pay by bank account (ACH), so no ACH session was opened
+        and no payment method was created. `meta.code` is the stable reason clients translate:
         `ach_points` (points are applied; bank payments cannot be
         combined with points) or `ach_unavailable` (the method is not
         offered for this cart: the flag is off, the account is not set up, the
-        cart is not in USD, or the total is under the minimum). The English
+        cart was created in the admin, is not in USD, or the total is under the
+        minimum). The English
         `error_message` is for logs and for clients that do not know the code.
       type: object
       additionalProperties: false
@@ -650,7 +652,7 @@ components:
         varies by payment type: credit_card/apple_pay return card; saved payment
         methods return card + payment_method; paypal returns order_id (Braintree
         SDK PayPal also returns transaction_id); klarna returns
-        authorization_token; ach returns ach; bread/affirm/platform
+        authorization_token; ach returns the same ach session as `ach_session`; bread/affirm/platform
         payments return an empty object.'
       type: object
       additionalProperties: false
@@ -666,27 +668,7 @@ components:
           type: string
           description: Klarna authorization token (klarna flow).
         ach:
-          type: object
-          additionalProperties: false
-          required:
-          - publishable_key
-          - amount_cents
-          - currency
-          description: What the Stripe Payment Element mounts with in
-            deferred-intent mode (ach flow). The publishable key is
-            public by design.
-          properties:
-            publishable_key:
-              type: string
-              description: The payment account's Stripe publishable key.
-            amount_cents:
-              type: integer
-              description: What the PaymentIntent will ask for, in cents (the
-                cart total after points).
-            currency:
-              type: string
-              enum:
-              - usd
+          "$ref": "#/components/schemas/AchSession"
         card:
           type: object
           additionalProperties:
@@ -698,6 +680,59 @@ components:
           additionalProperties:
             "$ref": "#/components/schemas/JsonValue"
           description: Formatted payment method (saved payment method flow).
+    AchSession:
+      description: The ACH session. Routing has chosen the account behind it,
+        and the checkout mounts that provider's collector from this object
+        alone. The payment-method list carries no provider credentials.
+      type: object
+      additionalProperties: false
+      required:
+      - provider
+      - amount_cents
+      - currency
+      - mandate_text
+      - client
+      properties:
+        provider:
+          type: string
+          description: The key of the provider the routed account runs on
+            (`stripe`). The checkout picks its collector by this key and
+            treats a key it does not know as unavailable.
+        amount_cents:
+          type: integer
+          description: What the debit will ask for, in cents (the cart
+            total after points).
+        currency:
+          type: string
+          enum:
+          - usd
+        mandate_text:
+          type:
+          - string
+          - 'null'
+          description: The debit authorization text Fluid shows the
+            shopper. Null when the provider renders its own, as Stripe's
+            Payment Element does.
+        client:
+          type: object
+          additionalProperties: true
+          description: What the provider's collector mounts with. The
+            keys are provider-defined and opaque to every other client.
+            For `stripe` it holds `publishable_key`, the account's Stripe
+            publishable key, which is public by design; the secret key
+            never leaves Fluid.
+    AchSessionResponse:
+      description: Success body for the ACH session.
+      type: object
+      additionalProperties: false
+      required:
+      - ach
+      - meta
+      properties:
+        ach:
+          "$ref": "#/components/schemas/AchSession"
+        meta:
+          "$ref": "#/components/schemas/Meta"
     VgsVault:
       description: VGS Collect vault credentials used to tokenize card data
         client-side.
@@ -1330,6 +1365,82 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/ach-session":
+    post:
+      summary: Open the bank account (ACH) session
+      description: |
+        Resolves the bank account (ACH) payment account for the cart and returns
+        the ACH session: the provider the account runs on, the amount the debit
+        will ask for, and what that provider's collector mounts with. The
+        checkout calls it when the shopper looks at bank account and mounts the
+        provider's collector from the answer. No request body. It only reads: it
+        does not set the cart's payment method, create a payment method, register
+        a webhook or void an open charge, so calling it again is safe and a
+        shopper who looks at bank account and goes back to another method is
+        unaffected. `PUT payment_method` with type `ach` records the choice when
+        the shopper pays. A cart that cannot pay by bank account is refused with
+        `422` and `meta.code` = `ach_points` or `ach_unavailable`, the same codes
+        as that write. Cart-token authenticated. Returns `404` when the cart is not
+        found and `410` when the cart has already been processed or holds an
+        authorized enrollment.
+      tags:
+      - payments
+      operationId: payments_v2026_04_ach_session
+      x-fluid-audience: public
+      parameters:
+      - "$ref": "#/components/parameters/CheckoutJourneyId"
+      - "$ref": "#/components/parameters/CheckoutAttemptId"
+      - name: cart_token
+        in: path
+        required: true
+        description: |
+          Opaque cart token returned by the create-cart response. It scopes the
+          request to a single cart and is the credential for these endpoints —
+          cart-token authentication carried in the path, with no bearer token or API
+          key.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The ACH session
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AchSessionResponse"
+              examples:
+                stripe:
+                  summary: A Stripe-backed session
+                  value:
+                    ach:
+                      provider: stripe
+                      amount_cents: 3999
+                      currency: usd
+                      mandate_text: null
+                      client:
+                        publishable_key: pk_test_51Abc
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed or holds an authorized enrollment
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: The cart cannot pay by bank account (`meta.code` =
+            `ach_points` or `ach_unavailable`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AchRefusedResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/verify":
     post:
