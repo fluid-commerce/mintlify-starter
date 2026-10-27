@@ -2945,3 +2945,13 @@ restate HTTP contracts or promise support for dynamically constructed resource
 references or translation keys. It distinguishes theme widgets from Droplet
 extensions and portal widgets. Opening a link must never imply an import, page
 placement, publication, or source-company access.
+
+Theme-widget locale portability now refuses executable computed/chained `t` keys
+before a snapshot is issued: the recovery is to use literal translation keys.
+It does not export all theme locales as a fallback. Raw/comment blocks and quoted
+examples are inert. Literal template-owned and theme translations remain scoped
+per language, including language fallback and isolated destination keys; a local
+English value must not suppress another language's theme value. Evidence: Fluid
+snapshot-core fixes `06ef594418c` and `0d7eee842b4`. These are source checks, not
+proof of deployment or release. Imported library templates are published for
+rendering; import does not publish/activate the destination theme or add placements.
