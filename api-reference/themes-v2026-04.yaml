@@ -44,6 +44,8 @@ tags:
     A theme's own editable copies of Fluid's native widgets. A copy replaces
     the widget at every placement in its theme, and other themes keep Fluid's
     original. Deleting the copy as a template returns the theme to the original.
+    Authorized authors can also share immutable widget snapshots for independent
+    import into another authorized theme, including a theme in another company.
   x-fluid-section: Website
 - name: preview comments
   description: |-
@@ -60,6 +62,333 @@ tags:
     accepted and discarded — it answers 200 with the status unchanged, because
     the request did what the contract says.
 paths:
+  "/api/v202604/theme-widget-sharing/capability":
+    get:
+      summary: Read the widget sharing capability
+      description: |-
+        Confirms widget sharing is available to the authenticated company
+        administrator with theme view permission. Availability is permission
+        based. The can_share field separately reports theme update permission;
+        authorized viewers can still list widgets and author local files without
+        permission to create or import shares. Every response is private and must
+        not be cached.
+      operationId: getThemeWidgetSharingCapability
+      x-fluid-audience: company
+      tags: [theme widgets]
+      responses:
+        "200":
+          description: Widget sharing is available to this authorized administrator.
+          content:
+            application/json:
+              example: {"enabled": true, "can_share": true, "status": 200, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingCapability"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+  "/api/v202604/themes/{theme_id}/widget-shares/source":
+    get:
+      summary: List the files needed to share a widget
+      description: |-
+        Lists file paths for the selected theme widget and its dependencies so
+        Mist can include current local edits in an immutable snapshot. A new
+        local widget is supported even when its server template does not exist.
+        Requires theme update permission. No file
+        contents are returned. Every response is private and must not be cached.
+      operationId: getThemeWidgetShareSource
+      x-fluid-audience: company
+      tags: [theme widgets]
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Authorized source theme.
+        schema: {type: integer}
+      - name: widget_name
+        in: query
+        required: true
+        description: Widget directory name to package from the theme.
+        schema: {type: string}
+      responses:
+        "200":
+          description: The selected widget name and required local file paths.
+          content:
+            application/json:
+              example: {"widget_name": "care-card", "files": [{"path": "widgets/care-card/index.liquid", "encoding": "utf8", "content_type": "text/x-liquid"}], "status": 200, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetShareSource"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "404":
+          description: The resource is unavailable or the target is not authorized.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+        "422":
+          description: Invalid widget selection, invalid local files, or the snapshot cannot be saved.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+  "/api/v202604/themes/{theme_id}/widget-shares":
+    post:
+      summary: Create an immutable widget share link
+      description: |-
+        Snapshots the selected widget, its supplied current local files, assets,
+        auxiliary templates and translations. Supports a newly authored local
+        widget. The opaque link can be used by administrators in other companies;
+        recipients receive metadata until they choose an authorized destination
+        theme and import a copy. Later source edits do not change this snapshot.
+        Requires source theme update permission.
+        The token is returned once and remains available until revoked.
+        Every response is private and must not be cached.
+      operationId: createThemeWidgetShare
+      x-fluid-audience: company
+      tags: [theme widgets]
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Authorized source theme.
+        schema: {type: integer}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/WidgetShareCreateRequest"
+            example:
+              widget_name: shared-card
+              files:
+              - path: widgets/shared-card/index.liquid
+                encoding: utf8
+                content: '<p>Hello</p>{% schema %}{"name":"Shared card","settings":[]}{% endschema %}'
+      responses:
+        "201":
+          description: The share metadata, revocation identifier, and copyable link.
+          content:
+            application/json:
+              example: {"share": {"id": 481, "url": "https://admin.fluid.app/widgets/shared/7a6b3d1e9c024f58b7e3a19d0f6c8b253e914a7c2d580f6b1e39c47d82a05f61", "name": "care-card", "summary": "Reusable theme widget with its templates, assets and translations."}, "status": 201, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetShareCreated"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "404":
+          description: The resource is unavailable or the target is not authorized.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+        "422":
+          description: Invalid widget selection, invalid local files, or the snapshot cannot be saved.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+  "/api/v202604/themes/{theme_id}/widget-shares/{id}":
+    delete:
+      summary: Revoke a widget share link
+      description: |-
+        Revokes a share issued by the signed-in company. Repeated revocation is
+        successful. Revocation blocks future metadata reads and imports, while
+        existing imported copies remain independent. Requires source theme
+        update permission. A source company can
+        revoke its share even after the original theme has been deleted.
+        Every response is private and must not be cached.
+      operationId: revokeThemeWidgetShare
+      x-fluid-audience: company
+      tags: [theme widgets]
+      parameters:
+      - name: theme_id
+        in: path
+        required: true
+        description: Source theme identifier used when the share was issued.
+        schema: {type: integer}
+      - name: id
+        in: path
+        required: true
+        description: Share identifier returned to its creator.
+        schema: {type: integer}
+      responses:
+        "200":
+          description: The link is revoked.
+          content:
+            application/json:
+              example: {"revoked": true, "status": 200, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetShareRevoked"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "404":
+          description: The resource is unavailable or the target is not authorized.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+  "/api/v202604/theme-widget-shares/{token}":
+    get:
+      summary: Read shared widget metadata
+      description: |-
+        Returns only a name and safe summary for an available widget snapshot.
+        The bearer token permits cross-company discovery without exposing source
+        theme identifiers, code, files, credentials or installation details.
+        Requires an authenticated administrator with theme view permission.
+        Revoked or malformed tokens return the same unavailable 404. Every
+        response is private and must not be cached.
+      operationId: getThemeWidgetShare
+      x-fluid-audience: company
+      tags: [theme widgets]
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: Opaque bearer token from the shared link.
+        schema: {type: string}
+      responses:
+        "200":
+          description: Minimal shared widget metadata.
+          content:
+            application/json:
+              example: {"share": {"name": "care-card", "summary": "Reusable theme widget with its templates, assets and translations."}, "status": 200, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetShareMetadataResponse"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "404":
+          description: The resource is unavailable or the target is not authorized.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+  "/api/v202604/theme-widget-shares/{token}/imports":
+    post:
+      summary: Import a shared widget into a theme
+      description: |-
+        Creates an independent widget in one of the recipient company themes,
+        including owned assets, auxiliary templates and translations. The share
+        snapshot grants no access to other source-company resources. Requires
+        authenticated administrator access and destination theme update
+        permission. Revoked or malformed tokens return the same unavailable 404.
+        Imports do not activate the destination theme, place the widget on a
+        page, or replace an existing widget; imports receive an independent
+        name. An optional operation_id UUID identifies one import intent: retrying
+        the same share into the same theme returns its original widget. Use a new
+        UUID to intentionally import another copy. Authorization and token
+        revocation are checked before replay. Theme branches change through branch
+        publication and cannot receive direct imports. Every response is private
+        and must not be cached.
+      operationId: importThemeWidgetShare
+      x-fluid-audience: company
+      tags: [theme widgets]
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: Opaque bearer token from the shared link.
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [theme_id]
+              additionalProperties: false
+              properties:
+                theme_id:
+                  type: integer
+                  description: Recipient-company theme authorized for direct editing.
+                operation_id:
+                  type: string
+                  format: uuid
+                  description: Stable UUID for retries of one import intent within this share and theme.
+            example:
+              theme_id: 48213
+              operation_id: 019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4051
+      responses:
+        "201":
+          description: The independently owned imported widget.
+          content:
+            application/json:
+              example: {"template": {"id": 8621, "name": "care-card", "application_theme_id": 247, "themeable_type": "widgets"}, "status": 201, "meta": {}}
+              schema:
+                "$ref": "#/components/schemas/WidgetShareImportResponse"
+        "401":
+          description: Missing or invalid administrator credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "403":
+          description: Credential lacks administrator access or the required theme permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetShareAuthenticationError"
+        "404":
+          description: The resource is unavailable or the target is not authorized.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetSharingError"
+        "422":
+          description: Invalid destination, invalid snapshot, or a destination owned by a theme branch.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/WidgetSharingError"
+                - "$ref": "#/components/schemas/BranchThemeRefusal"
   "/api/v202604/themes":
     get:
       summary: List the company's themes
@@ -3016,6 +3345,113 @@ components:
       type: http
       scheme: bearer
   schemas:
+    WidgetSharingCapability:
+      type: object
+      required: [enabled, can_share, status, meta]
+      properties:
+        enabled: {type: boolean, description: Whether widget authoring and listing are available to the authorized viewer.}
+        can_share: {type: boolean, description: Whether the administrator has theme update permission to create or import shares.}
+        status: {type: integer, const: 200}
+        meta: {type: object}
+    WidgetShareSource:
+      type: object
+      required: [widget_name, files, status, meta]
+      properties:
+        widget_name: {type: string, description: Selected widget directory name.}
+        files:
+          type: array
+          description: Required local widget and dependency paths without file contents.
+          items:
+            type: object
+            required: [path]
+            additionalProperties: false
+            properties:
+              path: {type: string, description: Theme-relative package file path.}
+              encoding: {type: string, enum: [utf8, base64], description: Encoding to use when submitting this file.}
+              content_type: {type: string, description: Safe media type associated with the manifest entry.}
+        status: {type: integer, const: 200}
+        meta: {type: object}
+    WidgetShareCreateRequest:
+      type: object
+      required: [widget_name, files]
+      additionalProperties: false
+      properties:
+        widget_name: {type: string, minLength: 1, description: New or existing widget directory name.}
+        files:
+          type: array
+          description: Current local widget files and dependency overrides copied into the snapshot.
+          items:
+            type: object
+            required: [path, content, encoding]
+            additionalProperties: false
+            properties:
+              path: {type: string, minLength: 1, description: Safe theme-relative package file path.}
+              content: {type: string, description: File bytes encoded according to encoding.}
+              encoding: {type: string, enum: [utf8, base64], description: Text or binary file encoding.}
+    WidgetShareMetadata:
+      type: object
+      required: [name, summary]
+      additionalProperties: false
+      properties:
+        name: {type: string, description: Widget snapshot name.}
+        summary: {type: string, description: Safe package summary without source-company identifiers or code.}
+    WidgetShareMetadataResponse:
+      type: object
+      required: [share, status, meta]
+      properties:
+        share: {"$ref": "#/components/schemas/WidgetShareMetadata"}
+        status: {type: integer, const: 200}
+        meta: {type: object}
+    WidgetShareCreated:
+      type: object
+      required: [share, status, meta]
+      properties:
+        share:
+          type: object
+          required: [id, url, name, summary]
+          additionalProperties: false
+          properties:
+            id: {type: integer, description: Identifier used by the source company to revoke this share.}
+            url: {type: string, format: uri, description: Copyable recipient URL built from a trusted administrator origin.}
+            name: {type: string, description: Widget snapshot name.}
+            summary: {type: string, description: Safe widget package summary.}
+        status: {type: integer, const: 201}
+        meta: {type: object}
+    WidgetShareRevoked:
+      type: object
+      required: [revoked, status, meta]
+      properties:
+        revoked: {type: boolean, const: true}
+        status: {type: integer, const: 200}
+        meta: {type: object}
+    WidgetShareImportResponse:
+      type: object
+      required: [template, status, meta]
+      properties:
+        template: {"$ref": "#/components/schemas/ThemeTemplate"}
+        status: {type: integer, const: 201}
+        meta: {type: object}
+    WidgetSharingError:
+      type: object
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [message, details]
+          properties:
+            message: {type: string}
+            details: {type: object}
+        status: {type: integer}
+        meta: {type: object}
+    WidgetShareAuthenticationError:
+      type: object
+      description: Authentication failures use message; theme permission refusals use error.
+      oneOf:
+      - required: [message]
+      - required: [error]
+      properties:
+        message: {type: string}
+        error: {type: string}
     NativeWidgetCopyResponse:
       type: object
       required: [template, status, meta]
