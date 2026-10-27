@@ -2955,3 +2955,9 @@ English value must not suppress another language's theme value. Evidence: Fluid
 snapshot-core fixes `06ef594418c` and `0d7eee842b4`. These are source checks, not
 proof of deployment or release. Imported library templates are published for
 rendering; import does not publish/activate the destination theme or add placements.
+
+The upcoming Mist workflow also exposes conversational creation through the actual
+registered creation capability. The guide uses a natural-language request and keeps
+implementation tool names out of published prose. Source registry tests verify
+selected-theme creation, read-only refusal, and company pinning; native customization
+and Droplet workflows remain distinct. This is source evidence, not release evidence.
