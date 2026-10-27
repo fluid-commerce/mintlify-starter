@@ -2931,8 +2931,11 @@ Durable decisions:
 ## Theme widgets created and shared from Mist
 
 `themes/theme-widgets.mdx` documents an upcoming workflow, not a released Mist
-version. Keep its availability note until the Mist release and company rollout
-are verified. Both source and destination companies must have sharing enabled.
+version. Keep its availability note until compatible Mist, backend, and Admin
+releases are verified. Availability follows deployment and client releases, not
+a company rollout flag. The user explicitly removed the proposed sharing flag;
+normal authentication, company-admin access, theme permissions, destination
+scoping, and share-token revocation remain mandatory. No live flag was provisioned.
 
 The registered claims describe theme-file and UI behavior verified against the
 Mist Widgets panel, project-bound widget service and bundle collector, admin
