@@ -2926,3 +2926,19 @@ Durable decisions:
 - **Today's benefits are product facts.** Posting never notifies anyone (the
   Flow settings copy says so); the large-community rationale comes from the
   product owner.
+
+
+## Theme widgets created and shared from Mist
+
+`themes/theme-widgets.mdx` documents an upcoming workflow, not a released Mist
+version. Keep its availability note until the Mist release and company rollout
+are verified. Both source and destination companies must have sharing enabled.
+
+The registered claims describe theme-file and UI behavior verified against the
+Mist Widgets panel, project-bound widget service and bundle collector, admin
+recipient modal, and widget snapshot/import domain in Fluid's
+`feat/theme-widget-sharing` implementation. The guide intentionally does not
+restate HTTP contracts or promise support for dynamically constructed resource
+references or translation keys. It distinguishes theme widgets from Droplet
+extensions and portal widgets. Opening a link must never imply an import, page
+placement, publication, or source-company access.
