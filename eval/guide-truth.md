@@ -2961,3 +2961,22 @@ registered creation capability. The guide uses a natural-language request and ke
 implementation tool names out of published prose. Source registry tests verify
 selected-theme creation, read-only refusal, and company pinning; native customization
 and Droplet workflows remain distinct. This is source evidence, not release evidence.
+
+The user selected explicit declarations for JavaScript-linked assets: rendered widget
+index/head Liquid declares literal `asset_url` references, and scripts consume the
+rendered URLs. Raw script strings/comments and runtime resource filename guesses
+are not dependency declarations. Literal relative intrinsic module import/export
+declarations, recognized Liquid/HTML/CSS/typed resource JSON references, and owned
+or native associated-file pins remain included. Detectable bare local runtime
+filenames require declaration guidance even if the file is otherwise included.
+No manifest, public API shape, database schema, or sharing release flag is introduced.
+Internal reader-first format expansion is required; reader #29355 at `c4455f575ab`
+precedes writer #29402 at `fb0760c96f7`. Existing v1 links remain supported by the
+expanded reader. Executable Liquid asset helpers inside schema count; plain HTML-looking
+captions remain data. Raw blocks can emit actual HTML resource attributes, but Liquid
+helper/translation syntax inside raw does not execute. Raw JS/MJS files are not Liquid
+rendering contexts. These claims were checked against Mist `c81ce049` declaration
+collection and backend reader/writer source at the commits above. Owned/native pins do
+not exempt detectable raw runtime filenames from new-share refusal; authors must use
+rendered Liquid URLs. Existing immutable links retain their legacy reader behavior. This
+is source evidence, not deployed-runtime or release evidence.
