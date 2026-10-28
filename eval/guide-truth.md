@@ -2970,8 +2970,8 @@ declarations, recognized Liquid/HTML/CSS/typed resource JSON references, and own
 or native associated-file pins remain included. Detectable bare local runtime
 filenames require declaration guidance even if the file is otherwise included.
 No manifest, public API shape, database schema, or sharing release flag is introduced.
-Internal reader-first format expansion is required; reader #29355 at `ef2922273c5`
-precedes writer #29402 at `58107c70b91`. Existing v1 links remain supported by the
+Internal reader-first format expansion is required; reader #29355 at `9380ebb3539`
+precedes writer #29402 at `3a823ff972f`. Existing v1 links remain supported by the
 expanded reader. Executable Liquid asset helpers inside schema count; plain HTML-looking
 captions remain data. Raw blocks can emit actual HTML resource attributes, but Liquid
 helper/translation syntax inside raw does not execute. Raw JS/MJS files are not Liquid
@@ -2981,9 +2981,19 @@ not exempt detectable raw runtime filenames from new-share refusal; authors must
 rendered Liquid URLs. Existing immutable links retain their legacy reader behavior. This
 is source evidence, not deployed-runtime or release evidence.
 
-Navigation parity source verification: reader `ef2922273c5`, writer `58107c70b91`,
-and Mist `f4e8f8e83a26` distinguish consuming HTML/resource settings from
+Navigation parity source verification: reader `9380ebb3539`, writer `3a823ff972f`,
+and Mist `e2add50a0726` distinguish consuming HTML/resource settings from
 navigation-only hrefs and schema URL values, including selected-filename collisions
 and block/instance setting namespaces. Explicit rendered Liquid helpers remain
 authoritative even in navigation attributes or URL defaults. The guide records
 this boundary; no rollout or deployment is implied.
+
+Actual translation-renderer parity is verified in reader `9380ebb3539`, writer
+`3a823ff972f`, and Mist `e2add50a0726`. Only defined `t` selects/rebinds translations;
+undefined `translate` remains literal. Selected static HTML follows the renderer's
+one-pass HTML decoding with source-byte-preserving reference rewrites. Nested
+executable translation calls and active Liquid mixed with resource HTML/CSS fail
+with flattening guidance; plain interpolation remains supported. Raw/comment/inline
+comment Liquid remains inert, without treating emitted raw HTML as absent. Actual
+Liquid-render tests prove imported and duplicated destination filenames. Nested
+asset/include syntax is not recursive theme-file discovery. No release is claimed.
