@@ -2926,3 +2926,74 @@ Durable decisions:
 - **Today's benefits are product facts.** Posting never notifies anyone (the
   Flow settings copy says so); the large-community rationale comes from the
   product owner.
+
+
+## Theme widgets created and shared from Mist
+
+`themes/theme-widgets.mdx` documents an upcoming workflow, not a released Mist
+version. Keep its availability note until compatible Mist, backend, and Admin
+releases are verified. Availability follows deployment and client releases, not
+a company rollout flag. The user explicitly removed the proposed sharing flag;
+normal authentication, company-admin access, theme permissions, destination
+scoping, and share-token revocation remain mandatory. No live flag was provisioned.
+
+The registered claims describe theme-file and UI behavior verified against the
+Mist Widgets panel, project-bound widget service and bundle collector, admin
+recipient modal, and widget snapshot/import domain in Fluid's
+`feat/theme-widget-sharing` implementation. The guide intentionally does not
+restate HTTP contracts or promise support for dynamically constructed resource
+references or translation keys. It distinguishes theme widgets from Droplet
+extensions and portal widgets. Opening a link must never imply an import, page
+placement, publication, or source-company access.
+
+Theme-widget locale portability now refuses executable computed/chained `t` keys
+before a snapshot is issued: the recovery is to use literal translation keys.
+It does not export all theme locales as a fallback. Raw/comment blocks and quoted
+examples are inert. Literal template-owned and theme translations remain scoped
+per language, including language fallback and isolated destination keys; a local
+English value must not suppress another language's theme value. Evidence: Fluid
+snapshot-core fixes `06ef594418c` and `0d7eee842b4`. These are source checks, not
+proof of deployment or release. Imported library templates are published for
+rendering; import does not publish/activate the destination theme or add placements.
+
+The upcoming Mist workflow also exposes conversational creation through the actual
+registered creation capability. The guide uses a natural-language request and keeps
+implementation tool names out of published prose. Source registry tests verify
+selected-theme creation, read-only refusal, and company pinning; native customization
+and Droplet workflows remain distinct. This is source evidence, not release evidence.
+
+The user selected explicit declarations for JavaScript-linked assets: rendered widget
+index/head Liquid declares literal `asset_url` references, and scripts consume the
+rendered URLs. Raw script strings/comments and runtime resource filename guesses
+are not dependency declarations. Literal relative intrinsic module import/export
+declarations, recognized Liquid/HTML/CSS/typed resource JSON references, and owned
+or native associated-file pins remain included. Detectable bare local runtime
+filenames require declaration guidance even if the file is otherwise included.
+No manifest, public API shape, database schema, or sharing release flag is introduced.
+Internal reader-first format expansion is required; reader #29355 at `9380ebb3539`
+precedes writer #29402 at `3a823ff972f`. Existing v1 links remain supported by the
+expanded reader. Executable Liquid asset helpers inside schema count; plain HTML-looking
+captions remain data. Raw blocks can emit actual HTML resource attributes, but Liquid
+helper/translation syntax inside raw does not execute. Raw JS/MJS files are not Liquid
+rendering contexts. These claims were checked against Mist `c81ce049` declaration
+collection and backend reader/writer source at the commits above. Owned/native pins do
+not exempt detectable raw runtime filenames from new-share refusal; authors must use
+rendered Liquid URLs. Existing immutable links retain their legacy reader behavior. This
+is source evidence, not deployed-runtime or release evidence.
+
+Navigation parity source verification: reader `9380ebb3539`, writer `3a823ff972f`,
+and Mist `e2add50a0726` distinguish consuming HTML/resource settings from
+navigation-only hrefs and schema URL values, including selected-filename collisions
+and block/instance setting namespaces. Explicit rendered Liquid helpers remain
+authoritative even in navigation attributes or URL defaults. The guide records
+this boundary; no rollout or deployment is implied.
+
+Actual translation-renderer parity is verified in reader `9380ebb3539`, writer
+`3a823ff972f`, and Mist `e2add50a0726`. Only defined `t` selects/rebinds translations;
+undefined `translate` remains literal. Selected static HTML follows the renderer's
+one-pass HTML decoding with source-byte-preserving reference rewrites. Nested
+executable translation calls and active Liquid mixed with resource HTML/CSS fail
+with flattening guidance; plain interpolation remains supported. Raw/comment/inline
+comment Liquid remains inert, without treating emitted raw HTML as absent. Actual
+Liquid-render tests prove imported and duplicated destination filenames. Nested
+asset/include syntax is not recursive theme-file discovery. No release is claimed.
