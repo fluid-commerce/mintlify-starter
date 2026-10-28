@@ -39,6 +39,7 @@ security:
 tags:
 - name: themes
   description: Theme listing and the active theme.
+  x-fluid-section: Website
 - name: theme widgets
   description: |-
     A theme's own editable copies of Fluid's native widgets. A copy replaces
@@ -3224,8 +3225,10 @@ paths:
         Unpublished pages and draft themes are supported. Content comes from the
         selected theme's stored templates, sections, settings and site navigation.
         No role means unrestricted authoring; member_type_id selects a synthetic
-        audience and applies site access rules. Private member collections are
-        not loaded. This endpoint neither authenticates a member nor publishes
+        audience and applies site access rules. A member_id selects an owned real
+        member and applies live eligibility using that member's own country and role.
+        Real profiles and private Liquid collections are read-only; native system
+        screens display an unavailable notice rather than sample data. This endpoint neither authenticates a member nor publishes
         content. Responses must not be cached. The CLI keeps its bearer token on
         its local server and serves the returned HTML without the builder base tag.
         Body/resource overrides are ignored; system-screen bodies remain sealed.
@@ -3274,13 +3277,17 @@ paths:
                   type: string
                   minLength: 1
                   description: Company member type for sample audience matching; omit for unrestricted authoring.
+                member_id:
+                  type: string
+                  minLength: 1
+                  description: Company-owned real member UUID; cannot accompany member_type_id. Requires members.view and the existing member storefront feature.
             example:
               members_site_id: 7310
               members_page_id: 18422
               member_type_id: brand-partner
       responses:
         "200":
-          description: Sample preview, including an access-denied view when the chosen role cannot access this site.
+          description: Read-only preview, including an access-denied view when the chosen role or member cannot access this site.
           headers:
             Cache-Control:
               description: Prevent storage of authoring previews.
@@ -3324,9 +3331,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [message]
+                anyOf:
+                - required: [message]
+                - required: [error]
                 properties:
                   message: {type: string}
+                  error: {type: string}
         "404":
           description: Feature disabled, foreign or stale selection, unknown screen, or unavailable audience/locale.
           content:
@@ -3339,6 +3349,80 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/MemberPreviewError"
+  /api/v202604/themes/{theme_id}/member-preview/people:
+    get:
+      summary: Search real members for theme previews
+      description: Company-admin-only directory ordered by role and name. Requires theme and member view permission and the existing MEMBER_STOREFRONT feature. Returns only display fields, with private no-store caching.
+      operationId: listMemberPreviewPeople
+      x-fluid-audience: company
+      tags: [themes]
+      parameters:
+      - {name: theme_id, in: path, required: true, description: Company-owned theme identifier., schema: {type: integer, minimum: 1}}
+      - {name: query, in: query, description: "Search name, email or role.", schema: {type: string, maxLength: 200}}
+      - {name: page, in: query, description: One-based page., schema: {type: integer, minimum: 1, default: 1}}
+      - {name: per_page, in: query, description: Maximum members per page., schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        "200":
+          description: One page of real members.
+          content:
+            application/json:
+              example:
+                people:
+                - id: "019b1284-c62b-7c02-9c57-026fa72fb718"
+                  full_name: Riley Kim
+                  email: riley@primex.test
+                  member_type_id: "019b1284-c62b-7c02-9c57-026fa72fb719"
+                  member_type_name: Rep
+                pagination: {page: 1, per_page: 25, total_count: 1, total_pages: 1}
+                real_member_preview_enabled: true
+                status: 200
+                meta: {}
+              schema:
+                type: object
+                required: [people, pagination, real_member_preview_enabled, status, meta]
+                properties:
+                  people:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, full_name, email, member_type_id, member_type_name]
+                      properties:
+                        id: {type: string}
+                        full_name: {type: string}
+                        email: {type: string}
+                        member_type_id: {type: [string, "null"]}
+                        member_type_name: {type: [string, "null"]}
+                  pagination:
+                    type: object
+                    required: [page, per_page, total_count, total_pages]
+                    properties:
+                      page: {type: integer}
+                      per_page: {type: integer}
+                      total_count: {type: integer}
+                      total_pages: {type: integer}
+                  real_member_preview_enabled: {type: boolean, const: true}
+                  status: {type: integer, const: 200}
+                  meta: {type: object}
+        "401":
+          description: Missing credential.
+          content:
+            application/json:
+              schema: {type: object}
+        "403":
+          description: Credential lacks company admin, theme or member view permission.
+          content:
+            application/json:
+              schema: {type: object}
+        "404":
+          description: Foreign theme or disabled feature.
+          content:
+            application/json:
+              schema: {"$ref": "#/components/schemas/MemberPreviewError"}
+        "422":
+          description: Invalid directory pagination or search.
+          content:
+            application/json:
+              schema: {"$ref": "#/components/schemas/MemberPreviewError"}
 components:
   securitySchemes:
     bearer_auth:
@@ -3504,7 +3588,7 @@ components:
         meta: {type: object}
     MemberPreviewResponse:
       type: object
-      description: Synthetic authoring render; no real member session or private collections.
+      description: Read-only authoring render. Sample mode uses synthetic roles; member mode exposes authorized real profile and private content without authenticating a session or creating share links.
       required: [preview, status, meta]
       properties:
         status: {type: integer, const: 200}
@@ -3513,7 +3597,7 @@ components:
           type: object
           required: [mode, contract_version, theme_id, members_site_id, members_page_id, system_screen_key, html_content, page_stylesheet, template_stylesheet, preview_audience]
           properties:
-            mode: {type: string, const: sample}
+            mode: {type: string, enum: [sample, member]}
             contract_version: {type: integer, const: 1}
             theme_id: {type: integer}
             members_site_id: {type: integer}
@@ -3526,8 +3610,9 @@ components:
               type: object
               required: [kind, member_type_id, matched_site_id, selected_site_accessible]
               properties:
-                kind: {type: string, enum: [guest, sample_member]}
+                kind: {type: string, enum: [guest, sample_member, member]}
                 member_type_id: {type: [string, "null"]}
+                member_id: {type: string}
                 matched_site_id: {type: [integer, "null"]}
                 selected_site_accessible: {type: [boolean, "null"]}
     PreviewCommentResponseMeta:
