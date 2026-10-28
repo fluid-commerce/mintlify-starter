@@ -2202,7 +2202,7 @@ components:
     SubscriptionProSettings:
       type: object
       additionalProperties: false
-      required: [active, lock_version, reminder_lead_days, annual_notice_days, retention_offer_cooldown_days, features]
+      required: [active, lock_version, reminder_lead_days, annual_notice_days, retention_offer_cooldown_days, blackout_rules, features]
       properties:
         active:
           type: boolean
@@ -2224,6 +2224,13 @@ components:
           type: integer
           minimum: 30
           maximum: 730
+        blackout_rules:
+          type: array
+          maxItems: 20
+          items: { "$ref": "#/components/schemas/BlackoutRule" }
+          description: >-
+            The blackout calendar, empty when the company has set no rule. The rules are stored only;
+            no bill date reads them yet.
         features:
           type: object
           additionalProperties: false
@@ -2273,6 +2280,100 @@ components:
         reminder_lead_days: { type: integer, minimum: 1, maximum: 14 }
         annual_notice_days: { type: integer, minimum: 15, maximum: 90 }
         retention_offer_cooldown_days: { type: integer, minimum: 30, maximum: 730 }
+        blackout_rules:
+          type: array
+          maxItems: 20
+          items: { "$ref": "#/components/schemas/BlackoutRuleInput" }
+          description: >-
+            The whole blackout calendar; it replaces the saved list, and an empty list clears it. A key
+            left out keeps the saved list. The save is refused (422) when a rule's move_to_day is blocked by
+            any rule, including a disabled one; when a move_to_day above 28 has a blocked day from 28 to
+            the day before it, because a short month cuts the move back to its last day; or when a rule
+            repeats a day.
+    BlackoutRule:
+      type: object
+      additionalProperties: false
+      required: [id, name, enabled, priority, blocked_days, move_to_day, checkout_message]
+      description: >-
+        A rule of the blackout calendar: a computed bill date that falls on one of its blocked days moves to
+        its move_to_day.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The rule's id.
+        name:
+          type: string
+          maxLength: 80
+          description: A label for the rule.
+        enabled:
+          type: boolean
+          description: >-
+            Whether the rule is in force. A disabled rule blocks nothing, but its days still count for the
+            checks when the calendar is saved.
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+          description: Decides an overlap between rules. The higher value wins, and a tie goes to the earlier rule in the list.
+        blocked_days:
+          type: array
+          minItems: 1
+          maxItems: 30
+          uniqueItems: true
+          items: { type: integer, minimum: 1, maximum: 31 }
+          description: The days of the month, 1 to 31, that a bill date may not fall on. Sorted.
+        move_to_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: The day a computed bill date moves to. A month with fewer days cuts it back to its last day.
+        checkout_message:
+          type: string
+          maxLength: 500
+          description: The note a shopper sees when their date moves.
+    BlackoutRuleInput:
+      type: object
+      required: [blocked_days, move_to_day]
+      description: One blackout rule, as the merchant sends it. A key not listed here is ignored.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The rule's id. A rule sent without one gets a new id.
+        name:
+          type: string
+          maxLength: 80
+          default: ""
+          description: A label for the rule.
+        enabled:
+          type: boolean
+          default: true
+          description: >-
+            Whether the rule is in force. A disabled rule blocks nothing, but its days still count for the
+            checks when the calendar is saved.
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+          default: 0
+          description: Decides an overlap between rules. The higher value wins, and a tie goes to the earlier rule in the list.
+        blocked_days:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items: { type: integer, minimum: 1, maximum: 31 }
+          description: The days of the month, 1 to 31, that a bill date may not fall on. A day may not repeat.
+        move_to_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: The day a computed bill date moves to. A month with fewer days cuts it back to its last day.
+        checkout_message:
+          type: string
+          maxLength: 500
+          default: ""
+          description: The note a shopper sees when their date moves.
     TenureTierInput:
       type: object
       required: [from, label]
@@ -5454,6 +5555,7 @@ paths:
                   reminder_lead_days: 5
                   annual_notice_days: 30
                   retention_offer_cooldown_days: 90
+                  blackout_rules: []
                   features:
                     autoship_profiles: { setting: false, available: true, enabled: false, precondition_failure: bundle_subscriptions_off }
                     cancel_flow: { setting: true, available: true, enabled: true, precondition_failure: null }
@@ -5506,6 +5608,11 @@ paths:
               reminder_lead_days: 5
               annual_notice_days: 30
               retention_offer_cooldown_days: 90
+              blackout_rules:
+              - name: Month end
+                blocked_days: [29, 30, 31]
+                move_to_day: 28
+                checkout_message: We bill on the 28th when the 29th to the 31st would fall due.
       responses:
         '200':
           description: Success
@@ -5520,6 +5627,14 @@ paths:
                   reminder_lead_days: 5
                   annual_notice_days: 30
                   retention_offer_cooldown_days: 90
+                  blackout_rules:
+                  - id: 3b8e5f0a-6c2d-4e1f-9a7b-2d4c6e8f0a1b
+                    name: Month end
+                    enabled: true
+                    priority: 0
+                    blocked_days: [29, 30, 31]
+                    move_to_day: 28
+                    checkout_message: We bill on the 28th when the 29th to the 31st would fall due.
                   features:
                     autoship_profiles: { setting: false, available: true, enabled: false, precondition_failure: bundle_subscriptions_off }
                     cancel_flow: { setting: true, available: true, enabled: true, precondition_failure: null }
@@ -5553,7 +5668,10 @@ paths:
         '422':
           description: >-
             Invalid values, Subscription Pro is not active (subscription_pro_inactive), or the feature's
-            precondition is not met (precondition_failed)
+            precondition is not met (precondition_failed). A blackout rule is refused (invalid, with the
+            rule's index and field in details) when the list holds more than 20 rules, a field is out of
+            range, a rule repeats a day, a move_to_day is blocked by any rule, or a move_to_day above 28
+            has a blocked day from 28 to the day before it.
           content:
             application/json:
               schema:
