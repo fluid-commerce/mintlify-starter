@@ -2382,6 +2382,52 @@ components:
           maxLength: 500
           default: ""
           description: The note a shopper sees when their date moves.
+    BlackoutPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [blackout_rules]
+      properties:
+        blackout_rules:
+          type: array
+          maxItems: 20
+          items: { "$ref": "#/components/schemas/BlackoutRuleInput" }
+          description: >-
+            The proposed blackout calendar, as it would be saved. An empty list previews no rules and counts
+            no moves. The same checks as a settings save apply: a rule's move_to_day may not be blocked by
+            any rule, including a disabled one; a move_to_day above 28 may not have a blocked day from 28 to
+            the day before it; and a rule may not repeat a day.
+    BlackoutPreviewMove:
+      type: object
+      additionalProperties: false
+      required: [to, count]
+      properties:
+        to:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: The move_to_day the subscriptions on this blocked day move to.
+        count:
+          type: integer
+          minimum: 1
+          description: The number of subscriptions that move off this blocked day.
+    BlackoutPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [moves, by_day, status, meta]
+      description: The counts sit at the top level of the body, beside status and meta, with no wrapper key.
+      properties:
+        moves:
+          type: integer
+          minimum: 0
+          description: The number of subscriptions the daily sweep would move now under the proposed rules.
+        by_day:
+          type: object
+          description: >-
+            The moves per blocked day. A key is the day of the month, "1" to "31". A blocked day that holds
+            no move is left out.
+          additionalProperties: { "$ref": "#/components/schemas/BlackoutPreviewMove" }
+        status: { type: integer, enum: [200] }
+        meta: { "$ref": "#/components/schemas/Meta" }
     TenureTierInput:
       type: object
       required: [from, label]
@@ -5686,6 +5732,98 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+  "/api/subscription_pro/blackout_preview":
+    post:
+      x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change."
+      x-fluid-audience: company
+      summary: Preview what a blackout calendar would move
+      description: >-
+        Counts the subscriptions the daily sweep would move now under the proposed blackout rules, so a merchant
+        sees the effect before it saves them. A subscription counts when it is on a month or year plan, is
+        active, or paused with a bill date, is not claimed by a renewal, and its local bill date is on a blocked
+        day after the reminder window. The window is the merchant's reminder_lead_days, but at least 3 days.
+        The blackout_dates feature need not be on, so a merchant can preview before it turns the feature on.
+        Not found (404, subscription_pro_inactive) while Subscription Pro is not active, which fluid-admin reads
+        as no count to show. Nothing is saved and no sweep is queued. Responses are not cached.
+      tags:
+      - subscription-pro
+      operationId: settings_v0_preview_subscription_pro_blackout
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BlackoutPreviewRequest"
+            example:
+              blackout_rules:
+              - name: Month end
+                blocked_days: [29, 30, 31]
+                move_to_day: 28
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/BlackoutPreviewResponse"
+              example:
+                moves: 3
+                by_day:
+                  '29': { to: 28, count: 1 }
+                  '30': { to: 28, count: 2 }
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-25T12:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Not an admin, or missing the orders.settings permission.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+        '404':
+          description: Subscription Pro is not active for the company (subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                error:
+                  message: Subscription Pro is not active
+                  details:
+                    error: subscription_pro_inactive
+                status: 404
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-25T12:00:00Z'
+        '422':
+          description: >-
+            The body is invalid: blackout_rules is missing, holds more than 20 rules, a field is out of range,
+            a key is not allowed, a rule repeats a day, a move_to_day is blocked by any rule, or a move_to_day
+            above 28 has a blocked day from 28 to the day before it. The rule's index and field are in details.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    blackout_rules:
+                      '0':
+                        move_to_day: [is blocked by rule 2]
+                status: 422
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-25T12:00:00Z'
   "/api/subscription_pro/milestone_report":
     get:
       x-fluid-lint-exempt: "Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/settings on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change."
