@@ -29,6 +29,7 @@ tags:
 - name: payments
   description: Cart-scoped payment method selection, VGS card tokenization, and
     3D Secure verification.
+  x-fluid-section: Payments
 - name: paypal
   description: PayPal checkout — client SDK token, order creation and
     authorization, and shipping-change callbacks.
@@ -202,9 +203,11 @@ components:
           - not_attempted
           - declined
           - unknown
+          - held
           description: >-
             `not_attempted`: fix the cause and resubmit. `declined`: the payment was refused; resubmit with another method. `declined` reflects the stored payment status; for some gateways an unconfirmed failure is still reported as `declined`.
             `unknown`: money may have moved; check the order before charging again.
+            `held`: the cart's only money is the payment a resubmit reuses. Fix the field and resubmit with the same payment method; checkout will not charge again.
         message:
           type: string
           description: The English message for this entry. Not translated.
@@ -226,6 +229,57 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/Meta"
+    AchRefusedResponse:
+      description: |
+        The cart cannot pay by bank account (ACH), so no ACH session was opened
+        and no payment method was created. `meta.code` is the stable reason clients translate:
+        `ach_points` (points are applied; bank payments cannot be
+        combined with points) or `ach_unavailable` (the method is not
+        offered for this cart: the flag is off, the account is not set up, the
+        cart was created in the admin or holds a subscription, is not in USD,
+        or the total is under the minimum; or, on `PUT payment_method`, the
+        account the ACH session pinned is no longer offered, so the client
+        opens a new session). The English
+        `error_message` is for logs and for clients that do not know the code.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - payment_method
+          properties:
+            payment_method:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - ach_points
+              - ach_unavailable
     PayerDetailsSyncFailedResponse:
       description: |
         The payer details PayPal holds for the approved order could not be
@@ -326,6 +380,96 @@ components:
               - integer
               - string
               description: Variant id of that line.
+    EnrollmentPricingStaleResponse:
+      description: |
+        An enrollment cart's line prices were set under a different member-type
+        pricing tier than its current target, so the hold or capture was refused
+        before any request left for the provider. Nothing is held. The refusal
+        is about the cart, not one line: the buyer selects the target again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - cart
+          properties:
+            cart:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - enrollment_pricing_stale
+              description: Machine-readable refusal code; always `enrollment_pricing_stale`.
+    DestinationMarketUnavailableResponse:
+      description: |
+        The cart's destination country is in none of the company's markets
+        (company on no-fallback pricing), so the hold or capture was refused
+        before any request left for the provider. Nothing is held. The refusal
+        is about the cart, not one line: the buyer changes the destination.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - cart
+          properties:
+            cart:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum:
+              - destination_market_unavailable
+              description: Machine-readable refusal code; always `destination_market_unavailable`.
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the shopper agreed to, so nothing
@@ -380,6 +524,9 @@ components:
               description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
               items:
                 "$ref": "#/components/schemas/CheckoutErrorDetail"
+            coded_recovery:
+              type: boolean
+              description: Present and true when the company routes checkout refusals by `error_details` (CHECKOUT_CODED_REFUSALS). Temporary; removed with that flag.
             cart:
               type: object
               additionalProperties: false
@@ -507,8 +654,8 @@ components:
         varies by payment type: credit_card/apple_pay return card; saved payment
         methods return card + payment_method; paypal returns order_id (Braintree
         SDK PayPal also returns transaction_id); klarna returns
-        authorization_token; bread/affirm/platform payments return an empty
-        object.'
+        authorization_token; ach returns the same ach session as `ach_session`; bread/affirm/platform
+        payments return an empty object.'
       type: object
       additionalProperties: false
       properties:
@@ -522,6 +669,8 @@ components:
         authorization_token:
           type: string
           description: Klarna authorization token (klarna flow).
+        ach:
+          "$ref": "#/components/schemas/AchSession"
         card:
           type: object
           additionalProperties:
@@ -533,6 +682,59 @@ components:
           additionalProperties:
             "$ref": "#/components/schemas/JsonValue"
           description: Formatted payment method (saved payment method flow).
+    AchSession:
+      description: The ACH session. Routing has chosen the account behind it,
+        and the checkout mounts that provider's collector from this object
+        alone. The payment-method list carries no provider credentials.
+      type: object
+      additionalProperties: false
+      required:
+      - provider
+      - amount_cents
+      - currency
+      - mandate_text
+      - client
+      properties:
+        provider:
+          type: string
+          description: The key of the provider the routed account runs on
+            (`stripe`). The checkout picks its collector by this key and
+            treats a key it does not know as unavailable.
+        amount_cents:
+          type: integer
+          description: What the debit will ask for, in cents (the cart
+            total after points).
+        currency:
+          type: string
+          enum:
+          - usd
+        mandate_text:
+          type:
+          - string
+          - 'null'
+          description: The debit authorization text Fluid shows the
+            shopper. Null when the provider renders its own, as Stripe's
+            Payment Element does.
+        client:
+          type: object
+          additionalProperties: true
+          description: What the provider's collector mounts with. The
+            keys are provider-defined and opaque to every other client.
+            For `stripe` it holds `publishable_key`, the account's Stripe
+            publishable key, which is public by design; the secret key
+            never leaves Fluid.
+    AchSessionResponse:
+      description: Success body for the ACH session.
+      type: object
+      additionalProperties: false
+      required:
+      - ach
+      - meta
+      properties:
+        ach:
+          "$ref": "#/components/schemas/AchSession"
+        meta:
+          "$ref": "#/components/schemas/Meta"
     VgsVault:
       description: VGS Collect vault credentials used to tokenize card data
         client-side.
@@ -555,7 +757,7 @@ components:
         environment:
           type: string
           description: VGS environment for the vault (e.g. `sandbox`, `live`).
-            Resolved from the company's VGS environment, falling back to the
+            Resolved from the merchant's VGS environment, falling back to the
             required `VGS_ENVIRONMENT` env var, so it is always present and
             never `null`.
         route_id:
@@ -910,8 +1112,8 @@ paths:
                 type:
                   type: string
                   description: Payment type (credit_card, paypal, apple_pay,
-                    klarna, bread, affirm, or a platform type such as *_citcon,
-                    *_ppro, *_dlocal).
+                    klarna, bread, affirm, ach, or a platform type such
+                    as *_citcon, *_ppro, *_dlocal).
                 payment_method:
                   type: object
                   additionalProperties:
@@ -1076,7 +1278,10 @@ paths:
         '422':
           description: Unprocessable entity, or (Apple Pay, Bread and Affirm) a
             line that cannot be priced for the buyer's member-type pricing tier
-            (`meta.code` = `strict_tier_line_refused`); nothing was held.
+            (`meta.code` = `strict_tier_line_refused`), or an enrollment cart whose line
+            prices are stale (`meta.code` = `enrollment_pricing_stale`), or a destination country in none of the company's markets (`meta.code` = `destination_market_unavailable`); nothing was held. A bank account
+            (`ach`) the cart cannot pay by is refused with
+            `meta.code` = `ach_points` or `ach_unavailable`.
           content:
             application/json:
               schema:
@@ -1084,6 +1289,9 @@ paths:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/BareErrorResponse"
                 - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
+                - "$ref": "#/components/schemas/DestinationMarketUnavailableResponse"
+                - "$ref": "#/components/schemas/AchRefusedResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/tokenize":
     post:
@@ -1159,6 +1367,86 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
+      security: []
+  "/api/payments/v2026-04/carts/{cart_token}/ach-session":
+    post:
+      summary: Open the bank account (ACH) session
+      description: |
+        Resolves the bank account (ACH) payment account for the cart and returns
+        the ACH session: the provider the account runs on, the amount the debit
+        will ask for, and what that provider's collector mounts with. The
+        checkout calls it when the shopper looks at bank account and mounts the
+        provider's collector from the answer. No request body. It does not set
+        the cart's payment method, create a payment method row, register a
+        webhook or void an open charge, so calling it again is safe and a
+        shopper who looks at bank account and goes back to another method is
+        unaffected. It stores a reserved routing pin in the cart's metadata that
+        names the account the session opened on; clients cannot write it and no
+        response shows it. The pin is sticky: later calls reopen the session on
+        the pinned account while the cart's payment methods still offer it.
+        `PUT payment_method` with type `ach` records the pinned account when the
+        shopper pays. A cart that cannot pay by bank account is refused with
+        `422` and `meta.code` = `ach_points` or `ach_unavailable`, the same codes
+        as that write. Cart-token authenticated. Returns `404` when the cart is not
+        found and `410` when the cart has already been processed or holds an
+        authorized enrollment.
+      tags:
+      - payments
+      operationId: payments_v2026_04_ach_session
+      x-fluid-audience: public
+      parameters:
+      - "$ref": "#/components/parameters/CheckoutJourneyId"
+      - "$ref": "#/components/parameters/CheckoutAttemptId"
+      - name: cart_token
+        in: path
+        required: true
+        description: |
+          Opaque cart token returned by the create-cart response. It scopes the
+          request to a single cart and is the credential for these endpoints —
+          cart-token authentication carried in the path, with no bearer token or API
+          key.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The ACH session
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AchSessionResponse"
+              examples:
+                stripe:
+                  summary: A Stripe-backed session
+                  value:
+                    ach:
+                      provider: stripe
+                      amount_cents: 3999
+                      currency: usd
+                      mandate_text: null
+                      client:
+                        publishable_key: pk_test_51Abc
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '404':
+          description: Cart not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '410':
+          description: Cart already processed or holds an authorized enrollment
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ProcessedCartResponse"
+        '422':
+          description: The cart cannot pay by bank account (`meta.code` =
+            `ach_points` or `ach_unavailable`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AchRefusedResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/verify":
     post:
@@ -1340,7 +1628,8 @@ paths:
         `complete_cart` step (`POST /api/checkout/v2026-04/carts/{cart_token}/complete`,
         Checkout endpoints reference) as its `payment_uuid` query parameter.
         Cart-token authenticated. Returns `422` for invalid parameters, a
-        zero-amount cart, or unsupported recurring Apple Pay; `404` when the cart is
+        zero-amount cart, unsupported recurring Apple Pay, or a Fastlane or Apple Pay
+        order with no `expected_total` while the quote-failure policy is enabled; `404` when the cart is
         not found; and `410` when the cart has already been processed or holds an authorized enrollment.
       tags:
       - paypal
@@ -1379,6 +1668,25 @@ paths:
                     switches the order to the Fastlane capture flow.
                 is_app_switch:
                   type: boolean
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required for a Fastlane or Apple Pay order (charged at create) while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             examples:
               standard:
                 summary: Standard PayPal order
@@ -1398,10 +1706,16 @@ paths:
             cart refuses writes until the charge resolves (`meta.code` =
             `payment_in_progress`). The provider collects the amount the charge
             opened with, and the order is built from this cart when it does.
+            It also answers a Fastlane or Apple Pay order (charged at create) whose
+            cart was saved without calculations and whose recalculation moved the
+            total (`meta.code` = `cart_total_changed`; `meta.cart` carries the new
+            total). No order was created; read the cart and create the order again.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '201':
           description: Order created
           content:
@@ -1440,6 +1754,8 @@ paths:
                 oneOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
+                - "$ref": "#/components/schemas/DestinationMarketUnavailableResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/paypal/authorize":
     post:
@@ -1580,7 +1896,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: Invalid parameters, zero-amount cart, or a line that cannot
+          description: Invalid parameters, an order_id this cart did not open, zero-amount cart, or a line that cannot
             be priced for the buyer's member-type pricing tier (`meta.code` =
             `strict_tier_line_refused`), checked after PayPal's payer details are
             applied; nothing was authorized.
@@ -1590,6 +1906,8 @@ paths:
                 oneOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
+                - "$ref": "#/components/schemas/DestinationMarketUnavailableResponse"
         '502':
           description: |
             The payer details PayPal holds for the approved order could not be
@@ -1697,7 +2015,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ProcessedCartResponse"
         '422':
-          description: Invalid parameters
+          description: Invalid parameters, an order_id this cart did not open, or the cart's repricing could not finish (the PayPal order is left unchanged)
           content:
             application/json:
               schema:
@@ -1842,6 +2160,25 @@ paths:
                       type: string
                     country_code:
                       type: string
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             examples:
               pay:
                 summary: Authorize a Braintree transaction from a JS SDK nonce
@@ -1856,10 +2193,16 @@ paths:
             cart refuses writes until the charge resolves (`meta.code` =
             `payment_in_progress`). The provider collects the amount the charge
             opened with, and the order is built from this cart when it does.
+            It also answers a Braintree authorization whose address or tax refresh
+            moved the total the buyer was shown (`meta.code` = `cart_total_changed`;
+            `meta.cart` carries the new total). Nothing was charged; read the cart
+            and pay again.
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '201':
           description: Transaction authorized
           content:
@@ -1892,7 +2235,8 @@ paths:
             authorization, a payment account that does not belong to the cart's
             company, gateway failure, or a line that cannot be priced for the
             buyer's member-type pricing tier (`meta.code` =
-            `strict_tier_line_refused`); no Braintree customer, vaulted method
+            `strict_tier_line_refused`), or no `expected_total` while the
+            quote-failure policy is enabled; no Braintree customer, vaulted method
             or authorization was created.
           content:
             application/json:
@@ -1900,6 +2244,8 @@ paths:
                 oneOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/StrictTierLineRefusedResponse"
+                - "$ref": "#/components/schemas/EnrollmentPricingStaleResponse"
+                - "$ref": "#/components/schemas/DestinationMarketUnavailableResponse"
       security: []
   "/api/payments/v2026-04/carts/{cart_token}/klarna/sessions":
     post:
@@ -2139,7 +2485,10 @@ paths:
                   type: string
                   format: uri
                   description: Apple Pay startSession endpoint URL provided by
-                    the Apple Pay JS onvalidatemerchant event.
+                    the Apple Pay JS onvalidatemerchant event. Must be an HTTPS
+                    URL on an Apple Pay gateway host (`apple-pay-gateway*.apple.com`
+                    or `cn-apple-pay-gateway*.apple.com`); any other URL is
+                    rejected with `422` before Apple is contacted.
             examples:
               validate:
                 summary: Validate an Apple Pay merchant session

@@ -162,6 +162,9 @@ tags:
   description: |
     Token-authenticated company surface that backs the admin UI and
     integrations.
+- name: options
+  description: Product options used to define variant attributes and coordinate safe option-value updates.
+  x-fluid-section: Commerce
 components:
   securitySchemes:
     bearer_auth:
@@ -866,7 +869,9 @@ components:
           description: |
             Set to the parent category's id to nest this category; `null` (or omitted
             on create) makes it top-level. On update, set another id to re-parent it,
-            or `null` to promote it to the top level.
+            or `null` to promote it to the top level. The id must belong to the
+            authenticated company's store; otherwise, the request returns 422. On
+            update, the category's current `parent_id` is accepted when sent unchanged.
         position:
           type: integer
           description: |
@@ -880,6 +885,9 @@ components:
             opinion" and is treated as omitted, so it never erases a stored kind.
         application_theme_template_id:
           type: [integer, "null"]
+          description: |
+            Theme template to apply. The id must belong to the authenticated
+            company's store, otherwise the request returns 422.
         country_isos:
           type: array
           items:
@@ -1212,6 +1220,9 @@ components:
             at the boundary (auto-go-live) — no second write needed.
         application_theme_template_id:
           type: [integer, "null"]
+          description: |
+            Theme template to apply. The id must belong to the authenticated
+            company's store, otherwise the request returns 422.
         country_isos:
           type: array
           items:
@@ -1229,9 +1240,13 @@ components:
         category_id:
           type: [integer, "null"]
         collection_ids:
-          type: array
+          type: [array, "null"]
           items:
             type: integer
+          description: |
+            Collections the post belongs to. Sending an array replaces the
+            post's collections; `null` reads as an omitted key and leaves
+            them unchanged.
         metafields_attributes:
           type: array
           description: |
@@ -1335,7 +1350,8 @@ components:
         [id, slug, title, description, image_url, canonical_url, images,
          active, status, publish_at, seo, metafields, languages,
          sku, is_bundle, in_stock, has_subscription_plans, pricing,
-         default_variant, variants, subscription_plans, media, bundle_groups]
+         default_variant, skus, variants, subscription_plans, media,
+         bundle_groups]
       properties:
         id:
           type: integer
@@ -1488,9 +1504,12 @@ components:
         default_variant:
           type: [object, "null"]
           description: |
-            Lightweight master-variant summary (id + sku). The full variant
-            payload is in `variants`. Null when the product has no master
-            variant.
+            Lightweight variant summary (id + sku), usually the master's.
+            When the master has no option values and another variant with
+            option values is on in the shopper's country, this can be the
+            first such variant by position instead, so an Add to Cart built
+            from it adds a real choice. The full variant payload is in
+            `variants`. Null when the product has no master variant.
           required: [id, sku]
           properties:
             id:
@@ -1499,12 +1518,24 @@ components:
             sku:
               type: [string, "null"]
               example: SCRUTE-BEET-001-12OZ
+        skus:
+          type: array
+          description: |
+            Every non-blank variant SKU, ordered by variant position. Lists
+            SKUs that `default_variant` omits: products with no master
+            variant, and products with several variants. Empty when no
+            variant has a SKU.
+          items:
+            type: string
+          example: [SCRUTE-BEET-001-12OZ, SCRUTE-BEET-001-24OZ]
         variants:
           type: array
           description: |
             Every variant ordered by position, each rendered at the retail
             pricing tier. Per-country prices are keyed by ISO under
-            `variant_countries`.
+            `variant_countries`. A master with no option values can be left
+            out when another variant with option values is on in the
+            shopper's country.
           items:
             $ref: "#/components/schemas/ProductVariant"
         subscription_plans:
@@ -1546,6 +1577,18 @@ components:
             product. Empty for non-bundle products.
           items:
             $ref: "#/components/schemas/ProductBundleGroup"
+        bundle_hidden_one_time_price:
+          type: [string, "null"]
+          description: >-
+            Present only for group- or part-priced bundles on the row-priced path; absent for
+            bundle-level pricing. Emitted whether or not recurring bundle pricing is enabled.
+            The unrounded one-time amount checkout charges for the hidden included groups,
+            which the shopper cannot see or change; add it to the shopper's selected visible
+            parts to reproduce the one-time checkout total. 0.0 when no hidden group
+            contributes. Null when a hidden customizable (dynamic) group makes the amount
+            selection-bound, or when it cannot be resolved; a client must not show a
+            visible-only total then. Hidden exclusive branches are left out, same as checkout.
+          example: "20.0"
     Product:
       description: |
         Public Product read shape — the storefront (unauthenticated)
@@ -1564,8 +1607,12 @@ components:
       allOf:
         - $ref: "#/components/schemas/ProductBase"
         - type: object
-          required: [gallery]
+          required: [gallery, option_version]
           properties:
+            option_version:
+              type: integer
+              description: Authenticated-only option-text version. It changes when a value for an option declared by this product is renamed, even if no variant is joined to that value. Echo it on updates that add variants or change variant option_attrs when in-place option-value rename is enabled, or after an option used by the product or request was renamed in place (its values_version is above 0).
+              example: 3
             custom_slug:
               type: boolean
               description: |
@@ -1584,6 +1631,11 @@ components:
                 and reconcile `images_attributes` writes.
               items:
                 $ref: "#/components/schemas/ProductGalleryImage"
+            variants:
+              type: array
+              description: Authenticated detail variants, including the optimistic-lock token clients send with their next edit.
+              items:
+                $ref: "#/components/schemas/ProductVariantAuthenticated"
       unevaluatedProperties: false
 
     ProductGalleryImage:
@@ -1660,9 +1712,10 @@ components:
           example: false
         shipping_included_in_price:
           type: boolean
+          deprecated: true
           description: >-
-            True when shipping is already bundled into the price, so no separate
-            shipping charge is applied at checkout.
+            Has no effect on checkout: shipping is calculated the same whether
+            this is true or false.
           example: false
         track_quantity:
           type: boolean
@@ -1834,7 +1887,7 @@ components:
                 description: ISO 4217 currency code the prices in this entry are denominated in.
                 example: USD
               price:
-                type: string
+                type: [string, "null"]
                 description: Retail unit price in this country's currency, serialized as a decimal string.
                 example: "29.99"
               compare_price:
@@ -1851,21 +1904,21 @@ components:
                   pricing.
                 example: "26.99"
               cv:
-                type: string
+                type: [string, "null"]
                 format: decimal
                 description: >-
                   Commissionable Volume (CV) — the volume credited for this item
                   that counts toward commission calculations.
                 example: "20"
               qv:
-                type: string
+                type: [string, "null"]
                 format: decimal
                 description: >-
                   Qualifying Volume (QV) — the volume credited for this item that
                   counts toward rank and qualification requirements.
                 example: "20"
               points:
-                type: integer
+                type: [integer, "null"]
                 description: >-
                   Points the buyer accumulates on an order for purchasing this
                   item (per unit).
@@ -1913,7 +1966,7 @@ components:
                       description: Pre-formatted amount saved per cycle vs. the one-time price.
                       example: "3.00"
                     subscribe_and_save_for_display:
-                      type: string
+                      type: [string, "null"]
                       description: Localized "subscribe and save" marketing string.
                       example: Subscribe and save $3.00
         metafields:
@@ -1937,6 +1990,19 @@ components:
                 type: string
                 description: The metafield's data type.
                 example: single_line_text_field
+
+    ProductVariantAuthenticated:
+      description: Company-authenticated Product variant with its optimistic-lock token.
+      allOf:
+        - $ref: "#/components/schemas/ProductVariant"
+        - type: object
+          required: [lock_version]
+          properties:
+            lock_version:
+              type: integer
+              minimum: 0
+              description: Version read by the client and sent back with the next variant edit. A stale version returns 409.
+              example: 0
 
     SubscriptionPlan:
       type: object
@@ -2072,6 +2138,19 @@ components:
         sort_order:
           type: [integer, "null"]
           example: 1
+        bundle_plan_prices:
+          type: array
+          description: >-
+            Present only while recurring bundle pricing is enabled for the company. This
+            group's unrounded recurring share of the bundle price per offered subscription plan.
+          items:
+            $ref: '#/components/schemas/BundlePlanPrice'
+        bundle_plan_fallback_prices:
+          type: array
+          description: >-
+            Present only on dynamic groups while recurring bundle pricing is enabled for the company. The group's own fallback row price per offered subscription plan, unrounded and with the plan discount applied, which checkout charges for the group when at least one item is picked and the picked one-time sum is zero or less. Zero at Wholesale.
+          items:
+            $ref: '#/components/schemas/BundlePlanPrice'
         bundle_group_items:
           type: array
           items:
@@ -2086,6 +2165,25 @@ components:
               quantity:
                 type: [integer, "null"]
                 example: 1
+              bundle_plan_prices:
+                type: array
+                description: >-
+                  Present only while recurring bundle pricing is enabled for the company. This
+                  item's unrounded recurring share of the bundle price per offered subscription plan.
+                items:
+                  $ref: '#/components/schemas/BundlePlanPrice'
+
+    BundlePlanPrice:
+      type: object
+      description: A recurring price for one subscription plan, as an unrounded decimal string.
+      required: [subscription_plan_id, price]
+      properties:
+        subscription_plan_id:
+          type: integer
+          example: 4021
+        price:
+          type: string
+          example: '13.5'
 
     ProductCard:
       type: object
@@ -2103,7 +2201,7 @@ components:
       required:
         [id, slug, title, canonical_url, images, active, status, publish_at,
          metafields, languages, sku, is_bundle, in_stock,
-         has_subscription_plans, pricing, default_variant]
+         has_subscription_plans, pricing, default_variant, skus]
       properties:
         id:
           type: integer
@@ -2230,9 +2328,13 @@ components:
         default_variant:
           type: [object, "null"]
           description: |
-            Lightweight master-variant summary (id + sku) for the catalog
-            card. The full variant payload is on the show (`Product`) view.
-            Null when the product has no master variant.
+            Lightweight variant summary (id + sku) for the catalog card,
+            usually the master's. When the master has no option values and
+            another variant with option values is on in the shopper's
+            country, this can be the first such variant by position instead,
+            so an Add to Cart built from it adds a real choice. The full
+            variant payload is on the show (`Product`) view. Null when the
+            product has no master variant.
           required: [id, sku]
           properties:
             id:
@@ -2241,6 +2343,16 @@ components:
             sku:
               type: [string, "null"]
               example: SCRUTE-BEET-001-12OZ
+        skus:
+          type: array
+          description: |
+            Every non-blank variant SKU, ordered by variant position. Lists
+            SKUs that `default_variant` omits: products with no master
+            variant, and products with several variants. Empty when no
+            variant has a SKU.
+          items:
+            type: string
+          example: [SCRUTE-BEET-001-12OZ, SCRUTE-BEET-001-24OZ]
 
     ProductListResponse:
       allOf:
@@ -2287,6 +2399,23 @@ components:
         surface; static bundle-component links (`product_bundles_attributes`)
         ARE.
       properties:
+        option_version:
+          type: integer
+          minimum: 0
+          description: Update requests only; product create ignores it because a new product has no prior read. Send the option_version from this product's read when the update adds a variant or changes an existing variant's option_attrs and either in-place option-value rename is enabled or an option used by the product or request was previously renamed in place (its values_version is above 0); missing or stale returns 409. Option text must come from this product's read or the caller's own input; text copied from another product's read is not checked.
+        option_versions:
+          type: array
+          description: Product create only. Read GET /api/v202604/company/options and echo each existing option's values_version if a nested variant supplies a non-blank value for it and either in-place option-value rename is enabled or that option was previously renamed in place (its values_version is above 0). Missing or stale returns 409 and creates nothing; new option titles need no token. Client tokens with products:read, products:write, or storefront:write may read that endpoint.
+          items:
+            type: object
+            additionalProperties: false
+            required: [title, values_version]
+            properties:
+              title:
+                type: string
+              values_version:
+                type: integer
+                minimum: 0
         title:
           type: string
           example: Schrute Farms Beet Blend
@@ -2376,6 +2505,9 @@ components:
         application_theme_template_id:
           type: [integer, "null"]
           example: 77
+          description: |
+            Theme template to apply. The id must belong to the authenticated
+            company's store, otherwise the request returns 422.
         publish_to_portal_shop:
           type: boolean
           example: true
@@ -2398,7 +2530,15 @@ components:
           example: BEET-12OZ
         dam_asset_id:
           type: [string, "null"]
-          example: 7f3c2a90-1c2b-4d5e-9aaa-112233445566
+          description: |
+            The DAM asset to link as the product's image, sent as a string. A
+            string of digits is looked up as the asset id; any other string is
+            looked up as the asset code. A JSON number returns 422. When set,
+            it takes precedence over `dam_asset_code`. An asset the company
+            does not have links nothing, and the product is still created.
+            A Droplet whose role holds neither `storefront.view` nor
+            `products.view` also gets the product without the link.
+          example: "4821"
         metafields_attributes:
           type: array
           description: |
@@ -2547,6 +2687,10 @@ components:
             properties:
               id:
                 type: integer
+              lock_version:
+                type: integer
+                minimum: 0
+                description: Variant version read by the client. Changing an existing variant's option_attrs requires this field only while in-place option rename is on. A stale version always returns 409; an omitted required version returns 409 and rolls back the product update. List each existing variant only once; listing it twice with the same lock_version returns 409.
               option_attrs:
                 type: array
                 items:
@@ -2678,6 +2822,26 @@ components:
                         that counts toward rank and qualification requirements.
                         Nullable: null stores 0. On create an omitted key stores
                         0 too; on update it leaves the existing value unchanged.
+                    pc_cv:
+                      type: [number, string]
+                      format: decimal
+                      example: "10"
+                      description: >-
+                        Wholesale Commissionable Volume (CV) — the CV credited
+                        when the item is bought at the wholesale price. NOT
+                        nullable. Omitting the key keeps an existing value;
+                        while the wholesale value is unset, saving the country
+                        (create or update) copies the retail `cv` into it.
+                    pc_qv:
+                      type: [number, string]
+                      format: decimal
+                      example: "10"
+                      description: >-
+                        Wholesale Qualifying Volume (QV) — the QV credited when
+                        the item is bought at the wholesale price. NOT
+                        nullable. Omitting the key keeps an existing value;
+                        while the wholesale value is unset, saving the country
+                        (create or update) copies the retail `qv` into it.
                     points:
                       type: integer
                       example: 100
@@ -3489,12 +3653,22 @@ components:
     MediumAuthenticated:
       description: |
         Authenticated (company-surface) Medium read shape: the public
-        `MediumBase` plus `custom_slug`, admin metadata never rendered on the
-        public surface.
+        `MediumBase` plus `custom_slug` and `deactivate_at`, admin metadata
+        never rendered on the public surface.
       allOf:
         - $ref: "#/components/schemas/MediumBase"
         - type: object
+          required: [deactivate_at]
           properties:
+            deactivate_at:
+              type: [string, "null"]
+              format: date-time
+              description: |
+                Authenticated-only. When the medium switches itself off:
+                shortly after this time `active` becomes false, so `status`
+                reads `draft`, and `deactivate_at` is cleared. null = no
+                scheduled end.
+              example: null
             custom_slug:
               type: boolean
               description: |
@@ -3572,6 +3746,14 @@ components:
         publish_at:
           type: [string, "null"]
           format: date-time
+        deactivate_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            When the medium switches itself off. Must be after `publish_at`
+            when both are set. Returns 422 when scheduled deactivation is not
+            available for the store. Null, which clears it, and the stored
+            value sent back unchanged are always accepted.
         media_type:
           type: string
           enum: [share, training, update, upload]
@@ -4117,6 +4299,15 @@ components:
               id: { type: integer }
               relateable_type: { type: string }
               relateable_id: { type: integer }
+              relateable_slug:
+                type: [string, "null"]
+                description: |
+                  Slug of the item's related record. For relation types with a
+                  public JSON show endpoint, use this slug to fetch the record
+                  (for example `GET /api/v202604/media/{slug}` for `Medium`).
+                  `Promotion` items have no public JSON show endpoint.
+                  `null` when the record no longer exists.
+                example: why-our-paper-never-jams
               order: { type: integer }
     Playlist:
       description: |
@@ -5437,6 +5628,7 @@ paths:
                   default_variant:
                     id: 97120
                     sku: DM-20LB-CASE
+                  skus: [DM-20LB-CASE]
                 - id: 48240
                   slug: schrute-farms-beet-box
                   title: Schrute Farms Beet Box
@@ -5472,6 +5664,7 @@ paths:
                   default_variant:
                     id: 97166
                     sku: SF-BEET-BOX-12
+                  skus: [SF-BEET-BOX-12]
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
@@ -6183,6 +6376,7 @@ paths:
                   default_variant:
                     id: 913402
                     sku: DM-20LB-CASE
+                  skus: [DM-20LB-CASE]
                 - id: 48214
                   slug: scranton-branch-mug
                   title: Scranton Branch Mug
@@ -6218,6 +6412,7 @@ paths:
                   default_variant:
                     id: 913410
                     sku: DM-MUG-SCR
+                  skus: [DM-MUG-SCR]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -6504,6 +6699,7 @@ paths:
                     default_variant:
                       id: 880912
                       sku: SCRUTE-BEET-001-12OZ
+                    skus: [SCRUTE-BEET-001-12OZ]
                 meta:
                   request_id: 7f3c2a90-1c2b-4d5e-9aaa-112233445566
                   timestamp: "2026-07-15T12:34:56Z"
@@ -6601,6 +6797,7 @@ paths:
                   default_variant:
                     id: 880912
                     sku: SCRUTE-BEET-001-12OZ
+                  skus: [SCRUTE-BEET-001-12OZ]
                   variants:
                     - id: 880912
                       sku: SCRUTE-BEET-001-12OZ
@@ -6640,6 +6837,65 @@ paths:
                   bundle_groups: []
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/options:
+    get:
+      tags: [options]
+      summary: List company product options
+      operationId: companyOptionsIndex
+      x-fluid-audience: company
+      description: |
+        Returns all product options for the authenticated company, ordered by
+        position and id. The list is intentionally unpaginated because a
+        company has few options. Requires one of `products.view`,
+        `products.create`, `storefront.view`, or `storefront.update`.
+        Client tokens with `products:read`, `products:write`, or
+        `storefront:write` may read this endpoint.
+      security:
+        - bearer_auth: []
+      responses:
+        "200":
+          description: The company's product options.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [options, meta]
+                properties:
+                  options:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, title, presentation, position, values_version]
+                      properties:
+                        id:
+                          type: integer
+                        title:
+                          type: string
+                        presentation:
+                          type: [string, "null"]
+                        position:
+                          type: [integer, "null"]
+                        values_version:
+                          type: integer
+                          minimum: 0
+                          description: Counter bumped when one of this option's values is renamed in place. Product create option_versions entries must echo the current counter when the option is used.
+                  meta:
+                    $ref: "#/components/schemas/Meta"
+              example:
+                options:
+                  - id: 42
+                    title: size
+                    presentation: Size
+                    position: 1
+                    values_version: 3
+                meta:
+                  request_id: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-04-15T18:24:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/v202604/company/products:
     get:
@@ -6811,6 +7067,7 @@ paths:
                   default_variant:
                     id: 913402
                     sku: DM-20LB-CASE
+                  skus: [DM-20LB-CASE]
                   custom_slug: true
                 - id: 48214
                   slug: scranton-branch-mug
@@ -6847,6 +7104,7 @@ paths:
                   default_variant:
                     id: 913410
                     sku: DM-MUG-SCR
+                  skus: [DM-MUG-SCR]
                   custom_slug: false
                 - id: 48216
                   slug: pied-piper-box
@@ -6883,6 +7141,7 @@ paths:
                   default_variant:
                     id: 913425
                     sku: PP-BOX-01
+                  skus: [PP-BOX-01]
                   custom_slug: false
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -6896,8 +7155,11 @@ paths:
       summary: Create a Product
       operationId: companyProductsCreate
       description: |
-        Token-authenticated; requires `storefront.update` (or legacy
-        `products.update` during the migration).
+        Token-authenticated; requires `storefront.update` or
+        `products.create`. Also requires `storefront.view` or `products.view`
+        when the payload names existing company records such as collections,
+        tags, category, label, theme template, subscription plans, bundled
+        variants, warehouses, DAM assets, or nested record ids.
 
         Nested records are written with `*_attributes` keys (for example
         `variants_attributes` and `images_attributes`). A variant MUST be
@@ -6995,6 +7257,7 @@ paths:
                   timestamp: "2026-07-15T12:34:56Z"
                 product:
                   id: 60311
+                  option_version: 0
                   slug: scrute-farms-beet-blend
                   title: Schrute Farms Beet Blend
                   description: A cold-pressed beet concentrate from the finest acres on Schrute Farms.
@@ -7033,8 +7296,10 @@ paths:
                   default_variant:
                     id: 880912
                     sku: SCRUTE-BEET-001-12OZ
+                  skus: [SCRUTE-BEET-001-12OZ]
                   variants:
                     - id: 880912
+                      lock_version: 0
                       sku: SCRUTE-BEET-001-12OZ
                       is_master: true
                       title: 12 oz
@@ -7076,6 +7341,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          description: An existing option's values_version was missing or stale while in-place option-value rename was enabled, or another catalog write held the product creation lock past the wait limit. Nothing was written; call GET /api/v202604/company/options again and retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
@@ -7115,6 +7386,7 @@ paths:
                   timestamp: "2026-09-14T15:42:08Z"
                 product:
                   id: 48213
+                  option_version: 3
                   slug: 20lb-copy-paper
                   title: Dunder Mifflin 20lb Copy Paper
                   description: Bright white 20lb multipurpose copy paper, 8.5 x 11 in, 500 sheets per ream and 10 reams per case.
@@ -7166,8 +7438,10 @@ paths:
                   default_variant:
                     id: 913402
                     sku: DM-20LB-CASE
+                  skus: [DM-20LB-CASE]
                   variants:
                   - id: 913402
+                    lock_version: 0
                     sku: DM-20LB-CASE
                     is_master: true
                     title: Case (10 reams)
@@ -7369,6 +7643,7 @@ paths:
                   timestamp: "2026-09-14T15:42:08Z"
                 product:
                   id: 48213
+                  option_version: 3
                   slug: 20lb-copy-paper
                   title: Dunder Mifflin 20lb Copy Paper
                   description: Bright white 20lb multipurpose copy paper, 8.5 x 11 in, 500 sheets per ream and 10 reams per case.
@@ -7420,8 +7695,10 @@ paths:
                   default_variant:
                     id: 913402
                     sku: DM-20LB-CASE
+                  skus: [DM-20LB-CASE]
                   variants:
                   - id: 913402
+                    lock_version: 0
                     sku: DM-20LB-CASE
                     is_master: true
                     title: Case (10 reams)
@@ -7534,9 +7811,13 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            The product's bundle price lock was busy (error code
-            `bundle_price_busy` in `error.details`). Nothing was written;
-            retry.
+            The product's options or a nested variant changed after it was read,
+            another option-value or variant write is in progress, a required
+            `option_version` was omitted, or the product's bundle price lock was
+            busy (error code `bundle_price_busy` in `error.details`).
+            A stale `lock_version` always returns 409; omitting it for an `option_attrs`
+            change returns 409 only while in-place option rename is on. Nothing was written;
+            read again and retry.
           content:
             application/json:
               schema:
@@ -7549,7 +7830,8 @@ paths:
       summary: Destroy a Product
       operationId: companyProductsDestroy
       description: |
-        Token-authenticated. Soft-deletes the Product (Discard) and emits a
+        Token-authenticated; requires `storefront.update` or
+        `products.delete`. Soft-deletes the Product (Discard) and emits a
         `product.discarded` webhook post-commit so subscribers can react.
       security:
         - bearer_auth: []
@@ -7569,6 +7851,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: A nested variant changed after it was read, or another option-value or variant write is in progress. Nothing was deleted; read the product again and retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
 
   /api/v202604/company/products/{id}/shares:
     get:
@@ -9827,6 +10115,7 @@ paths:
                   active: true
                   status: published
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-03T09:12:44Z'
                   updated_at: '2026-09-16T11:40:02Z'
                   seo:
@@ -9878,6 +10167,7 @@ paths:
                   active: true
                   status: published
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-04T14:30:18Z'
                   updated_at: '2026-09-12T16:55:07Z'
                   seo:
@@ -9929,6 +10219,7 @@ paths:
                   active: false
                   status: draft
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-20T10:02:33Z'
                   updated_at: '2026-09-21T09:18:45Z'
                   seo:
@@ -10040,6 +10331,7 @@ paths:
                   active: true
                   status: published
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-22T14:15:31Z'
                   updated_at: '2026-09-22T14:15:31Z'
                   seo:
@@ -10128,6 +10420,7 @@ paths:
                   active: true
                   status: published
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-03T09:12:44Z'
                   updated_at: '2026-09-16T11:40:02Z'
                   seo:
@@ -10226,6 +10519,7 @@ paths:
                   active: false
                   status: draft
                   publish_at: null
+                  deactivate_at: null
                   created_at: '2026-09-04T14:30:18Z'
                   updated_at: '2026-09-22T14:18:02Z'
                   seo:
@@ -11550,18 +11844,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
         "404":
           $ref: "#/components/responses/NotFound"
@@ -11904,18 +12202,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
                   custom_slug: true
                   owner: null
@@ -12009,18 +12311,22 @@ paths:
                   - id: 91544
                     relateable_type: Medium
                     relateable_id: 27561
+                    relateable_slug: why-our-paper-never-jams
                     order: 1
                   - id: 91545
                     relateable_type: Product
                     relateable_id: 48213
+                    relateable_slug: schrute-farms-beet-blend
                     order: 2
                   - id: 91546
                     relateable_type: Medium
                     relateable_id: 27564
+                    relateable_slug: the-scranton-branch-tour
                     order: 3
                   - id: 91547
                     relateable_type: EnrollmentPack
                     relateable_id: 5214
+                    relateable_slug: scranton-starter-pack
                     order: 4
                   custom_slug: true
                   owner: null
@@ -12478,6 +12784,7 @@ paths:
                   default_variant:
                     id: 97141
                     sku: DM-MUG-SCR
+                  skus: [DM-MUG-SCR]
                 - id: 48240
                   slug: schrute-farms-beet-box
                   title: Schrute Farms Beet Box
@@ -12513,6 +12820,7 @@ paths:
                   default_variant:
                     id: 97166
                     sku: SF-BEET-BOX-12
+                  skus: [SF-BEET-BOX-12]
                 - id: 48255
                   slug: pied-piper-box
                   title: Pied Piper Compression Box
@@ -12548,6 +12856,7 @@ paths:
                   default_variant:
                     id: 97190
                     sku: PP-BOX-01
+                  skus: [PP-BOX-01]
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
@@ -13141,6 +13450,7 @@ paths:
                   default_variant:
                     id: 913410
                     sku: DM-MUG-SCR
+                  skus: [DM-MUG-SCR]
                 - id: 48215
                   slug: schrute-farms-beet-box
                   title: Schrute Farms Beet Box
@@ -13176,6 +13486,7 @@ paths:
                   default_variant:
                     id: 913418
                     sku: SF-BEET-BOX-STD
+                  skus: [SF-BEET-BOX-STD]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":

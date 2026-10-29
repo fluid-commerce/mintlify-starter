@@ -1,0 +1,4280 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Company API v2026-10 — Droplets
+  version: 2026-10
+  description: |-
+    Your company's droplets on v2026-10: the catalog your company can install from, the droplets your company publishes, and installing, changing and uninstalling one.
+
+    ## Authentication
+
+    Send a company admin credential as `Authorization: Bearer <token>`: an admin session token or an API token for your company. Reads need the `droplets.view` permission; writes and installs need `droplets.update`. Droplet installation tokens are refused, so a droplet cannot rewrite the catalog it is listed in.
+
+    ## Responses
+
+    Every response wraps the resource under its own key with `status` and `meta`, in the shape of the v2026-04 storefront API:
+
+    ```json
+    { "droplet": { "uuid": "drp_…", "title": "Order Sync" }, "status": 200, "meta": { "request_id": "…", "timestamp": "…" } }
+    ```
+
+    Errors use the same envelope with `error.message` and field-keyed `error.details`. A 401 is a bare `{ "message": … }`.
+
+    ## Finding a droplet
+
+    `GET /droplets?q=…` searches what droplets say they do, so look here before building one. Lists page by cursor: follow `meta.pagination.next_cursor` until it is null.
+
+    ## Showing installed droplets
+
+    `GET /droplet-installations` returns every droplet your company has installed with just its uuid, title and logo, for navigation menus and other places shown on every page. Open one with `GET /droplets/{uuid}`.
+
+    ## Managing an installation
+
+    `GET /droplet-installations/{uuid}` reads one installation with its droplet, role and scopes. `PATCH` changes its role or scopes, and `DELETE` uninstalls it: the droplet's credentials are revoked and its uninstall webhook is sent.
+
+    ## Who installed your droplet
+
+    `GET /droplets/{droplet_uuid}/installations` lists the companies that have installed a droplet your company publishes, each named by its uuid.
+
+    ## Describing a droplet
+
+    A droplet is described like the rest of the app's resources: a `title`, a one-line `summary` for its marketplace card, a longer `description` for its details page (HTML: paragraphs, headings, lists, links), a `logo_url`, and `features`, each a `title` with an optional `image_url` or `video_url`. Upload media to your company's DAM first and use the URLs it gives you.
+
+    ## Publishing a droplet
+
+    Only Fluid publishes a droplet to the public marketplace. When a draft or internal droplet is ready, `POST /droplets/{droplet_uuid}/publish-request` asks Fluid to review it; the droplet keeps its status, and keeps working for the stores that use it, until Fluid decides. Asking again while a request waits returns the same request, and `DELETE` withdraws it. Fluid publishes the droplet when it approves, or emails why it didn't; `latest_publish_review` on the droplet shows where the request stands, with the reason once rejected. Every move back to the marketplace, such as after Fluid unlists a droplet, is asked for the same way.
+
+    ## Webhook secret
+
+    Fluid signs the webhooks and data requests it sends your droplet with its webhook secret. No droplet response carries it. `POST /droplets/{uuid}/webhook-secret-rotations` generates a new one and returns it once; the old one stops being used immediately.
+
+    ## Checking a droplet's health
+
+    `GET /droplets/{uuid}/health` says how a droplet's callbacks have behaved for your company's own installation over a trailing window: each callback it answers, whether a checkout waits on it, and its request, failure and timeout counts and latency. Read `metrics_available` first: the figures come from Fluid's monitoring, so they can be missing (`metrics` null, `metrics_error` set) while the installation and its callbacks are listed in full. A zero count is a real reading: nothing called that callback in the window. `installation` is null when your company publishes the droplet but has not installed it. Only your company's installation is ever returned.
+
+    ## What changed from `/api/droplets`
+
+    - A droplet is flat: `title`, `summary`, `description`, `logo_url` and `features` replace the `name` and `settings` object, and a feature is its `title` and media.
+    - `filter[ownership]=owned` replaces `GET /api/droplets/company_droplets`.
+    - `publisher` carries the publishing company's `uuid`, not its integer id.
+    - A droplet's installations are read by their own uuid at `/droplet-installations/{uuid}`, and `PATCH` there does not need `active`.
+    - Listing who installed your droplet answers 404, not 401, when the droplet is not your company's.
+    - `PATCH` changes only what you send.
+    - `status` replaces the `active` and `publicly_available` flags, with the same rules: anyone with `droplets.update` can take a droplet offline (`draft`) or back into service (`internal`); publishing, or unlisting a published droplet, needs a Fluid root admin.
+    - `DELETE` is refused while another company has the droplet installed.
+    - Publishing goes through marketplace review (`POST /droplets/{droplet_uuid}/publish-request`) rather than an `active` or `publicly_available` flag.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: droplets
+  description: Droplets your company finds, publishes and installs.
+  x-fluid-section: Droplets
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: A company admin credential for your company. Droplet installation tokens are refused.
+  schemas:
+    Meta:
+      type: object
+      description: |
+        Response metadata included on every successful response body.
+        `request_id` and `timestamp` are always present; list endpoints
+        also add `pagination`.
+      required:
+      - request_id
+      - timestamp
+      properties:
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    Pagination:
+      type: object
+      required:
+      - cursor
+      - limit
+      - prev_cursor
+      - next_cursor
+      properties:
+        cursor:
+          type:
+          - string
+          - 'null'
+        limit:
+          type: integer
+          example: 25
+        prev_cursor:
+          type:
+          - string
+          - 'null'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    IdempotencyRefusal:
+      type: object
+      description: The idempotency guard's own refusal, rendered before the action runs.
+      required:
+      - status
+      - message
+      properties:
+        status:
+          type: string
+          enum:
+          - error
+        message:
+          type: string
+    UnauthorizedError:
+      type: object
+      description: |
+        Bare 401 body — a single `message` string, not the wrapped
+        `ErrorResponse`.
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          example: Invalid credentials.
+    ForbiddenError:
+      description: |
+        Bare 403 body: `{ error }` when a storefront permission is missing,
+        or `{ message }` when the credential is not company-admin tier.
+      oneOf:
+      - type: object
+        required:
+        - error
+        properties:
+          error:
+            type: string
+            example: Not authorized.
+      - type: object
+        required:
+        - message
+        properties:
+          message:
+            type: string
+            example: Not authorized.
+    CompanyDroplet:
+      type: object
+      description: A droplet as your company sees it.
+      required:
+      - uuid
+      - title
+      - status
+      - owned
+      - installed
+      - publisher
+      - mist_apps
+      - app_extensions
+      - categories
+      - embed_url
+      - install_embed_url
+      - client_id
+      - requested_scopes
+      - summary
+      - description
+      - logo_url
+      - features
+      - service_operational_countries
+      - created_at
+      - updated_at
+      properties:
+        uuid:
+          type: string
+          description: The droplet's public identifier.
+        title:
+          type:
+          - string
+          - 'null'
+          description: The droplet's name.
+        summary:
+          type:
+          - string
+          - 'null'
+          description: One line about the droplet, shown on its marketplace card. Plain text.
+        description:
+          type:
+          - string
+          - 'null'
+          description: The details-page description, as HTML.
+        logo_url:
+          type:
+          - string
+          - 'null'
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletFeature'
+        categories:
+          type: array
+          items:
+            type: object
+            required:
+            - slug
+            - name
+            properties:
+              slug:
+                type: string
+              name:
+                type: string
+        publisher:
+          type: object
+          required:
+          - uuid
+          - name
+          properties:
+            uuid:
+              type:
+              - string
+              - 'null'
+              format: uuid
+              description: The publishing company's uuid.
+            name:
+              type:
+              - string
+              - 'null'
+          description: The company that publishes the droplet.
+        mist_apps:
+          type: array
+          description: The Mist apps that serve this droplet, newest first. Empty for a droplet not built in Mist. Only apps
+            of the publishing company are listed, and an app being deleted or archived is left out.
+          items:
+            $ref: '#/components/schemas/CompanyDropletMistApp'
+        app_extensions:
+          type: array
+          description: The extensions the droplet ships, such as a theme extension.
+          items:
+            $ref: '#/components/schemas/CompanyDropletAppExtension'
+        status:
+          type: string
+          enum:
+          - draft
+          - internal
+          - pending
+          - published
+          - archived
+          - suspended
+          description: '`published`: in the public marketplace. `draft` and `internal`: private to the publisher, and an internal
+            droplet also to companies it is granted to. `archived`: no new installs. `suspended`: stopped by Fluid for
+            every store and out of the marketplace; its publisher and the companies that installed it still see it.'
+        owned:
+          type: boolean
+          description: Your company publishes this droplet.
+        installed:
+          type: boolean
+          description: Your company has this droplet installed.
+        requested_scopes:
+          type: array
+          items:
+            type: string
+          description: What the droplet asks to read or change in a store.
+        service_operational_countries:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+            pattern: ^[A-Z]{3}$
+          description: ISO3 codes of the countries the droplet works in; null when it works everywhere.
+        embed_url:
+          type:
+          - string
+          - 'null'
+          description: Where the droplet renders inside Fluid admin.
+        install_embed_url:
+          type:
+          - string
+          - 'null'
+          readOnly: true
+          description: Where this company's install frames the droplet. Follows the install's pinned manifest when it declares a detail page, otherwise equals embed_url; null when the pinned detail page is refused.
+        client_id:
+          type:
+          - string
+          - 'null'
+          description: The droplet's OAuth client id. Not a secret; a full-page embed sends it to mint a session token. Null
+            when the droplet has no OAuth client.
+        egress_proxy_requested:
+          type: boolean
+          description: The publisher asked for the droplet's traffic to leave through Fluid's egress proxy. Present only for
+            a root admin, a company admin, or a company API token, so an admin sees it before installing.
+        egress_proxy_enabled:
+          type: boolean
+          description: A Fluid root admin recorded the egress grant. Present to the same callers as `egress_proxy_requested`.
+        liveness_opt_out_requested:
+          type: boolean
+          description: The publisher asked to be excused from Fluid's liveness probes. Only a Fluid root admin's grant takes
+            effect. Present only for a droplet your company publishes, to its admins and its company API tokens with `droplets.view`; hidden for droplets owned by another company.
+        liveness_opt_out_reason:
+          type:
+          - string
+          - 'null'
+          description: Why the publisher asked to be excused from liveness probes. Present to the same callers as `liveness_opt_out_requested`, which are the publishing company's admins and its API tokens with `droplets.view`, never for a droplet owned by another company.
+        liveness_opt_out_granted:
+          type: boolean
+          description: A Fluid root admin granted the opt-out, so probes are skipped. Present to the same callers as `liveness_opt_out_requested`, which are the publishing company's admins and its API tokens with `droplets.view`, never for a droplet owned by another company.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CompanyDropletMistApp:
+      type: object
+      description: A Mist app that serves the droplet.
+      required:
+      - id
+      - name
+      - slug
+      - public_url
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The Mist app's id, as the Mist API names it.
+        name:
+          type:
+          - string
+          - 'null'
+          description: The name the Mist app's owner gave it.
+        slug:
+          type: string
+          description: Six-character short id that the app's repository and URL carry.
+          example: 3bed85
+        public_url:
+          type:
+          - string
+          - 'null'
+    CompanyDropletAppExtension:
+      type: object
+      description: An extension the droplet ships.
+      required:
+      - extension_type
+      - name
+      - version
+      - status
+      properties:
+        extension_type:
+          type: string
+          enum:
+          - theme
+        name:
+          type: string
+        version:
+          type:
+          - string
+          - 'null'
+        status:
+          type: string
+          enum:
+          - draft
+          - publishing
+          - published
+          - error
+        error_message:
+          type:
+          - string
+          - 'null'
+          description: Why publishing the extension failed. Only on a droplet your company publishes, read one at a time.
+    CompanyDropletDetail:
+      description: A droplet, with the endpoints only its publisher sees.
+      allOf:
+      - $ref: '#/components/schemas/CompanyDroplet'
+      - type: object
+        properties:
+          install_webhook_url:
+            type:
+            - string
+            - 'null'
+            description: Called when a company installs the droplet. Publisher only.
+          uninstall_webhook_url:
+            type:
+            - string
+            - 'null'
+            description: Called when a company uninstalls the droplet. Publisher only.
+          widget_data_url:
+            type:
+            - string
+            - 'null'
+            description: Where widget capability calls are served from. Publisher only.
+          data_url:
+            type:
+            - string
+            - 'null'
+            description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Publisher only.
+          lifecycle_contract_version:
+            type: string
+            enum:
+            - v1
+            - v2
+            description: Which install and uninstall webhook contract the droplet speaks. Publisher only.
+          pending_requested_scopes:
+            type:
+            - array
+            - 'null'
+            items:
+              type: string
+            description: The full scope list waiting on marketplace review after a published droplet asked for new scopes,
+              or null. Publisher only.
+          latest_scope_review:
+            type:
+            - object
+            - 'null'
+            description: Fluid's latest review of scopes this droplet asked to add, with the reason when it was rejected
+              (the reason the publisher was emailed), or null when it never asked. Publisher only.
+            required:
+            - state
+            - added_scopes
+            - reason
+            - requested_at
+            - decided_at
+            properties:
+              state:
+                type: string
+                enum:
+                - pending
+                - approved
+                - rejected
+              added_scopes:
+                type: array
+                items:
+                  type: string
+                description: The scopes the request asked to add.
+              reason:
+                type:
+                - string
+                - 'null'
+                description: Why Fluid rejected the request; null unless rejected.
+              requested_at:
+                type: string
+                format: date-time
+              decided_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+                description: When Fluid approved or rejected it; null while pending.
+          latest_publish_review:
+            description: Your latest request for Fluid to publish the droplet, pending, approved or rejected, with the reason
+              once rejected; null when it never asked, or after withdrawing. Publisher only.
+            oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/CompanyDropletPublishRequest'
+          latest_governance_action:
+            type:
+            - object
+            - 'null'
+            description: Fluid's latest marketplace action on the droplet (suspended, reinstated, unlisted, relisted or
+              taken down), with the reason the publisher was emailed, or null. Publisher only.
+            required:
+            - kind
+            - reason
+            - status_after
+            - state
+            - created_at
+            properties:
+              kind:
+                type: string
+                enum:
+                - suspend
+                - reinstate
+                - unlist
+                - relist
+                - take_down
+              reason:
+                type: string
+              status_after:
+                type: string
+                description: The droplet's status after the action.
+              state:
+                type: string
+                enum:
+                - running
+                - completed
+                - failed
+                description: A take-down runs in the background; every other action completes at once.
+              created_at:
+                type: string
+                format: date-time
+    CompanyDropletListResponse:
+      type: object
+      description: A page of droplets.
+      required:
+      - droplets
+      - status
+      - meta
+      properties:
+        droplets:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDroplet'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletResponse:
+      type: object
+      description: One droplet.
+      required:
+      - droplet
+      - status
+      - meta
+      properties:
+        droplet:
+          $ref: '#/components/schemas/CompanyDropletDetail'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletHealthResponse:
+      type: object
+      description: A droplet's health for your company's installation.
+      required:
+      - droplet_health
+      - status
+      - meta
+      properties:
+        droplet_health:
+          $ref: '#/components/schemas/CompanyDropletHealth'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletHealth:
+      type: object
+      required:
+      - window_hours
+      - generated_at
+      - metrics_available
+      - metrics_error
+      - droplet
+      - installation
+      properties:
+        window_hours:
+          type: integer
+          description: The trailing window the figures cover, in hours.
+        generated_at:
+          type: string
+          format: date-time
+          description: When the figures were read. Readings are reused for up to a minute.
+        metrics_available:
+          type: boolean
+          description: Whether the callback figures could be read. When false, every `metrics` is null and `metrics_error`
+            says why.
+        metrics_error:
+          description: Why the figures are missing or partial, or null.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletHealthMetricsError'
+        droplet:
+          type: object
+          required:
+          - uuid
+          - name
+          - status
+          properties:
+            uuid:
+              type: string
+            name:
+              type:
+              - string
+              - 'null'
+            status:
+              type: string
+        installation:
+          description: Your company's active installation of the droplet, or null when it has none.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletHealthInstallation'
+    CompanyDropletHealthMetricsError:
+      type: object
+      required:
+      - type
+      - description
+      properties:
+        type:
+          type: string
+          enum:
+          - unavailable
+          - incomplete
+          description: '`unavailable`: the figures could not be read; try again in a few minutes. `incomplete`: the window
+            was read but may be missing some callbacks.'
+        description:
+          type: string
+          description: A fixed plain-language sentence for the type.
+    CompanyDropletHealthInstallation:
+      type: object
+      required:
+      - installation_uuid
+      - installation_status
+      - scopes
+      - classification
+      - verdict
+      - metrics
+      - registrations
+      properties:
+        installation_uuid:
+          type: string
+        installation_status:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The API scopes the installation holds.
+        classification:
+          $ref: '#/components/schemas/CompanyDropletHealthClassification'
+        verdict:
+          type: string
+          enum:
+          - healthy
+          - degraded
+          - failing
+          - idle
+          - unknown
+          description: The installation's current state from the health rollup, independent of `window_hours`. A stale or
+            missing rollup reads `unknown`, never `healthy`; `idle` means it was read and nothing was called.
+        metrics:
+          description: Every callback of the installation together. Null when the figures could not be read.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletHealthMetrics'
+        registrations:
+          type: array
+          description: The callbacks the droplet answers for your company.
+          items:
+            $ref: '#/components/schemas/CompanyDropletHealthRegistration'
+    CompanyDropletHealthClassification:
+      type: object
+      description: Where the installation sits relative to a checkout, from its active callbacks and its scopes.
+      required:
+      - criticality
+      - domains
+      - checkout_path
+      - commerce_access
+      - blocking
+      - reasons
+      properties:
+        criticality:
+          type: string
+          enum:
+          - checkout_blocking
+          - commerce_blocking
+          - auth_blocking
+          - checkout_async
+          - non_blocking
+        domains:
+          type: array
+          items:
+            type: string
+            enum:
+            - cart
+            - subscription
+            - order
+            - payment
+            - auth
+            - email
+            - platform
+        checkout_path:
+          type: boolean
+          description: Whether it answers a callback fired during a checkout.
+        commerce_access:
+          type: boolean
+          description: Whether its scopes can read or change cart, order or payment data.
+        blocking:
+          type: boolean
+          description: Whether Fluid waits on its response to finish a request.
+        reasons:
+          type: array
+          items:
+            type: string
+    CompanyDropletHealthRegistration:
+      type: object
+      required:
+      - uuid
+      - definition_name
+      - criticality
+      - domain
+      - url
+      - active
+      - country_codes
+      - metrics
+      properties:
+        uuid:
+          type: string
+        definition_name:
+          type: string
+          description: The callback it answers, e.g. `update_cart_tax`.
+        criticality:
+          type:
+          - string
+          - 'null'
+          enum:
+          - checkout_blocking
+          - commerce_blocking
+          - auth_blocking
+          - checkout_async
+          - non_blocking
+          - null
+          description: '`checkout_blocking` means a checkout waits on this callback.'
+        domain:
+          type:
+          - string
+          - 'null'
+          enum:
+          - cart
+          - subscription
+          - order
+          - payment
+          - auth
+          - email
+          - platform
+          - null
+        url:
+          type:
+          - string
+          - 'null'
+          description: The endpoint Fluid calls, as scheme, host and path only. A query string, fragment or credentials in
+            the registered URL are never returned.
+        active:
+          type:
+          - boolean
+          - 'null'
+        country_codes:
+          type: array
+          items:
+            type: string
+          description: Countries the callback is limited to; empty means every country.
+        metrics:
+          description: Null when the figures could not be read; zero requests means nothing called it.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletHealthMetrics'
+    CompanyDropletHealthMetrics:
+      type: object
+      required:
+      - request_count
+      - failure_count
+      - timeout_count
+      - failure_rate
+      - average_ms
+      - worst_p95_ms
+      - max_ms
+      properties:
+        request_count:
+          type: integer
+        failure_count:
+          type: integer
+          description: Requests that did not return a successful answer.
+        timeout_count:
+          type: integer
+          description: Requests that timed out, a subset of failures.
+        failure_rate:
+          type: number
+          description: Failures over requests, 0 to 1.
+        average_ms:
+          type:
+          - number
+          - 'null'
+        worst_p95_ms:
+          type:
+          - number
+          - 'null'
+          description: The highest p95 among the callbacks folded in.
+        max_ms:
+          type:
+          - number
+          - 'null'
+    CompanyDropletStatusResponse:
+      type: object
+      description: One droplet installation's status.
+      required:
+      - droplet_status
+      - status
+      - meta
+      properties:
+        droplet_status:
+          $ref: '#/components/schemas/CompanyDropletStatus'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletStatus:
+      type: object
+      required:
+      - generated_at
+      - window_hours
+      - installation
+      - history
+      - sections
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        window_hours:
+          type: integer
+          description: The trailing window `sections.metrics` and `sections.webhook_health` cover.
+        installation:
+          $ref: '#/components/schemas/CompanyDropletStatusInstallation'
+        history:
+          description: Every installation your company has made of the droplet, newest first. Null when read by installation uuid.
+          oneOf:
+          - type: 'null'
+          - type: array
+            items:
+              $ref: '#/components/schemas/CompanyDropletStatusInstallation'
+        sections:
+          $ref: '#/components/schemas/CompanyDropletStatusSections'
+    CompanyDropletStatusInstallation:
+      type: object
+      description: One of your company's installations of a droplet, in any status.
+      required:
+      - uuid
+      - status
+      - droplet
+      - created_at
+      - updated_at
+      properties:
+        uuid:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - pending_uninstall
+          - uninstalled
+          description: The installation's own status. For what to tell a merchant, read `sections.install_status`.
+        droplet:
+          type: object
+          required:
+          - uuid
+          - name
+          properties:
+            uuid:
+              type: string
+            name:
+              type:
+              - string
+              - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: For an uninstalled installation, when it last changed, which is when it was uninstalled.
+    CompanyDropletStatusStateSignal:
+      type: object
+      required:
+      - state
+      - observed_at
+      properties:
+        state:
+          type: string
+          description: The signal's state; `unknown` when the reading is stale or absent.
+        observed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CompanyDropletStatusError:
+      type: object
+      description: Why a section could not be read. A fixed category and sentence, never a provider's own text.
+      required:
+      - type
+      - description
+      properties:
+        type:
+          type: string
+          enum:
+          - unavailable
+          - incomplete
+        description:
+          type: string
+    CompanyDropletStatusSection:
+      type: object
+      description: One part of the status. Each part is read on its own, so one that fails does not hide the others.
+      required:
+      - available
+      - error
+      - data
+      properties:
+        available:
+          type: boolean
+          description: False when the part could not be read, and for `connect`, which is not built yet.
+        error:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletStatusError'
+        data:
+          type:
+          - object
+          - 'null'
+    CompanyDropletStatusSections:
+      type: object
+      required:
+      - deployment
+      - install_status
+      - lifecycle
+      - health
+      - metrics
+      - webhook_health
+      - app_hosts
+      - reconcile
+      - support
+      - connect
+      properties:
+        deployment:
+          description: The droplet's Mist app deployments for your company; unavailable unless you hold `mist.code`.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required:
+                  - hosted
+                  - deployments
+                  properties:
+                    hosted:
+                      type: boolean
+                      description: Whether your company has a Mist app serving the droplet.
+                    source:
+                      type: string
+                      enum:
+                      - vercel_webhook
+                      - vercel_live
+                      description: Where the deployments came from. `vercel_webhook` is the table the Vercel webhooks keep; `vercel_live` means it was stale and Vercel was read. Absent when Vercel could not be read and the table rows may be stale, or the app is not provisioned.
+                    deployments:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                        - id
+                        - state
+                        - url
+                        - commit_sha
+                        - created_at
+                        - target
+                        properties:
+                          id:
+                            type: string
+                          state:
+                            type: string
+                          url:
+                            type:
+                            - string
+                            - 'null'
+                          commit_sha:
+                            type:
+                            - string
+                            - 'null'
+                          created_at:
+                            type:
+                            - string
+                            - 'null'
+                          target:
+                            type:
+                            - string
+                            - 'null'
+        install_status:
+          description: What to tell the merchant, from the installation's status and its latest lifecycle webhook.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/CompanyDropletInstallationLifecycle'
+        lifecycle:
+          description: The installation's install and uninstall webhook deliveries, newest first.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required:
+                  - deliveries
+                  properties:
+                    deliveries:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                        - event
+                        - trigger
+                        - state
+                        - attempts
+                        - last_status
+                        - last_error_category
+                        - created_at
+                        - updated_at
+                        properties:
+                          event:
+                            type: string
+                            enum:
+                            - installed
+                            - uninstalled
+                          trigger:
+                            type: string
+                            enum:
+                            - install
+                            - uninstall
+                            - retry
+                          state:
+                            type: string
+                            enum:
+                            - pending
+                            - enqueue_failed
+                            - retrying
+                            - delivered
+                            - rejected
+                            - exhausted
+                          attempts:
+                            type: integer
+                          last_status:
+                            type:
+                            - integer
+                            - 'null'
+                          last_error_category:
+                            type:
+                            - string
+                            - 'null'
+                          created_at:
+                            type: string
+                            format: date-time
+                          updated_at:
+                            type: string
+                            format: date-time
+        health:
+          description: The installation's health rollup, with its verdict and signals including the circuit breaker.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required:
+                  - verdict
+                  - signals
+                  properties:
+                    verdict:
+                      type: string
+                      enum: [healthy, degraded, failing, idle, unknown]
+                      description: This installation's callback verdict worsened by its delivery verdict and its circuit breaker, and, when enabled for the platform, by the liveness and endpoint probe signals, from the health rollup and independent of `window_hours`. A stale or missing rollup reads `unknown`.
+                    signals:
+                      type: object
+                      required: [callback, delivery, breaker, lifecycle, liveness, probe]
+                      properties:
+                        callback:
+                          type: object
+                          required: [verdict]
+                          properties:
+                            verdict:
+                              type: string
+                              enum: [healthy, degraded, failing, idle, unknown]
+                        delivery:
+                          type: object
+                          description: How this installation's own webhook, lifecycle and callback deliveries fared, from the share that failed. `idle` when none were attempted in the window.
+                          required: [verdict]
+                          properties:
+                            verdict:
+                              type: string
+                              enum: [healthy, degraded, failing, idle, unknown]
+                        breaker:
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+                        lifecycle:
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+                        liveness:
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+                        probe:
+                          description: "Whether Fluid can reach this installation's registered embed and callback hosts: `reachable`, `unreachable` (the latest three probes of an endpoint all failed in transport), or `unknown`."
+                          $ref: '#/components/schemas/CompanyDropletStatusStateSignal'
+        metrics:
+          description: Every callback of this installation together over `window_hours`; unavailable when New Relic cannot be read.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [window_hours, request_count, failure_count, timeout_count, failure_rate, average_ms, worst_p95_ms, max_ms]
+                  properties:
+                    window_hours:
+                      type: integer
+                    request_count:
+                      type: integer
+                    failure_count:
+                      type: integer
+                    timeout_count:
+                      type: integer
+                    failure_rate:
+                      type: number
+                    average_ms:
+                      type: [number, 'null']
+                    worst_p95_ms:
+                      type: [number, 'null']
+                    max_ms:
+                      type: [number, 'null']
+        webhook_health:
+          description: The installation's ordinary event webhooks, kept apart from lifecycle delivery.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [window_hours, verdict, webhooks, deliveries, recent_failures, shared_events]
+                  properties:
+                    window_hours:
+                      type: integer
+                    verdict:
+                      type: string
+                      enum: [none, ambiguous, healthy, attention, failing]
+                      description: '`none` when the installation has no webhooks. `ambiguous` when every event it takes is shared with another of your webhooks, so no delivery can be attributed to it. `failing` when its last three settled deliveries failed or under 80% of settled deliveries succeeded.'
+                    webhooks:
+                      type: object
+                      required: [total, active, events]
+                      properties:
+                        total:
+                          type: integer
+                        active:
+                          type: integer
+                        events:
+                          type: array
+                          items:
+                            type: string
+                    deliveries:
+                      type: object
+                      required: [total, succeeded, failed, pending, success_rate, capped]
+                      properties:
+                        total:
+                          type: integer
+                        succeeded:
+                          type: integer
+                        failed:
+                          type: integer
+                        pending:
+                          type: integer
+                        success_rate:
+                          type: [number, 'null']
+                        capped:
+                          type: boolean
+                          description: True when the window held more deliveries than were counted.
+                    recent_failures:
+                      type: array
+                      items:
+                        type: object
+                        required: [id, event, status, at]
+                        properties:
+                          id:
+                            type: string
+                          event:
+                            type: string
+                          status:
+                            type: [string, 'null']
+                          at:
+                            type: string
+                            format: date-time
+                    shared_events:
+                      type: array
+                      items:
+                        type: string
+                      description: Events another active webhook of your company also takes. Deliveries are matched by event name, so these counts may include the other webhook's deliveries.
+        app_hosts:
+          description: Which of your company's webhooks deliver to the Mist app's hosts; unavailable unless you hold `mist.code`.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [hosted, hosts, webhooks, shared_events, capped]
+                  properties:
+                    hosted:
+                      type: boolean
+                    hosts:
+                      type: array
+                      items:
+                        type: string
+                    webhooks:
+                      type: array
+                      items:
+                        type: object
+                        required: [event, active, url]
+                        properties:
+                          event:
+                            type: [string, 'null']
+                          active:
+                            type: boolean
+                          url:
+                            type: [string, 'null']
+                            description: Origin and path only.
+                    shared_events:
+                      type: array
+                      items:
+                        type: string
+                    capped:
+                      type: boolean
+                      description: True when your company has more webhooks than were matched.
+        reconcile:
+          description: Where the installation stands against its droplet's manifest, with the resources it owns because of it.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [state, pinned_version, target_version, attempts, next_at, last_error_code, resources, truncated]
+                  properties:
+                    state:
+                      type: string
+                      enum: [not_adopted, pending, reconciling, in_sync, awaiting_consent, failed_retrying, failed_terminal]
+                    pinned_version:
+                      type: [string, 'null']
+                    target_version:
+                      type: [string, 'null']
+                    attempts:
+                      type: integer
+                    next_at:
+                      type: [string, 'null']
+                      format: date-time
+                    last_error_code:
+                      type: [string, 'null']
+                    resources:
+                      type: array
+                      description: Empty unless the caller holds `droplets.view`. A role resource's key reads `role`, never the role id.
+                      items:
+                        type: object
+                        required: [kind, key, status, error_code]
+                        properties:
+                          kind:
+                            type: string
+                          key:
+                            type: string
+                          status:
+                            type: string
+                            enum: [pending, applied, failed, skipped]
+                          error_code:
+                            type: [string, 'null']
+                    truncated:
+                      type: boolean
+                      description: True when the installation owns more resources than are listed (the list holds the first 200 by kind and key).
+        support:
+          description: Whether the installation's pinned version is still supported by its droplet, and until when it may stay on an older one. Nothing about access changes when the window ends.
+          allOf:
+          - $ref: '#/components/schemas/CompanyDropletStatusSection'
+          - properties:
+              data:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  required: [state, min_version, window_ends_at]
+                  properties:
+                    state:
+                      type: string
+                      enum: [supported, deprecated, action_required]
+                      description: '`supported`: the pinned version is at or above the droplet''s minimum supported version. `deprecated`: below it, inside the deprecation window. `action_required`: below it and the window is over.'
+                    min_version:
+                      type: [string, 'null']
+                      description: The minimum supported version the installation is below; `null` when supported.
+                    window_ends_at:
+                      type: [string, 'null']
+                      format: date-time
+                      description: When the deprecation window closes; `null` when supported.
+        connect:
+          description: Not built yet. Always `available` false.
+          $ref: '#/components/schemas/CompanyDropletStatusSection'
+    CompanyDropletInstallation:
+      type: object
+      required:
+      - uuid
+      - droplet_uuid
+      - droplet
+      - status
+      - scopes
+      - effective_scopes
+      - installed_by
+      - lifecycle
+      - created_at
+      - updated_at
+      properties:
+        uuid:
+          type: string
+          description: The installation's public identifier.
+        droplet_uuid:
+          type: string
+        droplet:
+          type: object
+          description: The droplet installed.
+          required:
+          - uuid
+          - title
+          - logo_url
+          properties:
+            uuid:
+              type: string
+            title:
+              type:
+              - string
+              - 'null'
+            logo_url:
+              type:
+              - string
+              - 'null'
+        role:
+          description: The role the droplet acts with, or null. Present only when you have the `roles.view` permission.
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - id
+            - uuid
+            - name
+            properties:
+              id:
+                type: integer
+                deprecated: true
+                description: 'Deprecated: use `uuid`.'
+              uuid:
+                type: string
+                format: uuid
+              name:
+                type:
+                - string
+                - 'null'
+        installed_by:
+          description: Who installed it; null for installations made before this was recorded or by an API credential.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/CompanyDropletInstaller'
+        status:
+          type: string
+          enum:
+          - active
+          - pending_uninstall
+          - uninstalled
+        lifecycle:
+          $ref: '#/components/schemas/CompanyDropletInstallationLifecycle'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The scopes granted.
+        effective_scopes:
+          type: array
+          items:
+            type: string
+          description: 'The scopes in force: those granted, within what the droplet may request.'
+        created_at:
+          type: string
+          format: date-time
+          description: When it was installed.
+        updated_at:
+          type: string
+          format: date-time
+    CompanyDropletInstallationLifecycle:
+      type: object
+      description: What to tell the merchant about an installation, from its status and the latest lifecycle webhook delivery.
+      required:
+      - status
+      - delivery_state
+      - reason
+      properties:
+        status:
+          type: string
+          enum:
+          - active
+          - needs_attention
+          - uninstalling
+          - failed
+          - uninstalled
+          description: '`needs_attention`: active, but the install webhook was rejected, exhausted its retries or could not be queued, or the installation is waiting for consent to a wider manifest (`awaiting_consent`) or its reconcile failed for good (`failed_terminal`), or it is pinned below its droplet''s minimum supported version (`deprecated` inside the deprecation window, `action_required` after it; nothing about access changes). `failed`: the uninstall webhook was rejected, exhausted its retries or could not be queued while the installation is still `pending_uninstall`. A rejected or exhausted uninstall is finalized anyway, so the installation then reads `uninstalled`; one whose webhook could not be queued stays `pending_uninstall` until the uninstall is requested again.'
+        delivery_state:
+          type: string
+          enum:
+          - unknown
+          - pending
+          - enqueue_failed
+          - retrying
+          - delivered
+          - rejected
+          - exhausted
+          description: The latest delivery's state, `unknown` when none was recorded.
+        reason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - install_webhook_failed
+          - reconcile_awaiting_consent
+          - reconcile_failed_terminal
+          - deprecated
+          - action_required
+          - liveness_failing
+          - null
+          description: 'Why the status is `needs_attention`: `install_webhook_failed` when the install webhook failed, `reconcile_awaiting_consent` when a wider manifest waits for consent, `reconcile_failed_terminal` when applying the manifest failed for good, `deprecated` or `action_required` when the installation is pinned below the droplet''s minimum supported version (inside, or after, its deprecation window), `liveness_failing` when the droplet is failing its liveness checks. `null` for every other status.'
+    CompanyDropletInstaller:
+      type: object
+      description: A person on your company's staff who installed a droplet.
+      required:
+      - uuid
+      - name
+      - email
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: The person's public identifier.
+        name:
+          type:
+          - string
+          - 'null'
+          description: Their full name, or null when none is on record.
+        email:
+          type: string
+          description: Their email address.
+    CompanyDropletInstallationResponse:
+      type: object
+      description: One installation.
+      required:
+      - droplet_installation
+      - status
+      - meta
+      properties:
+        droplet_installation:
+          $ref: '#/components/schemas/CompanyDropletInstallation'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletCreateRequest:
+      type: object
+      required:
+      - droplet
+      properties:
+        droplet:
+          type: object
+          required:
+          - title
+          - embed_url
+          properties:
+            title:
+              type: string
+              minLength: 1
+              description: The droplet's name.
+            embed_url:
+              type: string
+              minLength: 1
+              description: Where the droplet renders inside Fluid admin.
+            install_webhook_url:
+              type:
+              - string
+              - 'null'
+              description: Called when a company installs the droplet.
+            uninstall_webhook_url:
+              type:
+              - string
+              - 'null'
+              description: Called when a company uninstalls the droplet.
+            widget_data_url:
+              type:
+              - string
+              - 'null'
+              description: Where widget capability calls are served from.
+            requested_scopes:
+              type: array
+              items:
+                type: string
+              description: What the droplet asks to read or change in a store.
+            categories:
+              type: array
+              items:
+                type: string
+              description: Category slugs. Replaces the droplet's categories; an unknown slug is a 422 and nothing is written.
+            summary:
+              type:
+              - string
+              - 'null'
+              description: One line for the marketplace card. Plain text.
+            description:
+              type:
+              - string
+              - 'null'
+              description: The details-page description, as HTML.
+            logo_url:
+              type:
+              - string
+              - 'null'
+            features:
+              type: array
+              items:
+                $ref: '#/components/schemas/CompanyDropletFeatureWrite'
+              description: Replaces the feature list, in this order.
+            service_operational_countries:
+              type:
+              - array
+              - 'null'
+              items:
+                type: string
+                pattern: ^[A-Z]{3}$
+            data_url:
+              type:
+              - string
+              - 'null'
+              description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Sent together, the two
+                must match.
+            extension_zip_url:
+              type: string
+              minLength: 1
+              description: A public HTTPS URL of an extension zip (such as a theme extension) to import once the droplet is
+                saved. Any other URL is refused with 422 and nothing is written. The import runs in the background; read
+                `app_extensions` for its status.
+            egress_proxy_requested:
+              type: boolean
+              description: Ask for the droplet's installations to reach the internet through Fluid's egress proxy, from Fluid's
+                IP addresses. Only a company admin or a company API token may send it (403 otherwise). Setting it to false
+                also withdraws Fluid's grant. The grant itself, `egress_proxy_enabled`, is not set through this API.
+            liveness_opt_out_requested:
+              type: boolean
+              description: Ask to be excused from Fluid's liveness probes; needs `liveness_opt_out_reason`. The request alone
+                changes nothing, because only a Fluid root admin's grant takes effect, and that is not set through this API. Only a
+                company admin or a company API token may send it (403 otherwise). Setting it to false withdraws the grant.
+            liveness_opt_out_reason:
+              type:
+              - string
+              - 'null'
+              description: Why the droplet should be excused from liveness probes. Same audience as `liveness_opt_out_requested`.
+            lifecycle_contract_version:
+              type: string
+              enum:
+              - v1
+              - v2
+              description: Which install and uninstall webhook contract the droplet speaks.
+            status:
+              type: string
+              enum:
+              - draft
+              - internal
+              - published
+              description: '`draft` takes the droplet offline. `internal` makes it installable by your company and companies
+                it is granted to; a published droplet cannot be unlisted this way. `published` lists it in the public marketplace
+                and needs a Fluid root admin (403 otherwise): publish through marketplace review. Sending the current status
+                changes nothing, and moves the droplet''s lifecycle does not allow (for example out of `suspended`, or out
+                of service while other companies have it installed) are refused with 422. On create, the droplet starts from
+                `draft`.'
+    CompanyDropletUpdateRequest:
+      type: object
+      required:
+      - droplet
+      properties:
+        droplet:
+          type: object
+          description: Only the keys sent change.
+          properties:
+            title:
+              type: string
+              minLength: 1
+              description: The droplet's name.
+            embed_url:
+              type: string
+              minLength: 1
+              description: Where the droplet renders inside Fluid admin.
+            install_webhook_url:
+              type:
+              - string
+              - 'null'
+              description: Called when a company installs the droplet.
+            uninstall_webhook_url:
+              type:
+              - string
+              - 'null'
+              description: Called when a company uninstalls the droplet.
+            widget_data_url:
+              type:
+              - string
+              - 'null'
+              description: Where widget capability calls are served from.
+            requested_scopes:
+              type: array
+              items:
+                type: string
+              description: What the droplet asks to read or change in a store. On a published droplet, scopes added here
+                may wait for Fluid review (see `pending_requested_scopes` in the response) while the droplet keeps the scopes
+                it had; removing a scope applies at once.
+            categories:
+              type: array
+              items:
+                type: string
+              description: Category slugs. Replaces the droplet's categories; an unknown slug is a 422 and nothing is written.
+            summary:
+              type:
+              - string
+              - 'null'
+              description: One line for the marketplace card. Plain text.
+            description:
+              type:
+              - string
+              - 'null'
+              description: The details-page description, as HTML.
+            logo_url:
+              type:
+              - string
+              - 'null'
+            features:
+              type: array
+              items:
+                $ref: '#/components/schemas/CompanyDropletFeatureWrite'
+              description: Replaces the feature list, in this order.
+            service_operational_countries:
+              type:
+              - array
+              - 'null'
+              items:
+                type: string
+                pattern: ^[A-Z]{3}$
+            data_url:
+              type:
+              - string
+              - 'null'
+              description: The same URL as `widget_data_url`, by the name the droplet manifest uses. Sent together, the two
+                must match.
+            extension_zip_url:
+              type: string
+              minLength: 1
+              description: A public HTTPS URL of an extension zip (such as a theme extension) to import once the droplet is
+                saved. Any other URL is refused with 422 and nothing is written. The import runs in the background; read
+                `app_extensions` for its status.
+            egress_proxy_requested:
+              type: boolean
+              description: Ask for the droplet's installations to reach the internet through Fluid's egress proxy, from Fluid's
+                IP addresses. Only a company admin or a company API token may send it (403 otherwise). Setting it to false
+                also withdraws Fluid's grant. The grant itself, `egress_proxy_enabled`, is not set through this API.
+            liveness_opt_out_requested:
+              type: boolean
+              description: Ask to be excused from Fluid's liveness probes; needs `liveness_opt_out_reason`. The request alone
+                changes nothing, because only a Fluid root admin's grant takes effect, and that is not set through this API. Only a
+                company admin or a company API token may send it (403 otherwise). Setting it to false withdraws the grant.
+            liveness_opt_out_reason:
+              type:
+              - string
+              - 'null'
+              description: Why the droplet should be excused from liveness probes. Same audience as `liveness_opt_out_requested`.
+            lifecycle_contract_version:
+              type: string
+              enum:
+              - v1
+              - v2
+              description: Which install and uninstall webhook contract the droplet speaks.
+            status:
+              type: string
+              enum:
+              - draft
+              - internal
+              - published
+              description: '`draft` takes the droplet offline. `internal` makes it installable by your company and companies
+                it is granted to; a published droplet cannot be unlisted this way. `published` lists it in the public marketplace
+                and needs a Fluid root admin (403 otherwise): publish through marketplace review. Sending the current status
+                changes nothing, and moves the droplet''s lifecycle does not allow (for example out of `suspended`, or out
+                of service while other companies have it installed) are refused with 422. On create, the droplet starts from
+                `draft`.'
+    CompanyDropletPublishedInstallation:
+      type: object
+      description: Another company's installation of a droplet your company publishes.
+      required:
+      - uuid
+      - status
+      - created_at
+      - company
+      - health
+      - reconcile
+      - pinned_version
+      - target_version
+      - support
+      properties:
+        uuid:
+          type: string
+          description: The installation's public identifier.
+        status:
+          type: string
+          enum:
+          - active
+          - pending_uninstall
+          description: '`pending_uninstall` while the droplet''s uninstall webhook is being handled.'
+        created_at:
+          type: string
+          format: date-time
+          description: When the company installed the droplet.
+        company:
+          type: object
+          description: The company that installed it.
+          required:
+          - uuid
+          - name
+          - active
+          properties:
+            uuid:
+              type: string
+              format: uuid
+            name:
+              type:
+              - string
+              - 'null'
+            active:
+              type: boolean
+              description: Whether the company's account is active.
+        health:
+          type: object
+          description: The installation's health from the rolled-up readings, never a live query.
+          required:
+          - verdict
+          properties:
+            verdict:
+              type: string
+              enum:
+              - unknown
+              - idle
+              - healthy
+              - degraded
+              - failing
+        reconcile:
+          type: object
+          description: Where the installation is against the manifest it is pinned to. `state` is the authoritative signal, including for failure.
+          required:
+          - state
+          - errors
+          properties:
+            state:
+              type: string
+              enum:
+              - not_adopted
+              - pending
+              - reconciling
+              - in_sync
+              - awaiting_consent
+              - failed_retrying
+              - failed_terminal
+            errors:
+              type: array
+              description: The resources that failed to apply, at most 20, by kind and key only. Messages are never shown. Per-resource failures only, so it can be empty for an installation whose failure is run-level; read state to know whether it failed.
+              items:
+                type: object
+                required:
+                - kind
+                - key
+                - error_code
+                properties:
+                  kind:
+                    type: string
+                  key:
+                    type: string
+                  error_code:
+                    type:
+                    - string
+                    - 'null'
+        pinned_version:
+          type:
+          - string
+          - 'null'
+          description: The manifest version the installation is pinned to.
+        target_version:
+          type:
+          - string
+          - 'null'
+          description: The manifest version it is moving to, if any.
+        support:
+          type: object
+          required:
+          - state
+          properties:
+            state:
+              type: string
+              enum:
+              - supported
+              - deprecated
+              - action_required
+              description: Whether the pinned manifest version is still supported.
+    CompanyDropletPublishedInstallationListResponse:
+      type: object
+      description: A page of a droplet's installations.
+      required:
+      - droplet_installations
+      - status
+      - meta
+      properties:
+        droplet_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletPublishedInstallation'
+        status:
+          type: integer
+          example: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletCategory:
+      type: object
+      required:
+      - slug
+      - name
+      - description
+      properties:
+        slug:
+          type: string
+          description: Names the category on a droplet, in `categories` on a write, and in `filter[category]`.
+        name:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+          description: What kinds of droplet the category holds.
+    CompanyDropletCategoryListResponse:
+      type: object
+      required:
+      - droplet_categories
+      - status
+      - meta
+      properties:
+        droplet_categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletCategory'
+        status:
+          type: integer
+          example: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletWebhookSecretRotationResponse:
+      type: object
+      description: The droplet's new webhook secret. Returned only here, once.
+      required:
+      - webhook_secret_rotation
+      - status
+      - meta
+      properties:
+        webhook_secret_rotation:
+          type: object
+          required:
+          - droplet_uuid
+          - webhook_secret
+          - rotated_at
+          properties:
+            droplet_uuid:
+              type: string
+            webhook_secret:
+              type: string
+              description: Signs the webhooks and data requests Fluid sends the droplet. Store it now; no response returns
+                it again.
+            rotated_at:
+              type: string
+              format: date-time
+              description: When the new secret took effect.
+        status:
+          type: integer
+          example: 201
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletPublishRequest:
+      type: object
+      description: A request for Fluid to publish the droplet to the public marketplace.
+      required:
+      - id
+      - state
+      - status_before
+      - reason
+      - requested_at
+      - decided_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - withdrawn
+          - superseded
+          description: '`pending` waits on Fluid. `approved` published the droplet; `rejected` left it as it was, with `reason`.
+            `withdrawn` you took back, and `superseded` Fluid settled another way, such as publishing or suspending the droplet
+            directly.'
+        status_before:
+          type: string
+          enum:
+          - draft
+          - internal
+          description: The droplet's status when it asked.
+        reason:
+          type:
+          - string
+          - 'null'
+          description: Why Fluid did not publish it; null unless rejected.
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When it was approved, rejected, withdrawn or superseded; null while pending.
+    CompanyDropletPublishRequestResponse:
+      type: object
+      description: One request to publish a droplet.
+      required:
+      - publish_request
+      - status
+      - meta
+      properties:
+        publish_request:
+          $ref: '#/components/schemas/CompanyDropletPublishRequest'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    CompanyDropletInstallationUpdateRequest:
+      type: object
+      required:
+      - installation
+      properties:
+        installation:
+          type: object
+          description: Only the keys sent change.
+          properties:
+            role_uuid:
+              type:
+              - string
+              - 'null'
+              format: uuid
+              description: The role the droplet acts with, by its uuid. Null clears it. Needs the `roles.update` permission.
+            role_id:
+              type:
+              - integer
+              - 'null'
+              deprecated: true
+              description: 'Deprecated: use `role_uuid`. The role by its integer id; null clears it. Sent with `role_uuid`,
+                both must name the same role or the update is refused with 422. Needs the `roles.update` permission.'
+            scopes:
+              type: array
+              items:
+                type: string
+              description: Scopes to grant, within what the droplet requests. Replaces the list.
+            active:
+              type: boolean
+              description: '`false` uninstalls an active installation after any other change is saved, as `DELETE` does.
+                `true` changes nothing: an installation being removed cannot be reactivated.'
+    CompanyDropletInstallRequest:
+      type: object
+      properties:
+        installation:
+          type: object
+          properties:
+            scopes:
+              type: array
+              items:
+                type: string
+              description: Scopes to grant, within what the droplet requests. The droplet's own declaration when left out.
+            role_uuid:
+              type: string
+              format: uuid
+              description: The role the droplet acts with, by its uuid. A new role is made when left out. Needs the `roles.update`
+                permission.
+            role_id:
+              type: integer
+              deprecated: true
+              description: 'Deprecated: use `role_uuid`. The role by its integer id. Sent with `role_uuid`, both must name
+                the same role or the install is refused with 422. Needs the `roles.update` permission.'
+
+    CompanyDropletFeature:
+      type: object
+      description: Something the droplet does, with an optional screenshot or video.
+      required:
+      - title
+      - image_url
+      - video_url
+      properties:
+        title:
+          type: string
+        image_url:
+          type:
+          - string
+          - 'null'
+        video_url:
+          type:
+          - string
+          - 'null'
+    CompanyDropletFeatureWrite:
+      type: object
+      required:
+      - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+        image_url:
+          type:
+          - string
+          - 'null'
+        video_url:
+          type:
+          - string
+          - 'null'
+    CompanyDropletInstallationSummary:
+      type: object
+      description: An installed droplet, with just what a navigation menu shows.
+      required:
+      - uuid
+      - droplet
+      - status
+      - lifecycle
+      properties:
+        uuid:
+          type: string
+          description: The installation's identifier.
+        status:
+          type: string
+          enum:
+          - active
+        lifecycle:
+          $ref: '#/components/schemas/CompanyDropletInstallationLifecycle'
+        droplet:
+          type: object
+          required:
+          - uuid
+          - title
+          - logo_url
+          properties:
+            uuid:
+              type: string
+              description: Open the droplet at `GET /droplets/{uuid}`.
+            title:
+              type:
+              - string
+              - 'null'
+            logo_url:
+              type:
+              - string
+              - 'null'
+    CompanyDropletInstallationFullListResponse:
+      type: object
+      description: A page of full installation rows (`view=full`).
+      required:
+      - droplet_installations
+      - status
+      - meta
+      properties:
+        droplet_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletInstallation'
+        status:
+          type: integer
+          example: 200
+        meta:
+          allOf:
+          - $ref: '#/components/schemas/Meta'
+          - type: object
+            required:
+            - pagination
+    CompanyDropletInstallationListResponse:
+      type: object
+      required:
+      - droplet_installations
+      - status
+      - meta
+      properties:
+        droplet_installations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanyDropletInstallationSummary'
+        status:
+          type: integer
+          example: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+  responses:
+    WriteForbidden:
+      description: Authenticated, but not a company admin with `droplets.update`, or a droplet installation token (bare body);
+        or a write only some callers may make (the error envelope), such as publishing without being a Fluid root admin, or
+        `egress_proxy_requested` from a caller other than a company admin or company API token.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ForbiddenError'
+            - $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Publishing goes through marketplace review
+              details:
+                status:
+                - must be a Fluid root admin to publish or unlist a droplet
+            status: 403
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-20T15:32:08Z'
+    StatusForbidden:
+      description: Not a company admin with the needed permissions (bare body), or a droplet installation token (the error
+        envelope).
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ForbiddenError'
+            - $ref: '#/components/schemas/ErrorResponse'
+          example:
+            message: Not authorized.
+    Unauthorized:
+      description: Missing or invalid bearer token. The body is a bare `{ message }`, not the error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+          example:
+            message: Invalid credentials.
+    Forbidden:
+      description: Authenticated, but not a company admin with the needed droplets permission, or a droplet installation token.
+        The body is bare.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ForbiddenError'
+          example:
+            message: Not authorized.
+    NotFound:
+      description: No such droplet for your company. Another company's private droplet, and on writes another company's droplet
+        of any status, read as missing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Droplet not found
+              details: {}
+            status: 404
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-18T15:32:08Z'
+    UnprocessableEntity:
+      description: Invalid parameters, or a write the droplet refused.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Invalid parameters
+              details:
+                droplet:
+                  name:
+                  - is missing
+            status: 422
+            meta:
+              request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-18T15:32:08Z'
+paths:
+  /api/company/v2026-10/droplets:
+    get:
+      operationId: companyDropletsIndex
+      summary: List and search droplets
+      description: |-
+        The droplets your company may see, a page at a time. Search with `q` to find a droplet that already does what you need before building one; narrow with `filter[ownership]`, `filter[category]` and `filter[status]`.
+
+        Needs the `droplets.view` permission.
+
+        Examples:
+
+        - Find one to install: `GET /api/company/v2026-10/droplets?q=sync%20orders%20to%20a%20warehouse`
+        - Your company's own droplets (what `GET /api/droplets/company_droplets` returned): `?filter[ownership]=owned`
+        - What you have installed: `?filter[ownership]=installed`
+        - The next page: `?page[cursor]=<meta.pagination.next_cursor>`
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: A page of droplets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletListResponse'
+              example:
+                droplets:
+                - uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  title: Order Sync
+                  summary: Push every paid order to your warehouse the moment it is captured.
+                  description: <p>Order Sync sends each paid order to your warehouse management system as soon as payment
+                    is captured, and writes tracking numbers back when it ships.</p><h3>What it does</h3><ul><li>Sends new
+                    orders, with line items and shipping address, within seconds.</li><li>Marks orders fulfilled and adds
+                    tracking when the warehouse ships.</li></ul>
+                  logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  features:
+                  - title: Real-time order push
+                    image_url: https://ik.imagekit.io/fluid/droplets/order-sync/dashboard.png
+                    video_url: null
+                  - title: Tracking write-back
+                    image_url: null
+                    video_url: https://ik.imagekit.io/fluid/droplets/order-sync/tour.mp4
+                  categories:
+                  - slug: orders-shipping
+                    name: Orders & Shipping
+                  publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
+                    name: Pied Piper Apps
+                  mist_apps: []
+                  app_extensions: []
+                  status: published
+                  owned: false
+                  installed: true
+                  requested_scopes:
+                  - orders
+                  service_operational_countries: null
+                  embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  install_embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  client_id: drp_client_ordersync7k2m
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
+                  created_at: '2026-09-08T16:20:44Z'
+                  updated_at: '2026-10-02T09:12:30Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJuYW1lIjoiT3JkZXIgU3luYyIsImlkIjo0MTJ9
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: An invalid filter, sort, limit or cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    filter:
+                      ownership:
+                      - 'must be one of: all, owned, installed'
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 200
+        example: sync orders to a warehouse
+        description: 'Words describing what the droplet should do, or the id of a Mist app that serves it (its 6-character slug, as in `3bed85` or `primex-3bed85`). Matches the title, summary, description and categories; a Mist app id puts that app''s droplets first.
+          With no `sort`, the response is one page of the best matches, most relevant first, and `next_cursor` is null: refine
+          `q` rather than paging. With a `sort`, every match (up to 10,000) pages in that order.'
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`. Do not construct or decode it.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Droplets per page. Default 25, maximum 100.
+      - name: filter[ownership]
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - all
+          - owned
+          - installed
+        example: owned
+        description: '`all` (default): every droplet your company may see, which is published droplets, your own in any status,
+          and internal droplets granted to you. `owned`: only the droplets your company publishes. `installed`: only the droplets
+          your company has installed.'
+      - name: filter[category]
+        in: query
+        required: false
+        schema:
+          type: string
+        example: orders-shipping
+        description: A droplet category slug.
+      - name: filter[status]
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - draft
+          - internal
+          - pending
+          - published
+          - archived
+          - suspended
+        description: Only droplets in this status.
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - title
+          - -title
+          - created_at
+          - -created_at
+          - updated_at
+          - -updated_at
+        example: -updated_at
+        description: Sort key; prefix `-` for descending. Default `title`, or relevance when `q` is given.
+    post:
+      operationId: companyDropletsCreate
+      summary: Create a droplet for your company
+      description: Creates a droplet your company publishes, as a draft. Describe it with `summary`, `description` (HTML)
+        and `features`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletResponse'
+              example:
+                droplet:
+                  uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                  title: Wholesale Pricing
+                  summary: Give approved wholesale accounts their own price tiers.
+                  description: <p>Wholesale Pricing gives approved wholesale accounts their own prices and minimum order quantities.</p>
+                  logo_url: https://wholesale.acme.example/logo.png
+                  features:
+                  - title: Price tiers
+                    image_url: https://wholesale.acme.example/tiers.png
+                    video_url: null
+                  categories:
+                  - slug: sales-conversion
+                    name: Sales & Conversion
+                  publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-1f2e3d4c5b6a
+                    name: Acme Wellness
+                  mist_apps: []
+                  app_extensions: []
+                  status: draft
+                  owned: true
+                  installed: false
+                  requested_scopes:
+                  - products
+                  - orders
+                  service_operational_countries:
+                  - USA
+                  - CAN
+                  embed_url: https://wholesale.acme.example/fluid
+                  install_embed_url: https://wholesale.acme.example/fluid
+                  client_id: drp_client_wholesale9x2k
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
+                  install_webhook_url: https://wholesale.acme.example/fluid/installed
+                  uninstall_webhook_url: https://wholesale.acme.example/fluid/uninstalled
+                  widget_data_url: null
+                  data_url: null
+                  lifecycle_contract_version: v2
+                  pending_requested_scopes: null
+                  latest_scope_review: null
+                  latest_publish_review: null
+                  latest_governance_action: null
+                  created_at: '2026-09-08T16:20:44Z'
+                  updated_at: '2026-10-02T09:12:30Z'
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteForbidden'
+        '422':
+          description: Invalid parameters or an unknown category slug, and nothing is written. Rarely, the droplet saves but
+            its categories cannot be changed; `error.message` then says so.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Unknown category
+                  details:
+                    categories:
+                    - includes an unknown slug
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyDropletCreateRequest'
+            examples:
+              minimal:
+                summary: Title and embed URL only
+                value:
+                  droplet:
+                    title: Wholesale Pricing
+                    embed_url: https://wholesale.acme.example/fluid
+              listed:
+                summary: With its listing
+                value:
+                  droplet:
+                    title: Wholesale Pricing
+                    embed_url: https://wholesale.acme.example/fluid
+                    requested_scopes:
+                    - products
+                    - members
+                    categories:
+                    - pricing
+                    summary: Give approved wholesale accounts their own price tiers.
+                    description: <p>Wholesale Pricing gives approved wholesale accounts their own prices and minimum order
+                      quantities.</p>
+                    logo_url: https://wholesale.acme.example/logo.png
+                    features:
+                    - title: Price tiers
+                      image_url: https://wholesale.acme.example/tiers.png
+  /api/company/v2026-10/droplets/{uuid}:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The droplet's uuid, from `uuid` on any droplet.
+      schema:
+        type: string
+      example: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+    get:
+      operationId: companyDropletShow
+      summary: Read a droplet
+      description: |-
+        One droplet your company may see. On a droplet your company publishes, the response also carries its webhook and data URLs.
+
+        Needs the `droplets.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The droplet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletResponse'
+              example:
+                droplet:
+                  uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  title: Order Sync
+                  summary: Push every paid order to your warehouse the moment it is captured.
+                  description: <p>Order Sync sends each paid order to your warehouse management system as soon as payment
+                    is captured, and writes tracking numbers back when it ships.</p><h3>What it does</h3><ul><li>Sends new
+                    orders, with line items and shipping address, within seconds.</li><li>Marks orders fulfilled and adds
+                    tracking when the warehouse ships.</li></ul>
+                  logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  features:
+                  - title: Real-time order push
+                    image_url: https://ik.imagekit.io/fluid/droplets/order-sync/dashboard.png
+                    video_url: null
+                  - title: Tracking write-back
+                    image_url: null
+                    video_url: https://ik.imagekit.io/fluid/droplets/order-sync/tour.mp4
+                  categories:
+                  - slug: orders-shipping
+                    name: Orders & Shipping
+                  publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b
+                    name: Pied Piper Apps
+                  mist_apps: []
+                  app_extensions: []
+                  status: published
+                  owned: false
+                  installed: true
+                  requested_scopes:
+                  - orders
+                  service_operational_countries: null
+                  embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  install_embed_url: https://apps.piedpiper.com/fluid/order-sync
+                  client_id: drp_client_ordersync7k2m
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
+                  created_at: '2026-09-08T16:20:44Z'
+                  updated_at: '2026-10-02T09:12:30Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: companyDropletUpdate
+      summary: Update a droplet
+      description: Changes a droplet your company publishes. Only the keys you send change, so updating the summary leaves
+        the description, logo and features alone. `features`, when sent, replaces the list. `status` takes the droplet offline
+        (`draft`) or back into service (`internal`); publishing needs a Fluid root admin. `egress_proxy_requested` needs a
+        company admin or a company API token, and `extension_zip_url` a public HTTPS URL; both are checked before anything is
+        written. Scopes a published droplet newly adds to `requested_scopes` may wait for Fluid review. The droplet keeps the
+        scopes it already had, the full list you asked for shows in `pending_requested_scopes`, and Fluid approves or rejects
+        it. Removing a scope applies at once and withdraws a pending request that asked for it. A scope Fluid does not offer
+        is refused with 422, and a write refused for any reason holds nothing for review.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletResponse'
+              example:
+                droplet:
+                  uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                  title: Wholesale Pricing
+                  summary: Give approved wholesale accounts their own price tiers.
+                  description: <p>Wholesale Pricing gives approved wholesale accounts their own prices and minimum order quantities.</p>
+                  logo_url: https://wholesale.acme.example/logo.png
+                  features:
+                  - title: Price tiers
+                    image_url: https://wholesale.acme.example/tiers.png
+                    video_url: null
+                  categories:
+                  - slug: sales-conversion
+                    name: Sales & Conversion
+                  publisher:
+                    uuid: 0190a1b2-7c3d-7e4f-8a5b-1f2e3d4c5b6a
+                    name: Acme Wellness
+                  mist_apps:
+                  - id: 0199e0a4-5c1f-7b42-9a3e-3bed85a1c2d4
+                    name: Wholesale Pricing app
+                    slug: 3bed85
+                    public_url: https://acme-3bed85.wecommerce.dev
+                  app_extensions:
+                  - extension_type: theme
+                    name: Wholesale price badges
+                    version: 1.2.0
+                    status: published
+                  status: draft
+                  owned: true
+                  installed: true
+                  requested_scopes:
+                  - products
+                  - orders
+                  service_operational_countries:
+                  - USA
+                  - CAN
+                  embed_url: https://wholesale.acme.example/fluid
+                  install_embed_url: https://wholesale.acme.example/fluid
+                  client_id: drp_client_wholesale9x2k
+                  egress_proxy_requested: false
+                  egress_proxy_enabled: false
+                  install_webhook_url: https://wholesale.acme.example/fluid/installed
+                  uninstall_webhook_url: https://wholesale.acme.example/fluid/uninstalled
+                  widget_data_url: null
+                  data_url: null
+                  lifecycle_contract_version: v2
+                  pending_requested_scopes: null
+                  latest_scope_review: null
+                  latest_publish_review: null
+                  latest_governance_action: null
+                  created_at: '2026-09-08T16:20:44Z'
+                  updated_at: '2026-10-02T09:12:30Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Invalid parameters or an unknown category slug, and nothing is written. Rarely, the droplet saves but
+            its categories cannot be changed; `error.message` then says so.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Unknown category
+                  details:
+                    categories:
+                    - includes an unknown slug
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyDropletUpdateRequest'
+            examples:
+              description:
+                summary: Rewrite the description
+                value:
+                  droplet:
+                    description: <p>Give approved wholesale accounts their own price tiers and minimum order quantities.</p>
+              features:
+                summary: Replace the features
+                value:
+                  droplet:
+                    features:
+                    - title: Price tiers
+                      image_url: https://wholesale.acme.example/tiers.png
+                    - title: Minimum quantities
+                      video_url: https://wholesale.acme.example/minimums.mp4
+    delete:
+      operationId: companyDropletDestroy
+      summary: Delete a droplet
+      description: |-
+        Deletes a droplet your company publishes, with your own installation of it, and deactivates its credentials. Refused with 409 while another company has it installed, because deleting a droplet removes every installation of it.
+
+        Needs the `droplets.update` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Another company has the droplet installed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Other companies have this droplet installed
+                  details:
+                    droplet:
+                    - is installed by other companies
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+  /api/company/v2026-10/droplets/{uuid}/health:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The droplet's uuid, from `uuid` on any droplet.
+      schema:
+        type: string
+      example: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+    get:
+      operationId: companyDropletHealth
+      summary: Check a droplet's health
+      description: |-
+        How the droplet's callbacks have behaved for your company's own installation over a trailing window, and where it sits relative to a checkout. Use it to see whether a droplet is slowing or failing checkouts.
+
+        Read `metrics_available` first. When it is false the callbacks are still listed, with `metrics` null and `metrics_error.type` saying why. A droplet your company neither publishes nor has installed is a 404.
+
+        Needs the `developer.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: window_hours
+        in: query
+        required: false
+        description: The trailing window in hours, 1 to 168. Defaults to 24.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 168
+        example: 24
+      responses:
+        '200':
+          description: The droplet's health for your company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletHealthResponse'
+              example:
+                droplet_health:
+                  window_hours: 24
+                  generated_at: '2026-10-18T15:32:08Z'
+                  metrics_available: true
+                  metrics_error: null
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    name: Taxify
+                    status: published
+                  installation:
+                    installation_uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+                    installation_status: active
+                    scopes:
+                    - main
+                    classification:
+                      criticality: checkout_blocking
+                      domains:
+                      - cart
+                      checkout_path: true
+                      commerce_access: false
+                      blocking: true
+                      reasons:
+                      - answers update_cart_tax (checkout_blocking)
+                    verdict: healthy
+                    metrics:
+                      request_count: 1840
+                      failure_count: 23
+                      timeout_count: 9
+                      failure_rate: 0.0125
+                      average_ms: 182.4
+                      worst_p95_ms: 640.0
+                      max_ms: 3012.0
+                    registrations:
+                    - uuid: 0199e0a4-5c1f-7b42-9a3e-2d6f8c1b4e70
+                      definition_name: update_cart_tax
+                      criticality: checkout_blocking
+                      domain: cart
+                      url: https://taxify.example.com/fluid/callbacks/tax
+                      active: true
+                      country_codes: []
+                      metrics:
+                        request_count: 1840
+                        failure_count: 23
+                        timeout_count: 9
+                        failure_rate: 0.0125
+                        average_ms: 182.4
+                        worst_p95_ms: 640.0
+                        max_ms: 3012.0
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /api/company/v2026-10/droplets/{uuid}/status:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The droplet's uuid, from `uuid` on any droplet.
+      schema:
+        type: string
+      example: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+    get:
+      operationId: companyDropletStatus
+      summary: Read a droplet's status
+      description: The status of your company's live installation of a droplet, else its most recent, with every installation in `history`. Same payload as `GET /droplet-installations/{uuid}/status`. Needs the `developer.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: window_hours
+        in: query
+        required: false
+        description: The trailing window in hours, 1 to 168, for `sections.metrics` and `sections.webhook_health`. Defaults to 24.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 168
+        example: 24
+      responses:
+        '200':
+          description: The installation's status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletStatusResponse'
+              example:
+                droplet_status:
+                  generated_at: '2026-10-18T15:32:08Z'
+                  window_hours: 24
+                  installation:
+                    uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+                    status: active
+                    droplet:
+                      uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                      name: Taxify
+                    created_at: '2026-10-01T09:00:00Z'
+                    updated_at: '2026-10-01T09:00:00Z'
+                  history: null
+                  sections:
+                    deployment:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        deployments: []
+                    install_status:
+                      available: true
+                      error: null
+                      data:
+                        status: active
+                        delivery_state: delivered
+                        reason: null
+                    lifecycle:
+                      available: true
+                      error: null
+                      data:
+                        deliveries: []
+                    health:
+                      available: true
+                      error: null
+                      data:
+                        verdict: healthy
+                        signals:
+                          callback:
+                            verdict: healthy
+                          delivery:
+                            verdict: healthy
+                          breaker:
+                            state: closed
+                            observed_at: '2026-10-18T15:31:00Z'
+                          lifecycle:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                          liveness:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                          probe:
+                            state: reachable
+                            observed_at: '2026-10-18T15:30:00Z'
+                    metrics:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        request_count: 120
+                        failure_count: 0
+                        timeout_count: 0
+                        failure_rate: 0.0
+                        average_ms: 84.2
+                        worst_p95_ms: 190.0
+                        max_ms: 410.0
+                    webhook_health:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        verdict: none
+                        webhooks:
+                          total: 0
+                          active: 0
+                          events: []
+                        deliveries:
+                          total: 0
+                          succeeded: 0
+                          failed: 0
+                          pending: 0
+                          success_rate: null
+                          capped: false
+                        recent_failures: []
+                        shared_events: []
+                    app_hosts:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        hosts: []
+                        webhooks: []
+                        shared_events: []
+                        capped: false
+                    reconcile:
+                      available: true
+                      error: null
+                      data:
+                        state: not_adopted
+                        pinned_version: null
+                        target_version: null
+                        attempts: 0
+                        next_at: null
+                        last_error_code: null
+                        resources: []
+                        truncated: false
+                    support:
+                      available: true
+                      error: null
+                      data:
+                        state: supported
+                        min_version: null
+                        window_ends_at: null
+                    connect:
+                      available: false
+                      error: null
+                      data: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/StatusForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The uuid of a droplet your company publishes.
+      schema:
+        type: string
+      example: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+    post:
+      operationId: companyDropletWebhookSecretRotationCreate
+      summary: Rotate a droplet's webhook secret
+      description: |-
+        Generates a new webhook secret for a droplet your company publishes and returns it, once. This is how you obtain the secret on v2026-10: no other response returns it, and asking again rotates again.
+
+        The old secret stops being used the moment the new one is saved: every webhook and data request Fluid signs from then on uses the new one, so update your droplet straight away. A lifecycle webhook already queued when you rotate is still signed with the old one. A droplet built in Mist has the new secret written to its app's `FLUID_DROPLET_SECRET` and `FLUID_WEBHOOK_AUTH_TOKEN` and is redeployed. A Mist app with no linked GitHub repository gets the new values but is not redeployed, so it keeps verifying with the old secret until its next deploy; deploy it yourself after rotating.
+
+        Another company's droplet is a 404. The response is never cached. Needs the `droplets.update` permission, including for a Fluid root admin's sign-in narrowed to company admin.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: The new secret.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletWebhookSecretRotationResponse'
+              example:
+                webhook_secret_rotation:
+                  droplet_uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                  webhook_secret: dws_3Fq8mZr2kTn6vXb1cLw9yHd4pJs7aGe5u
+                  rotated_at: '2026-10-20T15:32:08Z'
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+  /api/company/v2026-10/droplets/{droplet_uuid}/publish-request:
+    parameters:
+    - name: droplet_uuid
+      in: path
+      required: true
+      description: The uuid of a draft or internal droplet your company publishes.
+      schema:
+        type: string
+      example: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+    post:
+      operationId: companyDropletPublishRequestCreate
+      summary: Ask Fluid to publish a droplet
+      description: |-
+        Asks Fluid to put a draft or internal droplet your company publishes in the public marketplace. Fluid's reviewers are told; the droplet keeps its status, and keeps working for the stores that use it, until a reviewer decides. Approving publishes it. Rejecting leaves it as it is, and the requester is emailed why; the reason also shows in the droplet's `latest_publish_review`.
+
+        Asking while a request already waits returns that request with 200 and tells no one again; a new request is 201. A droplet that is published, suspended or archived cannot ask (409). Another company's droplet is a 404.
+
+        Needs the `droplets.update` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: The new request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishRequestResponse'
+              example:
+                publish_request:
+                  id: 01a1507c-2222-7333-8444-555566667777
+                  state: pending
+                  status_before: internal
+                  reason: null
+                  requested_at: '2026-10-21T18:04:12Z'
+                  decided_at: null
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+        '200':
+          description: The request already waiting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishRequestResponse'
+              example:
+                publish_request:
+                  id: 01a1507c-2222-7333-8444-555566667777
+                  state: pending
+                  status_before: internal
+                  reason: null
+                  requested_at: '2026-10-21T18:04:12Z'
+                  decided_at: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:10:40Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The droplet is not draft or internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Only a draft or internal droplet can ask to be published
+                  details:
+                    status:
+                    - is published
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+    delete:
+      operationId: companyDropletPublishRequestDestroy
+      summary: Withdraw a request to publish a droplet
+      description: |-
+        Withdraws the droplet's waiting request. The droplet stays as it is. 404 when no request waits.
+
+        Needs the `droplets.update` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '204':
+          description: Withdrawn.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid, or no request waiting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: No publish request is waiting
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+        '409':
+          description: The request was decided while you withdrew it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: This request was already approved
+                  details: {}
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-21T18:04:12Z'
+  /api/company/v2026-10/droplets/{droplet_uuid}/installations:
+    parameters:
+    - name: droplet_uuid
+      in: path
+      required: true
+      description: The droplet's uuid, from `uuid` on any droplet.
+      schema:
+        type: string
+      example: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+    get:
+      operationId: companyDropletPublishedInstallationsIndex
+      summary: List the companies that installed your droplet
+      description: |-
+        The companies that have installed a droplet your company publishes, newest first, a page at a time. Installations already uninstalled are left out; one being uninstalled reads `pending_uninstall`. Each company is named by its uuid; the person there who installed it is not shown. Each row also gives the installation's health verdict, reconcile state with the kind, key and error code of failed resources, pinned and target manifest versions, and support state.
+
+        Only the droplet's publisher can list them. For any other company, and for a droplet that does not exist, the answer is 404, so it never confirms a private droplet. (`GET /api/droplets/{uuid}/companies`, which this replaces, answers 401 instead.)
+
+        Needs the `droplets.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`. Do not construct or decode it.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Installations per page. Default 25, maximum 100.
+      - name: reconcile_state
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - not_adopted
+          - pending
+          - reconciling
+          - in_sync
+          - awaiting_consent
+          - failed_retrying
+          - failed_terminal
+        description: Only installations in this reconcile state.
+      - name: support
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - supported
+          - deprecated
+          - action_required
+        description: Only installations with this support state. A filtered page scans at most 500 installations, so it can hold fewer than `page[limit]` rows while `next_cursor` is set; follow `next_cursor` until it is null. A filtered page has no `prev_cursor`.
+      - name: health
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - unknown
+          - idle
+          - healthy
+          - degraded
+          - failing
+        description: Only installations with this health verdict. Pages as `support` does.
+      responses:
+        '200':
+          description: A page of installations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletPublishedInstallationListResponse'
+              example:
+                droplet_installations:
+                - uuid: dri_9Pq4nVx2bKt7mRw3
+                  status: active
+                  created_at: '2026-10-14T09:41:27Z'
+                  company:
+                    uuid: 0190b3c4-2d5e-7f60-8a1b-9c2d3e4f5a6b
+                    name: Zennoa Naturals
+                    active: true
+                  health:
+                    verdict: healthy
+                  reconcile:
+                    state: failed_retrying
+                    errors:
+                    - kind: webhook
+                      key: order_created
+                      error_code: target_unreachable
+                  pinned_version: '3'
+                  target_version: '4'
+                  support:
+                    state: deprecated
+                - uuid: dri_3Hk8wQz5cLm1vTy6
+                  status: pending_uninstall
+                  created_at: '2026-09-30T18:05:12Z'
+                  company:
+                    uuid: 0190a9f8-6e7d-7c5b-9a4f-3e2d1c0b9a87
+                    name: Globex Wellness
+                    active: true
+                  health:
+                    verdict: idle
+                  reconcile:
+                    state: not_adopted
+                    errors: []
+                  pinned_version: null
+                  target_version: null
+                  support:
+                    state: supported
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJjcmVhdGVkX2F0IjoiMjAyNi0wOS0zMFQxODowNToxMloiLCJpZCI6OTEyfQ
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company publishes by that uuid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: An invalid limit or cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    page:
+                      limit:
+                      - must be less than or equal to 100
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+    post:
+      operationId: companyDropletInstall
+      summary: Install a droplet
+      description: |-
+        Installs a droplet for your company and calls its install webhook. You can install a published droplet, one your company publishes, or an internal droplet granted to you.
+
+        The droplet receives the scopes it requests unless you narrow them with `installation.scopes`. Name the role it acts with by `installation.role_uuid`; the integer `role_id` still works but is deprecated.
+
+        Needs the `droplets.update` permission, and `roles.update` to name a role, as assigning a role to a member does.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '201':
+          description: Installed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  lifecycle:
+                    status: active
+                    delivery_state: pending
+                    reason: null
+                  status: active
+                  role:
+                    id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                    name: Order Sync
+                  installed_by:
+                    uuid: 0190c2d1-9a2b-7c3d-8e4f-5a6b7c8d9e0f
+                    name: Priya Shah
+                    email: priya@example.com
+                  scopes:
+                  - orders
+                  effective_scopes:
+                  - orders
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-18T15:32:08Z'
+                status: 201
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No droplet your company may install by that uuid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '409':
+          description: Already installed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet already installed
+                  details: {}
+                status: 409
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '422':
+          description: A role your company does not have, `role_id` and `role_uuid` naming different roles, a sandbox company,
+            or a refused install.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Role not found
+                  details:
+                    role_id:
+                    - not found
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyDropletInstallRequest'
+            examples:
+              default:
+                summary: Grant what the droplet requests
+                value: {}
+              narrowed:
+                summary: Grant fewer scopes
+                value:
+                  installation:
+                    scopes:
+                    - orders
+              with_role:
+                summary: Act with an existing role
+                value:
+                  installation:
+                    role_uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+  /api/company/v2026-10/droplet-installations:
+    get:
+      operationId: companyDropletInstallationsIndex
+      summary: List installed droplets
+      description: |-
+        Every droplet your company has installed, ordered by title, with the installation's and droplet's identifiers, title and logo, and the installation's `status` and `lifecycle`. Use it for navigation menus and other places shown on every page: it is one small response, not paginated, where listing the catalog with `filter[ownership]=installed` returns each droplet's full listing.
+
+        Installations being removed are left out here; `view=full` lists them. `lifecycle.delivery_state` is the latest install webhook's state: `unknown` when Fluid recorded none, never assumed delivered. An `active` installation whose install webhook was rejected, exhausted its retries or could not be queued reads `needs_attention`, as does one in reconcile state `awaiting_consent` or `failed_terminal`.
+
+        With `view=full` it returns full installation rows instead (status, scopes, effective scopes, the droplet, and the role when you have `roles.view`), as `GET /api/droplet_installations` did: every installation not yet uninstalled, so one being removed too, newest first, narrowed with `filter[category]` and paged by cursor (`page[limit]`, `page[cursor]`, `meta.pagination.next_cursor`). In full rows an installation being removed reads `lifecycle.status` `uninstalling`, or `failed` when the droplet rejected the uninstall webhook. The other parameters are read only with `view=full`.
+
+        Needs the `droplets.view` permission.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: view
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - full
+        example: full
+        description: '`full` for full installation rows, paged. Leave out for the navigation list.'
+      - name: filter[category]
+        in: query
+        required: false
+        schema:
+          type: string
+        example: payments
+        description: With `view=full`, only installations of droplets in this category slug.
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: With `view=full`, the opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: With `view=full`, installations per page. Default 25, maximum 100.
+      responses:
+        '200':
+          description: The installed droplets; full rows with `view=full`.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/CompanyDropletInstallationListResponse'
+                - $ref: '#/components/schemas/CompanyDropletInstallationFullListResponse'
+              examples:
+                navigation:
+                  summary: The navigation list
+                  value:
+                    droplet_installations:
+                    - uuid: dri_7Hc2kWq9mNz4pLx8
+                      droplet:
+                        uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                        title: Order Sync
+                        logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                      status: active
+                      lifecycle:
+                        status: needs_attention
+                        delivery_state: rejected
+                        reason: install_webhook_failed
+                    - uuid: dri_2Rk8vYb5cTq1wMe6
+                      droplet:
+                        uuid: drp_9xk2mt7pq4rz1bwc8hd5nfy3jvs6ale0
+                        title: Wholesale Pricing
+                        logo_url: null
+                      status: active
+                      lifecycle:
+                        status: active
+                        delivery_state: delivered
+                        reason: null
+                    status: 200
+                    meta:
+                      request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                      timestamp: '2026-10-20T15:32:08Z'
+                full:
+                  summary: Full rows (view=full)
+                  value:
+                    droplet_installations:
+                    - uuid: dri_7Hc2kWq9mNz4pLx8
+                      droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                      droplet:
+                        uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                        title: Order Sync
+                        logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                      status: active
+                      lifecycle:
+                        status: active
+                        delivery_state: delivered
+                        reason: null
+                      role:
+                        id: 4182
+                        uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                        name: Order Sync
+                      installed_by:
+                        uuid: 0190c2d1-9a2b-7c3d-8e4f-5a6b7c8d9e0f
+                        name: Priya Shah
+                        email: priya@example.com
+                      scopes:
+                      - orders
+                      effective_scopes:
+                      - orders
+                      created_at: '2026-10-18T15:32:08Z'
+                      updated_at: '2026-10-18T15:32:08Z'
+                    status: 200
+                    meta:
+                      request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                      timestamp: '2026-10-20T15:32:08Z'
+                      pagination:
+                        cursor: null
+                        limit: 25
+                        prev_cursor: null
+                        next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: With `view=full`, an invalid view, limit or cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Invalid parameters
+                  details:
+                    view:
+                    - must be one of: full
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+  /api/company/v2026-10/droplet-installations/{uuid}:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The installation's uuid, from `uuid` on an installation.
+      schema:
+        type: string
+      example: dri_7Hc2kWq9mNz4pLx8
+    get:
+      operationId: companyDropletInstallationShow
+      summary: Read a droplet installation
+      description: |-
+        One of your company's installations, in any status, with its droplet, scopes and, when you have the `roles.view` permission, its role. Credentials are never returned.
+
+        Needs the `droplets.view` permission. Replaces `GET /api/droplet_installations/{uuid}`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The installation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: active
+                  lifecycle:
+                    status: active
+                    delivery_state: delivered
+                    reason: null
+                  role:
+                    id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                    name: Order Sync
+                  installed_by:
+                    uuid: 0190c2d1-9a2b-7c3d-8e4f-5a6b7c8d9e0f
+                    name: Priya Shah
+                    email: priya@example.com
+                  scopes:
+                  - orders
+                  - products
+                  effective_scopes:
+                  - orders
+                  - products
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+    patch:
+      operationId: companyDropletInstallationUpdate
+      summary: Change a droplet installation
+      description: |-
+        Changes the role or scopes of one of your company's installations. Only the keys you send change. Sending `active: false` then uninstalls it, as `DELETE` does: the droplet's credentials are revoked and its uninstall webhook is sent.
+
+        Needs the `droplets.update` permission, and `roles.update` to send `role_uuid` or the deprecated `role_id`, as assigning a role to a member does; sent together, both must name the same role. Replaces `PUT /api/droplet_installations/{uuid}`, where `active` was required on every call and `role_id` needed only `droplets.update`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyDropletInstallationUpdateRequest'
+            examples:
+              scopes:
+                summary: Narrow the scopes
+                value:
+                  installation:
+                    scopes:
+                    - orders
+              role:
+                summary: Change the role
+                value:
+                  installation:
+                    role_uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+      responses:
+        '200':
+          description: Updated, or uninstalling when `active` was false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: active
+                  lifecycle:
+                    status: active
+                    delivery_state: delivered
+                    reason: null
+                  role:
+                    id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                    name: Order Sync
+                  installed_by:
+                    uuid: 0190c2d1-9a2b-7c3d-8e4f-5a6b7c8d9e0f
+                    name: Priya Shah
+                    email: priya@example.com
+                  scopes:
+                  - orders
+                  effective_scopes:
+                  - orders
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: Invalid parameters, a role your company does not have, `role_id` and `role_uuid` naming different roles, or scopes the droplet may not request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Role not found
+                  details:
+                    role_uuid:
+                    - not found
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+    delete:
+      operationId: companyDropletInstallationUninstall
+      summary: Uninstall a droplet
+      description: |-
+        Uninstalls one of your company's installations. Its API credentials are revoked and Fluid sends the droplet's uninstall webhook so it can clean up; the installation reads `pending_uninstall` until that finishes. Uninstalling again changes nothing, except for an installation the legacy `PUT /api/droplet_installations/{uuid}` left `pending_uninstall` without telling the droplet: its credentials are revoked and the uninstall webhook is sent then. If that webhook cannot be queued, its credentials stay revoked, the answer is 422, and calling again sends it.
+
+        Needs the `droplets.update` permission. Replaces `DELETE /api/droplet_installations/{uuid}`, and returns the whole installation rather than only its identifiers.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: Uninstalling.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletInstallationResponse'
+              example:
+                droplet_installation:
+                  uuid: dri_7Hc2kWq9mNz4pLx8
+                  droplet_uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                  droplet:
+                    uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                    title: Order Sync
+                    logo_url: https://ik.imagekit.io/fluid/droplets/order-sync/logo.png
+                  status: pending_uninstall
+                  lifecycle:
+                    status: uninstalling
+                    delivery_state: pending
+                    reason: null
+                  role:
+                    id: 4182
+                    uuid: 0190c2d3-4e5f-7a6b-8c9d-0e1f2a3b4c5d
+                    name: Order Sync
+                  installed_by:
+                    uuid: 0190c2d1-9a2b-7c3d-8e4f-5a6b7c8d9e0f
+                    name: Priya Shah
+                    email: priya@example.com
+                  scopes:
+                  - orders
+                  effective_scopes:
+                  - orders
+                  created_at: '2026-10-18T15:32:08Z'
+                  updated_at: '2026-10-20T15:32:08Z'
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No installation of your company by that uuid. Another company's installation reads as missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Droplet installation not found
+                  details: {}
+                status: 404
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '422':
+          description: The droplet could not be told it was uninstalled. Its credentials stay revoked; call again to send the webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The droplet could not be told it was uninstalled; try again
+                  details:
+                    installation:
+                    - notification_failed
+                status: 422
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+  /api/company/v2026-10/droplet-installations/{uuid}/rollback:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The installation's uuid.
+      schema:
+        type: string
+      example: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+    post:
+      operationId: rollbackCompanyDropletInstallation
+      summary: Roll an installation back to an earlier version
+      description: 'Points your company''s installation at an earlier version in its droplet''s ledger and queues a reconcile. A version outside the consent mark leaves the installation in `awaiting_consent`; rollback never widens the consent mark. Refused with 409 `reconcile_off` unless the droplet''s reconcile gate is `apply`. Needs the `droplets.update` permission and an `Idempotency-Key` header: repeating a key answers the first response.'
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: A client-chosen key, 1 to 255 printable ASCII characters; anything else answers 422.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - version
+              properties:
+                version:
+                  type: integer
+                  minimum: 1
+            example:
+              version: 3
+      responses:
+        '202':
+          description: Accepted and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - installation_uuid
+                - status
+                - meta
+                properties:
+                  installation_uuid:
+                    type: string
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+              example:
+                installation_uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+                status: 202
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-23T15:32:08Z'
+        '404':
+          description: The installation does not exist or belongs to another company (`installation_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`reconcile_off`, `not_adopted`, `reconcile_in_progress` or `already_at_version`. When `already_at_version` is returned after this call changed the installation''s operator pin, `details.pin` is `set` or `cleared`; it is absent when the pin did not change. Also the idempotency guard''s 409 for a key already in flight.'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/IdempotencyRefusal'
+        '422':
+          description: '`idempotency_key_required`, a malformed key (over 255 characters or not printable ASCII), `unknown_version`, `below_min_supported`, `would_fail` (details.reason is the reconciler''s error code), or the guard''s 422 for a key reused with a different request.'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/IdempotencyRefusal'
+        '423':
+          description: '`installation_not_active`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The idempotency claim store could not answer; retry the same request under the same key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotencyRefusal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteForbidden'
+  /api/company/v2026-10/droplet-installations/{uuid}/reconcile:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The installation's uuid.
+      schema:
+        type: string
+      example: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+    post:
+      operationId: retryCompanyDropletInstallationReconcile
+      summary: Retry a failed reconcile
+      description: 'Queues another reconcile run for an installation in `failed_terminal` or `failed_retrying`. Refused with 409 `reconcile_off` unless the droplet''s reconcile gate is `apply`. Needs the `droplets.update` permission and an `Idempotency-Key` header: repeating a key answers the first response.'
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: A client-chosen key, 1 to 255 printable ASCII characters; anything else answers 422.
+        schema:
+          type: string
+      responses:
+        '202':
+          description: Accepted and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - installation_uuid
+                - status
+                - meta
+                properties:
+                  installation_uuid:
+                    type: string
+                  status:
+                    type: integer
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+              example:
+                installation_uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+                status: 202
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-23T15:32:08Z'
+        '404':
+          description: The installation does not exist or belongs to another company (`installation_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`reconcile_off`, `reconcile_in_progress`, `not_failed` or `awaiting_consent`. Also the idempotency guard''s 409 for a key already in flight.'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/IdempotencyRefusal'
+        '422':
+          description: '`idempotency_key_required`, a malformed key (over 255 characters or not printable ASCII), or the guard''s 422 for a key reused with a different request.'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/IdempotencyRefusal'
+        '423':
+          description: '`installation_not_active`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The idempotency claim store could not answer; retry the same request under the same key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotencyRefusal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteForbidden'
+  /api/company/v2026-10/droplet-installations/{uuid}/status:
+    parameters:
+    - name: uuid
+      in: path
+      required: true
+      description: The installation's uuid, from `uuid` on an installation.
+      schema:
+        type: string
+      example: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+    get:
+      operationId: companyDropletInstallationStatus
+      summary: Read a droplet installation's status
+      description: One installation's Mist deployments, install status and lifecycle webhook deliveries in one read, addressed by the installation's own uuid so an uninstalled installation answers its own data. Each section is read on its own. Needs the `developer.view` and `droplets.view` permissions.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: window_hours
+        in: query
+        required: false
+        description: The trailing window in hours, 1 to 168, for `sections.metrics` and `sections.webhook_health`. Defaults to 24.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 168
+        example: 24
+      responses:
+        '200':
+          description: The installation's status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletStatusResponse'
+              example:
+                droplet_status:
+                  generated_at: '2026-10-18T15:32:08Z'
+                  window_hours: 24
+                  installation:
+                    uuid: dri_7hq2mxk4bnv8rlp3ctw6yzd1fgs9aje5
+                    status: active
+                    droplet:
+                      uuid: drp_4tq8nxw2kfl9mrv3bpz6cyh1jds7age5
+                      name: Taxify
+                    created_at: '2026-10-01T09:00:00Z'
+                    updated_at: '2026-10-01T09:00:00Z'
+                  history: null
+                  sections:
+                    deployment:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        deployments: []
+                    install_status:
+                      available: true
+                      error: null
+                      data:
+                        status: active
+                        delivery_state: delivered
+                        reason: null
+                    lifecycle:
+                      available: true
+                      error: null
+                      data:
+                        deliveries: []
+                    health:
+                      available: true
+                      error: null
+                      data:
+                        verdict: healthy
+                        signals:
+                          callback:
+                            verdict: healthy
+                          delivery:
+                            verdict: healthy
+                          breaker:
+                            state: closed
+                            observed_at: '2026-10-18T15:31:00Z'
+                          lifecycle:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                          liveness:
+                            state: ok
+                            observed_at: '2026-10-18T15:30:00Z'
+                          probe:
+                            state: reachable
+                            observed_at: '2026-10-18T15:30:00Z'
+                    metrics:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        request_count: 120
+                        failure_count: 0
+                        timeout_count: 0
+                        failure_rate: 0.0
+                        average_ms: 84.2
+                        worst_p95_ms: 190.0
+                        max_ms: 410.0
+                    webhook_health:
+                      available: true
+                      error: null
+                      data:
+                        window_hours: 24
+                        verdict: none
+                        webhooks:
+                          total: 0
+                          active: 0
+                          events: []
+                        deliveries:
+                          total: 0
+                          succeeded: 0
+                          failed: 0
+                          pending: 0
+                          success_rate: null
+                          capped: false
+                        recent_failures: []
+                        shared_events: []
+                    app_hosts:
+                      available: true
+                      error: null
+                      data:
+                        hosted: false
+                        hosts: []
+                        webhooks: []
+                        shared_events: []
+                        capped: false
+                    reconcile:
+                      available: true
+                      error: null
+                      data:
+                        state: not_adopted
+                        pinned_version: null
+                        target_version: null
+                        attempts: 0
+                        next_at: null
+                        last_error_code: null
+                        resources: []
+                        truncated: false
+                    support:
+                      available: true
+                      error: null
+                      data:
+                        state: supported
+                        min_version: null
+                        window_ends_at: null
+                    connect:
+                      available: false
+                      error: null
+                      data: null
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-18T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/StatusForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /api/company/v2026-10/droplet-categories:
+    get:
+      operationId: companyDropletCategoriesIndex
+      summary: List droplet categories
+      description: |-
+        Every marketplace category, in the order they were added. Use a category's `slug` in `categories` when you create or update a droplet, and in `filter[category]` when you list droplets. Not paginated.
+
+        Needs the `droplets.view` permission. Replaces `GET /api/droplet_categories`.
+      tags:
+      - droplets
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The categories.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyDropletCategoryListResponse'
+              example:
+                droplet_categories:
+                - slug: orders-shipping
+                  name: Orders & Shipping
+                  description: Order management, Shipping rate calculators, Fulfillment solutions, Tracking and delivery notifications,
+                    Returns management
+                - slug: finance-accounting
+                  name: Finance & Accounting
+                  description: Tax calculators, Accounting integrations, Invoice management, Payment processors
+                status: 200
+                meta:
+                  request_id: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-20T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'

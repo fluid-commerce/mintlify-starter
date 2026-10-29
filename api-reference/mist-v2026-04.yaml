@@ -43,6 +43,11 @@ tags:
   description: |
     Read a Mist app's deployments and its runtime and build logs.
   x-fluid-section: Developers
+- name: mist_traffic
+  description: |
+    Read a Mist app's visitors and page views from Vercel Web Analytics, and
+    turn Web Analytics on for the app.
+  x-fluid-section: Developers
 components:
   securitySchemes:
     bearer_auth:
@@ -52,9 +57,9 @@ components:
         Bearer token authentication. Accepts company admin tokens with
         the matching `mist.*` permission:
           - `mist.view` to list and show Mists
-          - `mist.create` to create and rename Mists
+          - `mist.create` to create and rename Mists, and to turn on visitor numbers
           - `mist.destroy` to delete and restore Mists
-          - `mist.code` for deployments and logs
+          - `mist.code` for deployments, logs, and traffic
           - `mist.env_vars` to read and manage environment variables
         Droplet installation tokens are refused.
   responses:
@@ -254,6 +259,13 @@ components:
             Slug of the template this app was generated from, or null when
             it came from the install-wide starter. The repo the slug points
             at and the commit the copy received are internal.
+        egress_proxy_from_template:
+          type: boolean
+          description: |
+            Whether adding a droplet to this app turns the droplet's egress
+            through Fluid's egress proxy on by itself, because its template
+            asks for egress. A client can leave the egress choice out when
+            it is true.
         created_at:
           type: string
           format: date-time
@@ -326,6 +338,165 @@ components:
           - string
           - 'null'
           enum: [production, preview, null]
+    MistTraffic:
+      type: object
+      description: |
+        Visitors and page views for the range, in UTC days that end today.
+      required: [range, since, until, totals, days, top_paths, top_referrers]
+      properties:
+        range:
+          type: string
+          enum: [7d, 28d, 90d]
+          description: The range that was read.
+        since:
+          type: string
+          format: date
+          description: First day of the range.
+        until:
+          type: string
+          format: date
+          description: Last day of the range, today in UTC.
+        totals:
+          description: |
+            Totals for the whole range, read from Vercel's visits count. `visitors`
+            is unique for the range: a visitor who came on several days
+            counts once, so it is usually less than the sum of the `days`
+            rows.
+          "$ref": "#/components/schemas/MistTrafficCounts"
+        days:
+          type: array
+          description: One row for every day of the range, oldest first. A day with no visits has zeros.
+          items:
+            allOf:
+            - "$ref": "#/components/schemas/MistTrafficCounts"
+            - type: object
+              required: [date]
+              properties:
+                date:
+                  type: string
+                  format: date
+        top_paths:
+          type: array
+          maxItems: 10
+          description: |
+            Up to 10 routes, most visitors first. Each `path` is a route
+            pattern such as `/products/[slug]`, never a raw request path, so
+            it carries no tokens or ids. Requests the framework gave no
+            route are not listed.
+          items:
+            allOf:
+            - "$ref": "#/components/schemas/MistTrafficCounts"
+            - type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+        top_referrers:
+          type: array
+          maxItems: 10
+          description: |
+            Up to 10 referring hosts, most visitors first. Direct visits have
+            no referrer and are not listed.
+          items:
+            allOf:
+            - "$ref": "#/components/schemas/MistTrafficCounts"
+            - type: object
+              required: [host]
+              properties:
+                host:
+                  type: string
+    MistTrafficCounts:
+      type: object
+      description: Visitors and page views.
+      required: [visitors, page_views]
+      properties:
+        visitors:
+          type: integer
+          minimum: 0
+        page_views:
+          type: integer
+          minimum: 0
+    MistTrafficError:
+      type: object
+      description: A traffic read that failed. `error.code` names the reason.
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+              - invalid_range
+              - not_provisioned
+              - web_analytics_off
+              - web_analytics_plan_required
+              - web_analytics_forbidden
+              - vendor_error
+            message:
+              type: string
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    MistTrafficEnablementError:
+      type: object
+      description: A request to turn on visitor numbers that failed. `error.code` names the reason.
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+              - not_provisioned
+              - web_analytics_plan_required
+              - web_analytics_forbidden
+              - vendor_error
+            message:
+              type: string
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    MistPendingDestroyError:
+      type: object
+      description: The Mist is scheduled for deletion and must be restored first.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, details]
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              properties:
+                state:
+                  type: string
+                scheduled_destroy_at:
+                  type:
+                  - string
+                  - 'null'
+                  format: date-time
+    MistPermissionError:
+      type: object
+      description: The credential is not allowed to read this Mist's traffic.
+      required: [error]
+      properties:
+        error:
+          type: string
+    MistMessageError:
+      type: object
+      description: An authentication or role refusal.
+      required: [message]
+      properties:
+        message:
+          type: string
     LogEntry:
       type: object
       properties:
@@ -427,6 +598,7 @@ paths:
                   provisioned_at: '2026-04-14T16:22:41Z'
                   scheduled_destroy_at:
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-14T16:22:41Z'
                 status: 200
@@ -544,6 +716,7 @@ paths:
                   provisioned_at:
                   scheduled_destroy_at:
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-14T16:22:04Z'
                 status: 201
@@ -602,6 +775,7 @@ paths:
                   provisioned_at: '2026-04-14T16:22:41Z'
                   scheduled_destroy_at:
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-14T16:22:41Z'
                 status: 200
@@ -673,6 +847,7 @@ paths:
                   provisioned_at: '2026-04-14T16:22:41Z'
                   scheduled_destroy_at:
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-21T11:03:17Z'
                 status: 200
@@ -737,6 +912,7 @@ paths:
                   provisioned_at: '2026-04-14T16:22:41Z'
                   scheduled_destroy_at: '2026-05-06T10:30:00Z'
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-21T10:30:00Z'
                 status: 202
@@ -794,6 +970,7 @@ paths:
                   provisioned_at: '2026-04-14T16:22:41Z'
                   scheduled_destroy_at:
                   template: rewards-starter
+                  egress_proxy_from_template: false
                   created_at: '2026-04-14T16:21:58Z'
                   updated_at: '2026-04-22T08:12:45Z'
                 status: 200
@@ -872,9 +1049,9 @@ paths:
       summary: Add a user-managed env var
       description: |
         Adds an environment variable to the Mist's deployment project. It
-        applies to all three targets (`production`, `preview`, and
-        `development`) unless you pass `targets`. The value takes effect on
-        the next deployment.
+        applies to `production` only unless you pass `targets`, so a secret
+        never reaches preview or staging builds unless you add those
+        targets. The value takes effect on the next deployment.
 
         Returns `422` with `error.details.type` of `managed_var` if `key`
         is a Mist-managed variable, such as `DATABASE_URL` or one of the
@@ -911,7 +1088,7 @@ paths:
                       items:
                         type: string
                         enum: [production, preview, development]
-                      default: [production, preview, development]
+                      default: [production]
             example:
               env_var:
                 key: REWARDS_POINTS_PER_DOLLAR
@@ -1245,3 +1422,296 @@ paths:
           $ref: "#/components/responses/Unprocessable"
         '502':
           $ref: "#/components/responses/BadGateway"
+  "/api/v202604/mists/{mist_id}/traffic":
+    get:
+      operationId: mist_traffic_read
+      summary: Visitors and page views for a Mist app
+      description: |
+        Returns daily visitors and page views for the Mist's app, with its
+        top routes (as route patterns, in `top_paths`) and referring hosts,
+        read from Vercel Web Analytics. The range ends today in UTC and has one row for every
+        day.
+
+        Only companies with Mist growth tools turned on can read traffic.
+        For any other company this endpoint returns `404` and reads
+        nothing from Vercel.
+
+        A failed read names its reason in `error.code`:
+          - `422` `invalid_range` when `range` is not `7d`, `28d`, or `90d`.
+          - `409` `not_provisioned` when the Mist has no Vercel project yet.
+          - `409` `web_analytics_off` when Web Analytics is off for the app.
+          - `402` `web_analytics_plan_required` when the Vercel plan does
+            not include the Web Analytics API.
+          - `502` `web_analytics_forbidden` when Web Analytics is on but
+            Mist's Vercel credential cannot read it.
+          - `502` `vendor_error` for any other Vercel failure.
+
+        Returns `409` without `error.code` while the Mist is
+        `pending_destroy`.
+
+        Requires a company admin token with the `mist.code` permission.
+      x-fluid-audience: company
+      tags: [mist_traffic]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      - name: range
+        in: query
+        description: Number of days to read, ending today. Defaults to `28d`.
+        schema:
+          type: string
+          enum: [7d, 28d, 90d]
+          default: 28d
+      responses:
+        '200':
+          description: Traffic for the range
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traffic, status, meta]
+                properties:
+                  traffic:
+                    "$ref": "#/components/schemas/MistTraffic"
+                  status:
+                    type: integer
+                  meta:
+                    "$ref": "#/components/schemas/Meta"
+              example:
+                traffic:
+                  range: 7d
+                  since: '2026-10-08'
+                  until: '2026-10-14'
+                  totals:
+                    visitors: 140
+                    page_views: 431
+                  days:
+                  - { date: '2026-10-08', visitors: 21, page_views: 48 }
+                  - { date: '2026-10-09', visitors: 25, page_views: 61 }
+                  - { date: '2026-10-10', visitors: 0, page_views: 0 }
+                  - { date: '2026-10-11', visitors: 33, page_views: 80 }
+                  - { date: '2026-10-12', visitors: 38, page_views: 92 }
+                  - { date: '2026-10-13', visitors: 30, page_views: 71 }
+                  - { date: '2026-10-14', visitors: 35, page_views: 79 }
+                  top_paths:
+                  - { path: /, visitors: 120, page_views: 190 }
+                  - { path: "/products/[slug]", visitors: 44, page_views: 87 }
+                  top_referrers:
+                  - { host: www.google.com, visitors: 61, page_views: 140 }
+                  - { host: t.co, visitors: 12, page_views: 19 }
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistMessageError"
+        '402':
+          description: "`web_analytics_plan_required`: the Vercel plan does not include the Web Analytics API."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficError"
+              example:
+                error:
+                  code: web_analytics_plan_required
+                  message: Web Analytics needs a paid Vercel plan
+                status: 402
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '403':
+          description: |
+            The credential is not a company admin (`message`), is a droplet
+            token, or lacks the `mist.code` permission (`error`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistPermissionError"
+                - "$ref": "#/components/schemas/MistMessageError"
+        '404':
+          description: The Mist does not exist in this company, or growth tools are off for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: |
+            `not_provisioned` or `web_analytics_off`, or the Mist is
+            `pending_destroy` (no `error.code`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistTrafficError"
+                - "$ref": "#/components/schemas/MistPendingDestroyError"
+              example:
+                error:
+                  code: web_analytics_off
+                  message: Web Analytics is off for this app
+                status: 409
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '422':
+          description: "`invalid_range`: `range` is not one of `7d`, `28d`, or `90d`."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficError"
+              example:
+                error:
+                  code: invalid_range
+                  message: range must be one of 7d, 28d, 90d
+                status: 422
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '502':
+          description: "`web_analytics_forbidden` or `vendor_error`: Vercel did not answer with traffic."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficError"
+              example:
+                error:
+                  code: vendor_error
+                  message: vercel answered 500
+                status: 502
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+  "/api/v202604/mists/{mist_id}/traffic/enablement":
+    post:
+      operationId: mist_traffic_enable
+      summary: Turn on visitor numbers for a Mist app
+      description: |
+        Turns on Vercel Web Analytics for the Mist's Vercel project, which
+        is what the traffic read needs before it can return numbers. Page
+        views then count toward the app's hosting usage.
+
+        Calling it again for an app that is already on answers the same
+        `200`, so it is safe to repeat. The request has no body.
+
+        Only companies with Mist growth tools turned on can call it. For
+        any other company this endpoint returns `404` and sends nothing to
+        Vercel.
+
+        A failed request names its reason in `error.code`:
+          - `409` `not_provisioned` when the Mist has no Vercel project yet.
+          - `402` `web_analytics_plan_required` when the Vercel plan does
+            not include Web Analytics.
+          - `502` `web_analytics_forbidden` when Mist's Vercel credential
+            may not change the project.
+          - `502` `vendor_error` for any other Vercel failure.
+
+        Returns `409` without `error.code` while the Mist is
+        `pending_destroy`.
+
+        Requires a company admin token with the `mist.create` permission.
+      x-fluid-audience: company
+      tags: [mist_traffic]
+      security:
+      - bearer_auth: []
+      parameters:
+      - "$ref": "#/components/parameters/NestedMistId"
+      responses:
+        '200':
+          description: Web Analytics is on for the app
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [traffic_enablement, status, meta]
+                properties:
+                  traffic_enablement:
+                    type: object
+                    required: [enabled]
+                    properties:
+                      enabled:
+                        type: boolean
+                        enum: [true]
+                  status:
+                    type: integer
+                  meta:
+                    "$ref": "#/components/schemas/Meta"
+              example:
+                traffic_enablement:
+                  enabled: true
+                status: 200
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistMessageError"
+        '402':
+          description: "`web_analytics_plan_required`: the Vercel plan does not include Web Analytics."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficEnablementError"
+              example:
+                error:
+                  code: web_analytics_plan_required
+                  message: Web Analytics needs a paid Vercel plan
+                status: 402
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '403':
+          description: |
+            The credential is not a company admin (`message`), is a droplet
+            token, or lacks the `mist.create` permission (`error`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistPermissionError"
+                - "$ref": "#/components/schemas/MistMessageError"
+        '404':
+          description: The Mist does not exist in this company, or growth tools are off for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '409':
+          description: |
+            `not_provisioned`, or the Mist is `pending_destroy` (no
+            `error.code`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/MistTrafficEnablementError"
+                - "$ref": "#/components/schemas/MistPendingDestroyError"
+              example:
+                error:
+                  code: not_provisioned
+                  message: hosting has no vercel_project_id
+                status: 409
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'
+        '502':
+          description: "`web_analytics_forbidden` or `vendor_error`: Vercel did not turn Web Analytics on."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MistTrafficEnablementError"
+              example:
+                error:
+                  code: vendor_error
+                  message: vercel answered 500
+                status: 502
+                meta:
+                  request_id: 6f1c2a9e-4b7d-4e8a-9c3f-2d5b8a1e7f40
+                  timestamp: '2026-10-14T15:02:11Z'

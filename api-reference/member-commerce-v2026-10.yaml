@@ -68,6 +68,28 @@ components:
           type: string
           format: date-time
           description: ISO 8601 timestamp at which the server produced the response.
+        subscription_schedule:
+          "$ref": "#/components/schemas/SubscriptionSchedule"
+        code:
+          type: string
+          description: Machine code for the refusal. This surface serves shoppers, who are never refused for a blackout day. A picked bill date on one is saved on the next open day, and the success response carries the saved date. `next_bill_date_blackout` is kept for clients that already read it.
+          example: next_bill_date_blackout
+        blocked_date:
+          type: string
+          format: date
+          description: Present with `next_bill_date_blackout`. The date that was refused, as an ISO 8601 calendar date.
+          example: '2026-11-30'
+        blocked_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Present with `next_bill_date_blackout`. The day of the month of `blocked_date`.
+          example: 30
+        allowed_date:
+          type: string
+          format: date
+          description: Present with `next_bill_date_blackout`. The nearest date the merchant's blackout rules allow, the date to offer instead.
+          example: '2026-11-28'
       required:
       - request_uuid
       - timestamp
@@ -848,7 +870,7 @@ components:
           type:
           - string
           - 'null'
-          description: Discount code.
+          description: Discount code. A Subscription Pro discount shows its customer name instead (Loyalty discount, Special discount or Subscription discount), never its system code.
         type:
           type:
           - string
@@ -914,6 +936,12 @@ components:
         auto_apply_points:
           type: boolean
           description: Whether renewal may automatically spend this member's reward points.
+        cancellation_reason_code:
+          type:
+          - string
+          - 'null'
+          description: Why the subscription was cancelled, from the fixed reason taxonomy. Null while it is not cancelled.
+          example: too_expensive
         id:
           type: string
           description: External subscription identifier.
@@ -1053,10 +1081,94 @@ components:
           type: string
           format: uuid
           description: Public UUID of an owned saved address. Omission preserves the current address; country cannot change.
+    SubscriptionSchedule:
+      type: object
+      description: Current owned billing intent state. Present in detail-read metadata and confirmed Skip/Undo metadata; never in legacy empty-body Skip metadata. Dates use the subscription timezone. The optional applied flag appears only after a confirmed mutation and is false for an accepted replay.
+      additionalProperties: false
+      properties:
+        next_bill_date:
+          type: [string, 'null']
+          format: date
+          description: Current local billing date, or null when unscheduled.
+        latest_skip_id:
+          type: [string, 'null']
+          format: uuid
+          description: Latest historical skip UUID, including undone skips, or null before the first skip. Echo this exact epoch when confirming a new skip.
+        pending_skip_id:
+          type: [string, 'null']
+          format: uuid
+          description: Currently undoable skip UUID, or null.
+        pending_skip_date:
+          type: [string, 'null']
+          format: date
+          description: Local date skipped by the pending intent, or null.
+        can_skip:
+          type: boolean
+          description: Whether current plan, state and skip allowance permit a new skip.
+        applied:
+          type: boolean
+          description: True only when this request changed the schedule; false for an accepted replay. Omitted on reads.
+      required: [next_bill_date, latest_skip_id, pending_skip_id, pending_skip_date, can_skip]
+    SubscriptionSkip:
+      description: Preserve legacy empty-body Skip, or confirm an exact local date and historical skip epoch together. A replay cannot skip another bill, including after Undo.
+      oneOf:
+      - "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+      - type: object
+        additionalProperties: false
+        properties:
+          scheduled_date:
+            type: string
+            format: date
+            description: Local billing date explicitly confirmed by the member.
+          expected_latest_skip_id:
+            type: [string, 'null']
+            format: uuid
+            description: Latest historical skip UUID from current detail metadata, or explicit null before the first skip.
+        required: [scheduled_date, expected_latest_skip_id]
+    SubscriptionUndo:
+      type: object
+      description: Restore exactly the confirmed pending skip. An identical already-undone retry succeeds without applying another change.
+      additionalProperties: false
+      properties:
+        skip_id:
+          type: string
+          format: uuid
+          description: Owned pending skip UUID from current detail metadata.
+      required: [skip_id]
     SubscriptionEmptyTransition:
       type: object
       description: No transition fields are accepted. Supply an empty JSON object.
       additionalProperties: false
+    SubscriptionCancel:
+      type: object
+      description: Optionally say why the member is cancelling. Omit the body or send an empty object to record `unknown`.
+      additionalProperties: false
+      properties:
+        reason_code:
+          type:
+          - string
+          - 'null'
+          description: A customer reason code. Omitted or null records `unknown`. Any other value returns 422.
+          enum:
+          - too_expensive
+          - too_much_product
+          - too_frequent
+          - not_seeing_results
+          - did_not_like_product
+          - switching_brand
+          - shipping_or_delivery_issue
+          - taking_a_break
+          - moving_or_life_change
+          - other
+          - null
+          example: other
+        reason_text:
+          type:
+          - string
+          - 'null'
+          maxLength: 500
+          description: Free text, allowed only with `reason_code` `other`.
+          example: Moving abroad
     SubscriptionRetryEnvelope:
       description: Fresh subscription detail with explicit asynchronous retry queue status.
       allOf:
@@ -1273,7 +1385,7 @@ components:
               - string
               - 'null'
               description: Immutable captured code, falling back to the definition for
-                historical records.
+                historical records. A Subscription Pro discount shows its customer name instead (Loyalty discount, Special discount or Subscription discount), never its system code.
           required:
           - id
           - code
@@ -1291,7 +1403,7 @@ components:
               type:
               - string
               - 'null'
-              description: Discount code captured in this version.
+              description: Discount code captured in this version. A Subscription Pro discount shows its customer name instead (Loyalty discount, Special discount or Subscription discount), never its system code.
             price_discount_type:
               type: string
               description: Pricing kind captured in this version.
@@ -3379,7 +3491,7 @@ paths:
         pending skip are distinct refusals. Duplicate concurrent requests must not advance
         two cycles. The bearer fixes the member and company. State and ownership are rechecked
         under write locks. Responses are no-store, including refusals, and never return
-        304. Unknown fields and query parameters are rejected.
+        304. Unknown fields and query parameters are rejected. An empty body preserves legacy behavior and response metadata. Supplying scheduled_date and expected_latest_skip_id together confirms an idempotent intent; success includes meta.subscription_schedule with applied. Read the current date and epoch from GET subscription detail before confirming.
       parameters:
       - name: id
         in: path
@@ -3390,13 +3502,153 @@ paths:
           format: uuid
       requestBody:
         required: false
-        description: Top-level transition fields; omit the body or send an empty object
-          when no fields are needed.
+        description: Omit the body or send an empty object for legacy behavior, or supply both confirmed intent fields.
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
+              "$ref": "#/components/schemas/SubscriptionSkip"
             example: {}
+      responses:
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '200':
+          description: Fresh subscription detail after the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  status: active
+                  frequency:
+                    interval: 1
+                    unit: month
+                  next_billing_at: '2026-11-01T12:00:00Z'
+                  currency: USD
+                  next_total:
+                  items_count: 1
+                  paused_until:
+                  created_at: '2026-10-01T12:00:00Z'
+                  items:
+                  - id: '019a23a4-9211-71bf-8fa5-a5f31a82a0e2'
+                    title: Monthly wellness bundle
+                    variant_title: Standard
+                    sku: WELLNESS-01
+                    quantity: 1
+                    unit_price: '20.0'
+                    total: '20.0'
+                    image_url:
+                  shipping_address:
+                  payment_method:
+                  discounts: []
+                  next_order_preview:
+                  auto_apply_points: false
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
+                  timestamp: '2026-10-01T12:00:00Z'
+                  bundle_pagination:
+                    next_cursor:
+        '401':
+          description: Missing or unusable member credential.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential is read-only.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Missing or malformed subscription identifier, or a subscription
+            outside the member and company scope.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: A database lock timeout, deadlock, serialization conflict, or saved-reference
+            contention prevented the transition. Refresh and retry. Ordinary contention may wait;
+            a changed owner returns 404.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: Invalid transition fields or state, unavailable reference, country
+            change or a domain guard refused the transition.
+          headers:
+            Cache-Control:
+              description: This response must not be stored.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+      x-fluid-audience: member
+  "/api/member/v2026-10/subscriptions/{id}/undo":
+    post:
+      operationId: member_subscriptions_undo
+      tags:
+      - subscriptions
+      summary: Undo a specific subscription billing skip
+      description: Restore the exact owned pending skip through locked lifecycle policy. Identical already-undone retries succeed with applied false. Expired, replaced or foreign skip IDs conflict without writes. Every success includes meta.subscription_schedule with applied and authoritative current state. Canonical member credentials determine ownership; Members Site enablement and cookies are not required. Responses are no-store. Unknown fields and query parameters are rejected.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public UUID of an owned subscription.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        description: The exact pending skip to restore.
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionUndo"
+            example:
+              skip_id: 019a23a4-9211-71bf-8fa5-a5f31a82a0e2
       responses:
         '400':
           description: The request body is not valid JSON.
@@ -3521,7 +3773,8 @@ paths:
       - subscriptions
       summary: Cancel an owned subscription
       description: Cancel billing and clear dunning. An already cancelled subscription
-        is refused. Cancellation also removes applicable discount attachments. The bearer fixes
+        is refused. The optional reason is stored on the subscription; a reason that is not a
+        customer reason code is refused with 422. Cancellation also removes applicable discount attachments. The bearer fixes
         the member and company. State and ownership are rechecked under write locks. Responses
         are no-store, including refusals, and never return 304. Unknown fields and query
         parameters are rejected.
@@ -3535,13 +3788,15 @@ paths:
           format: uuid
       requestBody:
         required: false
-        description: Top-level transition fields; omit the body or send an empty object
-          when no fields are needed.
+        description: The optional cancellation reason; omit the body or send an empty
+          object to record `unknown`.
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/SubscriptionEmptyTransition"
-            example: {}
+              "$ref": "#/components/schemas/SubscriptionCancel"
+            example:
+              reason_code: other
+              reason_text: Moving abroad
       responses:
         '400':
           description: The request body is not valid JSON.
@@ -3589,6 +3844,7 @@ paths:
                   discounts: []
                   next_order_preview:
                   auto_apply_points: false
+                  cancellation_reason_code: other
                 meta:
                   request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
                   timestamp: '2026-10-01T12:00:00Z'
@@ -4357,7 +4613,7 @@ paths:
   "/api/member/v2026-10/subscriptions/{id}/failed-cycle-waiver":
     get:
       operationId: member_subscription_waivers_show
-      summary: Preview a failed-cycle waiver
+      summary: Preview a failed-cycle waiver for an owned subscription
       description: Read current eligibility and future billing and shipping dates without
         changing the subscription, charging, provisioning a customer or reporting activation
         telemetry. Ineligibility returns 200 with eligible false and null dates. Responses
@@ -4667,7 +4923,144 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
-
+    post:
+      x-fluid-audience: member
+      operationId: member_carts_create
+      tags:
+      - carts
+      summary: Create a cart for the signed-in member
+      description: >-
+        Create a cart in the member's company and bind it to the signed-in member in one call. The body is the cart
+        create body of the public carts API (country_code is required; items and attribution are optional). The cart
+        is created in the member's company only: a company named in the body is ignored, as are member_id,
+        customer_id and an admin source. The response is the cart already bound to the member and priced for them
+        (wholesale for rep member types), with its token, and it is populated before the response. If the bind is
+        refused no cart is left behind. FairShare on a member host makes this one same-origin call (session cookie plus
+        X-CSRF-Token) instead of a public create followed by a claim; guests keep the public create. Claim stays
+        supported. Requires a writable member credential.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - country_code
+              additionalProperties: true
+              properties:
+                country_code:
+                  type: string
+                  example: US
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - variant_id
+                    - quantity
+                    properties:
+                      variant_id:
+                        type: integer
+                      quantity:
+                        type: integer
+            example:
+              country_code: US
+              items:
+              - variant_id: 482913
+                quantity: 2
+      responses:
+        "400":
+          description: The request body is not valid JSON, or the cart could not be built from it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '201':
+          description: The created cart, bound to the member.
+          headers:
+            Cache-Control:
+              description: Always includes no-store, because the response carries the cart token. The bearer mount sends no-store; the cookie mount sends private, no-store.
+              schema:
+                type: string
+                enum:
+                - no-store
+                - private, no-store
+          content:
+            application/json:
+              schema:
+                allOf:
+                - "$ref": "#/components/schemas/CartEnvelope"
+                - type: object
+                  properties:
+                    meta:
+                      type: object
+                      properties:
+                        skipped_items:
+                          type: array
+                          description: >-
+                            Requested items that were not added because they are unavailable in the cart's country.
+                            Present only when at least one item was skipped; the cart holds the rest.
+                          items:
+                            type: object
+                            properties:
+                              variant_id:
+                                type: integer
+                              reason:
+                                type: string
+              example:
+                status: 201
+                data:
+                  id: 0192f4e0-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  token: ct_6d1f0c2a9b8e4f37
+                  state: start
+                  kind: regular
+                  currency: USD
+                  totals:
+                    subtotal: '59.98'
+                    discount: '0.0'
+                    shipping: '7.5'
+                    tax: '4.8'
+                    total: '72.28'
+                  created_at: '2026-09-29T16:02:11.402913Z'
+                  updated_at: '2026-09-30T08:41:55.118204Z'
+                  items:
+                  - id: 0192f4e2-5d6e-7f80-91a2-b3c4d5e6f7a8
+                    title: Daily Greens
+                    variant_title: 30 servings
+                    sku: DG-30
+                    quantity: 2
+                    subscription: false
+                    unit_price: '29.99'
+                    total: '59.98'
+                    image_url: https://cdn.fluid.app/products/daily-greens-30.jpg
+                meta:
+                  request_uuid: 0192f520-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                  timestamp: '2026-09-30T15:20:00Z'
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The member credential can only read, or the CSRF token is missing or invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The cart could not be created for this member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: >-
+            The body is invalid or its items cannot be added, or this membership has no commerce identity to hold carts.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
 
   "/api/member/v2026-10/carts/{token}":
     parameters:

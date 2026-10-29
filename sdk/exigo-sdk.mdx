@@ -1,0 +1,241 @@
+---
+title: "Exigo connection SDK"
+sidebarTitle: "Exigo SDK"
+description: "Call Exigo's REST API and query its SQL replica from a droplet or Mist app, with one credential interface and typed errors."
+---
+
+The Exigo connection SDK gives droplets and Mist apps one way to talk to Exigo: a REST client, a cached SQL pool, a credential interface and typed errors. It handles the connection, authentication and errors. Your app keeps its own business queries.
+
+The package runs on Node 20 or later, including Vercel's Node runtime and Cloud Run. It doesn't run on the Edge runtime.
+
+## Install the SDK
+
+<CodeGroup>
+
+```bash npm
+npm install @fluid-app/exigo-connection-sdk
+```
+
+```bash pnpm
+pnpm add @fluid-app/exigo-connection-sdk
+```
+
+```bash yarn
+yarn add @fluid-app/exigo-connection-sdk
+```
+
+</CodeGroup>
+
+Add these only if your app needs them:
+
+- `mssql` 11 or 12, and `@types/mssql` 9 or later as a dev dependency, to query Exigo's SQL replica.
+- `undici` 6 or 7, to call Exigo's REST API through [Fluid's egress proxy](/mist-apps/egress-proxy).
+
+| Import | Provides | Needs `mssql` |
+| --- | --- | --- |
+| `@fluid-app/exigo-connection-sdk` | `defineExigoCredentials`, the credential types and the errors | No |
+| `@fluid-app/exigo-connection-sdk/rest` | `createExigoRestClient` and the errors | No |
+| `@fluid-app/exigo-connection-sdk/sql` | `getExigoPool`, `closeExigoPool`, `closeAllExigoPools`, `translateExigoSqlError` and the errors | Yes |
+
+## Define the credentials
+
+The SDK reads no environment variables and stores nothing. You tell it where the credentials come from, once per app. If a field is missing, the SDK throws `ExigoCredentialsError` and names the field.
+
+A droplet that many companies install looks the credentials up per company:
+
+```ts lib/exigo.ts
+import { defineExigoCredentials } from "@fluid-app/exigo-connection-sdk";
+
+export const resolveExigoCredentials = defineExigoCredentials(
+  async (companyId: string) => {
+    const saved = await db.exigoCredentials.findUniqueOrThrow({
+      where: { companyId },
+    });
+    return {
+      rest: {
+        baseUrl: saved.apiBaseUrl,
+        username: saved.apiUser,
+        password: saved.apiPassword,
+        company: saved.companyName,
+      },
+      sql: {
+        host: saved.dbHost,
+        database: saved.dbName,
+        username: saved.dbUsername,
+        password: saved.dbPassword,
+        trustServerCertificate: true,
+      },
+    };
+  },
+);
+```
+
+A Mist app built for one company can return its environment variables from the same function instead.
+
+`trustServerCertificate` is required and has no default. Exigo's replicas present a certificate that doesn't verify against their host name, so they need `true`, which skips certificate verification.
+
+The resolver runs on every call. If the lookup is slow, cache the result in your app.
+
+## Call the REST API
+
+```ts
+import {
+  createExigoRestClient,
+  ExigoAuthError,
+  ExigoTimeoutError,
+} from "@fluid-app/exigo-connection-sdk/rest";
+
+const { rest } = await resolveExigoCredentials(companyId);
+const exigo = createExigoRestClient(rest);
+
+try {
+  const account = await exigo.get<PointAccount>(
+    "/customers/{id}/pointaccounts/{accountId}",
+    { params: { id: customerId, accountId: pointAccountId } },
+  );
+} catch (error) {
+  if (error instanceof ExigoAuthError) {
+    // The credentials are wrong. Tell the company's admin.
+  }
+  if (error instanceof ExigoTimeoutError) {
+    // Retry, or fail the callback fast.
+  }
+  throw error;
+}
+```
+
+`get` and `delete` take `params`, `query`, `headers`, `timeoutMs` and `signal`. `post`, `put` and `patch` also take a `body`, sent as JSON.
+
+The client:
+
+- Adds `/3.0` to the base URL, unless the stored URL already ends in it. A base URL that ends in another version, such as `/2.0`, throws `ExigoCredentialsError`.
+- Requires an `https` base URL, because every request carries the password. Plain `http` works only for `localhost`, `127.0.0.1` and `[::1]`, so you can test against a local stub.
+- Sends Basic authentication as `username@company`.
+- Times out after 15 seconds by default. Set `timeoutMs` on the client or on one call to change it.
+- Resolves to the parsed JSON, or to `undefined` when the response body is empty.
+- Throws `ExigoAuthError` for a 401 or 403, and `ExigoApiError` for any other status outside the 2xx range or for a 200 response whose body is an HTML page or isn't JSON. The error's message and `bodySnippet` never contain the password.
+- Refuses a path that is a full URL, so the credentials only go to the configured host. It also refuses a path that starts with an API version, such as `/3.0/customers`, because it adds the version itself.
+- Refuses a path parameter that is empty, `.` or `..`, which would otherwise reach a different endpoint than the path names.
+
+## Query the SQL replica
+
+```ts
+import { getExigoPool } from "@fluid-app/exigo-connection-sdk/sql";
+
+const { sql: credentials } = await resolveExigoCredentials(companyId);
+const pool = await getExigoPool(credentials);
+
+const { recordset } = await pool
+  .request()
+  .input("email", email)
+  .query("SELECT CustomerID FROM Customers WHERE Email = @email");
+```
+
+`getExigoPool` returns an `mssql` connection pool. For typed parameters, import the types from `mssql` itself: `request.input("id", sql.Int, id)`.
+
+### How pools are reused
+
+The SDK keeps one pool per host, port, database, user name and TLS settings. Repeated calls reuse it, and calls made while the first connect is still running share that connect. A failed connect isn't kept, so the next call tries again.
+
+When a password changes, the new password gets its own pool and the old one keeps serving the requests already running. The SDK closes the old pool once nothing has used it for about five minutes, and any pool once nothing has used it for about 30 minutes.
+
+The defaults:
+
+| Setting | Default |
+| --- | --- |
+| Port | 1433 |
+| `encrypt` | `true` |
+| Connections per pool (`max`) | 4 |
+| Idle connection closed after (`idleTimeoutMs`) | 10 seconds |
+| Connect timeout (`connectTimeoutMs`) | 12 seconds |
+| Query timeout (`requestTimeoutMs`) | 30 seconds |
+
+Pools are small because every running instance of your app opens its own. To change the pool settings, pass `{ max, idleTimeoutMs, connectTimeoutMs, requestTimeoutMs }` as the second argument. The options apply when the pool opens.
+
+### Errors from SQL
+
+A failed connect throws `ExigoAuthError`, `ExigoTimeoutError` or `ExigoConnectionError`, with a message that says what to check.
+
+The SDK leaves errors from your own queries alone. To map a query's timeout or dropped connection to the same errors, pass the error through `translateExigoSqlError`. Any other query error, such as a wrong table name, comes back unchanged, so it's never reported as a network failure.
+
+### Close pools on shutdown
+
+```ts
+import { closeAllExigoPools } from "@fluid-app/exigo-connection-sdk/sql";
+
+process.once("SIGTERM", () => void closeAllExigoPools());
+```
+
+### Use it in Next.js
+
+Keep `mssql` out of the bundle, and run every route that queries on the Node runtime:
+
+```ts next.config.ts
+export default { serverExternalPackages: ["mssql"] };
+```
+
+```ts app/api/customers/route.ts
+export const runtime = "nodejs";
+```
+
+## Reach Exigo through Fluid's egress proxy
+
+Exigo accepts calls only from IP addresses each tenant allowlists, and a Mist app on Vercel has no fixed outbound address. [Fluid's egress proxy](/mist-apps/egress-proxy) lends your app a fixed one. Both the REST client and the SQL pool take an `egressProxy` option:
+
+```ts
+import { resolveFluidInstallation } from "@/lib/fluid/installation-context";
+
+// Authorize the caller first: resolveFluidInstallation doesn't.
+const { installation, companyId } = await resolveFluidInstallation(request);
+const { rest, sql: credentials } = await resolveExigoCredentials(String(companyId));
+
+const egressProxy = process.env.FLUID_EGRESS_PROXY_URL
+  ? {
+      url: process.env.FLUID_EGRESS_PROXY_URL,
+      // The installation's droplet installation token (dit_…).
+      token: installation.authenticationToken,
+    }
+  : undefined;
+
+const exigo = createExigoRestClient(rest, { egressProxy });
+const pool = await getExigoPool(credentials, { egressProxy });
+```
+
+`resolveFluidInstallation` comes from the Mist app template. It finds the installation from a request header, but doesn't authenticate whoever sent the request. Before a route loads a company's Exigo credentials, check that the caller may act for that company. See [Authentication](/mist-apps/authentication#viewer-identity-with-session-tokens).
+
+When `FLUID_EGRESS_PROXY_URL` isn't set, as in a local run, the code above calls Exigo directly.
+
+- The REST client needs the `undici` package for the proxy. The SQL pool needs nothing extra.
+- Clients built with the same proxy URL and token share their connections, so you can create a client per request.
+- The proxy URL and token are part of a SQL pool's identity: a different proxy or token gets its own pool.
+- Through the proxy, the SQL connection must be encrypted. `encrypt: false` throws `ExigoCredentialsError`. If the replica doesn't offer encryption, the SDK closes the connection before it sends the login and throws `ExigoConnectionError`.
+- When the proxy refuses a connection, the SDK throws `ExigoProxyError`, whose `status` is the proxy's answer. See [When the proxy refuses](/mist-apps/egress-proxy#when-the-proxy-refuses).
+
+<Warning>
+  With `trustServerCertificate: true`, the connection is encrypted, but nothing proves the other end is Exigo. This is true for direct connections too. Closing the gap needs a certificate on Exigo's side that can be verified.
+</Warning>
+
+## Errors
+
+Every error extends `ExigoError`.
+
+| Error | When | Extra fields |
+| --- | --- | --- |
+| `ExigoCredentialsError` | A field is missing or invalid. | `fields` names them. |
+| `ExigoAuthError` | The REST API answered 401 or 403, or the SQL login failed. | `status`, for REST. |
+| `ExigoTimeoutError` | A REST call, SQL connect or SQL query took too long. | `timeoutMs` |
+| `ExigoConnectionError` | DNS, a refused connection, TLS or the network failed. | |
+| `ExigoProxyError` | Fluid's egress proxy refused the connection. | `status`, the proxy's answer. |
+| `ExigoApiError` | The REST API answered with an error, or with a body that isn't JSON. | `status`, `method`, `path`, `contentType`, `bodySnippet` |
+
+On the auth, timeout and connection errors, `source` is `"rest"` or `"sql"`.
+
+`ExigoProxyError` extends `ExigoConnectionError`, so a check for `instanceof ExigoConnectionError` also catches proxy refusals. Check for `ExigoProxyError` first if your app retries connection failures, since a `403` or `407` from the proxy won't succeed on retry.
+
+The SDK's own messages and fields never contain a password or an `Authorization` header. An error that wraps a driver error keeps the original as `cause`, which the SDK doesn't redact. Don't log or serialize `cause` whole.
+
+## Related pages
+
+- [Egress proxy](/mist-apps/egress-proxy): turn on Fluid's fixed outbound address for your droplet.
+- [Connect Exigo to Fluid](/setup/connect-exigo): link a company's Exigo account to Fluid itself.
+- [Authentication](/mist-apps/authentication): where a Mist app gets its droplet installation token.

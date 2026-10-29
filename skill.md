@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.3"
+  version: "1.5"
 ---
 
 # Fluid
@@ -30,6 +30,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
 | Build, host or troubleshoot a Mist app: hosting, database, env vars, integration points, domains, billing | https://docs.fluid.app/mist-apps/overview |
 | Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
+| Call Exigo's API or query its SQL replica from a droplet or Mist app, including through Fluid's egress proxy | https://docs.fluid.app/sdk/exigo-sdk, then https://docs.fluid.app/mist-apps/egress-proxy |
 | Decide between a Fluid theme and a headless front end | https://docs.fluid.app/themes/why-fluid-themes |
 | Build Portal Definitions and Widget Packages | https://docs.fluid.app/portal-widgets/overview |
 | Call the REST API | https://docs.fluid.app/api/overview, then the task guides under https://docs.fluid.app/api/guides |
@@ -53,14 +54,28 @@ Customers use industry words for things Fluid names differently. Search the docs
 Some areas have more than one generation of endpoints, and search can rank an older one first.
 
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
-- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. Don't use `/api/legacy_themes`.
+- **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
+- **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
+
+## Before you build a Droplet
+
+- **Search the app store first.** When someone wants a new capability, `GET /api/company/v2026-10/droplets?q=<the outcome, in plain words>` returns the droplets their company can install, most relevant first. If one fits, offer to install it (`POST /api/company/v2026-10/droplets/{uuid}/installations`, after they approve) instead of building a one-off.
+- **Fill in the listing of a droplet you create.** Write a one-line `summary`, an HTML `description` of what it really does, a `logo_url`, and `features` (a `title` with a screenshot `image_url` or a `video_url` each) with `PATCH /api/company/v2026-10/droplets/{uuid}`. A droplet with an empty listing is hard to find: https://docs.fluid.app/guides/creating-droplets
+
+## Ads
+
+- **Start here:** https://docs.fluid.app/api/guides/ads walks the whole flow (connect, choose the ad account, images, launch, results) with every failure type. https://docs.fluid.app/help/mist/run-ads is what the merchant sees; follow its order and wording.
+- **Facebook and Instagram ads:** connect Meta once with `fluid channels connect meta --open`; the one login grants catalog, WhatsApp and ads access. Then choose the ad account the company advertises from: `GET /api/v202506/company/ads/meta/ad-accounts` lists the ad accounts and Pages Meta shared, and `PUT /api/v202506/company/ads/meta/ad-account` saves the choice, using only ids from that list: https://docs.fluid.app/setup/sales-channel-meta#choose-the-ad-account-for-ads
+- **Google Ads:** the Google connection (`fluid channels connect google --open`) covers Merchant Center and Google Ads in one login. `GET /api/v202506/company/ads/google/ad-accounts` lists the Google Ads accounts it reaches, and `PUT /api/v202506/company/ads/google/ad-account` saves one that is enabled and not a manager account.
+- **Ad images:** when the product has no image at a placement's ratio, `POST /api/v202506/company/ads/images` with `prompt`, `aspect_ratio` (`1:1`, `4:5`, `9:16` or `1.91:1`) and `product_id` queues a generation billed to the company's AI credits; poll `GET /api/v202506/company/ads/images/{id}` until `completed`, and use each image's DAM `url` as a Meta ad's `image_url`. Ask before generating.
+- **Launching:** after the user approves the ads, `POST /api/v202506/company/ads/meta/launches` creates a paused Traffic campaign with up to five link ads, and `POST /api/v202506/company/ads/google/launches` creates a paused Search campaign with a responsive search ad. Fluid checks every line of copy first and refuses flagged copy (`claims_blocked`). Campaigns are always created paused in the merchant's own ad account, which bills them; the user switches them on in Ads Manager or Google Ads. Never say an ad is live. Send an `idempotency_key` (a hash of the approved ads) so a retry returns the first launch instead of a second campaign; `409` `launch_in_progress` means check the ad account before launching with a new key. Branch on `error.details.type`, never the message. To report how a launch is doing, `GET /api/v202506/company/ads/{meta,google}/launches/{id}/insights` returns its live status, spend, impressions, clicks, CTR and CPC for `since`/`until` (default: launch date to today).
 
 ## Platform pitfalls
 
 - **Storefront themes already load the FairShare SDK** from a Global Embed that Fluid manages. Never add, move or remove the SDK script in a theme.
 - **Checkout is a separate app.** A theme renders the storefront and cart; nothing in it can change checkout.
 - **Order totals across currencies:** each order's `amount` is in its own `currency_code`. Sum `amount_in_base`, which is always US dollars, converted at the rate saved on the order: https://docs.fluid.app/concepts/order-currency
-- **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`): https://docs.fluid.app/themes/common-pitfalls
+- **Theme facts** that break a storefront without an error (block rendering, which settings Fluid resolves, `localization` instead of `request`, `request.design_mode` to detect the editor): https://docs.fluid.app/themes/common-pitfalls
 
 ## REST API conventions
 
@@ -85,6 +100,7 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 ```
 
 - **Cart:** add items with `addCartItems()` and change them with `updateCartItems()`, both on `window.FairShareSDK`. Then call `FairShareSDK.checkout()` to send the shopper to Fluid checkout.
+- **Carts fill in the background.** `addCartItems()` resolves with the filled cart, or `undefined` if the fill fails. Never use `createCart()` to read data: it creates a new empty cart and replaces the shopper's. Use `getCountryCode()`. A theme with its own cart sidebar follows https://docs.fluid.app/themes/custom-cart-drawer. A custom add button calls `FairShareSDK.cart.control.open()` at the click.
 - **Attribution:** `FairShareSDK.getAttribution()`.
 - **Signatures and options:** https://docs.fluid.app/sdk/cart-api
 
@@ -92,12 +108,41 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 
 Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
 
-- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme push`.
-- **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push`, `fluid portal version`.
-- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget publish`.
-- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env set`, `fluid mist env pull`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
+- **Sign up** (https://docs.fluid.app/api/agent-launch#step-1-sign-up-confirm-the-email-and-sign-in): `fluid signup --email <email> --first-name <first> --last-name <last> --company-name <name> --subdomain <subdomain> --yes --json`. With the merchant's consent only; it creates a real company.
+- **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.
+- **Products** (https://docs.fluid.app/api/agent-launch#step-5-set-up-the-catalog-and-store-settings): `fluid products create --title <title> --price <price> --yes`, from `@fluid-app/fluid-cli-products`, once signed in. The product stays a draft unless `--publish`.
+- **Test order** (https://docs.fluid.app/api/agent-launch#place-a-test-order): `fluid payments test-order --product <id> --yes`, from `@fluid-app/fluid-cli-payments`, signed in as a person (not an API token). If it stops with `AGREEMENTS_NOT_ACCEPTED`, read the agreement titles it lists to the merchant, then rerun with `--accept-agreements`; otherwise that first run placed the order. It pays only the test gateway and stops otherwise, but the order is real: emails, webhooks, and sales reports until refunded. On `ORDER_OUTCOME_UNKNOWN`, check the admin before running it again.
+
+- **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme lint`, `fluid theme push`, `fluid theme crawl`. Which theme a push lands on: https://docs.fluid.app/themes/cli#choose-the-theme-a-command-uses
+- **MySite themes** (https://docs.fluid.app/themes/mysite-themes#work-on-a-theme-with-the-cli): `fluid mysite list`, `fluid mysite pull`, `fluid mysite dev`, `fluid mysite publish`. A publish changes every MySite on that theme at once.
+- **Media** (https://docs.fluid.app/api/dam-upload#upload-from-the-command-line): `fluid assets upload`.
+- **Guided setups** (https://docs.fluid.app/setup/overview): `fluid setup list`, `fluid setup show`, `fluid setup run`.
+- **Publishing live:** never publish a theme, MySite or portal unless the user asks for that publish: https://docs.fluid.app/guides/connect-ai-tools#keep-agents-from-publishing-on-their-own
+- **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push` (`--yes --activate` without prompts: https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference#push-without-prompts), `fluid portal version`.
+- **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget push` (publish with this; it also records your source), `fluid widget publish`.
+- **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env list`, `fluid mist env set`, `fluid mist env unset`, `fluid mist env pull`, `fluid mist staging`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet reinstall` (https://docs.fluid.app/mist-apps/troubleshooting#reinstall-a-droplet), `fluid mist droplet egress-proxy`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
 
 ## Admin portal help
 
 - Help Center URLs mirror admin routes: the admin's `/settings/taxes` screen is documented at https://docs.fluid.app/help/admin/settings/taxes.
 - Settings open from the **Settings** gear in the admin's top bar. The Settings sidebar groups screens under **Company**, **Commerce**, **Payments** and **System**.
+
+## Native member widgets
+
+- Native widgets are Fluid supplied Liquid sections rendered on the server; Droplet widgets require the supplying Droplet. Existing member storefront availability, deployed native templates, and supported live actions must be verified before publishing. Preserve the 8px grid, at most two font families / three sizes / three weights across all four variants, theme inset and concentric radii, four cell footprints, visible focus, honest unavailable states, and inert previews. Treat each Purpose/Data/Tap/Adapt entry as design intent until its live source and action are verified. Use the catalog names, sizes, configuration and preview rules at https://docs.fluid.app/themes/member-storefront/native-widgets.
+
+- For the pending independent native bundles, keep Liquid to server-rendered markup/settings and escaped instance data. Each `native/widgets/<key>/` bundle follows the Droplet theme-extension format: `fluid.extension.toml` (`type = "theme"`, required name, optional version), the current catalog primary `sections/<key>/index.liquid` plus arbitrarily named additional sections, optional used blocks/components, and its own assets/locales. Keep existing primary `fluid://native/widgets/<bundle>` aliases; named sections use `fluid://native/widgets/<bundle>/sections/<section>` only when declared and released. Do not create empty placeholder directories; any number and names of CSS, JavaScript, images, fonts, and other files are allowed. The owning section must explicitly reference needed resources through the current bundle's sealed `asset_url` resolution, using `stylesheet_tag` / `script_tag: defer: true` for CSS/JS. API calls and needed helpers/runtime live in that bundle's JavaScript files, with bundle-local state and no cross-bundle assets or dependencies. No automatic inclusion, filename inference, or script-fetch loader. Confirm release and synchronization; preserve supported-action limits. See the native-widget guide above.
+
+- For action-enabled native widgets (pending release; confirm deployment first), follow the conditional usage section in that guide: Photos needs a real authorized Library public UUID in scalar `photoPlaylistId`, then Prepare and a separate Share gesture. Verify each action release, member eligibility, actual persisted result, and inert previews; never infer message delivery, discounts, or reward credit from a success label.
+
+## Private Droplet reads
+
+- Use the common Droplet UUID selector for member-page browser queries and authenticated Member API applications after their backend/SDK releases. Copy the actual management API public `uuid`; do not invent a database UUID or automatically connect a native widget to a Droplet. Browser calls retain cookie/CSRF, site and existing member-storefront flag checks; Member API calls use supported member credentials. Both require an active company-scoped Droplet installation and signed-backend read permissions. Keep bearer credentials out of Liquid. Use canonical `data_url` after deployment, with `widget_data_url` as its deprecated compatibility alias: https://docs.fluid.app/themes/member-storefront/droplet-data.
+
+## Portal worker Droplet reads
+
+- For a Portal widget that reads its member through a Droplet, follow https://docs.fluid.app/portal-widgets/widget-packages/droplet-data first. Use the built-in `queryDropletData({ dropletUuid, operation, params? })`, declare it in `uses`, and verify the SDK release, deployed bound-context backend and package-version capability approval. No custom host project is required once upgraded. Workers must not read host CSRF, fetch the authenticated Portal endpoint directly, persist private results, or use the member-storefront helper. Implement application-owned read-only receiver operations and verify the exact signed member echo.
+
+## Build and troubleshoot Portal widgets
+
+- Start with https://docs.fluid.app/portal-widgets/widget-packages/company-quickstart and use https://docs.fluid.app/portal-widgets/widget-packages/troubleshooting when a stage fails. Work in the Portal project, verify SDK support, and distinguish package publication from screen placement, exact-version capability approval and Portal publication. Test the actual signed-in Portal before claiming completion; report pending authoring steps explicitly.

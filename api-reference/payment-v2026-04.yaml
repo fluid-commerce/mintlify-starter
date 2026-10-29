@@ -61,6 +61,13 @@ components:
         admin-tier JWT (company admin or root admin). Non-admin JWTs are
         rejected with `403`; live API keys additionally require the merchant's
         API access to be enabled.
+
+        A company admin, company token or partner token also needs the role
+        grant for the action, or gets `403`: `gateways.view`, `.create`,
+        `.update` or `.delete` (or the matching `apm.*` grant) for gateway
+        configuration, `transactions.update` for purchase, authorize, verify,
+        capture, void and credit, and `transactions.view` to read transactions.
+        API keys, root admins and droplet tokens are not checked against roles.
   schemas:
     Meta:
       type: object
@@ -129,8 +136,9 @@ components:
     ForbiddenResponse:
       description: |
         Authenticated but not authorized. Two body shapes occur:
-        - a bare `message` when the credential lacks the required role/tier
-          (e.g. a non-admin JWT calling an admin endpoint)
+        - a bare `message` when the credential lacks the required tier or
+          role grant (e.g. a non-admin JWT calling an admin endpoint, or an
+          admin whose role lacks the action's grant)
         - a `status` + `message` envelope from payment API endpoint gates
       anyOf:
       - type: object
@@ -1183,7 +1191,7 @@ components:
             "$ref": "#/components/schemas/ErrorResponse"
     Conflict:
       description: |
-        One of four states, told apart by the body's `message`:
+        One of five states, told apart by the body's `message`:
 
         - A request with the same Idempotency-Key is still being processed.
           Retry once it completes; the cached response then replays with
@@ -1199,6 +1207,9 @@ components:
           it under this key or a fresh one: read the resulting transaction
           instead. Every retry under the same key answers 409 until 24 hours
           after the reconciliation.
+        - On capture, void and credit, another request for the same transaction
+          is running. Nothing was sent to the payment provider for this one;
+          retry once the other finishes, so the balance it leaves is checked.
         - On gateway updates, the gateway's country membership changed since
           the caller loaded it; the body's `errors.current_country_codes` lists
           the current ISO codes.
@@ -1223,6 +1234,13 @@ components:
         replays; its `message` says to confirm the outcome of an earlier
         request before sending it again under a different key.
 
+        A capture, void or credit the source transaction cannot take also
+        answers 422 and does not run: a capture needs a successful
+        authorization that was not voided, a credit needs a successful
+        capture or purchase, a void needs an authorization with no capture or
+        void, and the amount cannot exceed what is left to capture or refund.
+        Its `message` says which rule refused it.
+
         A request whose payment account uses an adapter not on the guard's
         audited allowlist also answers 422 and does not run, whether or not
         an `Idempotency-Key` is present; its `message` says the payment
@@ -1243,14 +1261,6 @@ components:
         the server could not confirm that the key was released, the message
         says so: the key may still be held, and if that retry is refused as
         held, contact support.
-      content:
-        application/json:
-          schema:
-            "$ref": "#/components/schemas/ErrorResponse"
-    NotImplemented:
-      description: |
-        The operation is reserved but not implemented; the request performs no
-        work.
       content:
         application/json:
           schema:
@@ -2020,58 +2030,6 @@ paths:
           "$ref": "#/components/responses/NotFound"
         '422':
           "$ref": "#/components/responses/UnprocessableEntity"
-  "/api/payment/v2026-04/gateways/{id}/store":
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-      description: Gateway slug
-    post:
-      operationId: storeGateway
-      summary: Vault a payment method (reserved, not implemented)
-      description: |
-        Reserved endpoint for vaulting a payment method against the gateway.
-        Not implemented: every request returns `501` with an error envelope and
-        performs no work. Authentication is still enforced, so `401`/`403`
-        apply before the `501`.
-      tags:
-      - Gateways
-      responses:
-        '401':
-          "$ref": "#/components/responses/Unauthorized"
-        '403':
-          "$ref": "#/components/responses/Forbidden"
-        '501':
-          "$ref": "#/components/responses/NotImplemented"
-  "/api/payment/v2026-04/gateways/{id}/general_credit":
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-      description: Gateway slug
-    post:
-      operationId: generalCreditGateway
-      summary: Issue a general credit (reserved, not implemented)
-      description: |
-        Reserved endpoint for crediting a payment method without a prior
-        transaction (a standalone credit). Not implemented: every request
-        returns `501` with an error envelope and performs no work.
-        Authentication is still enforced, so `401`/`403` apply before the
-        `501`. To refund an existing transaction, use the transaction credit
-        endpoint instead.
-      tags:
-      - Gateways
-      responses:
-        '401':
-          "$ref": "#/components/responses/Unauthorized"
-        '403':
-          "$ref": "#/components/responses/Forbidden"
-        '501':
-          "$ref": "#/components/responses/NotImplemented"
   "/api/payment/v2026-04/transactions":
     get:
       operationId: listTransactions
@@ -2217,8 +2175,11 @@ paths:
         and returns it with `201`; read the capture outcome from `data.status`. Pass
         an `Idempotency-Key` header to make retries safe. Returns `404` when the
         authorization is not found — including authorizations that were not created
-        through this API — `409` on an in-flight duplicate key, and `422` when the
-        authorization cannot be captured. On success, API-key-authenticated requests
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same authorization is running, and `422` when the
+        authorization cannot be captured: it is not a successful authorization, it
+        was voided, or `amount_cents` exceeds the authorized amount less the
+        captures already made. On success, API-key-authenticated requests
         emit a `payment.captured` webhook.
       tags:
       - Transactions
@@ -2325,8 +2286,10 @@ paths:
         returns it with `200`; read the void outcome from `data.status`. Pass an
         `Idempotency-Key` header to make retries safe. Returns `404` when the
         authorization is not found — including authorizations that were not created
-        through this API — `409` on an in-flight duplicate key, and `422` when the
-        authorization cannot be voided. On success, API-key-authenticated requests
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same authorization is running, and `422` when the
+        authorization cannot be voided: it is not a successful authorization, or
+        it was already captured or voided. On success, API-key-authenticated requests
         emit a `payment.voided` webhook.
       tags:
       - Transactions
@@ -2420,13 +2383,15 @@ paths:
         it to refund the full amount. Partial refunds accumulate in the source
         transaction's `credited_amount_cents`. Creates a `refund` transaction linked
         via `parent_transaction_id` and returns it with `201`; read the refund
-        outcome from `data.status`. The refundable balance is not pre-checked: an
-        over-refund is submitted to the provider and typically comes back as a `201`
-        with `data.status: declined` or `error`. Pass an `Idempotency-Key` header to
-        make retries safe. Returns `404` when the transaction is not found —
-        including transactions that were not created through this API — `409` on an
-        in-flight duplicate key, and `422` when the request fails validation (for
-        example `amount_cents: 0`). On success, API-key-authenticated requests emit
+        outcome from `data.status`. Only a successful `capture` or `purchase` can be
+        refunded, and the refunds together cannot exceed its amount: the refundable
+        balance is checked before anything is sent to the provider. Pass an
+        `Idempotency-Key` header to make retries safe. Returns `404` when the
+        transaction is not found — including transactions that were not created
+        through this API — `409` on an in-flight duplicate key or while another
+        request for the same transaction is running, and `422` when the request
+        fails validation (for example `amount_cents: 0`), the transaction cannot be
+        refunded, or `amount_cents` exceeds the refundable balance. On success, API-key-authenticated requests emit
         a `payment.refunded` webhook.
       tags:
       - Transactions

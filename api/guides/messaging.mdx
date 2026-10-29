@@ -1,0 +1,142 @@
+---
+title: "Message members, customers and contacts"
+sidebarTitle: "Messaging"
+description: "Choose between Flow, Fluid's messaging center, and outbound messages. Welcome a new enrollee, send on someone's behalf from a droplet, set what members can see in Flow, and tell Fluid's bots apart."
+---
+
+Fluid gives you two ways to reach people. Pick by what the person should get.
+
+- **Flow** is Fluid's messaging center: the **Messaging** screen in the admin and the **Messaging** tab in the mobile app. It holds direct and group conversations, channels, downline conversations, SMS and email conversations with contacts, bots, and **Today**. People read and reply there, in threads.
+- **Today** is part of Flow: your company's own social feed. See [Today](#today).
+- **Outbound messages** send one message from your company to one person, on a channel you choose: email, SMS, push, the person's preferred channel, or a Flow direct message. Each one goes out from your company's own sending identity, and Fluid keeps it with its delivery events.
+
+Use outbound messages when your system decides to tell someone something. Use the Flow APIs when you're building or running the conversation itself.
+
+## Which API to use
+
+| You want to | Use |
+| --- | --- |
+| Send one person an email, a text or a push notification, and see whether it arrived | [Send an email](/api-reference/outbound-messages/send-an-email), [Send an SMS text message](/api-reference/outbound-messages/send-an-sms-text-message), [Send a push notification](/api-reference/outbound-messages/send-a-push-notification) |
+| Reach a member on whatever channel works for them | [Send on the member's preferred channel](/api-reference/outbound-messages/send-on-the-members-preferred-channel) |
+| Send a member a direct message in Flow from your company, your app, a person or a We-Bot | [Send a Flow direct message](/api-reference/outbound-messages/send-a-flow-direct-message) |
+| Build a chat experience for a signed-in rep | The [member messaging API](/api/member-apis), starting with [Start a conversation](/api-reference/messaging/start-a-conversation) |
+| Work in Flow as a signed-in admin: create channels and post to them | [Create a conversation](/api-reference/messaging--conversations/create-a-conversation) and [Create a message](/api-reference/messaging--messages/create-a-message) |
+| Post to a Flow conversation with a company API token, acting for a named admin | [Create a conversation message](/api-reference/company-v0/company/create-a-conversation-message) |
+| Post into a group or channel from another system, the way a Slack incoming webhook does | [Create an incoming webhook](/api-reference/messaging--incoming-webhooks/create-an-incoming-webhook) |
+| Choose whom members can find and message, and whether they see Today | [Change the Member messaging policy](/api-reference/messaging-member-policy/change-the-member-messaging-policy) |
+| Moderate channels and Today | [Remove a channel message](/api-reference/channel-messages/remove-a-channel-message), [Archive a Today post](/api-reference/messaging-today/archive-a-today-post) |
+| Run an AI agent that works for your admins | [We-Bots](/api/guides/we-bots) |
+
+WhatsApp has an endpoint, but Fluid can't send WhatsApp yet, so every request is refused.
+
+## How outbound messages behave
+
+These rules hold on every outbound channel:
+
+- **Your company is always the sender.** Email goes from your company's sending address and SMS from your registered number. Fluid never falls back to a shared sender. If a channel isn't set up, the request is refused with a `code` and a `setup` block that says what's left and links to the admin screen that finishes it.
+- **Name the recipient once.** Email and SMS take an address (`to`), `contact_id`, `customer_id` or `member_id`. Push, preferred and Flow take `member_id` only. Customers and members are the same people.
+- **Send each message once.** Pass an `idempotency_key`, or the `Idempotency-Key` header. Sending again with the same key returns the first message instead of sending twice.
+- **Marketing follows your rules.** A `marketing` message needs the person's marketing consent for the channel. One asked for during the person's quiet hours waits until they end, unless you pass `no_queue`. Set quiet hours and frequency caps with [Change marketing send rules](/api-reference/outbound-messages/change-marketing-send-rules). A `transactional` message, the default, skips both.
+- **Every send is kept.** Accepted or refused, read it back with [Get a message and its delivery history](/api-reference/outbound-messages/get-a-message-and-its-delivery-history). A Flow message is recorded as sent without a delivery receipt.
+
+Each channel needs its own permission: `outbound_messages.email`, `outbound_messages.sms`, `outbound_messages.push` or `outbound_messages.flow`. A company API token, a partner token, a droplet installation token with the `messaging` scope, or a We-Bot can send.
+
+## Welcome a new enrollee
+
+Say you want every new member to hear from you the moment they enroll.
+
+<Steps>
+  <Step title="Listen for the enrollment">
+    [Create a webhook](/api-reference/webhooks/create-a-webhook) for the `enrollment` resource's `completed` event. See [Webhooks](/api/guides/webhooks) for verifying deliveries. The delivery's `member` object carries the new member's id, and `sponsor` names who sponsored them.
+  </Step>
+  <Step title="Pick the channel">
+    A new enrollee might not have the app yet. Send a welcome on [their preferred channel](/api-reference/outbound-messages/send-on-the-members-preferred-channel): Fluid tries their ranked contact methods, then push, email and SMS, and uses the first one your company has set up and they can receive. If you want the welcome to start a conversation in Flow, send a [Flow direct message](/api-reference/outbound-messages/send-a-flow-direct-message) instead.
+  </Step>
+  <Step title="Send it once">
+    Use the enrollment as your idempotency key, so a retried webhook delivery doesn't send a second welcome:
+
+    ```json
+    {
+      "member_id": "0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58",
+      "message_type": "transactional",
+      "idempotency_key": "welcome-enrollment-58213",
+      "subject": "Welcome to Bloom Wellness, Jordan",
+      "title": "Welcome to Bloom Wellness",
+      "text": "Hi Jordan, welcome aboard. Your sponsor Priya will be in touch this week, and your starter guide is waiting in the app.",
+      "url": "/welcome"
+    }
+    ```
+  </Step>
+  <Step title="Handle a refusal">
+    A refusal names its reason in `code`. For the preferred channel, `setup.tried` lists each channel Fluid tried and why it skipped it. `no_reachable_channel` means none of them worked for this person.
+  </Step>
+</Steps>
+
+To have the sponsor say hello in Flow, send the Flow message as the sponsor with `send_as`. That needs the sponsor's permission first. See the next section.
+
+You can also give the job to a [We-Bot](/api/guides/we-bots): an event trigger on the enrollment wakes the bot, and the bot sends with `bot_id`.
+
+## Send on someone's behalf
+
+A droplet or a back-office service sends with its own token. Who the message appears to come from depends on what the request names:
+
+| The request | The message comes from |
+| --- | --- |
+| A person's own token | That person |
+| An app token, with nothing else | Your app's own sender, with its name, its icon and an **App** badge. Fluid creates it on your app's first send. |
+| `send_as` naming a member or an admin | That person, with your app shown as `sent_via` |
+| `bot_id` | One of your company's We-Bots |
+
+**Sending as a person needs their consent.** A person lets your app send as them with [Let an app send as you](/api-reference/flow-senders/let-an-app-send-as-you), for transactional messages, marketing messages, or both. Only that person can grant it. An admin can't grant it for them. Without it, a `send_as` request is refused with `sender_not_authorized`, and Fluid doesn't fall back to your app's sender. A person withdraws it with [Stop an app sending as you](/api-reference/flow-senders/stop-an-app-sending-as-you).
+
+**A droplet must ask for messaging.** A droplet installation token reaches outbound messages only with the opt-in `messaging` scope. Request it when you [create your droplet](/guides/creating-droplets).
+
+**Admins stay in control.** [List app senders](/api-reference/flow-senders/list-app-senders) shows every app that posts in Flow. [Change an app sender](/api-reference/flow-senders/change-an-app-sender) renames one, changes its icon, or disables it. A disabled sender's sends are refused with `app_sender_disabled`.
+
+**Replies come back as webhooks.** When a member replies to your app's Flow message, your droplet receives it through the `bot_message` resource's `created` webhook.
+
+## Today
+
+Today is your company's own social feed inside Flow, much like a timeline on a social network. Admins and members post updates, comment and like, and everyone in the company can follow along.
+
+- **A large community can connect without the noise.** Posting to Today never notifies anyone. A company with a hundred thousand members can share wins, news and stories without pinging everyone in real time, the way a busy channel would.
+- **People catch up when it suits them.** The feed waits for them, so Flow's conversations stay for the messages that need an answer.
+- **Admins stay in charge.** Members can report a post, and admins can archive and restore posts and comments. See [Moderate channels and Today](#moderate-channels-and-today).
+
+Today can be turned off. Hide it from members with `today_enabled`, or let only admins post with `today_posting`. Both are part of the [Member messaging policy](#set-what-members-can-see).
+
+## Set what members can see
+
+Some companies keep members from finding and messaging each other, for privacy or to prevent cross-recruiting between teams. The [Member messaging policy](/api-reference/messaging-member-policy/get-the-member-messaging-policy) sets this for the whole company. Change it with [Change the Member messaging policy](/api-reference/messaging-member-policy/change-the-member-messaging-policy), or in the admin: open **Messaging**, then choose **Settings** > **Flow settings**. See [Messaging](/help/admin/messages#flow-settings).
+
+| Setting | What it does |
+| --- | --- |
+| `directory_scope` | Whom a member may see, search and message among your members. `all_members` is everyone, the default. `team_graph` limits them to their Team Graph, their downline on any tree. `no_direct_messages` allows no other member. |
+| `include_upline` | Under `team_graph`, whether a member also reaches the members above them, such as their sponsor. On by default. |
+| `show_email`, `show_phone`, `show_bio` | Which contact fields a member sees on another member. Email and phone are shown by default, bio isn't. |
+| `today_enabled` | Whether members see Today. Admins always see it. On by default. |
+| `today_posting` | Who may post to Today: `everyone`, the default, or only `admins`. |
+
+The policy limits only a member reaching another member. Admins, staff and bots are always reachable, and a member can always reach them. Name and avatar are always shown. When a member falls out of reach, an existing conversation with them keeps its history but leaves the member's list and takes no new messages.
+
+## Moderate channels and Today
+
+Admins, and We-Bots running with their owner's rights, can moderate:
+
+- **Channels:** [Read channel messages](/api-reference/channel-messages/read-channel-messages), [remove one](/api-reference/channel-messages/remove-a-channel-message) from any channel, or [restore it](/api-reference/channel-messages/restore-a-removed-channel-message). Direct and group conversations are never moderated.
+- **Today:** [List open Today reports](/api-reference/messaging-today/list-open-today-reports), then [archive a post](/api-reference/messaging-today/archive-a-today-post) with a reason. An archived post leaves the feed for everyone and keeps its likes and comments, so you can [restore it](/api-reference/messaging-today/restore-a-today-post).
+
+Every removal, archive and restore is audited, naming the admin, or the bot and its owner.
+
+## Bots in Flow
+
+Four kinds of automated sender can appear in Flow. They're managed separately:
+
+| Kind | What it is | Manage it with |
+| --- | --- | --- |
+| **We-Bots** | AI agents your admins own. They work for admins only, act through the Fluid API within a permission grant, and can message customers through Fluid. | [We-Bots](/api/guides/we-bots) |
+| **Response bots** | A bot backed by your own service. Fluid delivers messages sent to it to your webhook, and members chat with it one-to-one. | [Create a bot](/api-reference/messaging--bots/create-a-bot) with type `ResponseBot` |
+| **Broadcast bots** | A bot that posts into channels. | [Create a bot](/api-reference/messaging--bots/create-a-bot) with type `BroadcastBot`, then [Add bot to conversation](/api-reference/messaging--bots/add-bot-to-conversation) |
+| **Incoming webhooks** | A link another system posts to. Each post appears in one group or channel under the webhook's name. | [Create an incoming webhook](/api-reference/messaging--incoming-webhooks/create-an-incoming-webhook) |
+
+An app sender isn't a bot. It's how your app's own outbound Flow messages are labelled.

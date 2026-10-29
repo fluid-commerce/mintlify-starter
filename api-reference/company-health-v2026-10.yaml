@@ -1,0 +1,579 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Company API v2026-10 — Health
+  version: 2026-10
+  description: |-
+    Your company's health on v2026-10: one call that says which parts of your store need attention, so a person or a bot knows where to look first.
+
+    ## Authentication
+
+    Send a company admin credential as `Authorization: Bearer <token>`: an admin session token or an API token for your company. Every endpoint needs the `company_settings.view` permission. A droplet installation token works too when it holds the `settings` scope; it sees only the areas whose permissions all map to scopes it holds (for example `orders` for `tax`), and never `mist_apps`, since Mist endpoints refuse droplet tokens.
+
+    Each area also needs the permissions its own data sits behind: `droplets.view` for `droplets`; `droplets.view`, `orders.view` and `members.view` for `connect`; `orders.view` for `tax`, `shipping` and `fulfillment`; `subscriptions.view` for `subscriptions`; `payment_accounts.view` and `reports.view` for `payments`; `orders.view` and `reports.view` for `checkout`; `mist.code` for `mist_apps`; `application_themes.view` and `application_themes.update` for `themes`; `members.view`, `company_admins.view` and `developer.view` for `auth`; `orders.view` for `fairshare`. An area you cannot see is left out of the response and of the overall `state`. Naming one, or having none left to return, answers 403.
+
+    ## How health is computed
+
+    Fluid checks each area on a schedule: hourly, and every six hours for `fulfillment`. It stores one row per check, so these endpoints only read; they never run a check. An area with no check yet, or whose last check is older than it should be, reads `unknown` (`stale: true` for the second, keeping its last findings and metrics).
+
+    States, from best to worst: `idle` (nothing to check, such as no Connect integration), `healthy`, `unknown`, `degraded`, `failing`. The overall `state` is the worst state among the areas returned, ignoring `idle`; it is `idle` only when every area is.
+
+    A finding names what is wrong with counts and category codes, never error text or record ids, and `next_step` names the call that holds the detail.
+
+    ## Being told about changes
+
+    Subscribe a company webhook to resource `company_health`, event `changed`, or give a bot the `company_health.changed` trigger. It fires when an area's state changes. The payload names no area or state: read `GET /health` and compare each area's `state` with its `previous_state`.
+
+    ## Responses
+
+    Every response wraps the resource under its own key with `status` and `meta`. Errors use the same envelope with `error.message` and `error.details`. A 401 is a bare `{ "message": … }`.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: company_health
+  description: Your company's health per area, and each area's history.
+  x-fluid-section: Analytics
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: A company admin credential for your company, or a droplet installation token with the `settings` scope.
+  schemas:
+    Meta:
+      type: object
+      description: Response metadata included on every response body. A legacy-envelope 403 names the request `request_id` rather than `request_uuid`.
+      required:
+      - timestamp
+      properties:
+        request_uuid:
+          type:
+          - string
+          - 'null'
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    UnauthorizedError:
+      type: object
+      description: Bare 401 body, a single `message` string, not the error envelope.
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          example: Invalid credentials.
+    ForbiddenError:
+      description: Bare 403 body, `{ error }` when a permission is missing or `{ message }` when the credential is not company-admin tier.
+      oneOf:
+      - type: object
+        required:
+        - error
+        properties:
+          error:
+            type: string
+            example: Not authorized.
+      - type: object
+        required:
+        - message
+        properties:
+          message:
+            type: string
+            example: Not authorized.
+    HealthArea:
+      type: string
+      description: An area key.
+      enum:
+      - droplets
+      - connect
+      - payments
+      - checkout
+      - tax
+      - shipping
+      - fulfillment
+      - subscriptions
+      - mist_apps
+      - themes
+      - auth
+      - fairshare
+    HealthState:
+      type: string
+      description: An area's or the company's state, from best to worst `idle`, `healthy`, `unknown`, `degraded`, `failing`.
+      enum:
+      - idle
+      - healthy
+      - unknown
+      - degraded
+      - failing
+    HealthFinding:
+      type: object
+      description: One thing a check found wrong. Counts and category codes only, never error text or record ids.
+      required:
+      - code
+      - severity
+      - summary
+      properties:
+        code:
+          type: string
+          description: '`<area>.<condition>`, such as `connect.tier_attention`.'
+          example: connect.tier_attention
+        severity:
+          type: string
+          enum:
+          - unknown
+          - degraded
+          - failing
+        summary:
+          type: string
+          description: A sentence a person or bot can relay.
+        subject:
+          type: object
+          description: What the finding is about, when it is one thing.
+          required:
+          - type
+          - uuid
+          properties:
+            type:
+              type: string
+              example: connect_integration
+            uuid:
+              type: string
+        count:
+          type: integer
+        next_step:
+          type: object
+          description: The documented call that holds the detail.
+          required:
+          - method
+          - path
+          properties:
+            method:
+              type: string
+              example: GET
+            path:
+              type: string
+    HealthAreaResult:
+      type: object
+      required:
+      - area
+      - state
+      - previous_state
+      - observed_at
+      - stale
+      - metrics
+      - findings
+      properties:
+        area:
+          $ref: '#/components/schemas/HealthArea'
+        state:
+          $ref: '#/components/schemas/HealthState'
+        previous_state:
+          description: The state of the check before the latest one; null for an area's first check.
+          oneOf:
+          - $ref: '#/components/schemas/HealthState'
+          - type: 'null'
+        observed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the latest check ran; null when the area has not been checked yet.
+        stale:
+          type: boolean
+          description: True when the latest check is older than the area allows, so `state` reads `unknown`.
+        metrics:
+          type: object
+          description: The area's figures from its latest check, such as `orders` and `zero_tax_share` for `tax`. Present for every state.
+          additionalProperties: true
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthFinding'
+    CompanyHealth:
+      type: object
+      required:
+      - state
+      - generated_at
+      - areas
+      properties:
+        state:
+          $ref: '#/components/schemas/HealthState'
+        generated_at:
+          type: string
+          format: date-time
+        areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthAreaResult'
+    CompanyHealthResponse:
+      type: object
+      required:
+      - company_health
+      - status
+      - meta
+      properties:
+        company_health:
+          $ref: '#/components/schemas/CompanyHealth'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    HealthCheck:
+      type: object
+      description: One stored check, as it was recorded.
+      required:
+      - uuid
+      - area
+      - state
+      - previous_state
+      - observed_at
+      - metrics
+      - findings
+      properties:
+        uuid:
+          type: string
+        area:
+          $ref: '#/components/schemas/HealthArea'
+        state:
+          $ref: '#/components/schemas/HealthState'
+        previous_state:
+          oneOf:
+          - $ref: '#/components/schemas/HealthState'
+          - type: 'null'
+        observed_at:
+          type: string
+          format: date-time
+        metrics:
+          type: object
+          additionalProperties: true
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthFinding'
+    Pagination:
+      type: object
+      required:
+      - cursor
+      - limit
+      - prev_cursor
+      - next_cursor
+      properties:
+        cursor:
+          type:
+          - string
+          - 'null'
+        limit:
+          type: integer
+        prev_cursor:
+          type:
+          - string
+          - 'null'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    HealthHistoryResponse:
+      type: object
+      required:
+      - company_health_checks
+      - status
+      - meta
+      properties:
+        company_health_checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthCheck'
+        status:
+          type: integer
+        meta:
+          allOf:
+          - $ref: '#/components/schemas/Meta'
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                $ref: '#/components/schemas/Pagination'
+  parameters:
+    Area:
+      name: area
+      in: path
+      required: true
+      description: The area key.
+      schema:
+        $ref: '#/components/schemas/HealthArea'
+      example: connect
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token. The body is a bare `{ message }`, not the error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+          example:
+            message: Invalid credentials.
+    Forbidden:
+      description: Not a company admin with `company_settings.view`, a droplet installation token without the `settings` scope (bare body), or an area you cannot see (the error envelope).
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ForbiddenError'
+            - $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: You do not have permission to read this health area
+              details: {}
+            status: 403
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+    InvalidParameters:
+      description: An unknown area key, or a query parameter out of range.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Invalid parameters
+              details:
+                area:
+                - 'must be one of: droplets, connect, tax, shipping, fulfillment, subscriptions'
+            status: 422
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-24T15:32:08Z'
+paths:
+  /api/company/v2026-10/health:
+    get:
+      operationId: companyHealth
+      summary: Read company health
+      description: |-
+        Each area's latest check and the company's state across the areas returned. Reads stored checks only.
+
+        Needs `company_settings.view`, and each area's own permissions; areas you cannot see are left out. Naming one in `areas[]`, or having none left, answers 403.
+      tags:
+      - company_health
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: areas[]
+        in: query
+        required: false
+        description: Only these areas. Omit for every area you can see.
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthArea'
+        style: form
+        explode: true
+      responses:
+        '200':
+          description: The company's health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyHealthResponse'
+              example:
+                company_health:
+                  state: degraded
+                  generated_at: '2026-10-24T15:32:08Z'
+                  areas:
+                  - area: connect
+                    state: degraded
+                    previous_state: healthy
+                    observed_at: '2026-10-24T15:07:12Z'
+                    stale: false
+                    metrics:
+                      integrations: 1
+                      connected: 1
+                    findings:
+                    - code: connect.tier_below
+                      severity: degraded
+                      summary: Exigo sync success is below its healthy tier; most failures are validation.
+                      subject:
+                        type: connect_integration
+                        uuid: drp_1mjyysle6csm9eb2q2wmffucoetres7cy
+                      next_step:
+                        method: GET
+                        path: /api/company/v2026-10/connect/integrations/drp_1mjyysle6csm9eb2q2wmffucoetres7cy/status
+                  - area: tax
+                    state: healthy
+                    previous_state: healthy
+                    observed_at: '2026-10-24T15:07:09Z'
+                    stale: false
+                    metrics:
+                      orders: 412
+                      zero_tax_orders: 18
+                      zero_tax_share: 0.044
+                    findings: []
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/company/v2026-10/health/{area}:
+    parameters:
+    - $ref: '#/components/parameters/Area'
+    get:
+      operationId: companyHealthArea
+      summary: Read one area's health
+      description: |-
+        One area's latest check, in the same envelope as `GET /health`, with the company `state` computed from that area alone.
+
+        Needs `company_settings.view` and the area's own permissions; an area you cannot see answers 403, an unknown key 422.
+      tags:
+      - company_health
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The area's health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyHealthResponse'
+              example:
+                company_health:
+                  state: failing
+                  generated_at: '2026-10-24T15:32:08Z'
+                  areas:
+                  - area: subscriptions
+                    state: failing
+                    previous_state: healthy
+                    observed_at: '2026-10-24T15:07:14Z'
+                    stale: false
+                    metrics:
+                      active: 1840
+                      past_due: 22
+                      overdue: 214
+                      failed_last_hour: 3
+                      pricing_quarantined: 0
+                      runs_stuck: 0
+                    findings:
+                    - code: subscriptions.renewals_overdue
+                      severity: failing
+                      summary: 214 active subscriptions are past their renewal date and have not billed.
+                      count: 214
+                      next_step:
+                        method: GET
+                        path: /api/company/v2026-10/health/subscriptions/history
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/company/v2026-10/health/{area}/history:
+    parameters:
+    - $ref: '#/components/parameters/Area'
+    get:
+      operationId: companyHealthAreaHistory
+      summary: Read one area's history
+      description: |-
+        The area's stored checks since `since`, newest first, a page at a time. Fluid keeps 90 days of checks, and always the latest one.
+
+        Needs `company_settings.view` and the area's own permissions.
+      tags:
+      - company_health
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: since
+        in: query
+        required: false
+        description: The earliest check to return. Defaults to the start of the hour 7 days ago; no earlier than 90 days ago. Send the same `since` with every page of a cursor; a cursor from a different `since` answers 422.
+        schema:
+          type: string
+          format: date-time
+      - name: page[cursor]
+        in: query
+        required: false
+        description: A cursor from `meta.pagination`.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Checks per page, 1 to 100. Defaults to 25.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: The area's checks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthHistoryResponse'
+              example:
+                company_health_checks:
+                - uuid: 019a1b2c-3d4e-7f60-8a9b-0c1d2e3f4a5b
+                  area: tax
+                  state: healthy
+                  previous_state: healthy
+                  observed_at: '2026-10-24T15:07:09Z'
+                  metrics:
+                    orders: 412
+                    zero_tax_orders: 18
+                    zero_tax_share: 0.044
+                  findings: []
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-24T15:32:08Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'

@@ -137,6 +137,19 @@ const OFFSET_PAGINATED_SECTIONS =
 // The four `forms-v0` list pages are genuine offset endpoints too, verified against
 // the Rails actions (integer `page` / `per_page`, `.page(...).per(...)`). Exact pages
 // only; no other Forms page is sanctioned.
+//
+// The website and mobile app navigation lists are AGENTS.md's two navigation
+// exceptions, and the Public SDK root themes list was verified the same way (integer
+// `page` / `per_page`, `.page(page).per(per_page)`, default 10). It is the only other
+// Public SDK page here; `per_page` on any further Public SDK page still fails.
+//
+// The rest are list operations of five more synced specs, each verified against its
+// Rails action on 2026-10-15 (ENG-2784). Every one reads integer `page` / `per_page`
+// and pages by offset: Kaminari `.page(...).per(...)` for most, Searchkick for
+// `GET /api/reps`, and an in-memory slice for `GET /api/google_fonts` and
+// `GET /api/sections/{id}/paginated_section_items`. Exact pages again: a neighbouring
+// operation of the same spec is not covered. Regenerate a group from the hits the run
+// reports as unsanctioned, and only after checking the new operation the same way.
 const OFFSET_PAGINATED_PAGES = new Set([
   "customer-addresses/list-customer-addresses",
   "customer-payment-methods/list-customer-payment-methods",
@@ -151,9 +164,75 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "form-elements/list-form-elements",
   "forms/list-form-respondents",
   "forms/list-incomplete-enrollees",
+  "menus/list-website-navigation-menus",
+  "mobile-navigations/list-mobile-app-navigations",
+  "root-themes/list-root-themes",
+  // admin-v2025-06
+  "points-ledgers/points-ledgers-points-ledgers",
+  "reps/list-credited-orders-for-a-rep",
+  "shipping-methods/list-shipping-methods",
+  "sitemap/get-sitemap-urls",
+  // company-v0
+  "company-v0/activities/list-paginated-user-activities",
+  "company-v0/agreements/lists-agreements",
+  "company-v0/company-contacts/list-company-contacts",
+  "company-v0/company/list-conversation-recipients",
+  "company-v0/company/list-conversations",
+  "company-v0/company/list-paginated-events",
+  "company-v0/company/search-message-recipients",
+  "company-v0/customernotes/list-customer-notes",
+  "company-v0/domains/lists-domains",
+  "company-v0/drop-zones/an-array-of-available-drop-zones",
+  "company-v0/enrollment-packs/list-all-enrollment-packs",
+  "company-v0/globalembeds/list-global-embeds",
+  "company-v0/google-fonts/list-google-fonts",
+  "company-v0/legacy-themes/list-legacy-themes",
+  "company-v0/media/list-filtered-media",
+  "company-v0/pages/list-pages",
+  "company-v0/products/list-filtered-products",
+  "company-v0/redirects/lists-redirects",
+  "company-v0/reps/list-reps",
+  "company-v0/roles/lists-roles-for-a-company",
+  "company-v0/search/global-search-across-all-searchable-models",
+  "company-v0/sections/list-paginated-section-items",
+  "company-v0/settings/list-country-settings",
+  "company-v0/shares/get-shares",
+  "company-v0/users/list-company-users",
+  "company-v0/webhook-events/list-webhook-events",
+  // integrations-v0
+  "droplet-installations/list-droplet-installations",
+  "droplets/an-array-of-available-droplets",
+  "droplets/list-your-companys-own-droplets",
+  "droplets/returns-an-array-of-companies-using-a-droplet",
+  // messaging-v1
+  "messaging--bots/list-bots",
+  "messaging--conversations/list-all-conversations-by-template",
+  "messaging--conversations/list-connected-recipients",
+  "messaging--conversations/list-conversations",
+  "messaging--drafts/list-all-my-draft-messages",
+  "messaging--messages/list-messages",
+  "messaging--messages/list-pinned-messages",
+  "messaging--messages/list-reactions-for-a-message",
+  "messaging--messages/list-recipients-who-saw-a-message",
+  "messaging--recipients/list-blocked-recipients",
+  "messaging--recipients/list-recipients-in-a-conversation",
+  "messaging--scheduled-messages/list-all-my-scheduled-messages",
+  "messaging--scheduled-messages/list-scheduled-messages-in-a-conversation",
+  // themes-v0
+  "applicationthemetemplates/returns-all-available-themeables-for-theme-template",
+  "file-resources/returns-a-list-of-file-resources",
 ]);
 
-// The 69 generated reference pages of `public-v2025-06` — the Public SDK surface the
+// Hand-written pages whose `per_page` is not a leak: they document the storefront's own
+// page URL parameter and the Liquid `pagination` object, not an API request parameter.
+// Exact pages, `per_page` only. (`themes/navigation-menus` is sanctioned sentence by
+// sentence in SANCTIONED_OCCURRENCES instead.)
+const PER_PAGE_PROSE_PAGES = new Set([
+  "themes/query-parameters-and-caching",
+  "themes/theme-variables",
+]);
+
+// The 74 generated reference pages of `public-v2025-06` — the Public SDK surface the
 // `@fluid-app` SDK actually calls, adopted in Phase 9.6f. Its paths are genuinely
 // `/api/public/v2025-06/...` and `/api/v202506/carts/...`, so every one of these pages
 // carries a version marker the legacy scan otherwise treats as a leak.
@@ -166,84 +245,92 @@ const OFFSET_PAGINATED_PAGES = new Set([
 // `paypal` four, where a version marker would be a real leak. Prefix-sanctioning
 // `carts/` would forgive all 17.
 //
-// This list is the `mint export` path inventory, not a hand-derived guess:
-//   npx mint@latest export --output /tmp/e.zip && unzip -Z1 /tmp/e.zip \
-//     | grep 'index.html$' | sed 's|^api-reference/||; s|/index.html$||'
-// filtered to the pages the `public-v2025-06` nav group adds. A page path is
-// `<tag>/<summary>` case-folded with spaces hyphenated, so an upstream summary edit
-// renames its page and drops it out of this set. That fails loudly — the run reports an
-// unsanctioned hit naming the new page — which is the right direction: regenerate the
-// list from the export rather than loosening the key.
-const PUBLIC_SDK_V2025_06_PAGES = new Set([
-  "affiliate/retrieve-affiliate-information",
-  "carts/add-enrollment-to-existing-cart",
-  "carts/adds-items-to-cart",
-  "carts/applies-a-discount-to-the-cart",
-  "carts/check-order-status-check-order-status",
-  "carts/client-token-client-token",
-  "carts/completes-cart-checkout",
-  "carts/confirm-magic-link-for-cart",
-  "carts/create-dlocal",
-  "carts/create-magic-link-for-cart",
-  "carts/create-payment-create-payment",
-  "carts/create-ppro",
-  "carts/creates-a-cart",
-  "carts/ipn-ipn",
-  "carts/removes-item-from-cart",
-  "carts/removes-rep_buyer-and-customer-for-the-cart",
-  "carts/retrieves-a-cart",
-  "carts/retrieves-cart-company-information",
-  "carts/retrieves-enroll-for-cart",
-  "carts/sets-cart-payment-method",
-  "carts/sets-cart-shipping-method",
-  "carts/shipping-address-change-shipping-address-change",
-  "carts/shipping-method-change-shipping-method-change",
-  "carts/subscribes-a-cart-item",
-  "carts/syncs-cart-with-authenticated-customer",
-  "carts/updates-a-cart",
-  "carts/updates-a-cart-items-variant",
-  "carts/updates-cart-address",
-  "carts/updates-subscribe:false-to-cart-item",
-  "carts/updates-the-country-of-a-cart-also-updates-the-currency-code",
-  "carts/updates-the-language-of-a-cart",
-  "checkout/record-a-checkout-starting",
-  "commerce/update-cart-items-prices",
-  "enrollment-packs/get-enrollment-pack-by-slug",
-  "events/save-a-new-lead-capture",
-  "events/save-a-new-page-visit",
-  "events/save-a-new-url-visit",
-  "fingerprint/start-a-new-fingerprint",
-  "forms/get-form-by-public-token",
-  "forms/submit-a-form-response",
-  "forms/verify-form-password",
-  "media/create-video-analytics-event",
-  "media/get-media-by-slug",
-  "media/get-media-by-slug-deprecated",
-  "orders/retrieves-an-order-with-points-redemption",
-  "payment/creates-a-klarna-payment-session",
-  "payment/updates-a-klarna-session",
-  "paypal/authorize-order-in-paypal",
-  "paypal/create-order-in-paypal",
-  "playlist/get-playlist-by-slug",
-  "playlist/get-playlist-by-slug-deprecated",
-  "product/get-product-by-slug-in-a-foreign-local-includes-the-correct-variants",
-  "public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public",
-  "public/auth-auth",
-  "public/countries-countries",
-  "public/db-port-db-port",
-  "public/get-apple-pay-domain",
-  "public/health-health",
-  "public/homepage-render-homepage-render",
-  "public/realtime-realtime",
-  "public/update-volumes-update-volumes",
-  "root-themes/get-root-theme-by-id",
-  "root-themes/list-root-themes",
-  "session/start-a-new-session",
-  "settings/retrieve-page-settings",
-  "widgets/retrieve-banner-widget",
-  "widgets/retrieve-cart-widget",
-  "widgets/retrieve-chat-widget",
-  "widgets/retrieve-popup-widget",
+// This map is the published page inventory, not a hand-derived guess: each page slug
+// mapped to the operation it documents, taken from the contract lines in llms-full.txt
+// with the awk command given for ADMIN_V2025_06_PAGES below (`-v spec=public-v2025-06`).
+// A page path is `<tag>/<summary>` case-folded with spaces hyphenated, so an upstream
+// summary edit renames its page and drops it out of this map. That fails loudly — the
+// run reports an unsanctioned hit naming the new page — which is the right direction:
+// regenerate the map rather than loosening the key. Mintlify keeps `_` and `:` in
+// these paths (`carts/removes-rep_buyer-...`), so copy them from the published
+// inventory rather than slugging summaries by hand. check-hosted-docs.test.mjs compares
+// the map's operations with the `public-v2025-06` operations docs.json publishes, so a
+// sync that adds, removes, or swaps one fails CI and names it.
+const PUBLIC_SDK_V2025_06_PAGES = new Map([
+  ["affiliate/retrieve-affiliate-information", "POST /api/public/v2025-06/affiliates/lookup"],
+  ["braintree/save-a-braintree-paypal-account-without-a-charge", "POST /api/v202506/carts/{cart_token}/braintree/vault-payment-method"],
+  ["carts/add-enrollment-to-existing-cart", "POST /api/public/v2025-06/commerce/carts/{cart_token}/enrollment"],
+  ["carts/adds-items-to-cart", "POST /api/public/v2025-06/commerce/carts/{cart_token}/items"],
+  ["carts/apply-a-promo-code-to-the-cart", "POST /api/public/v2025-06/commerce/carts/{cart_token}/discount"],
+  ["carts/check-order-status-check-order-status", "GET /api/v202506/carts/{cart_token}/check_order_status"],
+  ["carts/client-token-client-token", "GET /api/v202506/carts/{cart_token}/braintree/client_token"],
+  ["carts/completes-cart-checkout", "POST /api/public/v2025-06/commerce/carts/{cart_token}/checkout"],
+  ["carts/confirm-magic-link-for-cart", "POST /api/public/v2025-06/commerce/carts/{cart_token}/confirm_magic_link"],
+  ["carts/create-dlocal", "POST /api/v202506/carts/{cart_token}/dlocal/{webhook_type}"],
+  ["carts/create-dlocal-refund-notification", "POST /api/v202506/carts/refunds/dlocal"],
+  ["carts/create-magic-link-for-cart", "POST /api/public/v2025-06/commerce/carts/{cart_token}/magic_link"],
+  ["carts/create-payment-create-payment", "POST /api/v202506/carts/{cart_token}/braintree/create_payment"],
+  ["carts/create-ppro", "POST /api/v202506/carts/{cart_token}/ppro/{webhook_type}"],
+  ["carts/creates-a-cart", "POST /api/public/v2025-06/commerce/carts"],
+  ["carts/flag-a-public-sdk-cart-as-enrollment-eligible", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/enrollment"],
+  ["carts/ipn-ipn", "POST /api/v202506/carts/{cart_token}/citcon_upi/ipn"],
+  ["carts/removes-item-from-cart", "DELETE /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}"],
+  ["carts/removes-rep_buyer-and-customer-for-the-cart", "DELETE /api/public/v2025-06/commerce/carts/{cart_token}/logout"],
+  ["carts/retrieves-a-cart", "GET /api/public/v2025-06/commerce/carts/{cart_token}"],
+  ["carts/retrieves-cart-company-information", "GET /api/public/v2025-06/commerce/carts/{cart_token}/cart_info"],
+  ["carts/retrieves-enroll-for-cart", "GET /api/public/v2025-06/commerce/carts/{cart_token}/enroll"],
+  ["carts/sets-cart-payment-method", "POST /api/public/v2025-06/commerce/carts/{cart_token}/payment_methods/{type}"],
+  ["carts/sets-cart-shipping-method", "POST /api/public/v2025-06/commerce/carts/{cart_token}/shipping_method"],
+  ["carts/shipping-address-change-shipping-address-change", "POST /api/v202506/carts/{cart_token}/paypal/shipping_address_change"],
+  ["carts/shipping-method-change-shipping-method-change", "POST /api/v202506/carts/{cart_token}/paypal/shipping_method_change"],
+  ["carts/subscribes-a-cart-item", "POST /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/subscribe"],
+  ["carts/syncs-cart-with-authenticated-customer", "POST /api/public/v2025-06/commerce/carts/{cart_token}/sync_customer"],
+  ["carts/updates-a-cart", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}"],
+  ["carts/updates-a-cart-items-variant", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/variant"],
+  ["carts/updates-cart-address", "POST /api/public/v2025-06/commerce/carts/{cart_token}/address"],
+  ["carts/updates-subscribe:false-to-cart-item", "DELETE /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/subscribe"],
+  ["carts/updates-the-country-of-a-cart-also-updates-the-currency-code", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/update_country"],
+  ["carts/updates-the-language-of-a-cart", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/change_language"],
+  ["carts/venmo-shipping-callback-shipping-callback", "POST /api/v202506/carts/{cart_token}/paypal/venmo_shipping_callback"],
+  ["checkout/record-a-checkout-starting", "POST /api/public/v2025-06/events/checkout/started"],
+  ["commerce/recalculate-the-carts-external-discounts", "POST /api/carts/{cart_token}/refresh-discounts"],
+  ["commerce/update-cart-items-prices", "PATCH /api/carts/{cart_token}/update_cart_items_prices"],
+  ["enrollment-packs/get-enrollment-pack-by-slug", "POST /api/public/v2025-06/enrollment_packs/{slug}"],
+  ["events/save-a-new-lead-capture", "POST /api/public/v2025-06/events/leads/capture"],
+  ["events/save-a-new-page-visit", "POST /api/public/v2025-06/events/pages/visit"],
+  ["events/save-a-new-url-visit", "POST /api/public/v2025-06/events/urls/visit"],
+  ["fingerprint/start-a-new-fingerprint", "POST /api/public/v2025-06/browser/fingerprint"],
+  ["forms/get-form-by-public-token", "GET /api/public/v2025-06/forms/{token}"],
+  ["forms/submit-a-form-response", "POST /api/public/v2025-06/forms/{token}/respond"],
+  ["forms/verify-form-password", "POST /api/public/v2025-06/forms/{token}/verify_password"],
+  ["media/create-video-analytics-event", "POST /api/public/v2025-06/events/media/video_analytics"],
+  ["media/get-media-by-slug", "POST /api/public/v2025-06/media/{slug}"],
+  ["media/get-media-by-slug-deprecated", "POST /api/public/v2025-06/media"],
+  ["orders/retrieves-an-order-with-points-redemption", "GET /api/public/v2025-06/orders/{token}"],
+  ["payment/creates-a-klarna-payment-session", "POST /api/v202506/carts/{cart_token}/klarna/create_session"],
+  ["payment/updates-a-klarna-session", "POST /api/v202506/carts/{cart_token}/klarna/update_session"],
+  ["paypal/authorize-order-in-paypal", "POST /api/v202506/carts/{cart_token}/paypal/authorize_order"],
+  ["paypal/create-order-in-paypal", "POST /api/v202506/carts/{cart_token}/paypal/create_order"],
+  ["playlist/get-playlist-by-slug", "POST /api/public/v2025-06/playlists/{slug}"],
+  ["playlist/get-playlist-by-slug-deprecated", "POST /api/public/v2025-06/playlists"],
+  ["product/get-product-by-slug-in-a-foreign-local-includes-the-correct-variants", "POST /api/public/v2025-06/products/{slug}"],
+  ["public-drop-zones/an-array-of-available-checkout-order-confirmation-and-cart-drop-zones-public", "GET /api/public/drop_zones"],
+  ["public/countries-countries", "GET /api/public/leaderboards/countries"],
+  ["public/db-port-db-port", "GET /api/public/health/db_port"],
+  ["public/get-apple-pay-domain", "GET /api/public/v2025-06/apple_pay_domain/{hostname}"],
+  ["public/health-health", "GET /api/public/health"],
+  ["public/homepage-render-homepage-render", "GET /api/public/health/homepage_render"],
+  ["public/realtime-realtime", "GET /api/public/v2025-06/health/realtime"],
+  ["public/update-volumes-update-volumes", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/update_volumes"],
+  ["root-themes/get-root-theme-by-id", "GET /api/public/v2025-06/root_themes/{id}"],
+  ["root-themes/list-root-themes", "GET /api/public/v2025-06/root_themes"],
+  ["session/start-a-new-session", "POST /api/public/v2025-06/session"],
+  ["settings/retrieve-page-settings", "POST /api/public/v2025-06/settings"],
+  ["subscriptions/create-dlocal-renewal-notification", "POST /api/v202506/subscriptions/renewals/dlocal"],
+  ["widgets/retrieve-banner-widget", "POST /api/public/v2025-06/widgets/banners"],
+  ["widgets/retrieve-cart-widget", "POST /api/public/v2025-06/widgets/carts"],
+  ["widgets/retrieve-chat-widget", "POST /api/public/v2025-06/widgets/chats"],
+  ["widgets/retrieve-popup-widget", "POST /api/public/v2025-06/widgets/popups"],
 ]);
 
 // AGENTS.md also permits the Public SDK surface's version label on these exact
@@ -252,6 +339,225 @@ const PUBLIC_SDK_V2025_06_PAGES = new Set([
 const PUBLIC_SDK_V2025_06_PROSE_PAGES = new Set([
   "api/choosing-a-cart-surface",
   "sdk/cart-api",
+]);
+
+// The generated reference pages of `admin-v2025-06` and `members-v2025-06`: Fluid's
+// current admin API for resources with no newer version, published in the 2026-09-30
+// API Reference regroup. Their paths genuinely carry `v2025-06` or `v202506`, and
+// AGENTS.md sanctions that on these generated pages only. Prose gets no such licence
+// (its one exception is the tokens prefix in SANCTIONED_OCCURRENCES), and `per_page`
+// on these pages is judged by OFFSET_PAGINATED_PAGES like anywhere else.
+//
+// Enumerated page by page for the reasons PUBLIC_SDK_V2025_06_PAGES gives: these specs
+// share tags such as `orders`, `customers`, and `members` with the v2026-04 surfaces,
+// where a version marker is a real leak. Each map is the published contract-line
+// inventory, page slug to the operation it documents, regenerated with (swap in
+// `members-v2025-06` for the second map):
+//   curl -s https://docs.fluid.app/llms-full.txt | awk -v spec=admin-v2025-06 '/^Source: /{s=$2}
+//     $1=="/api-reference/" spec ".yaml"{sub("https://docs.fluid.app/api-reference/","",s);
+//     printf "  [\"%s\", \"%s %s\"],\n", s, toupper($2), $3}' | sort -u
+// check-hosted-docs.test.mjs compares each map's operations with the ones docs.json
+// publishes, so a sync that adds, removes, or swaps one fails CI and names it. A summary
+// edit that renames a page without changing its operation still shows up only in a live
+// run, as an unsanctioned hit on the new slug: regenerate the map when that happens.
+const ADMIN_V2025_06_PAGES = new Map([
+  ["admins/list-admins", "GET /api/v2025-06/admins"],
+  ["ads/clear-the-selected-google-ads-account", "DELETE /api/v202506/company/ads/google/ad-account"],
+  ["ads/clear-the-selected-meta-ad-account", "DELETE /api/v202506/company/ads/meta/ad-account"],
+  ["ads/generate-ad-images-at-an-aspect-ratio", "POST /api/v202506/company/ads/images"],
+  ["ads/get-the-selected-google-ads-account", "GET /api/v202506/company/ads/google/ad-account"],
+  ["ads/get-the-selected-meta-ad-account", "GET /api/v202506/company/ads/meta/ad-account"],
+  ["ads/launch-a-paused-google-search-campaign", "POST /api/v202506/company/ads/google/launches"],
+  ["ads/launch-a-paused-meta-campaign", "POST /api/v202506/company/ads/meta/launches"],
+  ["ads/list-the-companys-ads-launches", "GET /api/v202506/company/ads/meta/launches"],
+  ["ads/list-the-companys-google-ads-launches", "GET /api/v202506/company/ads/google/launches"],
+  ["ads/list-the-google-ads-accounts-the-connection-can-reach", "GET /api/v202506/company/ads/google/ad-accounts"],
+  ["ads/list-the-meta-ad-accounts-and-pages-the-connection-can-reach", "GET /api/v202506/company/ads/meta/ad-accounts"],
+  ["ads/read-a-google-launchs-campaign-results", "GET /api/v202506/company/ads/google/launches/{id}/insights"],
+  ["ads/read-a-meta-launchs-campaign-results", "GET /api/v202506/company/ads/meta/launches/{id}/insights"],
+  ["ads/read-an-ad-image-generation", "GET /api/v202506/company/ads/images/{id}"],
+  ["ads/select-the-google-ads-account-to-advertise-from", "PUT /api/v202506/company/ads/google/ad-account"],
+  ["ads/select-the-meta-ad-account-to-advertise-from", "PUT /api/v202506/company/ads/meta/ad-account"],
+  ["amazon/disconnect-the-companys-amazon-connection", "DELETE /api/v202506/amazon/connection"],
+  ["amazon/get-the-companys-amazon-connection", "GET /api/v202506/amazon/connection"],
+  ["amazon/list-the-companys-amazon-orders", "GET /api/v202506/amazon/orders"],
+  ["amazon/list-the-companys-amazon-product-listings", "GET /api/v202506/amazon/product_listings"],
+  ["amazon/publish-fluid-products-as-amazon-offers", "POST /api/v202506/amazon/product_listings"],
+  ["amazon/retry-a-failed-amazon-product-listing-publish", "POST /api/v202506/amazon/product_listings/{id}/retry"],
+  ["amazon/select-the-connections-amazon-marketplace", "PATCH /api/v202506/amazon/connection"],
+  ["amazon/start-the-amazon-seller-central-consent-flow", "POST /api/v202506/amazon/connection/authorize_url"],
+  ["amazon/unpublish-an-amazon-product-listing", "DELETE /api/v202506/amazon/product_listings/{id}"],
+  ["company-email-settings/company-email-settings-company-email-settings", "GET /api/v202506/company_email_settings"],
+  ["company-email-settings/get-company-email-settings", "GET /api/v202506/company_email_settings/{id}"],
+  ["company-email-settings/replace-company-email-settings", "PUT /api/v202506/company_email_settings/{id}"],
+  ["company-email-settings/returns-company-email-settings", "GET /api/v2025-06/company-email-settings"],
+  ["company-email-settings/update-company-email-settings", "PATCH /api/v202506/company_email_settings/{id}"],
+  ["company-email-settings/updates-company-email-settings", "PATCH /api/v2025-06/company-email-settings/{id}"],
+  ["company-transactions/company-transactions-company-transactions", "GET /api/v202506/company_transactions"],
+  ["company-transactions/export-csv-export-csv", "GET /api/v202506/company_transactions/export_csv"],
+  ["company-transactions/filter-options-filter-options", "GET /api/v202506/company_transactions/filter_options"],
+  ["customer-orders/list-orders-for-a-customer", "GET /api/v202506/customers/{customer_id}/orders"],
+  ["customer-orders/list-orders-for-a-member", "GET /api/v202506/members/{member_id}/orders"],
+  ["customers/create-a-customer", "POST /api/v2025-06/customers"],
+  ["customers/create-multiple-customers", "POST /api/v2025-06/customers/bulk"],
+  ["customers/delete-a-customer", "DELETE /api/v2025-06/customers/{id}"],
+  ["customers/delete-multiple-customers", "DELETE /api/v2025-06/customers/bulk"],
+  ["customers/get-a-customer", "GET /api/v2025-06/customers/{id}"],
+  ["customers/list-customers", "GET /api/v2025-06/customers"],
+  ["customers/update-a-customer", "PATCH /api/v2025-06/customers/{id}"],
+  ["discounts/copy-a-promo-code-discount", "POST /api/v2025-06/discounts/{id}/clone"],
+  ["discounts/create-a-promo-code-discount", "POST /api/v2025-06/discounts"],
+  ["discounts/delete-a-promo-code-discount", "DELETE /api/v2025-06/discounts/{id}"],
+  ["discounts/delete-several-promo-codes-discounts", "DELETE /api/v2025-06/discounts/bulk_delete"],
+  ["discounts/get-a-promo-code-discount", "GET /api/v2025-06/discounts/{id}"],
+  ["discounts/list-promo-codes-discounts", "GET /api/v2025-06/discounts"],
+  ["discounts/update-a-promo-code-discount", "PUT /api/v2025-06/discounts/{id}"],
+  ["fairshare/get-fair-share-settings", "GET /api/v2025-06/fairshare/settings"],
+  ["fairshare/update-fair-share-settings", "PATCH /api/v2025-06/fairshare/settings"],
+  ["google/disconnect-the-companys-google-merchant-center-connection", "DELETE /api/v202506/google/connection"],
+  ["google/get-the-companys-google-merchant-center-connection", "GET /api/v202506/google/connection"],
+  ["google/list-the-companys-google-shopping-listings", "GET /api/v202506/google/product_listings"],
+  ["google/publish-fluid-products-to-the-connected-merchant-center", "POST /api/v202506/google/product_listings"],
+  ["google/retry-a-failed-google-shopping-listing-publish", "POST /api/v202506/google/product_listings/{id}/retry"],
+  ["google/start-the-google-merchant-center-connect-flow", "POST /api/v202506/google/connection/authorize_url"],
+  ["google/unpublish-a-google-shopping-listing", "DELETE /api/v202506/google/product_listings/{id}"],
+  ["members/archive-a-custom-member-type", "DELETE /api/v2025-06/member-types/{slug}"],
+  ["members/archive-a-price-type", "POST /api/v2025-06/pricing-tiers/{id}/archive"],
+  ["members/change-a-members-email-address", "PATCH /api/v2025-06/members/{member_id}/change-email"],
+  ["members/create-a-custom-member-type", "POST /api/v2025-06/member-types"],
+  ["members/create-a-custom-price-type", "POST /api/v2025-06/pricing-tiers"],
+  ["members/create-members-in-bulk", "POST /api/v2025-06/members/bulk"],
+  ["members/discard-a-member", "DELETE /api/v2025-06/members/{member_id}"],
+  ["members/discard-members-in-bulk", "DELETE /api/v2025-06/members/bulk"],
+  ["members/list-company-member-types", "GET /api/v2025-06/member-types"],
+  ["members/list-company-pricing-tiers", "GET /api/v2025-06/pricing-tiers"],
+  ["members/rename-a-price-type", "PATCH /api/v2025-06/pricing-tiers/{id}"],
+  ["members/update-a-member-type", "PATCH /api/v2025-06/member-types/{slug}"],
+  ["meta/disconnect-the-companys-meta-commerce-connection", "DELETE /api/v202506/meta/connection"],
+  ["meta/get-the-companys-meta-catalog-ads-readiness", "GET /api/v202506/meta/ads_readiness"],
+  ["meta/get-the-companys-meta-commerce-connection", "GET /api/v202506/meta/connection"],
+  ["meta/list-the-companys-meta-catalog-listings", "GET /api/v202506/meta/catalog_listings"],
+  ["meta/list-the-companys-whatsapp-cart-intents", "GET /api/v202506/meta/orders"],
+  ["meta/publish-fluid-products-to-the-connected-meta-catalog", "POST /api/v202506/meta/catalog_listings"],
+  ["meta/retry-a-failed-meta-catalog-listing-publish", "POST /api/v202506/meta/catalog_listings/{id}/retry"],
+  ["meta/start-the-meta-business-login-connect-flow", "POST /api/v202506/meta/connection/authorize_url"],
+  ["meta/unpublish-a-meta-catalog-listing", "DELETE /api/v202506/meta/catalog_listings/{id}"],
+  ["order-change-logs/list-order-change-logs", "GET /api/v202506/order_change_logs"],
+  ["orders/export-orders-as-csv", "GET /api/v202506/orders/export_csv"],
+  ["orders/get-an-order", "GET /api/v202506/orders/{id}"],
+  ["orders/get-an-order-journey", "GET /api/v202506/orders/{order_id}/journey"],
+  ["orders/get-order-journey-events", "GET /api/v202506/orders/{order_id}/journey/events"],
+  ["orders/get-order-statistics", "GET /api/v202506/orders/stats"],
+  ["orders/import-an-order", "POST /api/v2025-06/orders"],
+  ["orders/list-orders", "GET /api/v202506/orders"],
+  ["partner-tokens/creates-a-new-partner-token", "POST /api/v2025-06/partner_tokens"],
+  ["partner-tokens/deletes-a-partner-token", "DELETE /api/v2025-06/partner_tokens/{id}"],
+  ["partner-tokens/returns-a-specific-partner-token", "GET /api/v2025-06/partner_tokens/{id}"],
+  ["partner-tokens/returns-an-array-of-partner-tokens", "GET /api/v2025-06/partner_tokens"],
+  ["partner-tokens/updates-a-partner-token", "PUT /api/v2025-06/partner_tokens/{id}"],
+  ["payment/cancel-authorized-bread-payment-transaction", "PATCH /api/v202506/payments/cancel/{order_token}"],
+  ["payment/create-payment-record-using-payment-account-uuid-and-cart-info", "POST /api/v202506/payments/{payment_account_id}"],
+  ["payment/list-of-filter-options-of-transactions", "GET /api/v202506/transactions/filter_options"],
+  ["payment/list-payment-transactions-with-filtering-sorting-and-pagination", "GET /api/v202506/transactions"],
+  ["payment/settle-authorized-payment-transaction", "POST /api/v202506/payments/settle"],
+  ["payment/tokenize-credit-card", "POST /api/v202506/payments/tokenize_card"],
+  ["payments-reports/list-the-approval-rate-of-each-payment-account", "GET /api/v202506/company/payments/payment-account-approval-rates"],
+  ["payments/approval-rate-approval-rate", "GET /api/v202506/payments/company_reports/approval_rate"],
+  ["payments/available-providers-available-providers", "GET /api/v202506/payments/company_reports/available_providers"],
+  ["payments/average-latency-average-latency", "GET /api/v202506/payments/company_reports/average_latency"],
+  ["payments/average-latency-by-provider-average-latency-by-provider", "GET /api/v202506/payments/company_reports/average_latency_by_provider"],
+  ["payments/error-rate-error-rate", "GET /api/v202506/payments/company_reports/error_rate"],
+  ["payments/kpis-kpis", "GET /api/v202506/payments/company_reports/kpis"],
+  ["payments/transaction-amount-transaction-amount", "GET /api/v202506/payments/company_reports/transaction_amount"],
+  ["payments/transaction-volume-transaction-volume", "GET /api/v202506/payments/company_reports/transaction_volume"],
+  ["pinterest/disconnect-the-companys-pinterest-connection", "DELETE /api/v202506/pinterest/connection"],
+  ["pinterest/get-the-companys-pinterest-connection", "GET /api/v202506/pinterest/connection"],
+  ["pinterest/list-the-companys-pinterest-catalog-listings", "GET /api/v202506/pinterest/catalog_listings"],
+  ["pinterest/publish-fluid-products-to-the-connected-pinterest-catalog", "POST /api/v202506/pinterest/catalog_listings"],
+  ["pinterest/retry-a-failed-pinterest-catalog-listing-publish", "POST /api/v202506/pinterest/catalog_listings/{id}/retry"],
+  ["pinterest/start-the-pinterest-connect-flow", "POST /api/v202506/pinterest/connection/authorize_url"],
+  ["pinterest/unpublish-a-pinterest-catalog-listing", "DELETE /api/v202506/pinterest/catalog_listings/{id}"],
+  ["points-ledgers/create-a-new-points-ledger-entry", "POST /api/v202506/customers/{customer_id}/points_ledgers"],
+  ["points-ledgers/points-ledgers-points-ledgers", "GET /api/v202506/points_ledgers"],
+  ["points-ledgers/retrieve-a-list-of-points-ledger-entries-for-a-customer", "GET /api/v202506/customers/{customer_id}/points_ledgers"],
+  ["points-values/refresh-points-values", "POST /api/v202506/points_values/refresh"],
+  ["points-values/retrieve-a-list-of-points-values-for-company-currencies", "GET /api/v202506/points_values"],
+  ["points-values/update-a-points-value-for-a-currency", "PATCH /api/v202506/points_values"],
+  ["ranks/creates-a-rank-for-a-company", "POST /api/v202506/ranks"],
+  ["ranks/lists-all-ranks-for-the-current-company", "GET /api/v202506/ranks"],
+  ["ranks/soft-deletes-a-rank", "DELETE /api/v202506/ranks/{id}"],
+  ["ranks/updates-a-rank", "PATCH /api/v202506/ranks/{id}"],
+  ["reps/create-a-rep", "POST /api/v2025-06/reps"],
+  ["reps/create-multiple-reps", "POST /api/v2025-06/reps/bulk"],
+  ["reps/delete-a-rep", "DELETE /api/v2025-06/reps/{id}"],
+  ["reps/delete-multiple-reps", "DELETE /api/v2025-06/reps/bulk"],
+  ["reps/get-a-rep", "GET /api/v2025-06/reps/{id}"],
+  ["reps/get-most-shared-resources", "GET /api/v2025-06/reps/{rep_id}/most_shared"],
+  ["reps/get-most-viewed-resources", "GET /api/v2025-06/reps/{rep_id}/most_viewed"],
+  ["reps/get-top-products-sold-by-rep", "GET /api/v2025-06/reps/{rep_id}/top_products_sold"],
+  ["reps/list-credited-orders-for-a-rep", "GET /api/v2025-06/reps/{rep_id}/credited_orders"],
+  ["reps/list-reps", "GET /api/v2025-06/reps"],
+  ["reps/list-shared-assets-for-a-rep", "GET /api/v2025-06/reps/{rep_id}/shared_assets"],
+  ["reps/update-a-rep", "PATCH /api/v2025-06/reps/{id}"],
+  ["shipping-methods/create-a-shipping-method", "POST /api/v2025-06/shipping_methods"],
+  ["shipping-methods/create-a-shipping-method-rate", "POST /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates"],
+  ["shipping-methods/delete-shipping-method-rates", "DELETE /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates/{id}"],
+  ["shipping-methods/delete-shipping-methods", "DELETE /api/v2025-06/shipping_methods/{id}"],
+  ["shipping-methods/get-shipping-methods", "GET /api/v2025-06/shipping_methods/{id}"],
+  ["shipping-methods/list-shipping-method-rates", "GET /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates"],
+  ["shipping-methods/list-shipping-methods", "GET /api/v2025-06/shipping_methods"],
+  ["shipping-methods/replace-a-shipping-method", "PUT /api/v2025-06/shipping_methods/{id}"],
+  ["shipping-methods/replace-a-shipping-method-rate", "PUT /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates/{id}"],
+  ["shipping-methods/update-a-shipping-method", "PATCH /api/v2025-06/shipping_methods/{id}"],
+  ["shipping-methods/update-a-shipping-method-rate", "PATCH /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates/{id}"],
+  ["sitemap/get-sitemap-urls", "GET /api/v2025-06/sitemap"],
+  ["sitemap/update-sitemap-url-visibility", "PATCH /api/v2025-06/sitemap"],
+  ["subscriptions/export-csv-export-csv", "GET /api/v202506/subscriptions/export_csv"],
+  ["subscriptions/list-company-subscriptions", "GET /api/v2025-06/subscriptions"],
+  ["tiktok/browse-the-connected-tiktok-shops-categories", "GET /api/v202506/tiktok/categories"],
+  ["tiktok/configure-the-tiktok-shop-connection", "PATCH /api/v202506/tiktok/connection"],
+  ["tiktok/delete-a-tiktok-creator-mapping", "DELETE /api/v202506/tiktok/creator-mappings/{id}"],
+  ["tiktok/disconnect-the-companys-tiktok-shop-connection", "DELETE /api/v202506/tiktok/connection"],
+  ["tiktok/get-the-companys-tiktok-shop-connection", "GET /api/v202506/tiktok/connection"],
+  ["tiktok/list-the-companys-tiktok-creator-mappings", "GET /api/v202506/tiktok/creator-mappings"],
+  ["tiktok/list-the-companys-tiktok-orders", "GET /api/v202506/tiktok/orders"],
+  ["tiktok/list-the-companys-tiktok-product-listings", "GET /api/v202506/tiktok/product_listings"],
+  ["tiktok/list-the-connected-tiktok-shops-logistics-warehouses", "GET /api/v202506/tiktok/warehouses"],
+  ["tiktok/map-a-tiktok-creator-to-a-member", "POST /api/v202506/tiktok/creator-mappings"],
+  ["tiktok/publish-fluid-products-to-the-connected-tiktok-shop", "POST /api/v202506/tiktok/product_listings"],
+  ["tiktok/retry-a-failed-tiktok-product-listing-publish", "POST /api/v202506/tiktok/product_listings/{id}/retry"],
+  ["tiktok/set-or-clear-a-tiktok-listings-category-override", "PATCH /api/v202506/tiktok/product_listings/{id}"],
+  ["tiktok/start-the-tiktok-oauth-connect-flow", "POST /api/v202506/tiktok/connection/authorize_url"],
+  ["tiktok/unpublish-a-tiktok-product-listing", "DELETE /api/v202506/tiktok/product_listings/{id}"],
+  ["tokens/create-a-public-token", "POST /api/v2025-06/tokens/public"],
+  ["tokens/create-a-scoped-client", "POST /api/v2025-06/tokens/clients"],
+  ["tokens/creates-a-new-partner-token", "POST /api/v2025-06/tokens/partner"],
+  ["tokens/delete-a-public-token", "DELETE /api/v2025-06/tokens/public/{id}"],
+  ["tokens/deletes-a-partner-token", "DELETE /api/v2025-06/tokens/partner/{id}"],
+  ["tokens/embeddable-embeddable", "POST /api/v2025-06/tokens/embeddable"],
+  ["tokens/list-public-tokens", "GET /api/v2025-06/tokens/public"],
+  ["tokens/list-the-companys-scoped-clients", "GET /api/v2025-06/tokens/clients"],
+  ["tokens/returns-a-specific-partner-token", "GET /api/v2025-06/tokens/partner/{id}"],
+  ["tokens/returns-an-array-of-partner-tokens", "GET /api/v2025-06/tokens/partner"],
+  ["tokens/revoke-a-scoped-client", "POST /api/v2025-06/tokens/clients/{client_id}/revoke"],
+  ["tokens/rotate-a-scoped-clients-secret", "POST /api/v2025-06/tokens/clients/{client_id}/rotate"],
+  ["tokens/updates-a-partner-token", "PUT /api/v2025-06/tokens/partner/{id}"],
+  ["transactions/export-csv-export-csv", "GET /api/v202506/transactions/export_csv"],
+]);
+
+const MEMBERS_V2025_06_PAGES = new Map([
+  ["members/change-a-members-mysite-theme", "PUT /api/v2025-06/members/{member_id}/mysite-theme"],
+  ["members/change-a-members-type", "PUT /api/v2025-06/members/{member_id}/member-type"],
+  ["members/create-a-member", "POST /api/v2025-06/members"],
+  ["members/exchange-a-member-for-a-shopper-token", "POST /api/v2025-06/members/{member_id}/customer-token-exchange"],
+  ["members/find-a-member-by-a-unique-identifier", "GET /api/v2025-06/members/find"],
+  ["members/get-a-member", "GET /api/v2025-06/members/{member_id}"],
+  ["members/get-a-members-mysite-theme", "GET /api/v2025-06/members/{member_id}/mysite-theme"],
+  ["members/get-a-members-sponsor-genealogy", "GET /api/v2025-06/members/{member_id}/genealogy"],
+  ["members/list-a-members-payment-methods", "GET /api/v2025-06/members/{member_id}/payment_methods"],
+  ["members/list-members", "GET /api/v2025-06/members"],
+  ["members/redeem-a-handoff-token-for-a-shopper-session", "POST /api/v2025-06/members/{member_id}/customer-token-exchange/redeem"],
+  ["members/update-a-member", "PATCH /api/v2025-06/members/{member_id}"],
 ]);
 
 // `checkout-v2026-04` carries one reciprocal audience boundary in its
@@ -267,6 +573,58 @@ const CHECKOUT_PUBLIC_SDK_BOUNDARY =
   /\*\*If you are using the `@fluid-app` FairShare SDK in a theme or storefront,\s+you are not calling this surface\*\* — the SDK calls the Fluid Public SDK API\s+\(`public-v2025-06`\)\./;
 const CHECKOUT_GENERATED_CONTRACT =
   /^`{3,}yaml \/api-reference\/checkout-v2026-04\.yaml (?:get|post|patch|put|delete) \/api\/checkout\/v2026-04(?:\/\S*)?$/m;
+
+// Exact text occurrences AGENTS.md permits, removed one by one before the rest of the
+// section is scanned, so a second marker on the same page still fails. `pages: null`
+// means any page.
+//   1. The tokens exception: partner and public token management genuinely lives at
+//      `/api/v2025-06/tokens/*`, and prose may say so. That path prefix only.
+//   2. The two `themes/navigation-menus` sentences that document the website navigation
+//      menus list, an offset exception in OFFSET_PAGINATED_PAGES, and say it uses page
+//      numbers. AGENTS.md allows offset language in prose only there; any other
+//      `per_page` on the page still fails.
+//   3. Two generated pages that compare their operation with its published
+//      `admin-v2025-06` counterpart, the way AGENTS.md asks a page that names both
+//      versions to say which to use. The v2026-04 company orders list explains how it
+//      differs from `GET /api/v202506/orders` (in its description and in the inlined
+//      response schemas) and sends stats to `GET /api/v202506/orders/stats`; the
+//      company-v0 customers list says to prefer `GET /api/v2025-06/customers`. Exact
+//      phrases on each page, so a new version marker in either description still fails.
+const SANCTIONED_OCCURRENCES = [
+  { pages: null, occurrence: /\/api\/v2025-06\/tokens\//g },
+  {
+    pages: new Set(["themes/navigation-menus"]),
+    occurrence: exactText(
+      "`GET /api/menus` accepts `status` (`active` or `inactive`), `page`, `per_page`,",
+      "`meta` with `total_count`, `total_pages`, `current_page`, and `per_page`.",
+    ),
+  },
+  {
+    pages: new Set(["orders/list-the-companys-orders"]),
+    occurrence: exactText(
+      "differences from `GET /api/v202506/orders`",
+      "Unlike `GET /api/v202506/orders`,",
+      "come from `GET /api/v202506/orders/stats`",
+      "no stats block; see `GET /api/v202506/orders/stats`",
+      "made the v2025-06 index expensive",
+      "interchangeable with the v2025-06",
+      "retained for compatibility with the v2025-06 payload",
+      "Unlike the v2025-06 index this carries no",
+    ),
+  },
+  {
+    pages: new Set(["company-v0/customers/list-customers"]),
+    occurrence: exactText("prefer `GET /api/v2025-06/customers`"),
+  },
+];
+
+// A global regex matching any of the literal texts exactly, except that whitespace may
+// reflow the way Mintlify reflows hosted markdown.
+function exactText(...literals) {
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return new RegExp(literals.map(escape).join("|"), "g");
+}
+
 
 // Matches only a bare version token — what `scanLegacy` captures for the two
 // version patterns. Deliberately anchored so the Public SDK sanction can never
@@ -570,8 +928,13 @@ function hasBodyField(pageText, field) {
 // <token>", so any prose-based check would report bearer for every API prompt. A
 // requirement renders as `- bearer_auth: []`; the `securitySchemes` definition
 // renders as `bearer_auth:` with no dash, so the dash is what distinguishes them.
+// An operation that also lists the empty requirement `- {}` beside it accepts a bearer
+// token but does not need one, which reads as `optional`.
 function authFromPage(pageText) {
-  return typeof pageText === "string" && /-\s+bearer_auth\b/.test(pageText) ? "bearer" : "none";
+  if (typeof pageText !== "string" || !/-\s+bearer_auth\b/.test(pageText)) return "none";
+  return /-\s+bearer_auth:\s*\[\]\s*\n\s*-\s+\{\}|-\s+\{\}\s*\n\s*-\s+bearer_auth\b/.test(pageText)
+    ? "optional"
+    : "bearer";
 }
 
 function checkApiContract(expected, pageText) {
@@ -646,6 +1009,22 @@ function removeCheckoutPublicSdkBoundary(rawText) {
   };
 }
 
+// Removes every SANCTIONED_OCCURRENCES match that applies to this section's page and
+// returns the markers those occurrences carried, so each is still reported as sanctioned.
+function removeSanctionedOccurrences(label, rawText) {
+  const page = typeof label === "string" ? label.replace(/^api-reference\//, "") : "";
+  let text = typeof rawText === "string" ? rawText : "";
+  const markers = [];
+  for (const { pages, occurrence } of SANCTIONED_OCCURRENCES) {
+    if (pages && !pages.has(page)) continue;
+    text = text.replace(occurrence, (match) => {
+      markers.push(...scanLegacy(match));
+      return "";
+    });
+  }
+  return { text, markers: [...new Set(markers)] };
+}
+
 // llms-full.txt is an agent-instructions banner followed by one `# Title` /
 // `Source: <url>` section per page. `# ` at line start is the section delimiter —
 // page bodies use `##` and deeper, so it does not collide. Each section carries
@@ -668,8 +1047,9 @@ function splitLlmsSections(text) {
 //   1. The agent-instructions banner names legacy markers in order to forbid them.
 //   2. `webhooks-v0` list endpoints genuinely use offset `page`/`per_page`, and the
 //      generated reference reflects the spec. Prose pages get no such licence.
-//   3. The named `checkout-v2026-04` pages whose offset pagination is real — see
-//      OFFSET_PAGINATED_PAGES. Exact pages only, never a whole tag.
+//   3. The named generated pages whose offset pagination is real, each verified against
+//      its Rails action — see OFFSET_PAGINATED_PAGES — plus the exact prose pages in
+//      PER_PAGE_PROSE_PAGES. Exact pages only, never a whole tag.
 //   4. The named `public-v2025-06` reference pages, whose paths genuinely carry the
 //      version, plus the exact prose pages that explain this surface — see the two
 //      PUBLIC_SDK_V2025_06 sets. That sanction covers only the version marker.
@@ -678,17 +1058,26 @@ function splitLlmsSections(text) {
 //   5. The exact reciprocal Public SDK sentence in `checkout-v2026-04`'s
 //      info.description, removed occurrence-by-occurrence before this page-level
 //      sanction function runs. A generated Checkout contract line is required.
+//   6. The named `admin-v2025-06` and `members-v2025-06` generated pages. The version
+//      marker only.
+//   7. The tokens path prefix, the two navigation-menus sentences, and the exact
+//      version-comparison phrases on two generated pages, removed
+//      occurrence-by-occurrence like 5 — see SANCTIONED_OCCURRENCES.
 function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (label === BANNER_LABEL) return true;
   const page = label.replace(/^api-reference\//, "");
   if (/\bper_page\b/.test(marker)) {
     if (OFFSET_PAGINATED_SECTIONS.test(label)) return true;
     if (OFFSET_PAGINATED_PAGES.has(page)) return true;
+    if (PER_PAGE_PROSE_PAGES.has(page)) return true;
     if (sectionText.includes("webhooks-v0.yaml")) return true;
   }
   if (
     V2025_06_MARKER.test(marker) &&
-    (PUBLIC_SDK_V2025_06_PAGES.has(page) || PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page))
+    (PUBLIC_SDK_V2025_06_PAGES.has(page) ||
+      PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) ||
+      ADMIN_V2025_06_PAGES.has(page) ||
+      MEMBERS_V2025_06_PAGES.has(page))
   ) {
     return true;
   }
@@ -707,9 +1096,11 @@ function scanLegacyAttributed(sections) {
     if (checkoutBoundary.sanctioned) {
       sanctioned.push({ marker: "v2025-06", label: section.label });
     }
-    for (const marker of scanLegacy(checkoutBoundary.text)) {
+    const occurrences = removeSanctionedOccurrences(section.label, checkoutBoundary.text);
+    for (const marker of occurrences.markers) sanctioned.push({ marker, label: section.label });
+    for (const marker of scanLegacy(occurrences.text)) {
       const hit = { marker, label: section.label };
-      if (isSanctionedLegacyHit(marker, section.label, checkoutBoundary.text)) sanctioned.push(hit);
+      if (isSanctionedLegacyHit(marker, section.label, occurrences.text)) sanctioned.push(hit);
       else if (ADVISORY_LEGACY.test(marker)) advisory.push(hit);
       else unsanctioned.push(hit);
     }
@@ -1171,6 +1562,9 @@ if (isMain) {
 
 // Pure parsing/checking helpers — exported for unit testing (see check-hosted-docs.test.mjs).
 export {
+  PUBLIC_SDK_V2025_06_PAGES,
+  ADMIN_V2025_06_PAGES,
+  MEMBERS_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
@@ -1194,6 +1588,7 @@ export {
   checkWorkflowContract,
   scanLegacy,
   removeCheckoutPublicSdkBoundary,
+  removeSanctionedOccurrences,
   splitLlmsSections,
   stripAgentBanner,
   isSanctionedLegacyHit,

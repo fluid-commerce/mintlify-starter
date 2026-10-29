@@ -28,6 +28,7 @@ servers:
 tags:
 - name: members
   description: Unified member identity
+  x-fluid-section: Members
 components:
   securitySchemes:
     bearer_auth:
@@ -80,7 +81,7 @@ components:
       type: object
       description: The member detail (admin view). Key identity and profile fields are enumerated; the
         admin view also returns additional fields (addresses, payment_methods, sponsor, placement, member_type,
-        rank, points, orders_count, total_spent_in_base, notes).
+        rank, orders_count, total_spent_in_base, notes).
       properties:
         id:
           type: string
@@ -157,6 +158,14 @@ components:
         updated_at:
           type: string
           format: date-time
+        points:
+          type: integer
+          description: The points balance as a whole number.
+        points_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: The points balance as an exact decimal string with four decimal places. `points` keeps the whole number.
+          example: "120.0000"
         payment_methods:
           type: array
           description: Payment methods owned by this member through member_id or customer_profile_id, scoped to the
@@ -165,6 +174,67 @@ components:
             Company-wallet-only cards are excluded here; read them from the payment_methods sub-resource.
           items:
             $ref: '#/components/schemas/MemberEmbeddedPaymentMethod'
+        sponsor:
+          description: The member's enroller (sponsor) in the enrollment tree, or null when the member has none.
+          oneOf:
+          - $ref: '#/components/schemas/MemberSponsor'
+          - type: 'null'
+        placement:
+          description: The member's parent in the placement tree, in the sponsor summary shape, or null
+            when the company has no placement tree or the member has no placement parent.
+          oneOf:
+          - $ref: '#/components/schemas/MemberSponsor'
+          - type: 'null'
+    MemberSponsor:
+      type: object
+      description: A summary of a member's sponsor or placement parent.
+      required:
+      - active
+      properties:
+        id:
+          type:
+          - integer
+          - 'null'
+          description: The sponsor's legacy id, a user_company id or, for a customer sponsor, a customer id.
+        member_id:
+          type:
+          - string
+          - 'null'
+          description: The sponsor's native member UUID, or null when no member backs the sponsor.
+        external_id:
+          type:
+          - string
+          - 'null'
+        name:
+          type: string
+        full_name:
+          type: string
+        first_name:
+          type:
+          - string
+          - 'null'
+        last_name:
+          type:
+          - string
+          - 'null'
+        email:
+          type:
+          - string
+          - 'null'
+        phone:
+          type: string
+        image_url:
+          type:
+          - string
+          - 'null'
+        country:
+          type:
+          - object
+          - 'null'
+        active:
+          type: boolean
+          description: Whether the sponsor is active. False when the sponsor's member is inactive or
+            the sponsor has been removed.
     MemberEmbeddedPaymentMethod:
       type: object
       description: The stable six-field payment method shape embedded in member detail responses.
@@ -469,6 +539,32 @@ components:
           - 200
         meta:
           $ref: '#/components/schemas/Meta'
+    MemberMysiteThemeResponse:
+      description: A member's MySite theme selection.
+      type: object
+      required:
+      - mysite_theme
+      - status
+      - meta
+      properties:
+        mysite_theme:
+          type: object
+          required:
+          - theme_id
+          properties:
+            theme_id:
+              type:
+              - integer
+              - 'null'
+              description: The selected MySite theme's id, or null when the member uses the company default.
+          additionalProperties: false
+        status:
+          type: integer
+          enum:
+          - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+      additionalProperties: false
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return one or more of these
         fields depending on the controller path.
@@ -544,15 +640,47 @@ paths:
       - name: filter[member_type_slug]
         in: query
         required: false
-        description: Restrict to one member type, e.g. `customer` or `rep`.
+        description: Restrict to a single member type, e.g. `customer` or `rep`. To match several types in one request, use the `filter[member_type_slug][]` array form instead. Send one form or the other, never both; the result of sending both is undefined.
         schema:
           type: string
+      - name: filter[member_type_slug][]
+        in: query
+        required: false
+        description: Restrict to any of several member types, e.g. `rep` and `provider`. Repeat the parameter once per slug; a member matches if its type is any of them. To request an explicit empty set, which matches no members, send the bare key `filter[member_type_slug][]` with no value — most clients serialize a zero-item array as no parameter at all, which reads as an omitted filter and applies no restriction. Send this array form or the scalar `filter[member_type_slug]`, never both; the result of sending both is undefined.
+        schema:
+          type: array
+          items:
+            type: string
+        style: form
+        explode: true
+        example: [rep, provider]
       - name: filter[search]
         in: query
         required: false
         description: Free-text match across name, email, and username.
         schema:
           type: string
+      - name: filter[metafield][namespace]
+        in: query
+        required: false
+        description: Namespace of a searchable member metafield. Send with `filter[metafield][key]` and `filter[metafield][value]`. For example, `?filter[metafield][namespace]=referral&filter[metafield][key]=codes&filter[metafield][value]=e0d941dcd3`.
+        schema:
+          type: string
+          maxLength: 255
+      - name: filter[metafield][key]
+        in: query
+        required: false
+        description: Key of a searchable member metafield. Namespace and key matching is case-insensitive.
+        schema:
+          type: string
+          maxLength: 255
+      - name: filter[metafield][value]
+        in: query
+        required: false
+        description: Exact, case-insensitive and surrounding-space-insensitive value to match. Any of the first 100 elements of a JSON array can match. Only the first 100 metafields of a member are matched. The member definition must be searchable and the member metafield lookup feature must be enabled; otherwise the request returns 422.
+        schema:
+          type: string
+          maxLength: 255
       - name: filter[country_iso]
         in: query
         required: false
@@ -783,11 +911,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Invalid pagination or filter parameters
+          description: Invalid pagination or filter parameters, including disabled or non-searchable metafield lookup
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
+                allOf:
+                - $ref: '#/components/schemas/StandardErrorResponse'
+                - type: object
+                  properties:
+                    error:
+                      type: object
+                      properties:
+                        details:
+                          type: object
+                          properties:
+                            filter:
+                              type: object
+                              properties:
+                                metafield:
+                                  oneOf:
+                                  - type: array
+                                    items:
+                                      type: string
+                                  - type: object
+                                    additionalProperties:
+                                      type: array
+                                      items:
+                                        type: string
     post:
       operationId: admin_v2025_06_members_post
       summary: Create a member
@@ -808,6 +958,9 @@ paths:
               required:
               - member
               properties:
+                droplet_installation_uuid:
+                  type: string
+                  description: With the external-entity-ids-d1 flag on, the installation (a Droplet::Installation uuid in your company) that the external_id is recorded for in the same transaction as the member insert. An unknown uuid answers 422 installation_not_found, a reuse the installation does not own 422 d1_reuse_unowned, and a failed assign 422 d1_assign_failed. Ignored with the flag off.
                 member:
                   type: object
                   required:
@@ -1085,6 +1238,7 @@ paths:
                   sponsor: null
                   placement: null
                   points: 0
+                  points_decimal: "0.0000"
                 status: 201
                 meta:
                   request_id: b7e2c4d1-3f5a-4e8b-9c2d-6a1f0e3b5d47
@@ -1210,6 +1364,7 @@ paths:
                   sponsor: null
                   placement: null
                   points: 1250
+                  points_decimal: "1250.0000"
                 status: 200
                 meta:
                   request_id: b7e2c4d1-3f5a-4e8b-9c2d-6a1f0e3b5d47
@@ -1321,6 +1476,7 @@ paths:
                   sponsor: null
                   placement: null
                   points: 1250
+                  points_decimal: "1250.0000"
                 status: 200
                 meta:
                   request_id: b7e2c4d1-3f5a-4e8b-9c2d-6a1f0e3b5d47
@@ -1390,7 +1546,14 @@ paths:
                       format: date
                       description: Date of birth, written to the member's linked user record. An explicit
                         null is rejected (422) — dob cannot be cleared through this endpoint, mirroring
-                        the legacy users update contract.
+                        the legacy users update contract. Cannot be combined with dob_if_blank.
+                    dob_if_blank:
+                      type: string
+                      format: date
+                      description: Date of birth written to the member's linked user record only when
+                        that user has none (decided under a row lock, so a concurrent writer is never
+                        overwritten). The response carries dob_filled. Cannot be combined with dob;
+                        null is rejected (422).
                     username:
                       type:
                       - string
@@ -1502,6 +1665,10 @@ paths:
               schema:
                 type: object
                 properties:
+                  dob_filled:
+                    type: boolean
+                    description: Present only when dob_if_blank was sent. True when the date of birth was
+                      written, false when the user already had one (the rest of the update still applies).
                   member:
                     type: object
                     description: The member detail (admin view). Key identity and profile fields are enumerated;
@@ -1650,6 +1817,7 @@ paths:
                   sponsor: null
                   placement: null
                   points: 1250
+                  points_decimal: "1250.0000"
                 status: 200
                 meta:
                   request_id: b7e2c4d1-3f5a-4e8b-9c2d-6a1f0e3b5d47
@@ -1915,6 +2083,7 @@ paths:
                   sponsor: null
                   placement: null
                   points: 0
+                  points_decimal: "0.0000"
                 status: 200
                 meta:
                   request_id: b7e2c4d1-3f5a-4e8b-9c2d-6a1f0e3b5d47
@@ -1944,6 +2113,135 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/members/{member_id}/mysite-theme:
+    parameters:
+    - name: member_id
+      in: path
+      required: true
+      description: The member's native UUID or its legacy bigint (legacy_user_company_id).
+      schema:
+        type: string
+    get:
+      operationId: admin_v2025_06_members_mysite_theme_show
+      x-fluid-audience: company
+      summary: Get a member's MySite theme
+      description: Returns the id of the MySite theme the member has selected, or null when the member
+        has none and their MySite uses the company default. Requires a company admin token with the members
+        view permission; a droplet token also needs it on its attached role.
+      tags:
+      - members
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The member's MySite theme selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberMysiteThemeResponse'
+              example:
+                mysite_theme:
+                  theme_id: 3187
+                status: 200
+                meta:
+                  request_id: 5d1e8b47-2c9a-4f63-a0b5-7e4c3f9d2a18
+                  timestamp: '2026-10-16T17:05:12Z'
+        '401':
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: 'The caller is authenticated but not permitted: a rep-tier token, an admin/service
+            token without the members view permission, or a droplet whose role lacks it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No member matches the supplied id for this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    put:
+      operationId: admin_v2025_06_members_mysite_theme_update
+      x-fluid-audience: company
+      summary: Change a member's MySite theme
+      description: Sets the MySite theme for the member named in the path, not the signed-in user. The
+        theme must be one the company's MySite can render, meaning a public theme the company owns that
+        has a MySite template; any other id is rejected with 422. The member's MySite cache is cleared
+        once the change is saved. Requires a company admin token with the members manage permission (or
+        users update for legacy roles); a droplet token also needs that permission on its attached role.
+      tags:
+      - members
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - theme_id
+              properties:
+                theme_id:
+                  type: integer
+                  description: The id of one of the company's public MySite themes.
+            example:
+              theme_id: 3187
+      responses:
+        '200':
+          description: The member's MySite theme selection after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberMysiteThemeResponse'
+              example:
+                mysite_theme:
+                  theme_id: 3187
+                status: 200
+                meta:
+                  request_id: 9a4c2e71-6b3d-4f08-8e15-d2b7c0a5f364
+                  timestamp: '2026-10-16T17:06:40Z'
+        '401':
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: 'The caller is authenticated but not permitted: a rep-tier token, an admin/service
+            token without the required members permission, or a droplet whose role lacks it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No member matches the supplied id for this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: The theme_id is missing, is not a MySite theme the company can render, or the member
+            changed concurrently and the request should be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+              example:
+                error:
+                  message: Unknown theme
+                  details:
+                    theme_id:
+                    - is not an available MySite theme of this company
+                status: 422
+                meta:
+                  request_id: 2f7b9d36-8e1a-4c54-b0f2-6a3d1e8c9b07
+                  timestamp: '2026-10-16T17:07:03Z'
   /api/v2025-06/members/{member_id}/payment_methods:
     get:
       operationId: admin_v2025_06_member_payment_methods

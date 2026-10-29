@@ -1,0 +1,3392 @@
+openapi: 3.1.0
+info:
+  title: Fluid Company API v2026-10 — Messages
+  version: 2026-10
+  description: 'Send email, SMS, WhatsApp, push notifications and Flow messages to your members, customers and contacts, and
+    see whether they were delivered.
+
+
+    Every message goes out from your company''s own identities: email from your company''s sending address (Amazon SES), SMS
+    from your registered number (Twilio). Fluid never falls back to a shared sender. If a channel isn''t set up yet, the request
+    is refused with a clear `code` and a `setup` block saying what''s left and where to finish it.
+
+
+    Name the recipient with exactly one of `to` (an address), `contact_id`, `customer_id` or `member_id`. Customers and members
+    are the same people. Push, preferred and Flow take `member_id` only.
+
+
+    To message someone inside Flow, use `POST /api/company/v2026-10/messages/flow`, or Flow''s own messaging API (`POST /api/v1/messaging/conversations`
+    and `POST /api/v1/messaging/conversations/{id}/messages`).
+
+
+    Every send, accepted or refused, is kept with its delivery events, so `GET /api/company/v2026-10/messages/{id}` shows
+    what happened. Delivery outcomes also teach Fluid about the address: a delivery marks it verified, and a hard bounce,
+    complaint, invalid number or unsubscribe marks it as no longer usable.
+
+
+    Sign in as an admin of your company, or use a company API token, a droplet token holding the opt-in `messaging` scope,
+    or a bot token (`bearer_auth`). Each channel needs its own permission: `outbound_messages.email`, `.sms`, `.whatsapp`,
+    `.push` or `.flow`; reading a message needs `outbound_messages.view`. A bot''s send is a `message_customer` action
+    (`GET /api/company/v2026-10/bot-action-classes`), so its owner''s mode for messaging people decides whether it waits
+    for approval, and the send rules apply as to any other sender.'
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: outbound-messages
+  description: Send messages to members, customers and contacts, and track delivery.
+  x-fluid-section: Messaging
+- name: contact-methods
+  description: Every way to reach a member or contact, and a member's devices.
+  x-fluid-section: Messaging
+- name: flow-senders
+  description: 'Who apps post Flow messages as: each app''s own sender, and the people who let an app send as them.'
+  x-fluid-section: Messaging
+- name: devices
+  description: A person's phones and desktop apps, desktop presence, and signing a device out.
+  x-fluid-section: Messaging
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: An admin session, company API token, droplet token or bot token.
+  schemas:
+    Meta:
+      type: object
+      description: Response metadata.
+      required:
+      - request_uuid
+      - timestamp
+      properties:
+        request_uuid:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    LegacyError:
+      description: The error body an authorization refusal answers with.
+      type: object
+      additionalProperties: true
+    Refusal:
+      type: object
+      description: Why Fluid didn't send. The same shape for every channel.
+      required:
+      - code
+      - message
+      - channel
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: 'Setup: `email_sender_not_configured`, `sms_not_registered`, `whatsapp_not_configured`, `push_no_devices`,
+            `channel_disabled`. Recipient: `recipient_not_found`, `recipient_ambiguous`, `no_contact_method`, `contact_method_invalid`,
+            `consent_required`, `opted_out`, `invalid_address`, `address_not_allowed`, `content_required`, `no_reachable_channel`,
+            `idempotency_key_reused`, `queue_failed`, `bot_not_found`, `sender_required`. Flow sender: `bot_not_authorized`,
+            `sender_not_authorized`, `send_as_not_found`, `sender_ambiguous`, `app_sender_disabled`, `app_sender_unavailable`.
+            Send rules (marketing only): `quiet_hours` (with `send_at`, when you passed no_queue), `frequency_capped` (with
+            `next_allowed_at`), `promotional_mail_unavailable` (marketing email until Fluid''s promotional sending path is
+            ready).'
+        message:
+          type: string
+          description: A plain-English explanation.
+        channel:
+          type: string
+          description: 'The channel that refused: email, sms, whatsapp, push, flow or preferred.'
+        message_id:
+          type: string
+          format: uuid
+          description: The refused message Fluid kept, when it kept one.
+        setup:
+          type: object
+          additionalProperties: true
+          description: 'Present when the company has setup to finish. `status` says how far along it is (for SMS: not_started,
+            brand_pending, campaign_pending, number_pending, rejected or approved_no_number), `next_step` what to do, `setup_url`
+            the Admin page. For preferred, `tried` lists each channel tried and why it was skipped.'
+          properties:
+            status:
+              type: string
+            next_step:
+              type: string
+            setup_url:
+              type: string
+            tried:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                - channel
+                - code
+                properties:
+                  channel:
+                    type: string
+                  code:
+                    type: string
+        send_at:
+          type: string
+          format: date-time
+          description: 'With quiet_hours: when the message may go.'
+        next_allowed_at:
+          type: string
+          format: date-time
+          description: 'With frequency_capped: when the next marketing message on this channel may go to this person.'
+    RefusalResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          $ref: '#/components/schemas/Refusal'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MessageEvent:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - detail
+      - occurred_at
+      properties:
+        status:
+          type: string
+          enum:
+          - accepted
+          - scheduled
+          - sent
+          - delivered
+          - failed
+          - refused
+        detail:
+          type:
+          - string
+          - 'null'
+          description: Why, for failed and refused events (for example bounced, unsubscribed, sms_not_registered).
+        occurred_at:
+          type: string
+          format: date-time
+    OutboundMessage:
+      type: object
+      additionalProperties: false
+      description: A message sent through this API. History reads may include decrypted content for authorized viewers.
+      required:
+      - id
+      - channel
+      - message_type
+      - status
+      - refusal_code
+      - provider
+      - provider_message_id
+      - recipient
+      - conversation_id
+      - created_at
+      - updated_at
+      - events
+      - send_at
+      properties:
+        recipient_address:
+          type: [string, 'null']
+          description: The destination email or phone stored with the attempt. Null for member-addressed push or Flow messages and historical attempts without an address. Present on authorized history reads.
+        subject:
+          type: [string, 'null']
+          description: Email subject or push title, with links and authentication credentials redacted. Null for messages without a subject or title. Present on authorized history reads.
+        source:
+          type: string
+          enum: [company_messages, we_bot_outreach]
+          description: Which outbound pipeline recorded the attempt. Present on history reads.
+        context:
+          type: object
+          additionalProperties: false
+          description: The bot playbook and subject when this was a playbook message. Empty for direct API sends.
+          properties:
+            bot_id:
+              type: string
+            playbook_key:
+              type: string
+            subject_type:
+              type: string
+            subject_id:
+              type: string
+        content_available:
+          type: boolean
+          description: Whether an original body snapshot exists. Older playbook messages may have metadata only; they are never re-rendered to invent historical content.
+        content:
+          $ref: '#/components/schemas/MessageContent'
+        id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum:
+          - email
+          - sms
+          - whatsapp
+          - push
+          - flow
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+        status:
+          type: string
+          enum:
+          - accepted
+          - scheduled
+          - sent
+          - delivered
+          - failed
+          - refused
+          description: 'accepted: Fluid took it. sent: the provider accepted it. delivered: it reached the recipient. failed:
+            it didn''t and won''t. refused: Fluid didn''t send it. `scheduled`: a marketing message held for the recipient''s
+            quiet hours; it goes out at send_at.'
+        refusal_code:
+          type:
+          - string
+          - 'null'
+        provider:
+          type:
+          - string
+          - 'null'
+          description: ses, twilio, expo or flow.
+        provider_message_id:
+          type:
+          - string
+          - 'null'
+        recipient:
+          type: object
+          additionalProperties: false
+          required:
+          - member_id
+          - contact_id
+          - contact_method_id
+          properties:
+            member_id:
+              type:
+              - string
+              - 'null'
+            contact_id:
+              type:
+              - integer
+              - 'null'
+            contact_method_id:
+              type:
+              - string
+              - 'null'
+        conversation_id:
+          type:
+          - string
+          - 'null'
+          description: For Flow messages, the conversation it was posted in.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageEvent'
+        send_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When a scheduled message goes out.
+    MessageContent:
+      type: object
+      additionalProperties: false
+      description: Original message wording, decrypted for outbound_messages.view readers. Links and authentication credentials are redacted, including in nested push data and template parameters. The encrypted stored snapshot is unchanged. Internal sender metadata is excluded.
+      properties:
+        to:
+          type: string
+          description: The normalized recipient address used at send time, when this channel uses an address.
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        reply_to:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        url:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        template:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            language:
+              type: string
+            params:
+              type: array
+              items:
+                type: string
+    MessageHistoryResponse:
+      type: object
+      required: [messages, page, history_complete, status, meta]
+      properties:
+        history_complete:
+          type: boolean
+          description: False while older WeBot attempts in this company await import. An empty or partial page must not be treated as evidence that the person has not been contacted. This covers only the outbound pipelines documented here.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutboundMessage'
+        page:
+          type: object
+          additionalProperties: false
+          required: [next_cursor, has_more]
+          properties:
+            next_cursor:
+              type: [string, 'null']
+            has_more:
+              type: boolean
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MessageResponse:
+      type: object
+      required:
+      - message
+      - status
+      - meta
+      properties:
+        message:
+          $ref: '#/components/schemas/OutboundMessage'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    EmailBody:
+      type: object
+      additionalProperties: false
+      required:
+      - subject
+      description: An email, sent from the company's own sending address.
+      properties:
+        to:
+          type: string
+          description: An email address (email) or an E.164 phone number (sms, whatsapp). Use this or one of the ids.
+        contact_id:
+          type: string
+          description: A contact's id or uuid. Fluid uses the contact's best email or phone for the channel.
+        customer_id:
+          type: string
+          description: A customer's id, as the customers API returns it. Customers and members are the same people.
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 998
+        html:
+          type: string
+          description: The HTML body. Send html, text or both.
+        text:
+          type: string
+          description: The plain-text body.
+        reply_to:
+          type: string
+          description: An address replies go to.
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    SmsBody:
+      type: object
+      additionalProperties: false
+      required:
+      - text
+      description: A text message, sent from the company's registered number.
+      properties:
+        to:
+          type: string
+          description: An email address (email) or an E.164 phone number (sms, whatsapp). Use this or one of the ids.
+        contact_id:
+          type: string
+          description: A contact's id or uuid. Fluid uses the contact's best email or phone for the channel.
+        customer_id:
+          type: string
+          description: A customer's id, as the customers API returns it. Customers and members are the same people.
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1600
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    WhatsappBody:
+      type: object
+      additionalProperties: false
+      required: []
+      description: 'A WhatsApp message: an approved template, or free text inside the 24-hour service window.'
+      properties:
+        to:
+          type: string
+          description: An email address (email) or an E.164 phone number (sms, whatsapp). Use this or one of the ids.
+        contact_id:
+          type: string
+          description: A contact's id or uuid. Fluid uses the contact's best email or phone for the channel.
+        customer_id:
+          type: string
+          description: A customer's id, as the customers API returns it. Customers and members are the same people.
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Free text. WhatsApp only allows it within 24 hours of the person's last message to you.
+        template:
+          type: object
+          additionalProperties: false
+          required:
+          - name
+          description: An approved WhatsApp template.
+          properties:
+            name:
+              type: string
+            language:
+              type: string
+            params:
+              type: array
+              items:
+                type: string
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    PushBody:
+      type: object
+      additionalProperties: false
+      required:
+      - member_id
+      - body
+      description: A push notification to the member's signed-in phones.
+      properties:
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        url:
+          type: string
+          description: Where tapping the notification takes the member in the app.
+        data:
+          type: object
+          additionalProperties: true
+          description: Extra data for the app.
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    PreferredBody:
+      type: object
+      additionalProperties: false
+      required:
+      - member_id
+      - text
+      description: A message on the member's preferred channel. Fluid tries their ranked contact methods first, then push,
+        email and SMS, and uses the first one the company has set up and the member can receive.
+      properties:
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        subject:
+          type: string
+          maxLength: 998
+          description: Used as the email subject.
+        title:
+          type: string
+          maxLength: 200
+          description: Used as the push title.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1600
+          description: The message, used on every channel.
+        html:
+          type: string
+          description: Used as the email's HTML body.
+        url:
+          type: string
+          description: Used as the push link.
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    FlowBody:
+      type: object
+      additionalProperties: false
+      required:
+      - member_id
+      - text
+      description: A Flow direct message to a member. With a person's token it comes from that person; with `bot_id`, from
+        one of the company's We-Bots; with `send_as`, from a person who let your app send as them; and with an app token and
+        neither, from your app's own sender, which shows your app's name and icon and an App badge.
+      properties:
+        member_id:
+          type: string
+          format: uuid
+          description: A member's uuid.
+        message_type:
+          type: string
+          enum:
+          - transactional
+          - marketing
+          default: transactional
+          description: '`marketing` needs the recipient''s marketing consent for the channel.'
+        idempotency_key:
+          type: string
+          maxLength: 200
+          description: A key you choose. Sending again with the same key answers with the first message instead of sending
+            twice. You can send it as the `Idempotency-Key` header instead.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        bot_id:
+          type: string
+          format: uuid
+          description: Send as one of the company's We-Bots. Allowed for the bot's owner, its stewards, a company admin, or
+            the bot's own run; anyone else gets 403 `bot_not_authorized`.
+        send_as:
+          type: object
+          additionalProperties: false
+          description: 'Send as a person: exactly one of `member_id` or `admin_id`. An app needs that person''s send delegation
+            (POST /messaging/send-delegations, granted by the person themself) covering the message type, or the request is
+            refused with 403 `sender_not_authorized`; Fluid never falls back to the app''s own sender. A person may only name
+            themself. The message shows `sent_via` with your app''s name and icon.'
+          properties:
+            member_id:
+              type: string
+              format: uuid
+              description: A member's uuid.
+            admin_id:
+              type: string
+              description: An admin's id.
+        no_queue:
+          type: boolean
+          default: false
+          description: A marketing message asked for during the recipient's quiet hours (21:00 to 08:00 in their time zone
+            by default) waits and goes out when they end. Pass true to have it refused as `quiet_hours` with `send_at` instead.
+    ContactMethod:
+      type: object
+      additionalProperties: false
+      description: One email address or phone number Fluid knows for a member or contact.
+      required:
+      - id
+      - kind
+      - value
+      - source
+      - sms_capable
+      - whatsapp_capable
+      - verified
+      - verified_at
+      - verified_via
+      - preferred_rank
+      - consent_transactional
+      - consent_marketing
+      - usable
+      - invalidated_at
+      - invalidated_reason
+      - last_outcome
+      - last_outcome_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum:
+          - email
+          - phone
+        value:
+          type: string
+          description: 'The address: a lowercase email or an E.164 phone number.'
+        source:
+          type: string
+          description: 'Where Fluid learned it: member_profile or contact.'
+        sms_capable:
+          type: boolean
+        whatsapp_capable:
+          type: boolean
+        verified:
+          type: boolean
+          description: A message reached it, or its owner proved it another way.
+        verified_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        verified_via:
+          type:
+          - string
+          - 'null'
+          description: delivery, profile or manual.
+        preferred_rank:
+          type:
+          - integer
+          - 'null'
+          description: 1 is the owner's first choice; null means not ranked.
+        consent_transactional:
+          type: boolean
+        consent_marketing:
+          type: boolean
+        usable:
+          type: boolean
+          description: False after a hard bounce, complaint, invalid number, unsubscribe or a manual block.
+        invalidated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        invalidated_reason:
+          type:
+          - string
+          - 'null'
+        last_outcome:
+          type:
+          - string
+          - 'null'
+          description: The latest delivery outcome, such as delivered, bounced or unsubscribed.
+        last_outcome_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Device:
+      type: object
+      additionalProperties: false
+      description: A phone, tablet or desktop app (Mist) the person signed in on. Shown only to the person and to admins,
+        never to other members or guests.
+      required:
+      - id
+      - device_type
+      - bundle_id
+      - last_seen_at
+      - registered_at
+      - push_status
+      - kind
+      - app_version
+      - device_name
+      - os_name
+      - last_active_at
+      - signed_out_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        device_type:
+          type:
+          - string
+          - 'null'
+          description: ios, android or desktop.
+        bundle_id:
+          type:
+          - string
+          - 'null'
+          description: Which app it's signed in to.
+        last_seen_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        registered_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        push_status:
+          type: string
+          enum:
+          - active
+          - expired
+          - no_token
+          - desktop
+          description: 'active: push can reach it. expired: not seen for a while, so its token may no longer work. desktop:
+            a desktop app, which gets no phone push.'
+        kind:
+          type: string
+          enum:
+          - phone
+          - desktop
+          description: A desktop app has no push token.
+        app_version:
+          type:
+          - string
+          - 'null'
+          description: The app's version, e.g. 1.1.0.
+        device_name:
+          type:
+          - string
+          - 'null'
+          description: The machine's name, e.g. MacBook Pro.
+        os_name:
+          type:
+          - string
+          - 'null'
+          description: The operating system, e.g. macOS 15.1.
+        last_active_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the person last used the desktop app. While it is within two minutes, Flow message pushes to their
+            phones wait two minutes and are dropped if they read the message on the desktop.
+        signed_out_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the desktop app was signed out.
+    ContactMethodsResponse:
+      type: object
+      required:
+      - contact_methods
+      - devices
+      - messages
+      - status
+      - meta
+      properties:
+        contact_methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactMethod'
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutboundMessage'
+          description: The latest 25 messages sent to them through this API.
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ContactMethodResponse:
+      type: object
+      required:
+      - contact_method
+      - status
+      - meta
+      properties:
+        contact_method:
+          $ref: '#/components/schemas/ContactMethod'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ContactMethodUpdateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - contact_method
+      properties:
+        contact_method:
+          type: object
+          additionalProperties: false
+          properties:
+            preferred_rank:
+              type:
+              - integer
+              - 'null'
+              minimum: 1
+              maximum: 20
+              description: Make it the owner's Nth choice (others move down), or null to unrank it.
+            consent_marketing:
+              type: boolean
+            invalidated:
+              type: boolean
+              description: true marks it unusable; false clears that.
+    AppSender:
+      type: object
+      additionalProperties: false
+      description: The sender an app's Flow messages come from when no person is named. Fluid creates it on the app's first
+        send, named and iconned after the app. A member's reply reaches a droplet through its `bot_message.created` webhook.
+      required:
+      - id
+      - app_type
+      - name
+      - icon_url
+      - disabled
+      - disabled_at
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        app_type:
+          type: string
+          enum:
+          - droplet_installation
+          - partner_token
+          - company_token
+          description: The kind of token the app calls with.
+        name:
+          type: string
+          description: The name members see.
+        icon_url:
+          type:
+          - string
+          - 'null'
+          description: The icon members see.
+        disabled:
+          type: boolean
+          description: Whether an admin switched it off; its sends are then refused with `app_sender_disabled`.
+        disabled_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AppSendersResponse:
+      type: object
+      required:
+      - app_senders
+      - status
+      - meta
+      properties:
+        app_senders:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppSender'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    AppSenderResponse:
+      type: object
+      required:
+      - app_sender
+      - status
+      - meta
+      properties:
+        app_sender:
+          $ref: '#/components/schemas/AppSender'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    AppSenderUpdateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - app_sender
+      properties:
+        app_sender:
+          type: object
+          additionalProperties: false
+          description: Every field is optional; an absent field keeps its current value.
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 100
+            icon_url:
+              type:
+              - string
+              - 'null'
+              maxLength: 2000
+              description: An https URL, or null for none.
+            disabled:
+              type: boolean
+    SendDelegation:
+      type: object
+      additionalProperties: false
+      description: A person's permission for one app to send Flow messages as them.
+      required:
+      - id
+      - app_sender
+      - scopes
+      - last_used_at
+      - revoked_at
+      - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        app_sender:
+          type: object
+          additionalProperties: false
+          required:
+          - id
+          - name
+          - icon_url
+          - app_type
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            icon_url:
+              type:
+              - string
+              - 'null'
+            app_type:
+              type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum:
+            - transactional
+            - marketing
+          description: The message types the app may send as the person; empty means every type.
+        last_used_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        revoked_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    SendDelegationsResponse:
+      type: object
+      required:
+      - send_delegations
+      - app_senders
+      - status
+      - meta
+      properties:
+        send_delegations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SendDelegation'
+        app_senders:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppSender'
+          description: The apps you could allow.
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    SendDelegationResponse:
+      type: object
+      required:
+      - send_delegation
+      - status
+      - meta
+      properties:
+        send_delegation:
+          $ref: '#/components/schemas/SendDelegation'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    SendDelegationCreateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - send_delegation
+      properties:
+        send_delegation:
+          type: object
+          additionalProperties: false
+          required:
+          - app_sender_id
+          properties:
+            app_sender_id:
+              type: string
+              format: uuid
+            scopes:
+              type: array
+              maxItems: 2
+              items:
+                type: string
+                enum:
+                - transactional
+                - marketing
+              description: Leave out or empty for every message type. Granting again changes the scopes.
+    DeviceResponse:
+      type: object
+      required:
+      - device
+      - status
+      - meta
+      properties:
+        device:
+          $ref: '#/components/schemas/Device'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    DevicesResponse:
+      type: object
+      required:
+      - devices
+      - status
+      - meta
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    DesktopPresenceBody:
+      type: object
+      additionalProperties: false
+      required:
+      - device
+      properties:
+        device:
+          type: object
+          additionalProperties: false
+          required:
+          - device_uid
+          properties:
+            device_uid:
+              type: string
+              minLength: 8
+              maxLength: 100
+              description: The install's stable id; one row per install, per person and company.
+            bundle_id:
+              type: string
+              maxLength: 200
+              description: e.g. app.fluid.mist
+            app_version:
+              type: string
+              maxLength: 50
+            device_name:
+              type: string
+              maxLength: 200
+            os_name:
+              type: string
+              maxLength: 100
+            active:
+              type: boolean
+              description: Whether the person used the app in the last minute; marks them active now.
+    DeviceSignedOut:
+      type: object
+      required:
+      - error
+      - message
+      properties:
+        error:
+          type: string
+          enum:
+          - device_signed_out
+        message:
+          type: string
+    SendRules:
+      type: object
+      additionalProperties: false
+      required:
+      - quiet_start_hour
+      - quiet_end_hour
+      - time_zone
+      - caps
+      description: Legal send rules for marketing messages, from every sender (people and apps through this API, and bots).
+        Transactional messages are exempt.
+      properties:
+        quiet_start_hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+          description: Quiet hours start, in the recipient's time zone.
+        quiet_end_hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+          description: Quiet hours end. Equal to the start for no quiet hours.
+        time_zone:
+          type: string
+          description: Used when the recipient's own time zone isn't known.
+        caps:
+          type: object
+          additionalProperties: false
+          required:
+          - email
+          - sms
+          - whatsapp
+          - push
+          - flow
+          description: At most this many marketing messages per person per channel per day and week, across every sender.
+          properties:
+            email:
+              type: object
+              additionalProperties: false
+              properties:
+                day:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                week:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+            sms:
+              type: object
+              additionalProperties: false
+              properties:
+                day:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                week:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+            whatsapp:
+              type: object
+              additionalProperties: false
+              properties:
+                day:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                week:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+            push:
+              type: object
+              additionalProperties: false
+              properties:
+                day:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                week:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+            flow:
+              type: object
+              additionalProperties: false
+              properties:
+                day:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                week:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+    SendRulesUpdateBody:
+      type: object
+      additionalProperties: false
+      required:
+      - send_rules
+      properties:
+        send_rules:
+          type: object
+          additionalProperties: false
+          properties:
+            quiet_start_hour:
+              type: integer
+              minimum: 0
+              maximum: 23
+            quiet_end_hour:
+              type: integer
+              minimum: 0
+              maximum: 23
+            time_zone:
+              type: string
+              maxLength: 64
+            caps:
+              type: object
+              additionalProperties: false
+              properties:
+                email:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    day:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                    week:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                sms:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    day:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                    week:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                whatsapp:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    day:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                    week:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                push:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    day:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                    week:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                flow:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    day:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                    week:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+    SendRulesResponse:
+      type: object
+      required:
+      - send_rules
+      - status
+      - meta
+      properties:
+        send_rules:
+          $ref: '#/components/schemas/SendRules'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+security:
+- bearer_auth: []
+paths:
+  /api/company/v2026-10/messages/email:
+    post:
+      operationId: companyMessagesSendEmail
+      summary: Send an email
+      description: An email, sent from the company's own sending address. Needs `outbound_messages.email`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailBody'
+            example:
+              member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+              message_type: transactional
+              idempotency_key: order-104882-shipped
+              subject: Your order 104882 has shipped
+              html: <p>Hi Jordan, your order <strong>104882</strong> is on its way. Track it at https://shop.example.com/orders/104882.</p>
+              text: Hi Jordan, your order 104882 is on its way. Track it at https://shop.example.com/orders/104882.
+              reply_to: support@shop.example.com
+      responses:
+        '202':
+          description: Accepted. Fluid kept the message and started delivering it; follow its status with GET /messages/{id}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1123-4b5c-7d6e-8f90-a1b2c3d4e5f6
+                  channel: email
+                  message_type: transactional
+                  status: accepted
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: null
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T14:05:12Z'
+                  updated_at: '2026-10-23T14:05:12Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:12Z'
+                  send_at: null
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '200':
+          description: A repeat of an earlier request with the same idempotency key; the first message is returned and nothing
+            is sent again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1123-4b5c-7d6e-8f90-a1b2c3d4e5f6
+                  channel: email
+                  message_type: transactional
+                  status: delivered
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: 0100019a11234c5d-7e8f9a0b-1c2d-4e3f-8a5b-6c7d8e9f0a1b-000000
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T14:05:12Z'
+                  updated_at: '2026-10-23T14:05:16Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:12Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:13Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:16Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the channel's permission or isn't a company admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                email_sender_not_configured:
+                  summary: Email isn't set up
+                  value:
+                    error:
+                      code: email_sender_not_configured
+                      message: This company hasn't finished setting up email sending yet.
+                      channel: email
+                      setup:
+                        status: not_configured
+                        next_step: Finish connecting the company's sending address in Settings > Communications.
+                        setup_url: /settings/communications
+                    status: 422
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+  /api/company/v2026-10/messages/sms:
+    post:
+      operationId: companyMessagesSendSms
+      summary: Send an SMS text message
+      description: A text message, sent from the company's registered number. Needs `outbound_messages.sms`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsBody'
+            example:
+              contact_id: '58213'
+              message_type: marketing
+              idempotency_key: fall-sale-2026-contact-58213
+              text: 'Our fall sale starts today: 20% off everything through Sunday. Reply STOP to opt out.'
+      responses:
+        '202':
+          description: Accepted. Fluid kept the message and started delivering it; follow its status with GET /messages/{id}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1130-7e21-7a4b-9c3d-5e6f7a8b9c0d
+                  channel: sms
+                  message_type: marketing
+                  status: accepted
+                  refusal_code: null
+                  provider: twilio
+                  provider_message_id: null
+                  recipient:
+                    member_id: null
+                    contact_id: 58213
+                    contact_method_id: 0199c2e1-6b7c-7d8e-9f0a-1b2c3d4e5f60
+                  conversation_id: null
+                  created_at: '2026-10-23T14:06:40Z'
+                  updated_at: '2026-10-23T14:06:40Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:40Z'
+                  send_at: null
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '200':
+          description: A repeat of an earlier request with the same idempotency key; the first message is returned and nothing
+            is sent again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1130-7e21-7a4b-9c3d-5e6f7a8b9c0d
+                  channel: sms
+                  message_type: marketing
+                  status: delivered
+                  refusal_code: null
+                  provider: twilio
+                  provider_message_id: SM4f9e2a7c1b8d3e6f0a5c9b2d7e1f4a8c
+                  recipient:
+                    member_id: null
+                    contact_id: 58213
+                    contact_method_id: 0199c2e1-6b7c-7d8e-9f0a-1b2c3d4e5f60
+                  conversation_id: null
+                  created_at: '2026-10-23T14:06:40Z'
+                  updated_at: '2026-10-23T14:06:47Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:40Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:41Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:47Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the channel's permission or isn't a company admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sms_not_registered:
+                  summary: SMS registration isn't finished
+                  value:
+                    error:
+                      code: sms_not_registered
+                      message: This company hasn't finished registering its number for SMS yet.
+                      channel: sms
+                      setup:
+                        status: campaign_pending
+                        next_step: Registration is with the carriers; this usually takes a few days.
+                        setup_url: /settings/communications
+                    status: 422
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+  /api/company/v2026-10/messages/whatsapp:
+    post:
+      operationId: companyMessagesSendWhatsapp
+      summary: Send a WhatsApp message
+      description: 'A WhatsApp message: an approved template, or free text inside the 24-hour service window. Needs `outbound_messages.whatsapp`.
+        Fluid can''t send WhatsApp yet, so every request is refused (422 `whatsapp_not_configured`).'
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      x-fluid-lint-exempt: No 2xx is documented because no request can succeed yet; every WhatsApp send is refused until a WhatsApp Business sender can be connected, and the success responses return with that path.
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatsappBody'
+            example:
+              to: '+447700900123'
+              message_type: transactional
+              template:
+                name: order_shipped
+                language: en_GB
+                params:
+                - Priya
+                - '104882'
+      responses:
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the channel's permission or isn't a company admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                whatsapp_not_configured:
+                  summary: No WhatsApp sender
+                  value:
+                    error:
+                      code: whatsapp_not_configured
+                      message: This company hasn't connected a WhatsApp sender yet.
+                      channel: whatsapp
+                      setup:
+                        status: not_started
+                        next_step: Connect a WhatsApp Business sender.
+                        setup_url: /settings/communications
+                    status: 422
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+  /api/company/v2026-10/messages/push:
+    post:
+      operationId: companyMessagesSendPush
+      summary: Send a push notification
+      description: A push notification to the member's signed-in phones. Needs `outbound_messages.push`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+            example:
+              member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+              title: Your order shipped
+              body: Order 104882 is on its way and should arrive Thursday.
+              url: /orders/104882
+              data:
+                order_id: 104882
+      responses:
+        '202':
+          description: Accepted. Fluid kept the message and started delivering it; follow its status with GET /messages/{id}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1141-9a8b-7c7d-8e6f-5a4b3c2d1e0f
+                  channel: push
+                  message_type: transactional
+                  status: accepted
+                  refusal_code: null
+                  provider: expo
+                  provider_message_id: null
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: null
+                  conversation_id: null
+                  created_at: '2026-10-23T14:10:21Z'
+                  updated_at: '2026-10-23T14:10:21Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:10:21Z'
+                  send_at: null
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '200':
+          description: A repeat of an earlier request with the same idempotency key; the first message is returned and nothing
+            is sent again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1141-9a8b-7c7d-8e6f-5a4b3c2d1e0f
+                  channel: push
+                  message_type: transactional
+                  status: sent
+                  refusal_code: null
+                  provider: expo
+                  provider_message_id: 3f6a9c2e-8b1d-4e7f-a5c0-9d2b6e1f4a8c
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: null
+                  conversation_id: null
+                  created_at: '2026-10-23T14:10:21Z'
+                  updated_at: '2026-10-23T14:10:22Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:10:21Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:10:22Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the channel's permission or isn't a company admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                push_no_devices:
+                  summary: The member has no phone signed in
+                  value:
+                    error:
+                      code: push_no_devices
+                      message: This member hasn't signed in to the app on a phone yet, so there's no device to notify.
+                      channel: push
+                      setup:
+                        status: no_devices
+                        next_step: The member needs to sign in to the company's mobile app.
+                        setup_url: /settings/push-notifications
+                    status: 422
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+  /api/company/v2026-10/messages/preferred:
+    post:
+      operationId: companyMessagesSendPreferred
+      summary: Send on the member's preferred channel
+      description: A message on the member's preferred channel. Fluid tries their ranked contact methods first, then push,
+        email and SMS, and uses the first one the company has set up and the member can receive. Needs `any of outbound_messages.push,
+        .email or .sms (only channels you hold are tried)`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreferredBody'
+            example:
+              member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+              message_type: marketing
+              subject: New arrivals for fall
+              title: New arrivals for fall
+              text: Our fall collection just landed. Take a look before your favourites sell out.
+              url: /collections/fall
+      responses:
+        '202':
+          description: Accepted. Fluid kept the message and started delivering it; follow its status with GET /messages/{id}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1152-6c5d-7e4f-9a3b-2c1d0e9f8a7b
+                  channel: email
+                  message_type: marketing
+                  status: scheduled
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: null
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T02:14:09Z'
+                  updated_at: '2026-10-23T02:14:09Z'
+                  events:
+                  - status: scheduled
+                    detail: null
+                    occurred_at: '2026-10-23T02:14:09Z'
+                  send_at: '2026-10-23T12:00:00Z'
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '200':
+          description: A repeat of an earlier request with the same idempotency key; the first message is returned and nothing
+            is sent again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1152-6c5d-7e4f-9a3b-2c1d0e9f8a7b
+                  channel: email
+                  message_type: marketing
+                  status: delivered
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: 0100019a11526c5d-2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e-000000
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T02:14:09Z'
+                  updated_at: '2026-10-23T12:00:05Z'
+                  events:
+                  - status: scheduled
+                    detail: null
+                    occurred_at: '2026-10-23T02:14:09Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T12:00:01Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T12:00:05Z'
+                  send_at: '2026-10-23T12:00:00Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the channel's permission or isn't a company admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: no_reachable_channel
+                  message: None of this member's channels can be used right now.
+                  channel: preferred
+                status: 422
+                meta:
+                  request_uuid: 00000000-0000-0000-0000-000000000000
+                  timestamp: '2026-10-23T12:00:00Z'
+  /api/company/v2026-10/messages/flow:
+    post:
+      operationId: companyMessagesSendFlow
+      summary: Send a Flow direct message
+      description: 'A Flow direct message to a member. Who it comes from: a person''s token sends as that person; `bot_id`
+        sends as a We-Bot; `send_as` sends as a person who let your app do so; an app token with neither sends as the app''s
+        own sender, created on its first send. Needs `outbound_messages.flow`.'
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Use this or `idempotency_key` in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowBody'
+            example:
+              member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+              text: Hi Jordan, your order 104882 shipped today. Reply here if anything looks wrong.
+              send_as:
+                admin_id: 0199b7e2-41c5-7a03-8d6f-3e9a12c4b580
+      responses:
+        '202':
+          description: Accepted. Fluid kept the message and started delivering it; follow its status with GET /messages/{id}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1160-1b2c-7d3e-8f4a-5b6c7d8e9f0a
+                  channel: flow
+                  message_type: transactional
+                  status: accepted
+                  refusal_code: null
+                  provider: flow
+                  provider_message_id: null
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: null
+                  conversation_id: '418223'
+                  created_at: '2026-10-23T14:12:48Z'
+                  updated_at: '2026-10-23T14:12:48Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:12:48Z'
+                  send_at: null
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '200':
+          description: A repeat of an earlier request with the same idempotency key; the first message is returned and nothing
+            is sent again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1160-1b2c-7d3e-8f4a-5b6c7d8e9f0a
+                  channel: flow
+                  message_type: transactional
+                  status: delivered
+                  refusal_code: null
+                  provider: flow
+                  provider_message_id: null
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: null
+                  conversation_id: '418223'
+                  created_at: '2026-10-23T14:12:48Z'
+                  updated_at: '2026-10-23T14:12:48Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:12:48Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:12:48Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '400':
+          description: No idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: 'The caller lacks the channel''s permission (`LegacyError`), or may not send as that sender: `bot_not_authorized`
+            or `sender_not_authorized` (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/LegacyError'
+              examples:
+                sender_not_authorized:
+                  summary: The person hasn't allowed this app
+                  value:
+                    error:
+                      code: sender_not_authorized
+                      message: This person hasn't let this app send Flow messages as them.
+                      channel: flow
+                    status: 403
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+        '422':
+          description: 'Refused: invalid parameters (`ErrorResponse`), or a channel, recipient or content refusal (`RefusalResponse`).'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/RefusalResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                app_sender_disabled:
+                  summary: An admin turned the app's sender off
+                  value:
+                    error:
+                      code: app_sender_disabled
+                      message: An admin has turned off Flow messages from this app.
+                      channel: flow
+                    status: 422
+                    meta:
+                      request_uuid: 00000000-0000-0000-0000-000000000000
+                      timestamp: '2026-10-23T12:00:00Z'
+        '404':
+          description: The `bot_id` or `send_as` person isn't in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefusalResponse'
+  /api/company/v2026-10/messages:
+    get:
+      operationId: companyMessagesIndex
+      summary: Search outbound message history by phone, email, contact or customer
+      description: >-
+        Check recent outreach before following up about an abandoned cart, purchase or subscription.
+        Returns this company's company-messages API and WeBot playbook attempts, newest first by created_at and id,
+        including context and delivery events. Fetch GET /api/company/v2026-10/messages/{id} for original decrypted content. Needs outbound_messages.view.
+        Name at most one of to, email, phone, contact_id, customer_id or member_id; other filters combine with AND.
+        Address filters match the actual destination; owner filters span the owner's channels and known addresses.
+        Refused attempts were not sent, scheduled attempts are waiting, accepted means queued, and sent means
+        handed to the transport. Read events.occurred_at to learn when a send or delivery happened;
+        created_at only records when the attempt was requested. Email delivered means the receiving server
+        accepted it; SMS delivered is carrier confirmation; push delivered means Expo reported handoff to
+        APNs or FCM. None proves the person read it. Flow records sent without a delivery receipt.
+        This is context for etiquette, not an atomic reservation; concurrent bots must still honor send rules.
+        Legacy mailers, other SMS paths and inbound messages are not included. Older WeBot playbook messages may have content_available=false; their delivery metadata is still returned.
+      tags: [outbound-messages]
+      x-fluid-audience: company
+      x-fluid-related:
+      - GET /api/company/v2026-10/messages/{id}
+      - POST /api/company/v2026-10/messages/email
+      - POST /api/company/v2026-10/messages/sms
+      - POST /api/company/v2026-10/messages/whatsapp
+      - POST /api/company/v2026-10/messages/push
+      parameters:
+      - name: to
+        in: query
+        description: "Exact email or phone number. Email is case-insensitive; phone numbers are normalized to E.164."
+        schema: {"type": "string", "maxLength": 320}
+      - name: email
+        in: query
+        description: "Alias for to, restricted to a valid email address."
+        schema: {"type": "string", "maxLength": 320}
+      - name: phone
+        in: query
+        description: "Alias for to, restricted to a valid phone number. Numbers without a country code are interpreted as US numbers."
+        schema: {"type": "string", "maxLength": 64}
+      - name: contact_id
+        in: query
+        description: "Contact numeric id or UUIDv7 in this company. Includes earlier bare-address sends to its known addresses."
+        schema: {"type": "string"}
+      - name: customer_id
+        in: query
+        description: "Legacy numeric customer id from the customers API. Includes its member history and bare-address sends to known addresses."
+        schema: {"type": "string"}
+      - name: member_id
+        in: query
+        description: "Member UUID in this company. Includes all channels and bare-address sends to known addresses."
+        schema: {"type": "string", "format": "uuid"}
+      - name: channel
+        in: query
+        description: "Restrict to one outbound channel."
+        schema: {"type": "string", "enum": ["email", "sms", "whatsapp", "push", "flow"]}
+      - name: exclude_channel
+        in: query
+        description: "Leave one outbound channel out, such as `flow` for outside deliveries only. Must differ from `channel`."
+        schema: {"type": "string", "enum": ["email", "sms", "whatsapp", "push", "flow"]}
+      - name: status
+        in: query
+        description: "Latest recorded delivery state. accepted and scheduled do not mean sent; delivered is provider confirmation, not proof of reading."
+        schema: {"type": "string", "enum": ["accepted", "scheduled", "sent", "delivered", "failed", "refused"]}
+      - name: message_type
+        in: query
+        description: "Restrict to transactional or marketing attempts."
+        schema: {"type": "string", "enum": ["transactional", "marketing"]}
+      - name: query
+        in: query
+        description: "All normalized whole words must occur in the subject, body or template. Case-insensitive; ignores HTML markup. No substring, phrase or semantic matching. Returns 503 while historical content is still indexing."
+        schema: {"type": "string", "maxLength": 500}
+      - name: created_after
+        in: query
+        description: "Include attempts created at or after this time. This is the request time, not the delivery time."
+        schema: {"type": "string", "format": "date-time"}
+      - name: created_before
+        in: query
+        description: "Include attempts created before this time. Must be later than created_after."
+        schema: {"type": "string", "format": "date-time"}
+      - name: limit
+        in: query
+        description: "Page size, from 1 to 100; defaults to 25."
+        schema: {"type": "integer", "minimum": 1, "maximum": 100}
+      - name: cursor
+        in: query
+        description: "Opaque next_cursor from the previous page with the same filters. Malformed cursors return 422; a cursor for different filters may restart at the first page of the current query."
+        schema: {"type": "string", "maxLength": 4096}
+      responses:
+        '200':
+          description: Matching outbound attempts and the cursor for older attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageHistoryResponse'
+              example:
+                messages: []
+                history_complete: true
+                page: {next_cursor: null, has_more: false}
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks outbound_messages.view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: Filters are invalid or the cursor is malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Historical message text is still indexing. Retry later or omit query to read recipient history immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/messages/{id}:
+    get:
+      operationId: companyMessagesShow
+      summary: Get a message and its delivery history
+      description: A message sent through this API, accepted or refused, with every delivery event. Needs `outbound_messages.view`. Includes decrypted message wording with links and authentication credentials redacted.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: The message's id, as a send returned it.
+      responses:
+        '200':
+          description: The message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              example:
+                message:
+                  id: 019a1123-4b5c-7d6e-8f90-a1b2c3d4e5f6
+                  channel: email
+                  message_type: transactional
+                  status: delivered
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: 0100019a11234c5d-7e8f9a0b-1c2d-4e3f-8a5b-6c7d8e9f0a1b-000000
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T14:05:12Z'
+                  updated_at: '2026-10-23T14:05:16Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:12Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:13Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:16Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks `outbound_messages.view`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: No such message in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/members/{member_id}/contact-methods:
+    get:
+      operationId: companyMemberContactMethods
+      summary: List a member's contact methods
+      description: A member's (customer's) email addresses and phone numbers, the devices they've signed in on, and the latest
+        messages sent to them. Needs `members.view`.
+      tags:
+      - contact-methods
+      x-fluid-audience: company
+      parameters:
+      - name: member_id
+        in: path
+        required: true
+        description: The member's uuid.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The contact methods.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMethodsResponse'
+              example:
+                contact_methods:
+                - id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  kind: email
+                  value: jordan.reyes@gmail.com
+                  source: member_profile
+                  sms_capable: false
+                  whatsapp_capable: false
+                  verified: true
+                  verified_at: '2026-09-14T18:22:05Z'
+                  verified_via: delivery
+                  preferred_rank: 1
+                  consent_transactional: true
+                  consent_marketing: true
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: delivered
+                  last_outcome_at: '2026-10-23T14:05:16Z'
+                - id: 0199c2d6-8e9f-7a0b-8c1d-2e3f4a5b6c7d
+                  kind: phone
+                  value: '+18015550142'
+                  source: member_profile
+                  sms_capable: true
+                  whatsapp_capable: true
+                  verified: false
+                  verified_at: null
+                  verified_via: null
+                  preferred_rank: 2
+                  consent_transactional: true
+                  consent_marketing: false
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: null
+                  last_outcome_at: null
+                devices:
+                - id: 0199d0a1-2b3c-7d4e-8f5a-6b7c8d9e0f1a
+                  device_type: ios
+                  bundle_id: app.fluid.portal
+                  last_seen_at: '2026-10-23T13:58:30Z'
+                  registered_at: '2026-08-02T16:11:04Z'
+                  push_status: active
+                  kind: phone
+                  app_version: 3.4.1
+                  device_name: null
+                  os_name: null
+                  last_active_at: null
+                  signed_out_at: null
+                - id: 0199e5b2-7c8d-7e9f-9a0b-1c2d3e4f5a6b
+                  device_type: desktop
+                  bundle_id: app.fluid.mist
+                  last_seen_at: '2026-10-23T14:04:51Z'
+                  registered_at: '2026-10-01T15:30:00Z'
+                  push_status: desktop
+                  kind: desktop
+                  app_version: 1.1.0
+                  device_name: MacBook Pro
+                  os_name: macOS 15.1
+                  last_active_at: '2026-10-23T14:04:51Z'
+                  signed_out_at: null
+                messages:
+                - id: 019a1123-4b5c-7d6e-8f90-a1b2c3d4e5f6
+                  channel: email
+                  message_type: transactional
+                  status: delivered
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: 0100019a11234c5d-7e8f9a0b-1c2d-4e3f-8a5b-6c7d8e9f0a1b-000000
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T14:05:12Z'
+                  updated_at: '2026-10-23T14:05:16Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:12Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:13Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:16Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/contacts/{contact_id}/contact-methods:
+    get:
+      operationId: companyContactContactMethods
+      summary: List a contact's contact methods
+      description: A contact's email addresses and phone numbers and the latest messages sent to them. Contacts have no devices.
+        Needs `contacts.view`.
+      tags:
+      - contact-methods
+      x-fluid-audience: company
+      parameters:
+      - name: contact_id
+        in: path
+        required: true
+        description: The contact's id.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The contact methods.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMethodsResponse'
+              example:
+                contact_methods:
+                - id: 0199c2e1-6b7c-7d8e-9f0a-1b2c3d4e5f60
+                  kind: phone
+                  value: '+13855550187'
+                  source: contact
+                  sms_capable: true
+                  whatsapp_capable: false
+                  verified: true
+                  verified_at: '2026-10-23T14:06:47Z'
+                  verified_via: delivery
+                  preferred_rank: null
+                  consent_transactional: true
+                  consent_marketing: true
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: delivered
+                  last_outcome_at: '2026-10-23T14:06:47Z'
+                - id: 0199c2e2-0a1b-7c2d-9e3f-4a5b6c7d8e9f
+                  kind: email
+                  value: avery.chen@outlook.com
+                  source: contact
+                  sms_capable: false
+                  whatsapp_capable: false
+                  verified: false
+                  verified_at: null
+                  verified_via: null
+                  preferred_rank: null
+                  consent_transactional: true
+                  consent_marketing: false
+                  usable: false
+                  invalidated_at: '2026-10-02T09:41:17Z'
+                  invalidated_reason: bounced
+                  last_outcome: bounced
+                  last_outcome_at: '2026-10-02T09:41:17Z'
+                devices: []
+                messages:
+                - id: 019a1130-7e21-7a4b-9c3d-5e6f7a8b9c0d
+                  channel: sms
+                  message_type: marketing
+                  status: delivered
+                  refusal_code: null
+                  provider: twilio
+                  provider_message_id: SM4f9e2a7c1b8d3e6f0a5c9b2d7e1f4a8c
+                  recipient:
+                    member_id: null
+                    contact_id: 58213
+                    contact_method_id: 0199c2e1-6b7c-7d8e-9f0a-1b2c3d4e5f60
+                  conversation_id: null
+                  created_at: '2026-10-23T14:06:40Z'
+                  updated_at: '2026-10-23T14:06:47Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:40Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:41Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:06:47Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/contact-methods/{id}:
+    put:
+      operationId: companyContactMethodUpdate
+      summary: Change a contact method
+      description: Rank it as preferred, record marketing consent, or mark it unusable. Needs `members.manage` or `contacts.update`.
+      tags:
+      - contact-methods
+      x-fluid-audience: company
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The contact method's id.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactMethodUpdateBody'
+            example:
+              contact_method:
+                preferred_rank: 1
+                consent_marketing: true
+      responses:
+        '200':
+          description: The changed method.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMethodResponse'
+              example:
+                contact_method:
+                  id: 0199c2d6-8e9f-7a0b-8c1d-2e3f4a5b6c7d
+                  kind: phone
+                  value: '+18015550142'
+                  source: member_profile
+                  sms_capable: true
+                  whatsapp_capable: true
+                  verified: false
+                  verified_at: null
+                  verified_via: null
+                  preferred_rank: 1
+                  consent_transactional: true
+                  consent_marketing: true
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: null
+                  last_outcome_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/customers/{customer_id}/contact-methods:
+    get:
+      operationId: companyCustomerContactMethods
+      summary: List a customer's contact methods
+      description: A customer's email addresses and phone numbers, devices and latest messages, by the customers API's id.
+        Customers and members are the same people. Needs `members.view`.
+      tags:
+      - contact-methods
+      x-fluid-audience: company
+      parameters:
+      - name: customer_id
+        in: path
+        required: true
+        description: The customer's id, as the customers API returns it.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The contact methods.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMethodsResponse'
+              example:
+                contact_methods:
+                - id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  kind: email
+                  value: jordan.reyes@gmail.com
+                  source: member_profile
+                  sms_capable: false
+                  whatsapp_capable: false
+                  verified: true
+                  verified_at: '2026-09-14T18:22:05Z'
+                  verified_via: delivery
+                  preferred_rank: 1
+                  consent_transactional: true
+                  consent_marketing: true
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: delivered
+                  last_outcome_at: '2026-10-23T14:05:16Z'
+                - id: 0199c2d6-8e9f-7a0b-8c1d-2e3f4a5b6c7d
+                  kind: phone
+                  value: '+18015550142'
+                  source: member_profile
+                  sms_capable: true
+                  whatsapp_capable: true
+                  verified: false
+                  verified_at: null
+                  verified_via: null
+                  preferred_rank: 2
+                  consent_transactional: true
+                  consent_marketing: false
+                  usable: true
+                  invalidated_at: null
+                  invalidated_reason: null
+                  last_outcome: null
+                  last_outcome_at: null
+                devices:
+                - id: 0199d0a1-2b3c-7d4e-8f5a-6b7c8d9e0f1a
+                  device_type: ios
+                  bundle_id: app.fluid.portal
+                  last_seen_at: '2026-10-23T13:58:30Z'
+                  registered_at: '2026-08-02T16:11:04Z'
+                  push_status: active
+                  kind: phone
+                  app_version: 3.4.1
+                  device_name: null
+                  os_name: null
+                  last_active_at: null
+                  signed_out_at: null
+                messages:
+                - id: 019a1123-4b5c-7d6e-8f90-a1b2c3d4e5f6
+                  channel: email
+                  message_type: transactional
+                  status: delivered
+                  refusal_code: null
+                  provider: ses
+                  provider_message_id: 0100019a11234c5d-7e8f9a0b-1c2d-4e3f-8a5b-6c7d8e9f0a1b-000000
+                  recipient:
+                    member_id: 0199c2d4-8a1e-7b35-9f02-6d4e1a7c3b58
+                    contact_id: null
+                    contact_method_id: 0199c2d5-1f3a-7c48-b6e1-9d2a4f7e8c13
+                  conversation_id: null
+                  created_at: '2026-10-23T14:05:12Z'
+                  updated_at: '2026-10-23T14:05:16Z'
+                  events:
+                  - status: accepted
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:12Z'
+                  - status: sent
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:13Z'
+                  - status: delivered
+                    detail: null
+                    occurred_at: '2026-10-23T14:05:16Z'
+                  send_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/messaging/app-senders:
+    get:
+      operationId: companyMessagingAppSendersList
+      summary: List app senders
+      description: The senders apps post Flow messages as. Needs `outbound_messages.view`.
+      tags:
+      - flow-senders
+      x-fluid-audience: company
+      responses:
+        '200':
+          description: The company's app senders.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppSendersResponse'
+              example:
+                app_senders:
+                - id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                  app_type: droplet_installation
+                  name: Order Updates
+                  icon_url: https://cdn.fluid.app/droplets/order-updates/icon.png
+                  disabled: false
+                  disabled_at: null
+                  created_at: '2026-10-12T10:20:33Z'
+                  updated_at: '2026-10-12T10:20:33Z'
+                - id: 019a0b88-1e2f-7a3b-9c4d-5e6f7a8b9c0d
+                  app_type: company_token
+                  name: Rewards Sync
+                  icon_url: null
+                  disabled: true
+                  disabled_at: '2026-10-20T17:45:00Z'
+                  created_at: '2026-10-15T08:02:19Z'
+                  updated_at: '2026-10-20T17:45:00Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+  /api/company/v2026-10/messaging/app-senders/{id}:
+    patch:
+      operationId: companyMessagingAppSenderUpdate
+      summary: Change an app sender
+      description: Rename it, change its icon, or disable or enable it. Needs `outbound_messages.manage_senders`.
+      tags:
+      - flow-senders
+      x-fluid-audience: company
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The id.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppSenderUpdateBody'
+            example:
+              app_sender:
+                name: Order Updates
+                disabled: true
+      responses:
+        '200':
+          description: The changed sender.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppSenderResponse'
+              example:
+                app_sender:
+                  id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                  app_type: droplet_installation
+                  name: Order Updates
+                  icon_url: https://cdn.fluid.app/droplets/order-updates/icon.png
+                  disabled: true
+                  disabled_at: '2026-10-23T14:20:44Z'
+                  created_at: '2026-10-12T10:20:33Z'
+                  updated_at: '2026-10-23T14:20:44Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/messaging/send-delegations:
+    get:
+      operationId: companyMessagingSendDelegationsList
+      summary: List your send delegations
+      description: The apps you let send Flow messages as you, and the apps you could allow. Only a signed-in person; not
+        an app token or bot run.
+      tags:
+      - flow-senders
+      x-fluid-audience: company
+      responses:
+        '200':
+          description: Your delegations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendDelegationsResponse'
+              example:
+                send_delegations:
+                - id: 019a1170-5f6a-7b7c-8d9e-0f1a2b3c4d5e
+                  app_sender:
+                    id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                    name: Order Updates
+                    icon_url: https://cdn.fluid.app/droplets/order-updates/icon.png
+                    app_type: droplet_installation
+                  scopes:
+                  - transactional
+                  last_used_at: null
+                  revoked_at: null
+                  created_at: '2026-10-23T14:15:02Z'
+                app_senders:
+                - id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                  app_type: droplet_installation
+                  name: Order Updates
+                  icon_url: https://cdn.fluid.app/droplets/order-updates/icon.png
+                  disabled: false
+                  disabled_at: null
+                  created_at: '2026-10-12T10:20:33Z'
+                  updated_at: '2026-10-12T10:20:33Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not a signed-in person with a Flow seat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: companyMessagingSendDelegationCreate
+      summary: Let an app send as you
+      description: Only you can grant this; an admin can't grant it for you.
+      tags:
+      - flow-senders
+      x-fluid-audience: company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendDelegationCreateBody'
+            example:
+              send_delegation:
+                app_sender_id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                scopes:
+                - transactional
+      responses:
+        '201':
+          description: The delegation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendDelegationResponse'
+              example:
+                send_delegation:
+                  id: 019a1170-5f6a-7b7c-8d9e-0f1a2b3c4d5e
+                  app_sender:
+                    id: 019a0a71-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                    name: Order Updates
+                    icon_url: https://cdn.fluid.app/droplets/order-updates/icon.png
+                    app_type: droplet_installation
+                  scopes:
+                  - transactional
+                  last_used_at: null
+                  revoked_at: null
+                  created_at: '2026-10-23T14:15:02Z'
+                status: 201
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not a signed-in person with a Flow seat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such app sender in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/messaging/send-delegations/{id}:
+    delete:
+      operationId: companyMessagingSendDelegationRevoke
+      summary: Stop an app sending as you
+      description: Revoke one of your delegations. The app's next send as you is refused with `sender_not_authorized`.
+      tags:
+      - flow-senders
+      x-fluid-audience: company
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The id.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Revoked.
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not a signed-in person with a Flow seat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not one of your delegations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/devices/desktop:
+    put:
+      operationId: companyDesktopDevicePresence
+      summary: Report desktop presence
+      description: 'A desktop app (Mist) registers its install and, about once a minute while the person is using it, reports
+        them active. Send the install''s id in the X-Fluid-Device-Id header on every request too: once the device is signed
+        out, that session is answered 401 `device_signed_out`.'
+      tags:
+      - devices
+      x-fluid-audience: company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesktopPresenceBody'
+            example:
+              device:
+                device_uid: 7c1e9a4f-2b8d-4e6a-9f3c-5d7b1e2a8c40
+                bundle_id: app.fluid.mist
+                app_version: 1.1.0
+                device_name: MacBook Pro
+                os_name: macOS 15.1
+                active: true
+      responses:
+        '200':
+          description: The device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceResponse'
+              example:
+                device:
+                  id: 0199e5b2-7c8d-7e9f-9a0b-1c2d3e4f5a6b
+                  device_type: desktop
+                  bundle_id: app.fluid.mist
+                  last_seen_at: '2026-10-23T14:04:51Z'
+                  registered_at: '2026-10-01T15:30:00Z'
+                  push_status: desktop
+                  kind: desktop
+                  app_version: 1.1.0
+                  device_name: MacBook Pro
+                  os_name: macOS 15.1
+                  last_active_at: '2026-10-23T14:04:51Z'
+                  signed_out_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in, or this device was signed out (`device_signed_out`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/DeviceSignedOut'
+                - $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not a signed-in person.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/devices/mine:
+    get:
+      operationId: companyMyDevices
+      summary: List your devices
+      description: Your phones and desktop apps in this company.
+      tags:
+      - devices
+      x-fluid-audience: company
+      responses:
+        '200':
+          description: Your devices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicesResponse'
+              example:
+                devices:
+                - id: 0199d0a1-2b3c-7d4e-8f5a-6b7c8d9e0f1a
+                  device_type: ios
+                  bundle_id: app.fluid.portal
+                  last_seen_at: '2026-10-23T13:58:30Z'
+                  registered_at: '2026-08-02T16:11:04Z'
+                  push_status: active
+                  kind: phone
+                  app_version: 3.4.1
+                  device_name: null
+                  os_name: null
+                  last_active_at: null
+                  signed_out_at: null
+                - id: 0199e5b2-7c8d-7e9f-9a0b-1c2d3e4f5a6b
+                  device_type: desktop
+                  bundle_id: app.fluid.mist
+                  last_seen_at: '2026-10-23T14:04:51Z'
+                  registered_at: '2026-10-01T15:30:00Z'
+                  push_status: desktop
+                  kind: desktop
+                  app_version: 1.1.0
+                  device_name: MacBook Pro
+                  os_name: macOS 15.1
+                  last_active_at: '2026-10-23T14:04:51Z'
+                  signed_out_at: null
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not a signed-in person.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/devices/{id}:
+    delete:
+      operationId: companyDeviceSignOut
+      summary: Sign a device out
+      description: Sign out a desktop app (its session is refused from then on, and it signs out locally) or remove a phone's
+        push registration. Your own device, or anyone's with `members.manage`.
+      tags:
+      - devices
+      x-fluid-audience: company
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The device's id.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Signed out.
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: Not your device, and you lack members.manage.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/LegacyError'
+        '404':
+          description: Not in this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/messaging/send-rules:
+    get:
+      operationId: companyMessagingSendRulesShow
+      summary: Show marketing send rules
+      description: Quiet hours and frequency caps for marketing messages. Needs `messaging.view`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      responses:
+        '200':
+          description: The rules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendRulesResponse'
+              example:
+                send_rules:
+                  quiet_start_hour: 21
+                  quiet_end_hour: 8
+                  time_zone: America/Denver
+                  caps:
+                    email:
+                      day: 1
+                      week: 7
+                    sms:
+                      day: 1
+                      week: 3
+                    whatsapp:
+                      day: 1
+                      week: 3
+                    push:
+                      day: 2
+                      week: 7
+                    flow:
+                      day: 3
+                      week: 10
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+    put:
+      operationId: companyMessagingSendRulesUpdate
+      summary: Change marketing send rules
+      description: Change any of the window, the default time zone and the caps; the rest keep their values. Needs `messaging.update`.
+      tags:
+      - outbound-messages
+      x-fluid-audience: company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendRulesUpdateBody'
+            example:
+              send_rules:
+                quiet_start_hour: 21
+                quiet_end_hour: 8
+                time_zone: America/Denver
+                caps:
+                  sms:
+                    day: 1
+                    week: 3
+      responses:
+        '200':
+          description: The rules after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendRulesResponse'
+              example:
+                send_rules:
+                  quiet_start_hour: 21
+                  quiet_end_hour: 8
+                  time_zone: America/Denver
+                  caps:
+                    email:
+                      day: 1
+                      week: 7
+                    sms:
+                      day: 1
+                      week: 3
+                    whatsapp:
+                      day: 1
+                      week: 3
+                    push:
+                      day: 2
+                      week: 7
+                    flow:
+                      day: 3
+                      week: 10
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '403':
+          description: The caller lacks the permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '422':
+          description: Invalid parameters or an unknown time zone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

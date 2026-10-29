@@ -137,6 +137,15 @@ components:
       scheme: bearer
       description: Bearer token authentication
   responses:
+    OrderOverrideForbidden:
+      description: The caller is not allowed to override orders. It needs a
+        company admin holding the `orders.override` permission, a service
+        token whose role grants it, a droplet, or a root admin. Reps, customers
+        and public tokens are refused.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/StandardErrorResponse"
     PaymentInProgressError:
       description: |
         A redirect payment (PPRO, dLocal, Citcon) is open at the provider, so the
@@ -159,6 +168,47 @@ components:
           schema:
             "$ref": "#/components/schemas/LockedCartErrorResponse"
   schemas:
+    OrderPricingSnapshot:
+      description: The buyer's member type when the order was built (the enrollment member type on an enrollment cart) and the pricing tier the order's lines were stamped with, recorded only on orders created by checkout. `null` on every other order (renewals, imports), when member-type tier charging was off at checkout, or when the checkout had no buyer member or enrollment member type. `pricing_tier_id` and `pricing_tier_name` are null unless `basis` is `unanimous`.
+      anyOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - member_type_id
+        - member_type_slug
+        - pricing_tier_id
+        - pricing_tier_name
+        - charged
+        - basis
+        properties:
+          member_type_id:
+            type:
+            - string
+            - 'null'
+            format: uuid
+          member_type_slug:
+            type:
+            - string
+            - 'null'
+          pricing_tier_id:
+            type:
+            - string
+            - 'null'
+            format: uuid
+          pricing_tier_name:
+            type:
+            - string
+            - 'null'
+          charged:
+            type: boolean
+          basis:
+            type: string
+            enum:
+            - unanimous
+            - mixed
+            - unstamped
+            - no_catalog_lines
+      - type: 'null'
     PaymentInProgressErrorResponse:
       description: |
         409 envelope for a cart write refused while a redirect payment is
@@ -321,6 +371,13 @@ components:
           type:
           - string
           - 'null'
+        phone_dialable:
+          type: boolean
+          description: >-
+            Whether checkout keeps `phone` on the customer's profile: it must parse as a possible number with its +country code. Checkout offers SMS consent for a saved phone only when this is true.
+        sms_marketing_preselected:
+          type: boolean
+          description: True only in the authenticated member's own cart sync response, when that attached member is opted in and their consent phone matches the profile-dialable cart phone. False for every unauthenticated or different-member response.
         language_iso:
           type:
           - string
@@ -436,9 +493,11 @@ components:
                 - not_attempted
                 - declined
                 - unknown
+                - held
                 description: >-
-                  What happened to the payment: the default the error catalog gives the
-                  blocker's `code` (`not_attempted` for every blocker code today), or
+                  What happened to the payment: the catalog default for the blocker's
+                  `code`, which is `not_attempted` for every blocker code; `held` instead
+                  when the cart's only money is the payment a resubmit reuses; or
                   `unknown` on every blocker while the cart may already hold money or
                   that cannot be read. Check before charging again on `unknown`.
                   `declined` reflects the stored payment status; for some gateways an
@@ -622,14 +681,29 @@ components:
             type: string
         customer_total_points:
           type: integer
+        customer_total_points_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: Customer points balance as an exact four-place decimal string.
+          example: "120.0000"
         customer_total_points_in_currency:
           type: string
         points_applied:
           type: integer
+        points_applied_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: Applied points as an exact four-place decimal string.
+          example: "120.0000"
         points_applied_amount_in_currency:
           type: string
         remaining_customer_points:
           type: integer
+        remaining_customer_points_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: Remaining customer points as an exact four-place decimal string.
+          example: "120.0000"
         remaining_customer_points_amount_in_currency:
           type: string
         remaining_cart_amount_after_points:
@@ -640,8 +714,21 @@ components:
           description: "Unavailable (null): a bundle price for this tier cannot be computed; checkout refuses the line."
         max_applicable_points:
           type: integer
+        points_unavailable_in_market:
+          type: boolean
+          description: "True when points cannot be spent in this cart's market because nobody set its points value and the company refuses such markets. False for a cart an earlier checkout attempt already spent points on. Checkout shows the points option disabled, naming the market."
+        max_applicable_points_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: Maximum applicable points as an exact four-place decimal string.
+          example: "120.0000"
         total_creditable_points:
           type: integer
+        total_creditable_points_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          description: Total creditable points as an exact four-place decimal string.
+          example: "120.0000"
         shipping_address:
           anyOf:
           - type: object
@@ -828,6 +915,12 @@ components:
                 - 'null'
               required:
                 type: boolean
+              content_digest:
+                type: string
+                pattern: '^[0-9a-f]{64}$'
+                description: SHA-256 hex digest of the agreement text as
+                  rendered for this cart; echo it in `accepted_agreement_versions`
+                  at checkout so a consent to since-edited wording is refused.
         country:
           $ref: '#/components/schemas/CartCountry'
         company:
@@ -877,6 +970,35 @@ components:
                 - 'null'
               start_date:
                 type: string
+              subscription_start_notice:
+                description: The blackout rule's checkout message when it moved
+                  this plan's first bill date (start_date), otherwise null. Informational
+                  only. A client treats a missing field as null.
+                anyOf:
+                - "$ref": "#/components/schemas/CartSubscriptionStartNotice"
+                - type: 'null'
+    CartSubscriptionStartNotice:
+      type: object
+      additionalProperties: false
+      description: The checkout message of the merchant's blackout rule that moved
+        a first bill date off a blocked day of the month. Informational only;
+        checkout never refuses on it.
+      required:
+      - message
+      - moved_from
+      properties:
+        message:
+          type: string
+          description: The rule's checkout message. Never empty; a rule without
+            a message gives no notice.
+          example: We never bill on the 29th to the 31st, so your first order
+            bills on the 28th.
+        moved_from:
+          type: string
+          format: date
+          description: The first bill date before the move, in the cart's time
+            zone.
+          example: '2026-11-30'
     CartItem:
       type: object
       additionalProperties: false
@@ -949,6 +1071,13 @@ components:
           description: "`true` when a bundle price for this tier cannot be computed:
             the line's price fields are null and checkout refuses it. `false` for
             every other line."
+        subscription_start_notice:
+          description: The blackout rule's checkout message when it moved subscription_start,
+            otherwise null. Informational only. A client treats a missing field
+            as null.
+          anyOf:
+          - "$ref": "#/components/schemas/CartSubscriptionStartNotice"
+          - type: 'null'
         enrollment_pack_id:
           type:
           - integer
@@ -1033,7 +1162,10 @@ components:
         creditable_points:
           type: integer
         product:
-          type: object
+          # Null on a custom (variant-less) line.
+          type:
+          - object
+          - 'null'
           additionalProperties:
             $ref: '#/components/schemas/JsonValue'
         variant:
@@ -1237,6 +1369,9 @@ components:
         identity_sign_in_enabled:
           type: boolean
           description: Whether the company's shoppers sign in through the identity service rather than the legacy code. Read through the company's sign-in path, never set here.
+        checkout_identity_enabled:
+          type: boolean
+          description: Whether checkout is identity-only for the company; true only when it signs in through the identity service and its release flag is on.
         id:
           type: integer
         name:
@@ -1295,6 +1430,16 @@ components:
           type: string
         collect_sms_marketing:
           type: boolean
+        sms_terms_url:
+          type: [string, 'null']
+          format: uri
+          description: The merchant's SMS terms override, or its storefront /terms-conditions
+            page by default. Null when the company does not collect SMS marketing or when no HTTPS policy URL is available.
+        sms_privacy_policy_url:
+          type: [string, 'null']
+          format: uri
+          description: The merchant's SMS privacy policy override, or its storefront
+            /privacy-policy page by default. Null when the company does not collect SMS marketing or when no HTTPS policy URL is available.
         collect_email_marketing:
           type: boolean
         bundle_subscriptions:
@@ -1337,6 +1482,14 @@ components:
               type: array
               items:
                 type: string
+            tax_skipped_reason:
+              type:
+              - string
+              - 'null'
+              description: Why tax was skipped when the order was placed, for
+                example `member_tax_exempt`. Null when tax was not skipped.
+            pricing_snapshot:
+              "$ref": "#/components/schemas/OrderPricingSnapshot"
           additionalProperties:
             "$ref": "#/components/schemas/JsonValue"
         meta:
@@ -2804,6 +2957,8 @@ components:
               name:
                 type: string
           - type: 'null'
+        pricing_snapshot:
+          "$ref": "#/components/schemas/OrderPricingSnapshot"
         source:
           type:
           - string
@@ -4224,6 +4379,119 @@ components:
       - type: string
       - "$ref": "#/components/schemas/ErrorBag"
       - type: 'null'
+    BraintreeCartTotalChangedError:
+      description: |
+        409 body of the Braintree create_payment authorization when the address or
+        tax refresh moved the total the buyer was shown. Nothing was charged;
+        `meta.cart` is the current total.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - error_code
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        error_code:
+          type: string
+          const: cart_total_changed
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                currency_code:
+                  type: string
+    CartHoldTotalChangedErrorResponse:
+      description: |
+        The address or tax refresh before a hold moved the total the shopper
+        was shown, so nothing was held. `meta.cart` is the current total.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - expected_total
+          properties:
+            expected_total:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - cart
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: cart_total_changed
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total as a decimal string in the currency's major unit.
+                currency_code:
+                  type: string
+                  description: ISO 4217 code of the currency this total is in.
     CartTotalChangedErrorResponse:
       description: |
         The cart no longer says the total the shopper agreed to, so nothing
@@ -4278,6 +4546,9 @@ components:
               description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
               items:
                 "$ref": "#/components/schemas/CheckoutErrorDetail"
+            coded_recovery:
+              type: boolean
+              description: Present and true when the company routes checkout refusals by `error_details` (CHECKOUT_CODED_REFUSALS). Temporary; removed with that flag.
             cart:
               type: object
               additionalProperties: false
@@ -4304,6 +4575,41 @@ components:
                     different currency is refused before the totals are
                     compared.
                   example: USD
+    WalletTierRefusalResponse:
+      description: Strict-tier line or stale enrollment pricing refusal before funds are held.
+      type: object
+      additionalProperties: false
+      required: [error_message, errors, meta]
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          properties:
+            cart_item:
+              type: array
+              items: {type: string}
+            cart:
+              type: array
+              items: {type: string}
+        meta:
+          type: object
+          additionalProperties: false
+          required: [code]
+          properties:
+            request_id:
+              type: [string, 'null']
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              enum: [strict_tier_line_refused, enrollment_pricing_stale, destination_market_unavailable]
+            cart_item_id:
+              type: [integer, string]
+            variant_id:
+              type: [integer, string]
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return one or more of these fields depending on the controller path.
       type: object
@@ -5400,6 +5706,8 @@ components:
                   name:
                     type: string
               - type: 'null'
+            pricing_snapshot:
+              "$ref": "#/components/schemas/OrderPricingSnapshot"
             external_id:
               type:
               - string
@@ -5488,6 +5796,7 @@ components:
           - email
           - enrollment_pack
           - enrollment_member_type
+          - pricing_snapshot
           - resulting_member_type
           - external_id
           - financial_status
@@ -5679,7 +5988,7 @@ components:
               issue:
                 type: string
                 description: MISSING_SHIPPING_ADDRESS, MISSING_ORDER_ID,
-                  SHIPPING_UNAVAILABLE or CART_TOTAL_UNAVAILABLE.
+                  SHIPPING_UNAVAILABLE, CART_TOTAL_UNAVAILABLE or PRICING_STALE.
             required:
             - issue
             additionalProperties: false
@@ -5917,6 +6226,8 @@ components:
                     type: boolean
                   standalone_on_checkout:
                     type: boolean
+                  content_digest:
+                    type: string
                   enrollment_pack_id:
                     type: 'null'
                   id:
@@ -5957,6 +6268,18 @@ components:
                     type: boolean
                   apple_pay_merchant_identifier:
                     type: 'null'
+                  google_pay:
+                    type: boolean
+                    description: Whether the checkout can offer Google Pay on this card account.
+                  google_pay_merchant_id:
+                    type: [string, 'null']
+                    description: The merchant's Google Pay merchant ID, for the PaymentDataRequest's merchantInfo. Present only when google_pay is true.
+                  google_pay_gateway:
+                    type: [string, 'null']
+                    description: The tokenization gateway for PAYMENT_GATEWAY tokenization (verygoodsecurity). Present only when google_pay is true.
+                  google_pay_gateway_merchant_id:
+                    type: [string, 'null']
+                    description: The gatewayMerchantId VGS issued the merchant. Present only when google_pay is true.
                   bogus_gateway:
                     type:
                     - boolean
@@ -6108,6 +6431,16 @@ components:
                   type: boolean
                 collect_sms_marketing:
                   type: boolean
+                sms_terms_url:
+                  type: [string, 'null']
+                  format: uri
+                  description: The merchant's SMS terms override, or its storefront
+                    /terms-conditions page by default. Null when the company does not collect SMS marketing or when no HTTPS policy URL is available.
+                sms_privacy_policy_url:
+                  type: [string, 'null']
+                  format: uri
+                  description: The merchant's SMS privacy policy override, or its storefront
+                    /privacy-policy page by default. Null when the company does not collect SMS marketing or when no HTTPS policy URL is available.
                 favicon_url:
                   type: 'null'
                 fluid_shop:
@@ -6125,6 +6458,9 @@ components:
                 identity_sign_in_enabled:
                   type: boolean
                   description: Whether the company's shoppers sign in through the identity service rather than the legacy code. Read through the company's sign-in path, never set here.
+                checkout_identity_enabled:
+                  type: boolean
+                  description: Whether checkout is identity-only for the company; true only when it signs in through the identity service and its release flag is on.
                 id:
                   type: integer
                 # When true, the company's payment tokens and customer profile
@@ -6247,6 +6583,11 @@ components:
               type: 'null'
             customer_total_points:
               type: integer
+            customer_total_points_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              description: Customer points balance as an exact four-place decimal string.
+              example: "120.0000"
             customer_total_points_in_currency:
               type: string
             cv_total:
@@ -6541,6 +6882,13 @@ components:
                     description: "`true` when a bundle price for this tier cannot be
                       computed: the line's price fields are null and checkout refuses
                       it. `false` for every other line."
+                  subscription_start_notice:
+                    description: The blackout rule's checkout message when it moved
+                      subscription_start, otherwise null. Informational only. A client
+                      treats a missing field as null.
+                    anyOf:
+                    - "$ref": "#/components/schemas/CartSubscriptionStartNotice"
+                    - type: 'null'
                   variant:
                     type: object
                     properties:
@@ -6684,6 +7032,14 @@ components:
               type: 'null'
             max_applicable_points:
               type: integer
+            points_unavailable_in_market:
+              type: boolean
+              description: "True when points cannot be spent in this cart's market because nobody set its points value and the company refuses such markets. False for a cart an earlier checkout attempt already spent points on. Checkout shows the points option disabled, naming the market."
+            max_applicable_points_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              description: Maximum applicable points as an exact four-place decimal string.
+              example: "120.0000"
             messages:
               type: object
               additionalProperties: false
@@ -6761,8 +7117,20 @@ components:
               - null
             phone:
               type: 'null'
+            phone_dialable:
+              type: boolean
+              description: >-
+                Whether checkout keeps `phone` on the customer's profile: it must parse as a possible number with its +country code. Checkout offers SMS consent for a saved phone only when this is true.
+            sms_marketing_preselected:
+              type: boolean
+              description: True only in the authenticated member's own cart sync response, when that attached member is opted in and their consent phone matches the profile-dialable cart phone. False for every unauthenticated or different-member response.
             points_applied:
               type: integer
+            points_applied_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              description: Applied points as an exact four-place decimal string.
+              example: "120.0000"
             points_applied_amount_in_currency:
               type: string
             points_enabled:
@@ -6811,6 +7179,11 @@ components:
               description: "Unavailable (null): a bundle price for this tier cannot be computed; checkout refuses the line."
             remaining_customer_points:
               type: integer
+            remaining_customer_points_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              description: Remaining customer points as an exact four-place decimal string.
+              example: "120.0000"
             remaining_customer_points_amount_in_currency:
               type: string
             requires_3ds:
@@ -6892,6 +7265,11 @@ components:
               description: "Unavailable (null): a bundle price for this tier cannot be computed; checkout refuses the line."
             total_creditable_points:
               type: integer
+            total_creditable_points_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              description: Total creditable points as an exact four-place decimal string.
+              example: "120.0000"
             totals:
               type: [object, 'null']
               additionalProperties: false
@@ -6997,9 +7375,11 @@ components:
                     - not_attempted
                     - declined
                     - unknown
+                    - held
                     description: >-
-                      What happened to the payment: the default the error catalog gives the
-                      blocker's `code` (`not_attempted` for every blocker code today), or
+                      What happened to the payment: the catalog default for the blocker's
+                      `code`, which is `not_attempted` for every blocker code; `held` instead
+                      when the cart's only money is the payment a resubmit reuses; or
                       `unknown` on every blocker while the cart may already hold money or
                       that cannot be read. Check before charging again on `unknown`.
                       `declined` reflects the stored payment status; for some gateways an
@@ -7042,6 +7422,7 @@ components:
           - currency_symbol
           - customer_id
           - customer_total_points
+          - customer_total_points_decimal
           - customer_total_points_in_currency
           - cv_total
           - digital_only
@@ -7063,6 +7444,8 @@ components:
           - items
           - language_iso
           - max_applicable_points
+          - points_unavailable_in_market
+          - max_applicable_points_decimal
           - messages
           - metadata
           - payment_account
@@ -7072,7 +7455,10 @@ components:
           - payment_resume_url
           - payment_unavailable_reason
           - phone
+          - phone_dialable
+          - sms_marketing_preselected
           - points_applied
+          - points_applied_decimal
           - points_applied_amount_in_currency
           - points_enabled
           - price_inclusive_of_tax
@@ -7084,6 +7470,7 @@ components:
           - remaining_cart_amount_after_points
           - remaining_cart_amount_after_points_in_currency
           - remaining_customer_points
+          - remaining_customer_points_decimal
           - remaining_customer_points_amount_in_currency
           - requires_3ds
           - requires_payment_method
@@ -7106,6 +7493,7 @@ components:
           - tax_total_for_display
           - tax_total_in_currency
           - total_creditable_points
+          - total_creditable_points_decimal
           - totals
           - transaction_fee
           - transaction_fee_in_currency
@@ -7814,6 +8202,9 @@ components:
           description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
           items:
             "$ref": "#/components/schemas/CheckoutErrorDetail"
+        coded_recovery:
+          type: boolean
+          description: Present and true when the company routes checkout refusals by `error_details` (CHECKOUT_CODED_REFUSALS). Temporary; removed with that flag.
       additionalProperties: false
     CheckoutErrorDetail:
       description: One refusal reason, in the same vocabulary as `checkout_blockers`, with where to send the shopper and what happened to the payment.
@@ -7839,9 +8230,11 @@ components:
           - not_attempted
           - declined
           - unknown
+          - held
           description: >-
             `not_attempted`: fix the cause and resubmit. `declined`: the payment was refused; resubmit with another method. `declined` reflects the stored payment status; for some gateways an unconfirmed failure is still reported as `declined`.
             `unknown`: money may have moved; check the order before charging again.
+            `held`: the cart's only money is the payment a resubmit reuses. Fix the field and resubmit with the same payment method; checkout will not charge again.
         message:
           type: string
           description: The English message for this entry. Not translated.
@@ -7851,7 +8244,7 @@ paths:
       summary: Update cart items prices
       operationId: public_v2025_06_commerce-carts-update-cart-items-prices
       description: Overrides line-item prices on the cart. Used by admin tooling;
-        requires a bearer token.
+        requires a bearer token allowed to override orders (`orders.override`).
       tags:
       - commerce
       security:
@@ -7895,6 +8288,16 @@ paths:
                   timestamp: '2026-09-14T15:32:08Z'
         '401':
           description: Unauthorized
+        '403':
+          description: >-
+            The caller is not allowed to override orders (see
+            OrderOverrideForbidden), or an admin without
+            `orders.add_custom_item` tried to reprice a custom (variant-less)
+            line.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: |-
             The request was understood but refused. Distinguish the cases by
@@ -9699,6 +10102,31 @@ paths:
                     payment is already authorized or captured.
                   example:
                   - 658
+                accepted_agreement_versions:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - id
+                    - content_digest
+                    properties:
+                      id:
+                        type: integer
+                      content_digest:
+                        type: string
+                        pattern: '^[0-9a-fA-F]{64}$'
+                  description: |
+                    The version of each accepted agreement's text the client
+                    showed the shopper: the agreement's `id` with the
+                    `content_digest` from the same entry of the cart's
+                    `agreements` array. Optional. When present, checkout
+                    refuses with `422` and `errors.agreements` if any named
+                    version is no longer the agreement's live text, so the
+                    shopper is shown the new wording before being charged.
+                  example:
+                  - id: 658
+                    content_digest: 4f7f9a2d0c6b1e8e3a5d9c7b2f1e0d4c8b6a5f3e2d1c0b9a8f7e6d5c4b3a2918
                 expected_total:
                   type: string
                   pattern: '^\d{1,12}(\.\d{1,5})?$'
@@ -10099,6 +10527,13 @@ paths:
         that conflicts with the enrollment the cart already holds, or repeats
         one still being processed, returns 409. A cart whose checkout lock is
         held is refused with 409.
+
+        With `replace: true`, a request that conflicts with the pack the cart
+        holds swaps that pack for the requested one in the same request,
+        instead of answering 409. When the requested pack is refused, the
+        cart keeps the pack it held. A claim still in progress is never
+        swapped. `replace` is released per company; where it is not, the
+        request is answered as if `replace` were absent.
       parameters:
       - name: cart_token
         in: path
@@ -10306,6 +10741,9 @@ paths:
             completed with a different configuration, or with one this cart
             never recorded; `enrollment_in_progress` means an enrollment for
             this pack has not finished — retry to get the completed cart.
+            With `replace`, the first two are swapped rather than refused, and
+            a cart that changed while the request was in flight is refused
+            with the code that matches its new state.
             Or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`).
           content:
             application/json:
@@ -10358,6 +10796,9 @@ paths:
                 enrollment_pack_id:
                   type: integer
                   description: ID of the enrollment pack to add
+                replace:
+                  type: boolean
+                  description: Swap the enrollment pack the cart holds, or its bundle selections, for this request's pack and selections instead of answering 409
                 bundle_selections:
                   type: array
                   description: Optional bundle group selections for dynamic bundle products in the enrollment pack
@@ -10482,6 +10923,23 @@ paths:
         Adds one or more variants — including dynamic bundles — to the cart.
         When the request includes an enrollment, a cart whose checkout lock is
         held is refused with 409.
+
+        An entry without `cart_item_id` is matched to an existing line of the
+        same variant. For a regular variant that carries `subscription`, only a
+        line in that subscription state matches (`true` matches a subscription
+        line; `false` or `null` matches a one-time line); with no such line a
+        new line is created, so a cart can hold the same variant once as a
+        subscription and once as a one-time purchase, and adding one never
+        changes the other. A regular variant whose entry omits `subscription`
+        matches the variant's existing line whatever its state and leaves that
+        line's subscription unchanged. A dynamic bundle is matched on its
+        component selection and its subscribe choice instead, and an omitted
+        `subscription` counts as one-time. Send `cart_item_id` to address one
+        exact line. With `quantity: 0`, the entry removes the line it matches
+        by the same rule for regular variants, and the request fails when no
+        line is in the stated state. Removal by `variant_id` does not
+        distinguish the configurations of a dynamic bundle, so send
+        `cart_item_id` to remove one.
       parameters:
       - name: cart_token
         in: path
@@ -10711,6 +11169,14 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+        '403':
+          description: >-
+            An admin without `orders.add_custom_item` tried to add a custom
+            (variant-less) line.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '404':
           description: Cart not found, or the requested `enrollment.enrollment_pack_id`
             does not exist or is inactive.
@@ -10759,7 +11225,9 @@ paths:
                     properties:
                       variant_id:
                         type: integer
-                        description: Variant ID
+                        description: Variant ID. Omitted for a custom (variant-less)
+                          line, which takes a `title` and `price`, and when
+                          `cart_item_id` names an existing line.
                       cart_item_id:
                         type: integer
                         description: ID of an existing cart line. When present, the entry
@@ -10792,6 +11260,16 @@ paths:
                       title:
                         type: string
                         description: Item title override
+                      sku:
+                        type: string
+                        description: >-
+                          A custom (variant-less) line's SKU, so the order exports
+                          it as that catalog item. Must match a variant SKU in
+                          the company's catalog, ignoring case. Accepted only as
+                          the custom line is added, from a caller that may set a
+                          custom line's values (an admin with
+                          `orders.add_custom_item`, a droplet or a company
+                          token). Ignored on a catalog line.
                       image_url:
                         type: string
                         description: Item image URL
@@ -10827,7 +11305,6 @@ paths:
                           - variant_id
                           - quantity
                     required:
-                    - variant_id
                     - quantity
                 perform_cart_calculations:
                   type: boolean
@@ -11581,7 +12058,7 @@ paths:
     patch:
       operationId: public_v2025_06_public_commerce_carts_items_update_volumes_patch
       description: Overrides a line item's CV and QV volumes. Used by admin tooling;
-        requires a bearer token.
+        requires a bearer token allowed to override orders (`orders.override`).
       summary: Update Volumes update volumes
       tags:
       - public
@@ -11627,6 +12104,16 @@ paths:
           "$ref": "#/components/responses/ProcessedCartResponse"
         '401':
           description: Unauthorized
+        '403':
+          description: >-
+            The caller is not allowed to override orders (see
+            OrderOverrideForbidden), or an admin without
+            `orders.add_custom_item` tried to set a custom (variant-less)
+            line's CV/QV.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '200':
           description: Success
           content:
@@ -11644,6 +12131,7 @@ paths:
                     show_at_checkout: true
                     show_path: "/api/agreements/7314"
                     standalone_on_checkout: false
+                    content_digest: 4f7f9a2d0c6b1e8e3a5d9c7b2f1e0d4c8b6a5f3e2d1c0b9a8f7e6d5c4b3a2918
                     subscription_only: false
                     title: Dunder Mifflin Terms of Service
                   amount_total: 55.48
@@ -11735,6 +12223,7 @@ paths:
                   currency_symbol: "$"
                   customer_id:
                   customer_total_points: 0
+                  customer_total_points_decimal: "0.0000"
                   customer_total_points_in_currency: "$0.00"
                   cv_total: '5.25'
                   digital_only: false
@@ -11853,6 +12342,8 @@ paths:
                       width:
                   language_iso:
                   max_applicable_points: 0
+                  points_unavailable_in_market: false
+                  max_applicable_points_decimal: "0.0000"
                   messages: {}
                   metadata:
                     shipping:
@@ -11880,6 +12371,7 @@ paths:
                   payment_unavailable_reason:
                   phone:
                   points_applied: 0
+                  points_applied_decimal: "0.0000"
                   points_applied_amount_in_currency: "$0.00"
                   points_enabled: false
                   population_status: complete
@@ -11893,6 +12385,7 @@ paths:
                   remaining_cart_amount_after_points: 55.48
                   remaining_cart_amount_after_points_in_currency: "$55.48"
                   remaining_customer_points: 0
+                  remaining_customer_points_decimal: "0.0000"
                   remaining_customer_points_amount_in_currency: "$0.00"
                   requires_3ds: false
                   requires_payment_method: true
@@ -11918,6 +12411,7 @@ paths:
                   tax_total_for_display: "$--"
                   tax_total_in_currency: "$0.00"
                   total_creditable_points: 0
+                  total_creditable_points_decimal: "0.0000"
                   totals:
                     gross_subtotal: '54.99'
                     gross_subtotal_in_currency: "$54.99"
@@ -12513,7 +13007,18 @@ paths:
           type: integer
       responses:
         '409':
-          "$ref": "#/components/responses/PaymentInProgressError"
+          description: |
+            A redirect payment (PPRO, dLocal, Citcon) is open at the provider
+            (`meta.code` = `payment_in_progress`), or an Affirm, Bread or Apple Pay hold
+            was refused because the address or tax refresh moved the total the buyer
+            was shown (`meta.code` = `cart_total_changed`; `meta.cart` carries the new
+            total). Nothing was held; read the cart and retry.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartHoldTotalChangedErrorResponse"
         '410':
           "$ref": "#/components/responses/ProcessedCartResponse"
         '201':
@@ -12559,6 +13064,20 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: >-
+            Payment method validation or provider failure. Holding types
+            (apple_pay, bread, affirm) also refuse strict-tier lines
+            (`meta.code` = `strict_tier_line_refused`, `errors.cart_item`,
+            line and variant ids) or stale enrollment pricing
+            (`enrollment_pricing_stale`, `errors.cart`, no line ids)
+            before funds are held.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/StandardErrorResponse"
+                - "$ref": "#/components/schemas/WalletTierRefusalResponse"
       requestBody:
         required: false
         content:
@@ -14242,6 +14761,9 @@ paths:
                   email: holly.flax@gmail.com
                   order_number: '100482'
                   token: fo_3kTm8QvZr2WxNc7JpLd9Hb
+                  enrollment_member_type: null
+                  resulting_member_type: null
+                  pricing_snapshot: null
                   source: web
                   currency_code: USD
                   order_status: completed
@@ -15195,6 +15717,14 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+        '422':
+          description: The payment account is not a Braintree account, or is
+            missing the Braintree credentials (merchant ID, public key, private
+            key) the gateway requires
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
       security: []
   "/api/v202506/carts/{cart_token}/braintree/create_payment":
     post:
@@ -15288,6 +15818,26 @@ paths:
                   type: string
                   description: Set to `checkout_with_vault` when the front end
                     produced a checkout-with-vault nonce.
+                expected_total:
+                  type: string
+                  pattern: '^\d{1,12}(\.\d{1,5})?$'
+                  description: |
+                    The cart total the client showed the shopper, as a decimal string in
+                    the cart currency's major unit (`"141.74"`). Requires
+                    `expected_currency`.
+
+                    Required on an unpinned request (no `approved_amount`, no
+                    `paypal_flow`) while the company's quote-failure policy is enabled:
+                    omitting it, or sending it malformed, answers `422` with an
+                    `expected_total` or `expected_currency` error before the cart is repriced and before any
+                    provider call. When it no longer matches the cart, the response is
+                    `409` with `meta.code` = `cart_total_changed` and nothing is charged;
+                    retry with the total in `meta.cart`. Optional, and ignored, otherwise.
+                  example: "141.74"
+                expected_currency:
+                  type: string
+                  description: ISO 4217 code of the currency the shopper was shown. Requires
+                    `expected_total`.
             example:
               payment_account_id: 9d3f6b2a-4e71-4c8d-a0b5-e27c1f9a6d34
               payment_method_nonce: tokencc_bh_7xk2mq_9vrbt3_nwz8lp_yc4hd2_q6f
@@ -15327,13 +15877,14 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '409':
-          description: An authorization for this cart is already in progress, or a redirect payment is open at the provider (`meta.code` = `payment_in_progress`)
+          description: An authorization for this cart is already in progress, a redirect payment is open at the provider (`meta.code` = `payment_in_progress`), or the address or tax refresh moved the total the buyer was shown (`meta.code` = `cart_total_changed`, `meta.cart` carries the new total)
           content:
             application/json:
               schema:
                 anyOf:
                 - "$ref": "#/components/schemas/StandardErrorResponse"
                 - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/BraintreeCartTotalChangedError"
         '503':
           description: Braintree gateway or auth error, or payment service temporarily
             unavailable
@@ -15530,6 +16081,7 @@ paths:
                   enrollment_pack: null
                   enrollment_member_type: null
                   resulting_member_type: null
+                  pricing_snapshot: null
                   source: web
                   points_applied: 0
                   points_applied_amount: 0.0
@@ -15558,8 +16110,9 @@ paths:
         servers, not by storefront code, so no Bearer token is used; the cart is addressed by `cart_token`.
         The notification's `reference` must name the payment method attached to that cart, otherwise it returns
         404. Only `charge` transactions are processed; any other `transaction_type` returns 422. A `status`
-        of `succeeded` records a captured payment and completes checkout. When the payment account requires
-        signed notifications, a missing or invalid `sign` returns 401. A redelivered notification whose `id`
+        of `succeeded` records a captured payment and completes checkout. Every notification must carry a
+        `sign` that verifies against the cart's Citcon payment account; a missing or invalid one returns 401,
+        as does a cart that pays through no Citcon account. A redelivered notification whose `id`
         was already recorded is acknowledged without creating a second payment. Returns 200 only once the notification
         is processed, so Citcon retries anything else.
       tags:
@@ -15583,8 +16136,8 @@ paths:
                   request_id: 7f3c2a91-4d6e-4b8a-9c15-2e8d0f6b1a47
                   timestamp: '2026-09-14T15:32:08Z'
         '401':
-          description: The notification's signature was invalid, or was absent for
-            an account that requires one
+          description: The notification's signature was missing or invalid, or the
+            cart's payment account cannot verify one
           content:
             application/json:
               schema:
@@ -15602,12 +16155,15 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
               description: The notification as Citcon posts it. Fields not listed here are accepted and kept
                 with the payment record.
+              required:
+              - sign
               properties:
                 id:
                   type: string
@@ -15630,8 +16186,8 @@ paths:
                   description: ISO 4217 currency code.
                 sign:
                   type: string
-                  description: Citcon SHA-256 signature over the notification. Required when the payment account
-                    enforces signed notifications.
+                  description: Citcon SHA-256 signature over the notification. Required on every notification;
+                    Citcon signs both sandbox and live notifications.
             example:
               id: ch_7Hq2mWx9KtR4vLp3
               transaction_type: charge
@@ -15998,7 +16554,7 @@ paths:
         the amount PayPal now holds, whenever PayPal reported one. For a zero-amount "start free" subscription
         cart, send `setup_token_id` instead of `order_id`: the approved vault setup token is exchanged for a
         reusable PayPal payment method on the cart, nothing is charged, and the response carries `payment_method_id`.
-        Returns 422 when `order_id` is missing on a chargeable cart or the cart does not require payment, 404
+        Returns 422 when `order_id` is missing on a chargeable cart, is not an order this cart opened, or the cart does not require payment, 404
         when the cart or its PayPal payment account is not found, and 400 when PayPal declines the authorization.
         Used by Fluid checkout and the FairShare SDK; direct REST integrations should use checkout-v2026-04.'
       tags:
@@ -16083,9 +16639,39 @@ paths:
         required: true
         schema:
           type: boolean
+      - name: expected_total
+        in: query
+        required: false
+        description: |
+          The cart total the client showed the shopper, as a decimal string in
+          the cart currency's major unit (`"141.74"`). Requires `expected_currency`.
+          Required for a Fastlane (`payment_token_id`) or `apple_pay` order, which is
+          charged at create, while the company's quote-failure policy is enabled:
+          omitting it answers `422` before the cart is repriced. Optional, and
+          ignored, otherwise.
+        schema:
+          type: string
+          pattern: '^\d{1,12}(\.\d{1,5})?$'
+      - name: expected_currency
+        in: query
+        required: false
+        description: ISO 4217 code of the currency the shopper was shown. Requires
+          `expected_total`.
+        schema:
+          type: string
       responses:
         '409':
-          "$ref": "#/components/responses/PaymentInProgressError"
+          description: |
+            A redirect payment is open at the provider (`meta.code` =
+            `payment_in_progress`), or a Fastlane or Apple Pay order's refresh moved the
+            total the buyer was shown (`meta.code` = `cart_total_changed`, `meta.cart`
+            carries the new total). No order was created.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
+                - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
         '201':
           description: Created
           content:
@@ -16119,7 +16705,8 @@ paths:
       description: Called by Fluid checkout when the buyer changes their shipping address inside the PayPal
         window. Writes the address to the cart as the ship-to address (and uses it for billing), reprices shipping
         and tax, then patches the PayPal order so its amount matches the cart. No Bearer token; the cart is
-        addressed by `cart_token`. Returns 422 when `order_id` or `shipping_address` is missing, 404 when the
+        addressed by `cart_token`. Returns 422 when `order_id` or `shipping_address` is missing, `order_id` is not an order this cart opened, or the repricing
+        could not finish (the PayPal order is left unchanged), 404 when the
         cart or its PayPal payment account is not found, and 400 when PayPal rejects the update. Used by Fluid
         checkout and the FairShare SDK; direct REST integrations should use checkout-v2026-04.
       tags:
@@ -16200,7 +16787,8 @@ paths:
       description: Called by Fluid checkout when the buyer picks a different shipping option inside the PayPal
         window. Sets the cart's shipping method, recalculates totals, and patches the PayPal order with the
         new amount and shipping options. No Bearer token; the cart is addressed by `cart_token`. Returns 422
-        when `order_id` or `shipping_method_id` is missing, 404 when the cart or its PayPal payment account
+        when `order_id` or `shipping_method_id` is missing, `order_id` is not an order this cart opened, or the repricing could not finish (the PayPal order
+        is left unchanged), 404 when the cart or its PayPal payment account
         is not found, and 400 when PayPal rejects the update. Used by Fluid checkout and the FairShare SDK;
         direct REST integrations should use checkout-v2026-04.
       tags:
@@ -16265,8 +16853,8 @@ paths:
         `shipping_option`; its presence is what distinguishes the two callbacks. The chosen option is applied
         before repricing. The response body is the update itself: PayPal applies the returned `purchase_units`
         rather than Fluid patching the order, so this action does not use the `{ success, order_id, meta }`
-        envelope. Declines use PayPal''s 422 shape (`MISSING_SHIPPING_ADDRESS`, `MISSING_ORDER_ID`, `SHIPPING_UNAVAILABLE`
-        or `CART_TOTAL_UNAVAILABLE`), and a declined address is removed from the cart again. No Bearer token;
+        envelope. Declines use PayPal''s 422 shape (`MISSING_SHIPPING_ADDRESS`, `MISSING_ORDER_ID`, `SHIPPING_UNAVAILABLE`,
+        `CART_TOTAL_UNAVAILABLE` or `PRICING_STALE`), and a declined address is removed from the cart again. No Bearer token;
         the cart is addressed by `cart_token`.'
       tags:
       - carts

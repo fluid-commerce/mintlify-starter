@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Fluid Member API v2026-10 — Content
   description: |
-    The signed-in member's own media and playlists: list, read, write, and delete, including direct media uploads and media creation. The bearer credential determines the member and company; no path, query or body parameter can change either. Only rep-eligible memberships may use these endpoints; other memberships receive 403. Foreign, deleted, and malformed identifiers return 404. Playlist items are separate operations outside this contract. Upload bytes never pass through this API: `POST /media/uploads` signs a direct upload bound to one path in the member's own storage namespace, the client posts the file to the returned URL with the returned fields, and `POST /media` then verifies the stored object and creates the medium, consuming the upload once.
+    The signed-in member's own media and playlists: list, read, write, and delete, including direct media uploads and media creation. The bearer credential determines the member and company; no path, query or body parameter can change either. Only rep-eligible memberships may use the content endpoints; other memberships receive 403. The one exception is `POST /media/uploads`, which signs for any membership, so a customer can upload an avatar or profile photo; only a rep-eligible membership can turn the upload into a medium. The dedicated referral-shares operation is available to customer and rep memberships with a writable member credential; it creates a server-selected public shop link, not a content target. Foreign, deleted, and malformed identifiers return 404. Playlist items are separate operations outside this contract. Upload bytes never pass through this API: `POST /media/uploads` signs a direct upload bound to one path in the member's own storage namespace, the client posts the file to the returned URL with the returned fields, and `POST /media` then verifies the stored object and creates the medium, consuming the upload once.
 
     **Sandbox test companies.** A sandbox test company is linked to a live
     company. While the test company cannot be reached, because sandbox access
@@ -954,7 +954,185 @@ components:
         - url
         - fields
         - expires_at
+    PhotoPreparation:
+      type: object
+      description: Current authorized photo addresses and their canonical attributed playlist link. No files are downloaded or sent by the server.
+      additionalProperties: false
+      required: [share, photos]
+      properties:
+        share:
+          type: object
+          description: Created or reused playlist share.
+          additionalProperties: false
+          required: [id, url]
+          properties:
+            id: {type: string, format: uuid, description: Public share identifier.}
+            url: {type: string, format: uri, description: Attributed playlist address.}
+        photos:
+          type: array
+          description: Selected currently authorized images; authorization is rechecked atomically with share creation.
+          minItems: 1
+          maxItems: 12
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, url]
+            properties:
+              id: {type: string, format: uuid, description: Public medium identifier.}
+              url: {type: string, description: Current authorized image address.}
+    PhotoPreparationEnvelope:
+      type: object
+      description: One non-cacheable photo preparation.
+      required: [status, data, meta]
+      properties:
+        status: {type: integer, description: HTTP response status.}
+        data: {$ref: '#/components/schemas/PhotoPreparation'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
 paths:
+  /api/member/v2026-10/photo-share-preparations:
+    post:
+      operationId: member_photo_share_preparations_create
+      x-fluid-audience: member
+      tags: [shares]
+      summary: Prepare selected photos for sharing
+      description: >-
+        Resolve one currently shareable playlist and one to twelve unique authorized image references.
+        Create or reuse its canonical attributed link, atomically rechecking the selection before commit.
+        Nothing is sent or downloaded. Requires a writable member credential and content access;
+        no member-site cookie, site flag, or opaque widget context is used. Other identities and asset URLs
+        cannot be supplied. No query parameters are accepted. Clients must not persist private asset URLs
+        after membership changes and must handle download or device-sharing failures themselves.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [playlist_id, media_ids]
+              properties:
+                playlist_id:
+                  type: string
+                  format: uuid
+                  description: Public UUID of a currently shareable playlist.
+                media_ids:
+                  type: array
+                  description: Unique public UUIDs of current authorized images in that playlist.
+                  minItems: 1
+                  maxItems: 12
+                  uniqueItems: true
+                  items: {type: string, format: uuid}
+            example:
+              playlist_id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f60
+              media_ids: [0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61]
+      responses:
+        '200':
+          description: Existing canonical share and current selected photo addresses.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PhotoPreparationEnvelope'}
+              example:
+                status: 200
+                data:
+                  share:
+                    id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f62
+                    url: https://primex.fluid.app/s/6f9eab3c
+                  photos:
+                    - id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+                      url: https://cdn.fluid.app/primex/product-photo.png
+                meta:
+                  request_uuid: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f63
+                  timestamp: '2026-10-15T18:00:00Z'
+        '201':
+          description: New canonical share and current selected photo addresses.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PhotoPreparationEnvelope'}
+              example:
+                status: 201
+                data:
+                  share:
+                    id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f62
+                    url: https://primex.fluid.app/s/6f9eab3c
+                  photos:
+                    - id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+                      url: https://cdn.fluid.app/primex/product-photo.png
+                meta:
+                  request_uuid: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f63
+                  timestamp: '2026-10-15T18:00:00Z'
+        '400':
+          description: Malformed JSON or unexpected query parameters.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /api/member/v2026-10/referral-shares:
+    post:
+      operationId: member_referral_shares_create
+      tags:
+        - shares
+      summary: Create or reuse the member's referral shop link
+      description: Returns a tracked public shop URL attributed to the bearer membership. Customers and reps may use a writable member credential without a legacy compatibility membership, storefront site, cookie, or widget flag. No query or body fields are accepted; clients cannot choose a destination or attribution. Retries reuse the ordinary member-owned shop share. This does not send anything, apply discounts, or award rewards. This separate response is not a persisted Page representation and does not change the content shares history.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Empty body; all destinations and attribution are selected by the server.
+              additionalProperties: false
+              maxProperties: 0
+            example: {}
+      responses:
+        '200':
+          description: The newly created or existing attributed shop link.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: A credential-free referral link and standard metadata.
+                additionalProperties: false
+                required: [status, data, meta]
+                properties:
+                  status:
+                    type: integer
+                    description: HTTP response status.
+                    const: 200
+                  data:
+                    type: object
+                    description: The attributed link, without a content target identifier.
+                    additionalProperties: false
+                    required: [url]
+                    properties:
+                      url:
+                        type: string
+                        format: uri
+                        description: Tracked link redirecting to the member's company shop.
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+              example:
+                status: 200
+                data:
+                  url: https://primex.fluid.app/s/example-referral
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      x-fluid-audience: member
   /api/member/v2026-10/media:
     get:
       operationId: member_media_index
@@ -2244,6 +2422,8 @@ paths:
         Signs an upload of one image, video, PDF or presentation to a path in the member's own storage
         namespace and records its receipt. The signature expires after 15 minutes. Declared sizes over the
         type's limit (images 10 MB, videos 100 MB, documents 25 MB) are refused. Responses are never stored.
+        Any membership, customer or rep, may sign: the upload can become its avatar (`PATCH /me`) or profile
+        photo (`PATCH /profile`), while `POST /media` still requires a rep-eligible membership.
       requestBody:
         required: true
         content:
@@ -2308,7 +2488,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: >-
+            The credential is read-only, or it is for a sandbox test company that cannot be reached. Any
+            membership may sign an upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '422':
           $ref: '#/components/responses/Invalid'
         '503':

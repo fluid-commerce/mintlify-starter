@@ -46,6 +46,19 @@ components:
       scheme: bearer
       description: Bearer token authentication
   schemas:
+    DecimalPointsFigure:
+      type: string
+      pattern: '^-?\d+\.\d{4}$'
+      example: '120.2200'
+      description: |
+        A points figure as delivered to a `decimal` receiver, with four decimal
+        places. A `whole` receiver gets an Integer instead.
+    PointsFormat:
+      type: string
+      enum: [whole, decimal]
+      default: whole
+      example: whole
+      description: How Fluid writes points figures in payloads it delivers to this receiver. `whole` sends Integers as today. `decimal` sends every non-null points figure as a `DecimalPointsFigure` string, while a null figure stays null.
     ProductWebhookBundlePrice:
       type: object
       additionalProperties: false
@@ -77,9 +90,32 @@ components:
         subscription_price:
           type: [string, 'null']
           description: >-
-            Always null for bundles on the bundle row gate: bundle subscriptions
-            are refused at checkout, so no recurring offer is exported.
-          example: null
+            The default subscription plan's recurring price as a decimal string.
+            Null when the recurring bundles flag is off for the company, the
+            product has no default plan, or the plan has no recurring price for
+            this tier (a refused plan), the row's price is null, the country is unresolved,
+            or the bundle's minimum depends on a required dynamic selection. Equals the matching subscription_prices entry.
+          example: '36.0'
+        subscription_prices:
+          type: array
+          description: >-
+            Present only when the recurring bundles flag is on for the company.
+            One entry per active subscription plan of the product that has a
+            recurring price for this tier; a plan with no recurring price is
+            omitted. Empty when the row is unavailable.
+          items:
+            type: object
+            additionalProperties: false
+            required: [subscription_plan_id, price]
+            properties:
+              subscription_plan_id:
+                type: integer
+                description: Id of the product's subscription plan.
+                example: 12
+              price:
+                type: string
+                description: The plan's recurring bundle price at this tier as a decimal string.
+                example: '36.0'
         cv:
           type: [string, 'null']
           description: >-
@@ -128,11 +164,11 @@ components:
           example: '32.0'
         bundle_subscription_price:
           type: [string, 'null']
-          description: Retail recurring offer; null for bundles on the bundle row gate.
+          description: Retail recurring offer. For bundles on the bundle row gate, the default plan's price when the recurring bundles flag is on for the company, otherwise null.
           example: '36.0'
         bundle_wholesale_subscription_price:
           type: [string, 'null']
-          description: Wholesale recurring offer; null for bundles on the bundle row gate.
+          description: Wholesale recurring offer. For bundles on the bundle row gate, the default plan's price when the recurring bundles flag is on for the company, otherwise null.
           example: '28.8'
         bundle_cv:
           type: [string, 'null']
@@ -150,6 +186,56 @@ components:
           type: [string, 'null']
           description: Wholesale bundle qualifying volume as an exact decimal string.
           example: '6.0'
+    SubscriptionCancelledWebhookPayload:
+      type: object
+      description: >-
+        The subscription object inside subscription_cancelled webhook
+        deliveries. Existing subscription fields remain present. The
+        cancellation reason fields are additive. Fluid builds the payload after
+        the cancellation and its reason are saved, so both fields carry the
+        reason recorded with this cancellation.
+      required:
+      - cancellation_reason_code
+      - cancellation_reason_text
+      properties:
+        cancellation_reason_code:
+          type: [string, 'null']
+          description: >-
+            Why the subscription was cancelled. Customer codes are
+            `too_expensive`, `too_much_product`, `too_frequent`,
+            `not_seeing_results`, `did_not_like_product`, `switching_brand`,
+            `shipping_or_delivery_issue`, `taking_a_break`,
+            `moving_or_life_change` and `other`. The platform or a merchant
+            user sets the system codes `merchant_initiated`, `support_request`,
+            `max_cycles_reached`, `dunning_exhausted`, `customer_deleted`,
+            `fraud` and `unknown`. `unknown` marks a cancellation that arrived
+            without a reason. Null only when the cancellation predates reason
+            capture.
+          enum:
+          - too_expensive
+          - too_much_product
+          - too_frequent
+          - not_seeing_results
+          - did_not_like_product
+          - switching_brand
+          - shipping_or_delivery_issue
+          - taking_a_break
+          - moving_or_life_change
+          - other
+          - merchant_initiated
+          - support_request
+          - max_cycles_reached
+          - dunning_exhausted
+          - customer_deleted
+          - fraud
+          - unknown
+          - null
+          example: too_expensive
+        cancellation_reason_text:
+          type: [string, 'null']
+          maxLength: 500
+          description: Free text recorded with reason code `other`, or null.
+          example: null
     Meta:
       type: object
       properties:
@@ -194,6 +280,22 @@ components:
           "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/Meta"
+    ForbiddenResponse:
+      description: A refused credential. A member below the required tier gets `message`;
+        a public token (pub-) gets `error`.
+      type: object
+      properties:
+        message:
+          type: string
+          description: Why the request was refused.
+        error:
+          type: string
+          description: Why the request was refused.
+      anyOf:
+      - required:
+        - message
+      - required:
+        - error
     UnauthorizedResponse:
       type: object
       properties:
@@ -261,6 +363,8 @@ components:
           - put
           - get
           description: HTTP method Fluid uses to deliver the payload to `url`.
+        points_format:
+          $ref: '#/components/schemas/PointsFormat'
         auth_token:
           type:
           - string
@@ -269,6 +373,18 @@ components:
             Shared secret Fluid signs each delivery with; `null` when none is set.
             Rotate it by sending a new value to the update endpoint. Omitted on a
             sandbox test store when the caller is a droplet or OAuth token.
+        signing_secret:
+          type:
+          - string
+          - 'null'
+          description: |
+            Secret Fluid signs each delivery with. It is never sent on a delivery. Fluid
+            sends `X-Fluid-Timestamp` and `X-Fluid-Signature-V2`, the hex HMAC-SHA256 of
+            `"{timestamp}.{raw body}"` keyed by this secret. Generated by Fluid.
+            `null` for a subscription that predates it until Fluid has issued one. Returned by
+            create, show and update only, never by the list endpoint, and a droplet receives it
+            only for webhooks of its own installation. Omitted on a sandbox test store when the
+            caller is a droplet or OAuth token.
         created_at:
           type: string
           format: date-time
@@ -307,11 +423,15 @@ components:
           - string
           - 'null'
           description: |
-            Token used to verify that a call to `url` originated from Fluid, or `null`
-            when none is set.
+            Token used to verify that a call to `url` originated from Fluid. Only the
+            registration's owner reads it: a droplet its own registrations, and the
+            company's admins and service tokens the ones the company owns. `null` for
+            any other caller, and when none is set.
         active:
           type: boolean
           description: Whether the registration is enabled.
+        points_format:
+          $ref: '#/components/schemas/PointsFormat'
         country_codes:
           type: array
           description: |
@@ -1050,13 +1170,332 @@ components:
           - member
         - required:
           - cart
+    SubscriptionUpcomingRenewalAmounts:
+      type:
+      - object
+      - 'null'
+      additionalProperties: false
+      description: >-
+        The amounts the renewal reminder email shows for this order, as decimal
+        strings at the currency's precision. An estimate: billing prices the
+        order again when it runs. Null when no estimate is available.
+      required: [subtotal, discount, tax, shipping, total, currency]
+      properties:
+        subtotal:
+          type: string
+          description: Sum of the item prices before discounts.
+          example: '99.98'
+        discount:
+          type: string
+          description: Subscription discounts that apply at renewal.
+          example: '10.0'
+        tax:
+          type: string
+          description: Estimated tax.
+          example: '7.2'
+        shipping:
+          type: string
+          description: Estimated shipping.
+          example: '5.0'
+        total:
+          type: string
+          description: Estimated order total.
+          example: '102.18'
+        currency:
+          type: string
+          description: ISO 4217 currency of every amount.
+          example: USD
+    SubscriptionUpcomingRenewalItem:
+      type: object
+      additionalProperties: false
+      description: One subscription line of the upcoming renewal order.
+      required: [subscription_token, name, variant, quantity, image_url]
+      properties:
+        subscription_token:
+          type: string
+          description: Token of the subscription this line renews.
+          example: sb_8KfQ2mVx
+        name:
+          type:
+          - string
+          - 'null'
+          description: Product name the customer sees. Null when neither the product nor the variant has a name.
+          example: Monthly Essentials
+        variant:
+          type: object
+          additionalProperties: false
+          description: The variant the subscription renews.
+          required: [id, sku, title]
+          properties:
+            id:
+              type: integer
+              description: Variant id.
+              example: 48213
+            sku:
+              type:
+              - string
+              - 'null'
+              description: Variant SKU.
+              example: PMX-SUB-V-001
+            title:
+              type:
+              - string
+              - 'null'
+              description: Variant title, such as an option label.
+              example: 30 count
+        quantity:
+          type: integer
+          description: Units this line renews.
+          example: 2
+        image_url:
+          type:
+          - string
+          - 'null'
+          description: The variant's primary image, else the product thumbnail. Null when neither exists.
+          example: https://cdn.fluid.app/products/essentials.png
+    SubscriptionUpcomingRenewalClaimUnit:
+      type: object
+      additionalProperties: false
+      description: >-
+        The order billing will raise on the local bill date. It holds every
+        subscription that bills in that order: one when the company does not
+        bundle subscriptions, and each bundled sibling when it does.
+      required: [id, local_bill_date, subscription_tokens, items, amounts, manage_url]
+      properties:
+        id:
+          type: string
+          description: >-
+            Stable id of this announcement, the same for the same subscriptions
+            on the same local bill date. Fluid sends each id once; deduplicate
+            delivery retries on it.
+          example: 3f9a1c7e5b2d8046a1e9c3b7d5f20e84a6c1b9d3e7f5028a4c6e1b3d9f7a5c20
+        local_bill_date:
+          type: string
+          format: date
+          description: Date the order bills, in the subscriptions' timezone.
+          example: '2026-10-13'
+        subscription_tokens:
+          type: array
+          description: Tokens of every subscription in the order.
+          items:
+            type: string
+          example:
+          - sb_8KfQ2mVx
+          - sb_3RtLw9Pz
+        items:
+          type: array
+          description: One line per subscription in the order.
+          items:
+            "$ref": "#/components/schemas/SubscriptionUpcomingRenewalItem"
+        amounts:
+          "$ref": "#/components/schemas/SubscriptionUpcomingRenewalAmounts"
+        manage_url:
+          type: string
+          format: uri
+          description: >-
+            Link for the customer to view the order and skip, pause, resume or
+            cancel its subscriptions, on Fluid's checkout domain. The token in
+            its fragment is scoped to these subscriptions and those actions,
+            reaches no other customer data, and expires at the end of the day
+            after local_bill_date. Send it only to the customer, and do not
+            shorten it with a public shortener.
+          example: https://checkout.fluid.app/manage/link#token=sml_eyJfcmFpbHMiOnsiZGF0YSI6e30sInB1ciI6InN1YnNjcmlwdGlvbl9tYW5hZ2VfbGluayJ9fQ--4f1c2a9e7b3d5f6081a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5
+    SubscriptionUpcomingRenewalCustomer:
+      type:
+      - object
+      - 'null'
+      additionalProperties: false
+      description: >-
+        The customer the renewal reminder goes to, with only the contact
+        details a reminder needs. Null when the subscription has no customer.
+      required: [id, email, phone, first_name, last_name]
+      properties:
+        id:
+          type: [integer, 'null']
+          description: Customer id; null for a member with no customer record.
+          example: 551203
+        email:
+          type: [string, 'null']
+          example: jane@example.com
+        phone:
+          type: [string, 'null']
+          example: "+15555550123"
+        first_name:
+          type: [string, 'null']
+          example: Jane
+        last_name:
+          type: [string, 'null']
+          example: Doe
+    CompanyHealthChangedWebhookPayload:
+      type: object
+      additionalProperties: true
+      description: >-
+        Payload of the company_health_changed webhook. It names no area and no
+        state: a webhook subscription records no creator whose permissions
+        delivery could re-check, so the receiver reads GET
+        /api/company/v2026-10/health with its own token and compares each
+        area's state with its previous_state. Alongside company_health the
+        body carries the metadata every delivery carries (event_name,
+        schema_version, schema_hash, company_id, resource_name, resource,
+        event, actor).
+      required: [company_health, event_name]
+      properties:
+        event_name:
+          type: string
+          description: Always company_health_changed.
+          example: company_health_changed
+        company_health:
+          type: object
+          additionalProperties: false
+          required: [company_id, uuid, observed_at, next_step]
+          properties:
+            company_id:
+              type: integer
+              description: The company whose health changed.
+              example: 1405
+            uuid:
+              type: string
+              format: uuid
+              description: The stored check whose state differs from its area's previous check.
+              example: 0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57
+            observed_at:
+              type: string
+              format: date-time
+              description: When the check ran.
+              example: '2026-10-25T20:08:55Z'
+            next_step:
+              type: object
+              additionalProperties: false
+              required: [method, path]
+              description: The read that says what changed.
+              properties:
+                method:
+                  type: string
+                  example: GET
+                path:
+                  type: string
+                  example: /api/company/v2026-10/health
+    MistAppErrorSpikeWebhookPayload:
+      type: object
+      additionalProperties: true
+      description: >-
+        Payload of the mist_app_error_spike webhook. It carries Vercel's
+        severity and error count for one Mist app but no route or alert
+        title; the receiver reads the app's logs with its own token.
+        Alongside mist_app_error_spike the body carries the metadata every
+        delivery carries (event_name, schema_version, schema_hash,
+        company_id, resource_name, resource, event, actor).
+      required: [mist_app_error_spike, event_name]
+      properties:
+        event_name:
+          type: string
+          description: Always mist_app_error_spike.
+          example: mist_app_error_spike
+        mist_app_error_spike:
+          type: object
+          additionalProperties: false
+          required: [company_id, mist_app, severity, errors, started_at, next_step]
+          properties:
+            company_id:
+              type: integer
+              description: The company that owns the Mist app.
+              example: 1405
+            mist_app:
+              type: object
+              additionalProperties: false
+              required: [uuid]
+              properties:
+                uuid:
+                  type: string
+                  format: uuid
+                  description: The Mist app, as GET /api/v202604/mists returns it.
+                  example: 0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57
+            severity:
+              type: string
+              description: >-
+                Vercel's severity for the alert: low, medium, high or critical.
+                Vercel calculates it, and only a completed Vercel Agent
+                investigation sets critical.
+              example: high
+            errors:
+              type: integer
+              description: Error responses Vercel counted over the anomaly period.
+              example: 120
+            started_at:
+              type: [string, 'null']
+              format: date-time
+              description: When Vercel says the anomaly started.
+              example: '2026-10-26T14:05:00Z'
+            next_step:
+              type: object
+              additionalProperties: false
+              required: [method, path]
+              description: The read that shows the failing requests.
+              properties:
+                method:
+                  type: string
+                  example: GET
+                path:
+                  type: string
+                  example: /api/v202604/mists/0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57/logs
+    SubscriptionUpcomingRenewalWebhookPayload:
+      type: object
+      additionalProperties: true
+      description: >-
+        Payload of the subscription_upcoming_renewal webhook, a Subscription
+        Pro feature. Sent once per renewal order, the merchant's reminder lead
+        days before its local bill date. The subscription object is the order's
+        primary subscription with claim_unit added. It lists its own fields,
+        narrower than the other subscription webhooks: the payload carries no
+        cart token, session token or sign-in link. Its only credential is
+        claim_unit.manage_url, a scoped manage link.
+      required: [subscription, event_name]
+      properties:
+        event_name:
+          type: string
+          description: Always subscription_upcoming_renewal.
+          example: subscription_upcoming_renewal
+        subscription:
+          type: object
+          additionalProperties: false
+          description: >-
+            The primary subscription of the order: the one whose payment
+            method, address and rep the renewal order takes.
+          required: [id, subscription_token, status, next_bill_date, timezone, customer, claim_unit]
+          properties:
+            id:
+              type: integer
+              description: Subscription id.
+              example: 90412
+            subscription_token:
+              type: string
+              description: Subscription token.
+              example: sb_8KfQ2mVx
+            status:
+              type: string
+              description: Subscription status.
+              example: active
+            next_bill_date:
+              type: [string, 'null']
+              format: date-time
+              description: The instant the primary subscription bills next.
+              example: '2026-10-13T09:00:00Z'
+            timezone:
+              type: string
+              description: The subscription's timezone, which sets local_bill_date.
+              example: America/New_York
+            customer:
+              "$ref": "#/components/schemas/SubscriptionUpcomingRenewalCustomer"
+            claim_unit:
+              "$ref": "#/components/schemas/SubscriptionUpcomingRenewalClaimUnit"
 paths:
   "/api/callback/definitions":
     get:
       summary: List callback definitions
       description: |
-        Lists the callback definitions available to the company — the catalog of
-        synchronous callbacks (e.g. tax, shipping) that a registration can target.
+        The complete catalog of callbacks: every synchronous callback (e.g. tax,
+        shipping) a registration can target, with its request and response schema.
+        Call it before creating a registration to discover valid `definition_name`s.
         Read-only. Requires a company Bearer token; returns `401` when the token is
         missing or invalid.
       tags:
@@ -1278,6 +1717,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The credential is below the company admin tier, or is a public
+            token (pub-), which may not use callback registrations.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ForbiddenResponse"
     post:
       summary: Create a callback registration
       description: |
@@ -1299,6 +1745,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The credential is below the company admin tier, or is a public
+            token (pub-), which may not use callback registrations.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ForbiddenResponse"
         '409':
           description: A registration for this definition already exists for the owner
           content:
@@ -1363,6 +1816,8 @@ paths:
                       description: ISO country codes the callback applies to.
                       items:
                         type: string
+                    points_format:
+                      $ref: '#/components/schemas/PointsFormat'
             example:
               callback_registration:
                 definition_name: update_cart_tax
@@ -1370,6 +1825,7 @@ paths:
                 active: true
                 country_codes:
                 - US
+                points_format: whole
   "/api/callback/registrations/{uuid}":
     get:
       summary: Show a callback registration
@@ -1398,6 +1854,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: The credential is below the company admin tier, or is a public
+            token (pub-), which may not use callback registrations.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ForbiddenResponse"
         '404':
           description: Not found
           content:
@@ -1470,11 +1933,14 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '403':
-          description: Managed by the droplet that registered it
+          description: Managed by the droplet that registered it, or the credential
+            is below the company admin tier or is a public token (pub-).
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/ForbiddenResponse"
         '404':
           description: Not found
           content:
@@ -1531,12 +1997,15 @@ paths:
                       description: ISO country codes the callback applies to.
                       items:
                         type: string
+                    points_format:
+                      $ref: '#/components/schemas/PointsFormat'
             example:
               callback_registration:
                 url: https://tax.dundermifflin.com/fluid/callbacks/cart-tax-v2
                 country_codes:
                 - US
                 - CA
+                points_format: decimal
     delete:
       summary: Delete a callback registration
       description: |
@@ -1571,11 +2040,14 @@ paths:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '403':
-          description: Managed by the droplet that registered it
+          description: Managed by the droplet that registered it, or the credential
+            is below the company admin tier or is a public token (pub-).
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/ErrorResponse"
+                oneOf:
+                - "$ref": "#/components/schemas/ErrorResponse"
+                - "$ref": "#/components/schemas/ForbiddenResponse"
         '404':
           description: Not found
           content:
@@ -2316,8 +2788,10 @@ paths:
         in: query
         required: false
         description: ISO country codes to scope the notification to, read from
-          `params[:event][:available_countries]`. Omit to notify all countries;
-          any unrecognized ISO returns 422.
+          `params[:event][:available_countries]`. Omit to notify every active rep
+          and admin in the company. An explicit empty selection, an unknown ISO,
+          or any country outside a restricted event returns 422. Otherwise,
+          exactly the selected countries are notified.
         schema:
           type: array
           items:
@@ -2336,7 +2810,8 @@ paths:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
-          description: One or more country ISO codes were not recognized
+          description: The country selection was explicitly empty, contained an
+            unrecognized ISO, or included any country outside a restricted event
           content:
             application/json:
               schema:
@@ -2455,7 +2930,8 @@ paths:
         Fluid signs deliveries with) are optional. Returns `201` with the subscription
         under a `webhook` key — including its integer `id` and the `event_identifier`
         for the event's payload schema — and `422` when the body fails validation.
-        Requires a company Bearer token (`401` otherwise). In production `url` must be a
+        Requires a company Bearer token (`401` otherwise); a droplet token needs the scope
+        that guards the resource (`403` otherwise). In production `url` must be a
         publicly reachable HTTPS endpoint.
       tags:
       - webhooks
@@ -2469,6 +2945,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: A droplet token whose installation lacks the scope the topic
+            needs. Returned only when scope enforcement is on for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ForbiddenResponse"
         '422':
           description: Unprocessable entity
           content:
@@ -2533,6 +3016,8 @@ paths:
                       type: string
                     auth_token:
                       type: string
+                    points_format:
+                      $ref: '#/components/schemas/PointsFormat'
             examples:
               order_created:
                 summary: Subscribe to order.created and sign deliveries with a secret
@@ -2544,6 +3029,7 @@ paths:
                     active: true
                     http_method: post
                     auth_token: k7Jf2Qm9RtV8xZ1aB4cD6eG0hL3nP5s
+                    points_format: whole
               minimal:
                 summary: Minimal subscription — only the required fields
                 value:
@@ -2622,8 +3108,10 @@ paths:
     get:
       summary: List webhook resources
       description: |
-        Lists the resources you can subscribe to and the events available on each — call
-        it before creating a subscription to discover valid `resource`/`event` pairs.
+        The complete catalog of webhooks: every resource you can subscribe to and the
+        events available on each, read live from the registry Fluid validates
+        subscriptions against, so it is always current. Call it before creating a
+        subscription to discover valid `resource`/`event` pairs.
         Read-only. The response also carries `deprecated_resources`: topics slated for
         removal (migrate to the `member_*` topics). Requires a company Bearer token
         (`401` otherwise).
@@ -2649,6 +3137,8 @@ paths:
                   - update_cart_email
                   - add_items
                   - remove_items
+                  company_health:
+                  - changed
                   contact:
                   - created
                   - updated
@@ -2680,18 +3170,19 @@ paths:
                   - updated
                   - activated
                   - submitted
-                  genealogy_placements:
-                  - moved
-                  - removed
+                  genealogy_move_jobs:
+                  - applied
+                  - failed
                   genealogy_move_requests:
                   - added
                   - approved
                   - rejected
                   - withdrawn
                   - expired
-                  genealogy_move_jobs:
-                  - applied
-                  - failed
+                  genealogy_placements:
+                  - added
+                  - moved
+                  - removed
                   member:
                   - created
                   - updated
@@ -2713,6 +3204,8 @@ paths:
                   - created
                   - updated
                   - deleted
+                  mist_app:
+                  - error_spike
                   mfa:
                   - missing_email
                   - verified
@@ -2759,6 +3252,7 @@ paths:
                   - resumed_after_payment_fix
                   - reactivated
                   - skipped
+                  - upcoming_renewal
                   subscription_discount:
                   - attached
                   - removed
@@ -2858,7 +3352,8 @@ paths:
         deleting and recreating. Rotate the signing secret by sending a new `auth_token`.
         Returns `200` with the updated subscription, `404` when the id is unknown, and
         `422` when the body fails validation. Requires a company Bearer token (`401`
-        otherwise).
+        otherwise); a droplet token re-activating a webhook needs the scope that
+        guards its resource (`403` otherwise).
       tags:
       - webhooks
       operationId: webhooks_v0_update_webhook
@@ -2880,6 +3375,13 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: A droplet token whose installation lacks the scope the topic
+            needs. Returned only when scope enforcement is on for the company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ForbiddenResponse"
         '404':
           description: Not found
           content:
@@ -2943,6 +3445,8 @@ paths:
                       - post
                       - put
                       - get
+                    points_format:
+                      $ref: '#/components/schemas/PointsFormat'
             examples:
               deactivate:
                 summary: Disable a subscription without deleting it
@@ -2960,6 +3464,7 @@ paths:
                   webhook:
                     url: https://hooks.dundermifflin.com/fluid/orders-v2
                     http_method: post
+                    points_format: decimal
     delete:
       summary: Delete a webhook
       description: |
@@ -3156,8 +3661,9 @@ paths:
         Fluid POSTs to your endpoint (the event `id`, `identifier`, `name`, `timestamp`,
         and the enriched `payload`) — use it to confirm what Fluid last sent. Read-only.
         Pass a resource the company has actually registered; an unknown or unregistered
-        `resource_name` returns `404` with a `{message, status}` body. Requires a company
-        Bearer token (`401` otherwise).
+        `resource_name` returns `404` with a `{message, status}` body, and so does a
+        registered resource the company has no delivered event for yet. Requires a
+        company Bearer token (`401` otherwise).
       tags:
       - webhooks
       security:
@@ -3181,8 +3687,8 @@ paths:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
         '404':
           description: >-
-            The resource name is not registered — a JSON body of
-            `{message, status}`.
+            The resource name is not registered, or the company has no
+            delivered event for it yet — a JSON body of `{message, status}`.
           content:
             application/json:
               schema:
@@ -3215,3 +3721,158 @@ paths:
                   resource_name: Company::Member
                   resource: member_sponsorships
                   event: reassigned
+webhooks:
+  company_health_changed:
+    post:
+      operationId: company_health_changed
+      summary: Deliver company health changed
+      description: >-
+        Sent to the URL configured in a company or droplet webhook
+        subscription with resource company_health and event changed. Fluid checks each area of a
+        company's health (droplets, connect, payments, checkout, tax, shipping,
+        fulfillment, subscriptions, mist_apps, themes, auth, fairshare) every
+        hour, and sends this once for each area whose state differs from that
+        area's previous check, so an unchanged hour sends nothing. A droplet
+        installation subscribes with the settings scope and reads GET /health
+        with its own token, which shows it the areas its scopes cover. This is
+        an outgoing notification, not an API route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/CompanyHealthChangedWebhookPayload"
+            examples:
+              changed:
+                summary: An area changed state
+                value:
+                  event_name: company_health_changed
+                  company_id: 1405
+                  resource: company_health
+                  event: changed
+                  company_health:
+                    company_id: 1405
+                    uuid: 0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57
+                    observed_at: '2026-10-25T20:08:55Z'
+                    next_step:
+                      method: GET
+                      path: /api/company/v2026-10/health
+      responses:
+        '200':
+          description: The subscriber accepts the notification.
+  mist_app_error_spike:
+    post:
+      operationId: mist_app_error_spike
+      summary: Deliver Mist app error spike
+      description: >-
+        Sent to the URL configured in a company webhook subscription with
+        resource mist_app and event error_spike. Fluid sends it as soon as
+        Vercel's error anomaly alert for a Mist app arrives: Vercel compares
+        each route's five-minute error count (5xx by default) with its
+        trailing 24-hour baseline. A usage anomaly sends nothing. Only a
+        company subscription receives it: Mist endpoints refuse droplet
+        installation tokens, so a droplet cannot subscribe. This is an
+        outgoing notification, not an API route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/MistAppErrorSpikeWebhookPayload"
+            examples:
+              error_spike:
+                summary: Vercel alerted on a Mist app's errors
+                value:
+                  event_name: mist_app_error_spike
+                  company_id: 1405
+                  resource: mist_app
+                  event: error_spike
+                  mist_app_error_spike:
+                    company_id: 1405
+                    mist_app:
+                      uuid: 0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57
+                    severity: high
+                    errors: 120
+                    started_at: '2026-10-26T14:05:00Z'
+                    next_step:
+                      method: GET
+                      path: /api/v202604/mists/0199b7a2-4c1e-7d3f-9a0b-2e6c8d4f1a57/logs
+      responses:
+        '200':
+          description: The subscriber accepts the notification.
+  subscription_upcoming_renewal:
+    post:
+      operationId: subscription_upcoming_renewal
+      summary: Deliver subscription upcoming renewal
+      description: >-
+        Sent to the URL configured in a company webhook subscription with
+        resource subscription and event upcoming_renewal. Fluid sends it once
+        per renewal order, the merchant's reminder lead days before the order's
+        local bill date, so a merchant's own SMS or email tool can remind the
+        customer. Only companies with Subscription Pro and the renewal webhook
+        turned on receive it. Delivery retries may repeat it: deduplicate on
+        subscription.claim_unit.id. This is an outgoing notification, not an
+        API route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SubscriptionUpcomingRenewalWebhookPayload"
+            examples:
+              bundled:
+                summary: Two bundled subscriptions that bill as one order
+                value:
+                  event_name: subscription_upcoming_renewal
+                  schema_version: 1.0.0
+                  schema_hash: 9c4e2a7f1b8d3065e2f9a4c7b1d8e3f05a6c2b9d4e7f1a3c8b5d2e9f6a0c4b71
+                  company_id: 1405
+                  resource_name: Commerce::Subscription
+                  resource: subscription
+                  event: upcoming_renewal
+                  subscription:
+                    id: 90412
+                    subscription_token: sb_8KfQ2mVx
+                    status: active
+                    next_bill_date: '2026-10-13T09:00:00Z'
+                    timezone: America/New_York
+                    customer:
+                      id: 551203
+                      email: jane@example.com
+                      phone: "+15555550123"
+                      first_name: Jane
+                      last_name: Doe
+                    claim_unit:
+                      id: 3f9a1c7e5b2d8046a1e9c3b7d5f20e84a6c1b9d3e7f5028a4c6e1b3d9f7a5c20
+                      local_bill_date: '2026-10-13'
+                      subscription_tokens:
+                      - sb_8KfQ2mVx
+                      - sb_3RtLw9Pz
+                      items:
+                      - subscription_token: sb_8KfQ2mVx
+                        name: Monthly Essentials
+                        variant:
+                          id: 48213
+                          sku: PMX-SUB-V-001
+                          title: 30 count
+                        quantity: 1
+                        image_url: https://cdn.fluid.app/products/essentials.png
+                      - subscription_token: sb_3RtLw9Pz
+                        name: Daily Greens
+                        variant:
+                          id: 48219
+                          sku: PMX-SUB-V-002
+                          title:
+                        quantity: 1
+                        image_url:
+                      amounts:
+                        subtotal: '99.98'
+                        discount: '10.0'
+                        tax: '7.2'
+                        shipping: '5.0'
+                        total: '102.18'
+                        currency: USD
+                      manage_url: https://checkout.fluid.app/manage/link#token=sml_eyJfcmFpbHMiOnsiZGF0YSI6e30sInB1ciI6InN1YnNjcmlwdGlvbl9tYW5hZ2VfbGluayJ9fQ--4f1c2a9e7b3d5f6081a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5
+      responses:
+        '200':
+          description: The subscriber accepts the notification.
