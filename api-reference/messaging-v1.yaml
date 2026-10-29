@@ -213,6 +213,21 @@ components:
       required:
       - success
       additionalProperties: false
+    MessagingBulkArchiveResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the bulk archive request was handled.
+        skipped_conversation_ids:
+          type: array
+          description: Conversation IDs whose seats could not be archived, such as broadcasting channels including the announcement channel. Those seats stay unchanged.
+          items:
+            type: integer
+      required:
+      - success
+      - skipped_conversation_ids
+      additionalProperties: false
     MessagingBot:
       description: A messaging bot.
       type: object
@@ -9483,17 +9498,20 @@ paths:
       - bearer_auth: []
       description: 'Archive several of your conversations at once. Archiving is per recipient: the conversations
         move to your archived list and are unpinned, but stay open for everyone else. Conversation IDs you do
-        not belong to are skipped. Callable by a signed-in company admin or rep whose role includes the messaging
-        update permission.'
+        not belong to are skipped. Seats that cannot be archived, such as seats in broadcasting channels, stay
+        unchanged and their conversation IDs are listed in the response. Callable by a signed-in company admin
+        or rep whose role includes the messaging update permission.'
       responses:
         '200':
-          description: The conversations were archived.
+          description: The request was handled. Seats that could be archived were archived; skipped_conversation_ids lists the rest.
           content:
             application/json:
               schema:
-                "$ref": '#/components/schemas/MessagingSuccessResponse'
+                "$ref": '#/components/schemas/MessagingBulkArchiveResponse'
               example:
                 success: true
+                skipped_conversation_ids:
+                - 90412
         '401':
           description: unauthorized
           content:
@@ -9525,9 +9543,10 @@ paths:
       operationId: messaging_v1_bulk_delete_conversations
       security:
       - bearer_auth: []
-      description: 'Delete several of your conversations at once. Deletion is per recipient: the conversations
-        are removed from your list and unpinned, but other participants keep them. Callable by a signed-in company
-        admin or rep whose role includes the messaging update permission.'
+      description: 'Delete several of your conversations at once. Deletion is all-or-nothing and per recipient:
+        the conversations are removed from your list and unpinned, but other participants keep them. If any
+        conversation cannot be deleted, none are deleted. Callable by a signed-in company admin or rep whose role
+        includes the messaging update permission.'
       responses:
         '200':
           description: The conversations were deleted from your list.
@@ -9537,12 +9556,49 @@ paths:
                 "$ref": '#/components/schemas/MessagingSuccessResponse'
               example:
                 success: true
+        '400':
+          description: No conversation IDs were provided, or the caller has no messaging recipient.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - "$ref": '#/components/schemas/StandardErrorResponse'
+                - type: object
+                  properties:
+                    error:
+                      type: string
+                  required:
+                  - error
+              example:
+                error: Failed to delete conversations
         '401':
           description: unauthorized
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '422':
+          description: One or more of your seats failed validation, so no conversations or messages were deleted. Conversation IDs you do not belong to are ignored and never cause this response.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - "$ref": '#/components/schemas/StandardErrorResponse'
+                - type: object
+                  properties:
+                    error:
+                      type: string
+                    conversation_ids:
+                      type: array
+                      items:
+                        type: integer
+                  required:
+                  - error
+                  - conversation_ids
+              example:
+                error: Some conversations could not be deleted
+                conversation_ids:
+                - 90412
       requestBody:
         content:
           application/json:
@@ -9929,8 +9985,9 @@ paths:
       - bearer_auth: []
       description: Refresh the members of your downline conversation to match your current downline, creating
         the conversation if needed. Callable by a signed-in rep whose role includes the messaging update permission
-        and whose membership has an active subscription (403 otherwise). Returns 422 if the conversation cannot
-        be saved.
+        and whose membership has an active subscription (403 otherwise). Returns 422 if the caller cannot be added
+        to a downline automatically, for example because the caller's messaging recipient is discarded, or if the
+        conversation cannot be saved.
       responses:
         '200':
           description: The synchronized downline conversation.
@@ -10027,6 +10084,14 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '422':
+          description: The caller cannot be added to a downline automatically, or the conversation cannot be saved.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
+              example:
+                error: You are not eligible for a downline conversation
   "/api/v1/messaging/conversations/{conversation_id}/archive":
     put:
       summary: Archive a conversation
