@@ -18,6 +18,9 @@ info:
 servers:
   - url: https://api.fluid.app
 tags:
+  - name: orders
+    description: Read an order's detail and journey, and preview the points a refund of a selection returns before it is sent.
+    x-fluid-section: Commerce
   - name: payments-reports
     description: 'Report on a company''s payments over a period: transaction volume and amount, gateway latency, and approval and error rates, overall or per payment account.'
     x-fluid-section: Payments
@@ -38506,6 +38509,25 @@ paths:
                         description: For a full-refund-only order, available while the bank payment can still be refunded, unsettled until the debit settles, and open once a refund of it is pending, sent or paid. Null otherwise. Admin only.
                       points_refunded:
                         type: boolean
+                      points_refund_offer:
+                        type:
+                          - object
+                          - 'null'
+                        description: The redeemed points that no refund of this order has returned yet, and the basis that decides whether a tax or shipping refund returns points. The refund screen asks POST /api/v202506/orders/{id}/refund-points-preview for the points a selection returns. Null when none are left to return. Present only to a company admin, and only while the company's refunds return points in proportion to the money refunded.
+                        required:
+                          - points_unreturned
+                          - basis
+                        properties:
+                          points_unreturned:
+                            type: integer
+                            minimum: 1
+                            description: Redeemed points that no refund has returned yet.
+                          basis:
+                            type: string
+                            enum:
+                              - subtotal
+                              - order_total
+                            description: subtotal when the base is the goods subtotal, so a tax or shipping refund returns no points; order_total when the base is the whole order.
                       cancel_context:
                         type:
                           - string
@@ -38540,6 +38562,12 @@ paths:
                         type: array
                         items:
                           type: object
+                          additionalProperties: true
+                          properties:
+                            points_reclaim_shortfall:
+                              type: integer
+                              minimum: 0
+                              description: Earned points the refund could not take back because the customer's points balance reached zero. Present only to a company admin, and only when the refund reclaimed earned points while the company's refunds returned points in proportion to the money refunded.
                       country:
                         type:
                           - object
@@ -38628,6 +38656,121 @@ paths:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '404':
           description: Order not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v202506/orders/{id}/refund-points-preview:
+    post:
+      summary: Preview the points a refund returns
+      description: Returns the redeemed points a refund of the given selection would return, counted the way the refund counts them, so the refund screen can show the figure before the refund is sent. A refund that covers everything the order can still refund returns every point left. While prorated points refunds are off for the company, every point left is returned. Requires a Bearer token of a company admin with the refunds update permission. Nothing is refunded or recorded. Returns 404 when the order is not in the caller's company.
+      tags:
+        - orders
+      operationId: admin_v2025_06_preview_order_refund_points
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - all
+                    - tax
+                    - shipping
+                    - product_price
+                    - cv
+                    - qv
+                    - partial
+                    - items
+                  description: The refund type of the selection. Use items with order_items for an item refund.
+                amount:
+                  type: number
+                  description: The cash amount of an all, partial or product_price refund.
+                tax:
+                  type: number
+                  description: The tax amount of a tax refund, or of an all refund that also refunds tax.
+                shipping:
+                  type: number
+                  description: The shipping amount of a shipping refund, or of an all refund that also refunds shipping.
+                order_items:
+                  type: array
+                  description: The units of each order line an item refund takes.
+                  items:
+                    type: object
+                    required:
+                      - id
+                      - quantity
+                    properties:
+                      id:
+                        type: integer
+                        description: The order line ID.
+                      quantity:
+                        type: integer
+                        minimum: 1
+                        description: The units of the line this refund takes.
+            example:
+              type: all
+              amount: 22
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - points_to_return
+                  - meta
+                properties:
+                  points_to_return:
+                    type: integer
+                    minimum: 0
+                    description: The redeemed points the refund would return. Zero when it returns none.
+                  meta:
+                    $ref: '#/components/schemas/Meta'
+                additionalProperties: false
+              example:
+                points_to_return: 30
+                meta:
+                  request_id: 3f1c9d2e-7a4b-4e8f-9c61-2b5d8a0e4f13
+                  timestamp: '2026-10-29T10:15:00Z'
+        '401':
+          description: No valid bearer token. A token that is not a company admin's, such as a shopper's or a rep's, is answered with the plain text Not authorized.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UnauthorizedResponse'
+                  - type: string
+        '403':
+          description: The caller is not a company admin, or lacks the refunds update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Order not found in the caller's company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid refund selection parameters.
           content:
             application/json:
               schema:
