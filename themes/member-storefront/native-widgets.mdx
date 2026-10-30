@@ -338,6 +338,118 @@ For `givget`, configure the friend offer, member offer, and optional `discountCo
 
 Use these actions only in the current authorized member context. A customer’s subscription access does not imply messaging or Library access. When eligibility, data, or session access is unavailable, retain the unavailable state and surface the actual failure rather than substituting another member’s records. Preview controls remain inert: sample content must not submit replies, alter subscriptions, schedule messages, create attributed shares, or copy a live member’s private data.
 
+## Read Exigo data
+
+A theme section you write can show the signed-in member's figures from your company's Exigo compensation plan: titles, volumes, estimated payouts, commissions, the people in their team, and recent activity. The section reads them from the member site's own session. The company must have turned on Exigo member data, and its Exigo connection must be set up; see [Connect Exigo to Fluid](/setup/connect-exigo).
+
+A section calls the endpoint with a plain `fetch` and reads the JSON it returns.
+
+<Warning>
+  Call only the `/api/member-storefront/native-widgets/exigo/...` paths below. The Member API's `/api/member/v2026-10/exigo/...` routes take a bearer credential and refuse a cookie session, so a section can't use them. An app that signs in as a member calls those routes instead; see the [Exigo data API](/api-reference/exigo/read-the-members-exigo-figures).
+</Warning>
+
+### Call the endpoint
+
+Request one operation for the signed-in member:
+
+```js
+const response = await fetch(
+  '/api/member-storefront/native-widgets/exigo/summary?period=2026-10',
+  { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+);
+const body = await response.json().catch(() => null);
+const exigo = body?.exigo;
+```
+
+Replace `summary` with any of the five operations:
+
+| Operation | What it returns |
+| --- | --- |
+| `summary` | The member's titles, volumes and estimated payout for a month. |
+| `team` | The people directly below the member. |
+| `earnings` | Commissions, payouts and adjustments. |
+| `plan` | The company's title ladders, the same for every member. |
+| `activity` | Recent orders, enrollments and titles, with performance metrics. |
+
+These query parameters are optional. An operation that doesn't accept a parameter, or a value of the wrong shape, returns `422`.
+
+| Parameter | Operations | Value |
+| --- | --- | --- |
+| `period` | `summary`, `team`, `earnings` | A month as `YYYY-MM`. The default is the current month in the company's Exigo timezone. |
+| `page` | `team` | A page number from 1 to 1000, with 25 people on each page. |
+| `type` | `team` | `affiliate` or `customer`, to limit the list to one kind of person. |
+| `ledger_page` | `earnings` | A page number from 1 to 1000 of the commission ledger, with 25 entries on each page. |
+| `payouts_page` | `earnings` | A page number from 1 to 1000 of the payouts, with 25 entries on each page. |
+
+To open someone in the member's team, add their Exigo customer id to the path: `/api/member-storefront/native-widgets/exigo/team/{exigo_id}/{operation}`. Use the `customer_id` of a person in a `team` answer as `exigo_id`. This works for `summary`, `team` and `activity`. The figures name whose they are with `customer_id`, and the chain from the member down to them with `path`.
+
+`earnings` and `plan` are always the member's own. A member reads their own figures only when their member type is eligible for rep features. Reading the team list or opening another person needs a rep member or an admin. Any other membership gets a `403`. A person who isn't in the member's team returns `404` with the status `not_in_team`. A team member who keeps their name and earnings private appears as `Private Member`, with `private` set to `true` and no estimated payout.
+
+### Read the status and the HTTP code
+
+Read both the HTTP code and `exigo.status`. The figures are `null` unless the status is `ready`.
+
+| HTTP code | `exigo.status` | What it means | What to render |
+| --- | --- | --- | --- |
+| `200` | `ready` | The figures are in `exigo.figures`. | The figures. |
+| `404` | `not_configured` | The company has no Exigo connection or mapping. | Hide the section, or say the figures aren't set up yet. |
+| `404` | `no_exigo_id` | The member has no Exigo customer id. | Say the member's account isn't linked to Exigo yet. |
+| `404` | `member_not_found` | Exigo has no customer with that id. | Say the member's Exigo account wasn't found. |
+| `404` | `not_in_team` | The person you opened isn't in the member's team. | Say that person isn't in their team, and link back to the member's own figures. |
+| `404` | None: the body has an `error` and no `exigo` | The company hasn't turned on Exigo member data, or the operation in the path isn't one of the five. | Hide the section. |
+| `503` | `unavailable` | Exigo couldn't answer. | Say the figures are unavailable for now, and offer a retry button. |
+| `401` | None: the body has an `error` and no `exigo` | The member is signed out. | Ask the member to sign in. |
+| `403` | None: the body has an `error` and no `exigo` | The member's membership can't read this. | Hide the section. |
+
+On a `503`, the `Retry-After` header says how many seconds to wait before asking again. Wait that long, and retry once for each click on the retry button. Don't poll in a loop.
+
+Read `exigo` with optional chaining, as in the example above. A `401`, `403` or `404` from a feature that is off carries no `exigo` object.
+
+### Show how fresh the figures are
+
+Every answer says how fresh its figures are:
+
+| Field | Meaning | What to render |
+| --- | --- | --- |
+| `as_of` | When Exigo was read, as a UTC timestamp. It is `null` when there are no figures. | "Updated 5 minutes ago". |
+| `stale` | Whether the figures are an older copy served because Exigo couldn't answer. | Show the `as_of` time so the member can see how old they are. |
+| `is_estimate` | Whether the figures are still moving. It is `true` for a `summary`, `team` or `earnings` answer whose month hasn't ended. | An "Estimated" label. |
+
+`as_of` is the time of the Exigo read, not the time of your request, because answers are cached briefly.
+
+### Label figures with the company's own names
+
+The keys of `volumes`, `pending` and the earnings `estimates` differ from company to company, so don't assume a set of keys. Loop over the keys in the response. The `labels` object in `summary`, `team` and `earnings` figures holds the company's own name for each key, in `labels.volumes`, `labels.pending` and `labels.estimates`. When a key has no label, show your own, such as the key with spaces and capital letters.
+
+### Example response
+
+A `summary` answer for a member who is partway through October 2026, shortened to the fields a section reads:
+
+```json
+{
+  "exigo": {
+    "operation": "summary",
+    "status": "ready",
+    "as_of": "2026-10-21T15:04:05Z",
+    "stale": false,
+    "is_estimate": true,
+    "figures": {
+      "operation": "summary",
+      "customer_id": 4021,
+      "period": { "id": 24, "name": "October 2026", "start": "2026-10-01", "end": "2026-10-31" },
+      "titles": { "circle_pay": "Silver", "circle_highest": "Gold", "team_pay": null, "team_highest": "Gold II" },
+      "volumes": { "personal_points": 1250.5, "group_points": 8800 },
+      "pending": { "group_points": 640.25 },
+      "labels": {
+        "volumes": { "personal_points": "Personal points", "group_points": "Group points" },
+        "pending": { "group_points": "Scheduled group points" }
+      },
+      "estimated_payout": { "circle": 100, "team": 25.5, "total": 125.5 }
+    }
+  }
+}
+```
+
 ## Give agents accurate build instructions
 
 Start from the native catalog entry and the widget's supported settings; reuse the existing native section instead of creating a Droplet just to make it globally available.
