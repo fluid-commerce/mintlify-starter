@@ -1,0 +1,1429 @@
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — Exigo member data
+  description: |
+    A member's figures from the Exigo compensation plan their company runs:
+    titles, volumes, estimated payouts, commissions, payouts, the company's
+    title ladders, the people in their team and their recent activity. Every
+    operation acts as the member the bearer credential speaks for; the member
+    and their company come from the credential alone, and their own Exigo
+    customer id is read from their membership, never from the request. A
+    `team/{exigo_id}` path (or the older `of` query parameter) only picks a
+    person inside that member's own downline to read; it can't switch to
+    another member's account, and a credential for another company or member
+    can only ever reach its own figures and downline.
+
+    **Who can read what.** A member reads their own figures when their
+    membership is rep-eligible; a `team/{exigo_id}` path naming the member's
+    own id is that same read. Reading anyone else's figures, which is the
+    team list and a `team/{exigo_id}` operation for someone in their
+    downline, needs a rep member, a company admin or a root admin; a
+    membership that is only rep-eligible is refused with `403`. Opening a person who is not in the member's downline
+    answers `404` with the status `not_in_team`. The feature is off until the
+    company turns on Exigo member data, and every operation answers `404`
+    until then.
+
+    **The envelope.** Every answer, including one with no figures, carries an
+    `exigo` object holding the `operation`, a `status`, how fresh the figures
+    are and the `figures` themselves. The HTTP code follows the `status`:
+    `200` for `ready`, `503` for `unavailable` (with `Retry-After`), and `404`
+    for every status that means there is nothing to read. The `figures` are
+    `null` unless the status is `ready`.
+
+    **Freshness.** `as_of` is when the figures were read from Exigo, in UTC. A
+    cached answer keeps the time of the read it holds, not the time of the
+    request. `stale` says whether the figures are an older copy served because
+    Exigo could not answer. `is_estimate` says whether they are still moving:
+    it is `true` for a summary, team or earnings answer whose month has not
+    ended.
+
+    **Figures that vary by company.** The `volumes`, `pending` and `estimates`
+    sections are maps whose keys are the figures the company's Exigo mapping
+    defines, so they differ from company to company. Read the keys from the
+    response rather than assuming a set, and use the `labels` object, which
+    carries the company's own name for each key, to show them.
+
+    **Caching.** Responses are private to the caller and are never reusable
+    from a cache (`Cache-Control: private, no-store`).
+
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation refuses a credential for it with `403` and the standard error
+    envelope, before the operation runs.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+  - MemberBearer: []
+servers:
+  - url: https://api.fluid.app
+    description: Production API server
+  - url: https://api.fluid.test
+    description: Local development server
+tags:
+  - name: exigo
+    description: >-
+      The signed-in member's figures from their company's Exigo compensation plan, and those of the people
+      in their team.
+    x-fluid-section: Members
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header: a portal
+        JWT whose login is linked to a membership in that company, or an
+        opaque member token. The credential alone identifies the member and
+        company. A member session JWT, the kind order and subscription email
+        links carry, is refused with 403. A company admin's own credential is
+        not a member credential and gets 401.
+  headers:
+    CacheControl:
+      description: Standard HTTP Cache-Control directive. Exigo figures are private to the caller and never reusable from a cache.
+      schema:
+        type: string
+        example: private, no-store
+    RetryAfter:
+      description: Seconds to wait before asking again.
+      schema:
+        type: string
+        example: '60'
+  parameters:
+    Period:
+      name: period
+      in: query
+      description: >-
+        Month to read, as YYYY-MM. Defaults to the current month in the company's Exigo timezone. Accepted
+        only for summary, team and earnings; plan accepts no query parameters.
+      schema:
+        type: string
+        pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+        example: '2026-10'
+    TeamPage:
+      name: page
+      in: query
+      description: >-
+        Page of the team list, 25 per page, from 1 to 1000. Accepted for team. On the member's own earnings
+        it pages both the ledger and the payouts, an older form kept for existing clients; use `ledger_page`
+        and `payouts_page` instead.
+      schema:
+        type: string
+        pattern: '^([1-9]\d{0,2}|1000)$'
+        example: '2'
+    TeamType:
+      name: type
+      in: query
+      description: Limit the team list to affiliates or customers. Accepted only for team.
+      schema:
+        type: string
+        enum:
+          - affiliate
+          - customer
+    LedgerPage:
+      name: ledger_page
+      in: query
+      description: Page of the earnings commission ledger, 25 per page, from 1 to 1000. Accepted only for the member's own earnings.
+      schema:
+        type: string
+        pattern: '^([1-9]\d{0,2}|1000)$'
+        example: '2'
+    PayoutsPage:
+      name: payouts_page
+      in: query
+      description: Page of the earnings payouts, 25 per page, from 1 to 1000. Accepted only for the member's own earnings.
+      schema:
+        type: string
+        pattern: '^([1-9]\d{0,2}|1000)$'
+        example: '2'
+    Of:
+      name: of
+      in: query
+      deprecated: true
+      description: >-
+        Exigo customer id of someone in the member's team to read instead of the member. Use the
+        `team/{exigo_id}/{operation}` path instead. Accepted only for summary, team and activity, with the
+        same checks as the path; the member's own id reads as if it were not sent.
+      schema:
+        type: string
+        pattern: '^[1-9]\d{0,9}$'
+        example: '4388'
+  responses:
+    Unauthorized:
+      description: Missing or unusable member credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            status: 401
+            error:
+              message: A member credential is required
+              details:
+                error: unauthorized
+            meta:
+              request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+              timestamp: '2026-10-21T15:04:05Z'
+    Forbidden:
+      description: >-
+        The credential cannot read this. It is the shopper session JWT that order and subscription email
+        links carry; or the membership is not rep-eligible; or the request reads the team list or another
+        person's figures and the membership is not a rep member, company admin or root admin; or the
+        credential is for a sandbox test company that cannot be reached.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            status: 403
+            error:
+              message: Widget is unavailable for this membership
+              details: {}
+            meta:
+              request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+              timestamp: '2026-10-21T15:04:05Z'
+    Invalid:
+      description: >-
+        A query parameter this operation does not accept, or a value of the wrong shape. The message says
+        which kind.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            status: 422
+            error:
+              message: Query parameters are not supported
+              details: {}
+            meta:
+              request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+              timestamp: '2026-10-21T15:04:05Z'
+    Unavailable:
+      description: >-
+        Exigo or the connector could not answer (`exigo.status` is `unavailable`, `figures` is `null`). Ask
+        again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ExigoEnvelope'
+          example:
+            status: 503
+            exigo:
+              operation: summary
+              status: unavailable
+              as_of: null
+              stale: false
+              is_estimate: false
+              figures: null
+            meta:
+              request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+              timestamp: '2026-10-21T15:04:05Z'
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+        - request_uuid
+        - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          description: The error message and details.
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              description: Further detail about the error; may be empty.
+              additionalProperties: true
+          required:
+            - message
+            - details
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - error
+        - meta
+    ExigoEnvelope:
+      type: object
+      description: The envelope every Exigo answer is in, with or without figures.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        exigo:
+          $ref: '#/components/schemas/ExigoReading'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+      required:
+        - status
+        - exigo
+        - meta
+    ExigoReading:
+      type: object
+      description: One operation's answer, with how fresh it is.
+      additionalProperties: false
+      properties:
+        operation:
+          type: string
+          description: The operation answered.
+          enum:
+            - summary
+            - team
+            - earnings
+            - plan
+            - activity
+        status:
+          type: string
+          description: >-
+            `ready` when figures are present; `not_configured` when the company has no Exigo connector or
+            mapping; `no_exigo_id` when the member has no numeric Exigo id; `member_not_found` when Exigo has
+            no such customer; `not_in_team` when the opened person is not in the member's downline;
+            `unavailable` when Exigo or the connector could not answer.
+          enum:
+            - ready
+            - not_configured
+            - no_exigo_id
+            - member_not_found
+            - not_in_team
+            - unavailable
+        as_of:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >-
+            When the figures were read from Exigo, in UTC. A cached answer keeps the time of the read it
+            holds, not the time of the request. Null when there are no figures.
+        stale:
+          type: boolean
+          description: >-
+            Whether the figures are an older copy served because Exigo could not answer. Always false for
+            now; no last-good copy is kept yet.
+        is_estimate:
+          type: boolean
+          description: >-
+            Whether the figures are still moving. True for a summary, team or earnings answer whose month
+            has not ended; false for a closed month, for plan and activity, and when there are no figures.
+        figures:
+          description: The operation's figures, or null unless the status is `ready`. Its shape follows `operation`.
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ExigoSummary'
+            - $ref: '#/components/schemas/ExigoTeam'
+            - $ref: '#/components/schemas/ExigoEarnings'
+            - $ref: '#/components/schemas/ExigoPlan'
+            - $ref: '#/components/schemas/ExigoActivity'
+      required:
+        - operation
+        - status
+        - as_of
+        - stale
+        - is_estimate
+        - figures
+    ExigoPeriod:
+      description: The month the figures cover, or null for an operation that has none.
+      oneOf:
+        - type: 'null'
+        - type: object
+          properties:
+            id:
+              type: integer
+              description: Exigo's id for the period.
+            name:
+              type:
+                - string
+                - 'null'
+              description: The period's name.
+            start:
+              type: string
+              format: date
+              description: First day of the period.
+            end:
+              type: string
+              format: date
+              description: Last day of the period.
+          required:
+            - id
+            - name
+            - start
+            - end
+    ExigoPath:
+      description: The chain from the member down to the person these figures are for, member first. A single entry when the member reads their own.
+      type: array
+      items:
+        type: object
+        properties:
+          customer_id:
+            type: integer
+            description: The person's Exigo customer id.
+          name:
+            type:
+              - string
+              - 'null'
+            description: >-
+              Name from the company's member records; `Private Member` for a team member who keeps it
+              private; null when Fluid has no single member with this Exigo id.
+          private:
+            type: boolean
+            description: Whether this team member keeps their name and earnings private (never the member themselves).
+        required:
+          - customer_id
+          - name
+          - private
+    ExigoTitles:
+      type: object
+      description: The titles a person holds on each track.
+      properties:
+        circle_pay:
+          type:
+            - string
+            - 'null'
+          description: The circle title paid this period.
+        circle_highest:
+          type:
+            - string
+            - 'null'
+          description: The highest circle title reached.
+        team_pay:
+          type:
+            - string
+            - 'null'
+          description: The team title paid. Filled only by the monthly commission run, so null mid-month.
+        team_highest:
+          type:
+            - string
+            - 'null'
+          description: The highest team title reached.
+      required:
+        - circle_pay
+        - circle_highest
+        - team_pay
+        - team_highest
+    ExigoMoney:
+      description: An amount in the person's currency, or null when there is none.
+      type:
+        - number
+        - 'null'
+    ExigoVolumes:
+      description: >-
+        The company's volume figures, keyed by the names its Exigo mapping defines, so the keys differ from
+        company to company. A figure the company has no data for is null. Read each key's name from
+        `labels.volumes`.
+      type: object
+      additionalProperties:
+        type:
+          - number
+          - 'null'
+    ExigoPending:
+      description: >-
+        Volume still scheduled this period (subscriptions), keyed like `volumes`. Every value is null
+        outside the current period. Read each key's name from `labels.pending`.
+      type: object
+      additionalProperties:
+        type:
+          - number
+          - 'null'
+    ExigoEstimates:
+      description: >-
+        This month's estimated earnings by component, keyed by the names the company's mapping defines, plus
+        a total. Read each key's name from `labels.estimates`.
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/ExigoMoney'
+    ExigoLabels:
+      description: >-
+        The company's own name for each key of `volumes`, `pending` and `estimates`, grouped like the figures
+        they name. A key without a label is absent. Read from the stored mapping on every request, so an edit
+        shows without waiting on the figures cache.
+      type: object
+      properties:
+        volumes:
+          description: Labels of the keys of `volumes`.
+          type: object
+          additionalProperties:
+            type: string
+        pending:
+          description: Labels of the keys of `pending`.
+          type: object
+          additionalProperties:
+            type: string
+        estimates:
+          description: Labels of the keys of `estimates` (earnings only).
+          type: object
+          additionalProperties:
+            type: string
+    ExigoEstimatedPayout:
+      description: This month's estimated payout split into circle, team and total; null for a team member who keeps their earnings private.
+      type:
+        - object
+        - 'null'
+      additionalProperties:
+        $ref: '#/components/schemas/ExigoMoney'
+    ExigoTitleTrack:
+      type: object
+      description: One title track with the title paid this period and the highest reached.
+      properties:
+        track:
+          type: string
+          description: Which track this is.
+          enum:
+            - circle
+            - team
+        label:
+          type: string
+          description: The track's name.
+        paid_as:
+          type:
+            - string
+            - 'null'
+          description: The title paid this period.
+        highest:
+          type:
+            - string
+            - 'null'
+          description: The highest title reached.
+        paid_as_label:
+          type: string
+          description: The company's name for the paid-as title; team track only, and only when the mapping labels it.
+        highest_label:
+          type: string
+          description: The company's name for the highest title; team track only, and only when the mapping labels it.
+      required:
+        - track
+        - label
+        - paid_as
+        - highest
+    ExigoTeamLeader:
+      type: object
+      description: A person leading one of the member's teams.
+      properties:
+        id:
+          type: integer
+          description: The leader's Exigo customer id.
+        name:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Name from the company's member records; `Private Member` for a leader who keeps it private; null
+            when Fluid has no single member with this Exigo id.
+        title:
+          type:
+            - string
+            - 'null'
+          description: The leader's title as the connector reports it; null when the connector sends none.
+        private:
+          type: boolean
+          description: Whether this leader keeps their name and earnings private (never the member themselves).
+      required:
+        - id
+        - name
+        - title
+        - private
+    ExigoSummary:
+      type: object
+      description: A person's titles, volumes and estimated payout for a month. The figures of the `summary` operation.
+      properties:
+        operation:
+          type: string
+          description: Always `summary`.
+          const: summary
+        customer_id:
+          type: integer
+          description: The Exigo customer id these figures are for.
+        path:
+          $ref: '#/components/schemas/ExigoPath'
+        period:
+          $ref: '#/components/schemas/ExigoPeriod'
+        titles:
+          $ref: '#/components/schemas/ExigoTitles'
+        volumes:
+          $ref: '#/components/schemas/ExigoVolumes'
+        pending:
+          $ref: '#/components/schemas/ExigoPending'
+        labels:
+          $ref: '#/components/schemas/ExigoLabels'
+        title_tracks:
+          description: >-
+            The circle and team titles as a list, in that order, each with the title paid this period and the
+            highest reached. The team track carries the company's own names for the two when its mapping has
+            them. The same titles are in `titles`.
+          type: array
+          items:
+            $ref: '#/components/schemas/ExigoTitleTrack'
+        estimated_payout:
+          $ref: '#/components/schemas/ExigoEstimatedPayout'
+        teams:
+          description: >-
+            Exigo customer ids leading the member's teams, largest first. The first is the Support team; the
+            others are Focus teams.
+          type: array
+          items:
+            type: integer
+        team_leaders:
+          description: >-
+            The people leading the teams, one per entry of `teams` and in the same order. Present only for a
+            member who may read the team list (a rep member, company admin or root admin); a member who is
+            only rep-eligible gets their summary without it, and `teams` is unchanged.
+          type: array
+          items:
+            $ref: '#/components/schemas/ExigoTeamLeader'
+      required:
+        - operation
+        - customer_id
+        - period
+        - titles
+        - volumes
+    ExigoTeamPerson:
+      type: object
+      description: One person in a team list.
+      properties:
+        customer_id:
+          type: integer
+          description: The person's Exigo customer id. Send it as `exigo_id` to open them.
+        customer_type:
+          type: string
+          description: Whether the person is an affiliate or a customer.
+          enum:
+            - affiliate
+            - customer
+        name:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Name from the company's member records; `Private Member` when they keep it private; null when
+            Fluid has no member with this Exigo id.
+        private:
+          type: boolean
+          description: Whether they keep their name and earnings private; their `estimated_payout` is then null.
+        circle_pay_title:
+          type:
+            - string
+            - 'null'
+          description: The circle title paid this period.
+        titles:
+          $ref: '#/components/schemas/ExigoTitles'
+        subscribed:
+          type: boolean
+          description: Whether the person has an active subscription.
+        volumes:
+          $ref: '#/components/schemas/ExigoVolumes'
+        pending:
+          $ref: '#/components/schemas/ExigoPending'
+        estimated_payout:
+          $ref: '#/components/schemas/ExigoEstimatedPayout'
+      required:
+        - customer_id
+        - customer_type
+        - name
+        - private
+        - circle_pay_title
+        - subscribed
+        - volumes
+    ExigoTeam:
+      type: object
+      description: A page of the people directly below a person. The figures of the `team` operation.
+      properties:
+        operation:
+          type: string
+          description: Always `team`.
+          const: team
+        customer_id:
+          type: integer
+          description: The Exigo customer id whose team this is.
+        period:
+          $ref: '#/components/schemas/ExigoPeriod'
+        path:
+          $ref: '#/components/schemas/ExigoPath'
+        page:
+          type: integer
+          description: The page returned.
+        per_page:
+          type: integer
+          description: People per page.
+        total:
+          type: integer
+          description: People in the whole list.
+        labels:
+          $ref: '#/components/schemas/ExigoLabels'
+        active:
+          type: integer
+          description: People in the list who bought this period.
+        type:
+          type:
+            - string
+            - 'null'
+          enum:
+            - affiliate
+            - customer
+            - null
+          description: The type the list was limited to, or null for both.
+        people:
+          type: array
+          description: The people on this page.
+          items:
+            $ref: '#/components/schemas/ExigoTeamPerson'
+      required:
+        - operation
+        - customer_id
+        - period
+        - page
+        - per_page
+        - total
+        - people
+    ExigoEarnings:
+      type: object
+      description: The member's commissions, payouts and adjustments. The figures of the `earnings` operation.
+      properties:
+        operation:
+          type: string
+          description: Always `earnings`.
+          const: earnings
+        customer_id:
+          type: integer
+          description: The Exigo customer id these figures are for.
+        path:
+          $ref: '#/components/schemas/ExigoPath'
+        period:
+          $ref: '#/components/schemas/ExigoPeriod'
+        estimates:
+          $ref: '#/components/schemas/ExigoEstimates'
+        labels:
+          $ref: '#/components/schemas/ExigoLabels'
+        ledger:
+          type: object
+          description: A page of the commission ledger, newest run first.
+          properties:
+            page:
+              type: integer
+              description: The page returned.
+            per_page:
+              type: integer
+              description: Entries per page.
+            total:
+              type: integer
+              description: Entries in the whole ledger.
+            entries:
+              type: array
+              description: The entries on this page.
+              items:
+                type: object
+                description: One commission run's earnings.
+                properties:
+                  run_id:
+                    type: integer
+                    description: The commission run's id.
+                  description:
+                    type:
+                      - string
+                      - 'null'
+                    description: The run's description.
+                  kind:
+                    type: string
+                    description: Whether the run is a daily or monthly run, or another kind.
+                    enum:
+                      - daily
+                      - monthly
+                      - other
+                  run_date:
+                    type:
+                      - string
+                      - 'null'
+                    format: date
+                    description: The date of the run.
+                  currency:
+                    type:
+                      - string
+                      - 'null'
+                    description: The currency code of the amounts.
+                  earnings:
+                    $ref: '#/components/schemas/ExigoMoney'
+                  total:
+                    $ref: '#/components/schemas/ExigoMoney'
+                required:
+                  - run_id
+                  - description
+                  - kind
+                  - run_date
+                  - currency
+                  - earnings
+                  - total
+          required:
+            - page
+            - per_page
+            - total
+            - entries
+        payouts:
+          type: object
+          description: A page of the payouts made to the member, newest first.
+          properties:
+            page:
+              type: integer
+              description: The page returned.
+            per_page:
+              type: integer
+              description: Entries per page.
+            total:
+              type: integer
+              description: Payouts in the whole list.
+            entries:
+              type: array
+              description: The payouts on this page.
+              items:
+                type: object
+                description: One payout.
+                properties:
+                  payout_id:
+                    type: integer
+                    description: The payout's id.
+                  date:
+                    type:
+                      - string
+                      - 'null'
+                    format: date
+                    description: The payout date.
+                  type:
+                    type:
+                      - string
+                      - 'null'
+                    description: How the payout was made.
+                  currency:
+                    type:
+                      - string
+                      - 'null'
+                    description: The currency code of the amount.
+                  amount:
+                    $ref: '#/components/schemas/ExigoMoney'
+                required:
+                  - payout_id
+                  - date
+                  - type
+                  - currency
+                  - amount
+          required:
+            - page
+            - per_page
+            - total
+            - entries
+        adjustments:
+          description: >-
+            Manual adjustment lines from the counted commission runs, newest first (at most 25). Each is also
+            inside its run's ledger total.
+          type: array
+          items:
+            type: object
+            description: One manual adjustment.
+            properties:
+              run_id:
+                type: integer
+                description: The commission run's id.
+              run_description:
+                type:
+                  - string
+                  - 'null'
+                description: The run's description.
+              run_date:
+                type:
+                  - string
+                  - 'null'
+                format: date
+                description: The date of the run.
+              kind:
+                type: string
+                description: Always `adjustment`.
+                const: adjustment
+              description:
+                type:
+                  - string
+                  - 'null'
+                description: The adjustment's description.
+              currency:
+                type:
+                  - string
+                  - 'null'
+                description: The currency code of the amount.
+              amount:
+                $ref: '#/components/schemas/ExigoMoney'
+            required:
+              - run_id
+              - run_description
+              - run_date
+              - kind
+              - description
+              - currency
+              - amount
+        monthly_history:
+          description: What the member earned in each of the recent months.
+          type: array
+          items:
+            type: object
+            description: One month's earnings.
+            properties:
+              id:
+                type: integer
+                description: Exigo's id for the period.
+              name:
+                type:
+                  - string
+                  - 'null'
+                description: The period's name.
+              start:
+                type: string
+                format: date
+                description: First day of the period.
+              end:
+                type: string
+                format: date
+                description: Last day of the period.
+              circle:
+                $ref: '#/components/schemas/ExigoMoney'
+              team:
+                $ref: '#/components/schemas/ExigoMoney'
+              other:
+                $ref: '#/components/schemas/ExigoMoney'
+              total:
+                $ref: '#/components/schemas/ExigoMoney'
+            required:
+              - id
+              - name
+              - start
+              - end
+              - circle
+              - team
+              - other
+              - total
+      required:
+        - operation
+        - customer_id
+        - period
+        - estimates
+        - ledger
+        - payouts
+        - monthly_history
+    ExigoPlan:
+      type: object
+      description: The company's title ladders, the same for every member. The figures of the `plan` operation.
+      properties:
+        operation:
+          type: string
+          description: Always `plan`.
+          const: plan
+        customer_id:
+          type: integer
+          description: The Exigo customer id that asked.
+        path:
+          $ref: '#/components/schemas/ExigoPath'
+        circle_titles:
+          description: Circle titles from the first up, with the minimum volume and plan terms for each.
+          type: array
+          items:
+            type: object
+            description: One circle title.
+            properties:
+              rank_id:
+                type: integer
+                description: Exigo's id for the title.
+              title:
+                type:
+                  - string
+                  - 'null'
+                description: The title's name.
+              min_volume:
+                type: number
+                description: The minimum circle volume to reach the title.
+              rate:
+                type: number
+                description: The commission rate the title pays, as a fraction.
+              product_credit:
+                type:
+                  - number
+                  - 'null'
+                description: The product credit the title earns, if any.
+              guarantee:
+                type:
+                  - number
+                  - 'null'
+                description: The guaranteed payout the title earns, if any.
+              one_time_bonus:
+                type:
+                  - number
+                  - 'null'
+                description: The one-time bonus for first reaching the title, if any.
+            required:
+              - rank_id
+              - title
+              - min_volume
+              - rate
+        team_titles:
+          description: >-
+            Team titles from the first up, with the pay volume and leg requirements for each and the plan
+            terms the company has for it (null when none).
+          type: array
+          items:
+            type: object
+            description: One team title.
+            properties:
+              rank_id:
+                type: integer
+                description: Exigo's id for the title.
+              title:
+                type:
+                  - string
+                  - 'null'
+                description: The title's name.
+              min_pay_volume:
+                type:
+                  - number
+                  - 'null'
+                description: The minimum pay volume to reach the title.
+              leg_requirements:
+                type: object
+                description: The volume required from the team's legs, keyed by the leg requirement the plan defines.
+                additionalProperties:
+                  type:
+                    - number
+                    - 'null'
+              rate:
+                type:
+                  - number
+                  - 'null'
+                description: The commission rate the title pays, as a fraction.
+              required_premier_teams:
+                type:
+                  - integer
+                  - 'null'
+                description: How many premier teams the title requires.
+              bonus:
+                type:
+                  - number
+                  - 'null'
+                description: The bonus the title earns, if any.
+            required:
+              - rank_id
+              - title
+              - min_pay_volume
+              - leg_requirements
+              - rate
+              - required_premier_teams
+              - bonus
+      required:
+        - operation
+        - circle_titles
+        - team_titles
+    ExigoActivity:
+      type: object
+      description: A person's recent orders, enrollments and titles, with performance metrics. The figures of the `activity` operation.
+      properties:
+        operation:
+          type: string
+          description: Always `activity`.
+          const: activity
+        customer_id:
+          type: integer
+          description: The Exigo customer id these figures are for.
+        path:
+          $ref: '#/components/schemas/ExigoPath'
+        recent:
+          description: >-
+            The person's last orders, new direct enrollees and titles reached over the last 12 months, newest
+            first, at most 10. A title counts when a month's pay title beats every earlier month in the window.
+          type: array
+          items:
+            type: object
+            description: One recent event. Which fields are present depends on `kind`.
+            properties:
+              kind:
+                type: string
+                description: What happened.
+                enum:
+                  - order
+                  - enrollment
+                  - title
+              date:
+                type:
+                  - string
+                  - 'null'
+                format: date
+                description: When it happened.
+              order_id:
+                type: integer
+                description: The order's id (order).
+              currency:
+                type:
+                  - string
+                  - 'null'
+                description: The currency code of the amount (order).
+              amount:
+                $ref: '#/components/schemas/ExigoMoney'
+              customer_id:
+                type: integer
+                description: The new enrollee's Exigo customer id (enrollment).
+              customer_type:
+                type: string
+                description: Whether the new enrollee is an affiliate or a customer (enrollment).
+                enum:
+                  - affiliate
+                  - customer
+              name:
+                type:
+                  - string
+                  - 'null'
+                description: >-
+                  The new enrollee's name from the company's member records; `Private Member` when they keep
+                  it private (enrollment).
+              private:
+                type: boolean
+                description: Whether the new enrollee keeps their name private (enrollment).
+              track:
+                type: string
+                description: The track the title is on (title).
+                enum:
+                  - circle
+                  - team
+              title:
+                type:
+                  - string
+                  - 'null'
+                description: The title reached (title).
+            required:
+              - kind
+              - date
+        metrics:
+          description: >-
+            Performance metrics. `growth_trend` is the change in circle volume between the two latest
+            complete months and `retention_rate` the share of direct people who bought in the earlier of them
+            and again in the later one, both as fractions; null when there is nothing to compare.
+          type: object
+          properties:
+            months_active:
+              type:
+                - integer
+                - 'null'
+              description: Months the person has been active.
+            avg_order_value:
+              description: Average counted order over the window, in `avg_order_currency`.
+              $ref: '#/components/schemas/ExigoMoney'
+            avg_order_currency:
+              type:
+                - string
+                - 'null'
+              description: The currency of the latest order; others are not blended in.
+            growth_trend:
+              type:
+                - number
+                - 'null'
+              description: The change in circle volume between the two latest complete months, as a fraction.
+            retention_rate:
+              type:
+                - number
+                - 'null'
+              description: The share of direct people who bought in the earlier month and again in the later one.
+          required:
+            - months_active
+            - avg_order_value
+            - growth_trend
+            - retention_rate
+      required:
+        - operation
+        - customer_id
+        - recent
+        - metrics
+paths:
+  /api/member/v2026-10/exigo/{operation}:
+    get:
+      operationId: member_exigo_show
+      tags:
+        - exigo
+      summary: Read the member's Exigo figures
+      x-fluid-audience: member
+      description: >-
+        Returns one operation's figures for the signed-in member from their company's Exigo connector. The
+        member is always the bearer's member and their Exigo id comes from their membership, never from the
+        request. The company must have Exigo member data turned on, and the membership must be rep-eligible;
+        the team list (`team`) is for rep members, company admins and root admins. `summary` is titles,
+        volumes and the estimated payout; `team` is the people directly below the member; `earnings` is
+        commissions, payouts and manual adjustments; `plan` is the company's title ladders, the same for every
+        member; `activity` is recent orders, enrollments and titles with performance metrics. Answers are
+        cached briefly per member, operation, month, pages and opened person, names included.
+      parameters:
+        - name: operation
+          in: path
+          required: true
+          description: The operation to read.
+          schema:
+            type: string
+            enum:
+              - summary
+              - team
+              - earnings
+              - plan
+              - activity
+        - $ref: '#/components/parameters/Period'
+        - $ref: '#/components/parameters/TeamPage'
+        - $ref: '#/components/parameters/TeamType'
+        - $ref: '#/components/parameters/LedgerPage'
+        - $ref: '#/components/parameters/PayoutsPage'
+        - $ref: '#/components/parameters/Of'
+      responses:
+        '200':
+          description: The figures. Their shape follows the operation.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExigoEnvelope'
+              example:
+                status: 200
+                exigo:
+                  operation: summary
+                  status: ready
+                  as_of: '2026-10-21T15:04:05Z'
+                  stale: false
+                  is_estimate: true
+                  figures:
+                    operation: summary
+                    customer_id: 4021
+                    path:
+                      - customer_id: 4021
+                        name: Sam Example
+                        private: false
+                    period:
+                      id: 24
+                      name: October 2026
+                      start: '2026-10-01'
+                      end: '2026-10-31'
+                    titles:
+                      circle_pay: Silver
+                      circle_highest: Gold
+                      team_pay: null
+                      team_highest: Gold II
+                    volumes:
+                      personal_points: 1250.5
+                      group_points: 8800
+                      qualified_legs: 2
+                    pending:
+                      group_points: 640.25
+                    labels:
+                      volumes:
+                        personal_points: Personal Points
+                        group_points: Group Points
+                        qualified_legs: Qualified Legs
+                      pending:
+                        group_points: Scheduled Group Points
+                    title_tracks:
+                      - track: circle
+                        label: Circle
+                        paid_as: Silver
+                        highest: Gold
+                      - track: team
+                        label: Team
+                        paid_as: null
+                        highest: Gold II
+                        highest_label: Highest Team Rank
+                    estimated_payout:
+                      circle: 100
+                      team: 25.5
+                      total: 125.5
+                    teams:
+                      - 4388
+                      - 5120
+                    team_leaders:
+                      - id: 4388
+                        name: Alex Sample
+                        title: Gold
+                        private: false
+                      - id: 5120
+                        name: Private Member
+                        title: null
+                        private: true
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-21T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            There is nothing to read. Either the company has not turned on Exigo member data, or the operation
+            is unknown (an error envelope); or there are no figures (`exigo.status` is `not_configured`,
+            `no_exigo_id`, `member_not_found` or `not_in_team`, and `figures` is `null`).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ExigoEnvelope'
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                status: 404
+                exigo:
+                  operation: summary
+                  status: no_exigo_id
+                  as_of: null
+                  stale: false
+                  is_estimate: false
+                  figures: null
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-21T15:04:05Z'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/member/v2026-10/exigo/team/{exigo_id}/{operation}:
+    get:
+      operationId: member_exigo_team_member_show
+      tags:
+        - exigo
+      summary: Read a team member's Exigo figures
+      x-fluid-audience: member
+      description: >-
+        Opens someone in the member's team, by the Exigo customer id a team list's people carry, for summary,
+        team and activity. The connector refuses anyone outside the member's downline (`exigo.status` is
+        `not_in_team`, 404), and reading anyone other than yourself needs a rep member, company admin or root
+        admin. The member's own id reads as their own figures. Earnings and the plan are only ever the
+        member's own. The answer is shaped like the member's own, and the figures name whose they are
+        (`customer_id`) and the chain from the member to them (`path`). A team member who keeps their
+        earnings private appears as `Private Member` with no estimated payout.
+      parameters:
+        - name: exigo_id
+          in: path
+          required: true
+          description: Exigo customer id of someone in the member's team, as a team list's `customer_id`.
+          schema:
+            type: string
+            pattern: '^[1-9]\d{0,9}$'
+        - name: operation
+          in: path
+          required: true
+          description: The operation to read for that person.
+          schema:
+            type: string
+            enum:
+              - summary
+              - team
+              - activity
+        - $ref: '#/components/parameters/Period'
+        - $ref: '#/components/parameters/TeamPage'
+        - $ref: '#/components/parameters/TeamType'
+      responses:
+        '200':
+          description: The figures of the person opened. Their shape follows the operation.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExigoEnvelope'
+              example:
+                status: 200
+                exigo:
+                  operation: activity
+                  status: ready
+                  as_of: '2026-10-21T15:04:05Z'
+                  stale: false
+                  is_estimate: false
+                  figures:
+                    operation: activity
+                    customer_id: 4388
+                    path:
+                      - customer_id: 4021
+                        name: Sam Example
+                        private: false
+                      - customer_id: 4388
+                        name: Alex Sample
+                        private: false
+                    recent:
+                      - kind: order
+                        date: '2026-10-12'
+                        order_id: 90210
+                        currency: usd
+                        amount: 84.5
+                      - kind: enrollment
+                        date: '2026-09-29'
+                        customer_id: 6150
+                        customer_type: affiliate
+                        name: Jordan Placeholder
+                        private: false
+                      - kind: title
+                        date: '2026-08-01'
+                        track: circle
+                        title: Silver
+                    metrics:
+                      months_active: 14
+                      avg_order_value: 91.25
+                      avg_order_currency: usd
+                      growth_trend: 0.04
+                      retention_rate: 0.83
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-21T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            There is nothing to read. Either the company has not turned on Exigo member data, or the operation
+            or Exigo id is malformed (an error envelope); or there are no figures (`exigo.status` is
+            `not_configured`, `no_exigo_id`, `member_not_found` or `not_in_team`, and `figures` is `null`).
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ExigoEnvelope'
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                status: 404
+                exigo:
+                  operation: summary
+                  status: not_in_team
+                  as_of: null
+                  stale: false
+                  is_estimate: false
+                  figures: null
+                meta:
+                  request_uuid: 01a0f4fe-de00-75b3-8d8a-b74b0cde8b07
+                  timestamp: '2026-10-21T15:04:05Z'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Unavailable'
