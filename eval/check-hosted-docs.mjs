@@ -221,6 +221,11 @@ const OFFSET_PAGINATED_PAGES = new Set([
   // themes-v0
   "applicationthemetemplates/returns-all-available-themeables-for-theme-template",
   "file-resources/returns-a-list-of-file-resources",
+  // member-exigo-v2026-10: the team list and the earnings ledger and payouts are read
+  // from Exigo a page number at a time (`page`, `ledger_page`, `payouts_page`, 25 each),
+  // and each answer reports its `page`, `per_page` and `total`.
+  "exigo/read-the-members-exigo-figures",
+  "exigo/read-a-team-members-exigo-figures",
 ]);
 
 // Hand-written pages whose `per_page` is not a leak: they document the storefront's own
@@ -450,6 +455,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["orders/get-order-statistics", "GET /api/v202506/orders/stats"],
   ["orders/import-an-order", "POST /api/v2025-06/orders"],
   ["orders/list-orders", "GET /api/v202506/orders"],
+  ["orders/preview-the-points-a-refund-returns", "POST /api/v202506/orders/{id}/refund-points-preview"],
   ["partner-tokens/creates-a-new-partner-token", "POST /api/v2025-06/partner_tokens"],
   ["partner-tokens/deletes-a-partner-token", "DELETE /api/v2025-06/partner_tokens/{id}"],
   ["partner-tokens/returns-a-specific-partner-token", "GET /api/v2025-06/partner_tokens/{id}"],
