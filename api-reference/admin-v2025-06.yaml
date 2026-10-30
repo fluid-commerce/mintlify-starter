@@ -381,6 +381,22 @@ components:
                 - 'null'
             total_count:
               type: integer
+    PointsPricePair:
+      type: object
+      description: 'A points price as a pair: points_count points buy currency_subunits minor units of the currency (cents for USD, yen for JPY). A response reports the stored pair, per one unit of the currency: currency_subunits is the minor units in one unit and points_count equals points_amount, whatever pair was sent, so a USD update sent as 10 points for 1000 subunits comes back as 1 point for 100.'
+      required:
+        - points_count
+        - currency_subunits
+      additionalProperties: false
+      properties:
+        points_count:
+          type: integer
+          minimum: 1
+          description: The points of the pair.
+        currency_subunits:
+          type: integer
+          minimum: 1
+          description: The minor units of the currency the points buy.
     PointsWorthOf100:
       type: object
       description: What 100 points are worth in a market, in its own currency and in the company's home currency, converted through the stored exchange rates. A market nobody priced (configured false) has neither figure. Otherwise the home market has both figures, equal, with no rate needed; any other market with no stored exchange rate, or whose home currency has none, has its own figure and no home figure.
@@ -4991,7 +5007,7 @@ components:
                 - string
                 - number
                 - 'null'
-              description: Amount of points to add (positive) or subtract (negative)
+              description: Whole points to add (positive) or subtract (negative). A number with a fraction is refused with 422.
             idempotency_key:
               type:
                 - string
@@ -5006,11 +5022,11 @@ components:
               description: Metadata about the points credit or debit. The order_credit transaction type and New Order source name are reserved for order accruals.
               additionalProperties:
                 $ref: '#/components/schemas/JsonValue'
-            skip_webhooks:
+            skip_events:
               type:
                 - boolean
                 - 'null'
-              description: When true, skips webhook broadcasts for point_wallet_updated and point_update_reward events. Useful for bulk imports, internal sync operations, or avoiding duplicate notifications.
+              description: When true, the entry fires no points event, so no point_wallet_updated or point_update_reward webhook is sent. Useful for bulk imports, internal sync operations, or avoiding duplicate notifications.
     CreateProductLighthouseRequestBodyApplicationJsonSchema:
       type:
         - object
@@ -44449,6 +44465,9 @@ paths:
                     currency_symbol: $
                     currency_name: US Dollar
                     configured: true
+                    price:
+                      points_count: 10
+                      currency_subunits: 100
                     worth_of_100_points:
                       amount: '10.00'
                       home_amount: '10.00'
@@ -44460,6 +44479,9 @@ paths:
                     currency_symbol: $
                     currency_name: Canadian Dollar
                     configured: true
+                    price:
+                      points_count: 14
+                      currency_subunits: 100
                     worth_of_100_points:
                       amount: '7.14'
                       home_amount: '5.13'
@@ -44471,6 +44493,7 @@ paths:
                     currency_symbol: €
                     currency_name: Euro
                     configured: false
+                    price: null
                     worth_of_100_points:
                       amount: null
                       home_amount: null
@@ -44484,6 +44507,9 @@ paths:
                   currency_symbol: $
                   currency_name: US Dollar
                   configured: true
+                  price:
+                    points_count: 10
+                    currency_subunits: 100
                   worth_of_100_points:
                     amount: '10.00'
                     home_amount: '10.00'
@@ -44528,6 +44554,11 @@ paths:
                         configured:
                           type: boolean
                           description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
+                        price:
+                          description: The stored price as a pair, per one unit of the currency, or null for a market with no stored value, or whose currency code is not one the money gem knows, so its minor units are unknown.
+                          oneOf:
+                            - $ref: '#/components/schemas/PointsPricePair'
+                            - type: 'null'
                   primary_currency:
                     type: string
                   primary_currency_data:
@@ -44556,6 +44587,11 @@ paths:
                       configured:
                         type: boolean
                         description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
+                      price:
+                        description: The stored price as a pair, per one unit of the currency, or null for a market with no stored value, or whose currency code is not one the money gem knows, so its minor units are unknown.
+                        oneOf:
+                          - $ref: '#/components/schemas/PointsPricePair'
+                          - type: 'null'
                   meta:
                     $ref: '#/components/schemas/Meta'
                 additionalProperties: false
@@ -44567,7 +44603,7 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     patch:
       summary: Update a points value for a currency
-      description: Update or create a points value for a specific currency. The authenticated user is recorded as the person who set it; submitting an unchanged value confirms it. A token that names no user is refused with 422 where the company refuses unpriced markets; elsewhere its value is saved with no author, so it reads as configured false.
+      description: Update or create a points value for a specific currency, as points_amount (points per unit of the currency) or as a price pair (points_count points for currency_subunits minor units), never both. A pair is saved as the whole points per unit it comes to; one that does not come to a whole number of points per unit that can be held as a price is refused with 422, and the error names the nearest pair that does under errors.nearest_price. A pair that comes to more than 2147483647 points per unit is refused with 422 too, with no nearest pair. The response reports the stored pair, per one unit of the currency, so 10 points for 1000 USD subunits comes back as 1 point for 100. The authenticated user is recorded as the person who set it; submitting an unchanged value confirms it. A token that names no user is refused with 422 where the company refuses unpriced markets; elsewhere its value is saved with no author, so it reads as configured false.
       tags:
         - points-values
       operationId: admin_v2025_06_update_points_value
@@ -44587,15 +44623,37 @@ paths:
                 - points_value
               properties:
                 points_value:
-                  type: object
-                  required:
-                    - currency_code
-                    - points_amount
-                  properties:
-                    currency_code:
-                      type: string
-                    points_amount:
-                      type: integer
+                  description: Exactly one of points_amount and price.
+                  oneOf:
+                    - type: object
+                      title: PointsValueByPointsAmount
+                      description: A points value set as the points one unit of the currency buys.
+                      required:
+                        - currency_code
+                        - points_amount
+                      not:
+                        required:
+                          - price
+                      properties:
+                        currency_code:
+                          type: string
+                        points_amount:
+                          type: integer
+                          description: The points one unit of the currency buys.
+                    - type: object
+                      title: PointsValueByPrice
+                      description: A points value set as a price pair, saved as the whole points per unit it comes to.
+                      required:
+                        - currency_code
+                        - price
+                      not:
+                        required:
+                          - points_amount
+                      properties:
+                        currency_code:
+                          type: string
+                        price:
+                          $ref: '#/components/schemas/PointsPricePair'
       responses:
         '200':
           description: Success
@@ -44609,6 +44667,9 @@ paths:
                   currency_symbol: $
                   currency_name: Canadian Dollar
                   configured: true
+                  price:
+                    points_count: 14
+                    currency_subunits: 100
                   worth_of_100_points:
                     amount: '7.14'
                     home_amount: '5.13'
@@ -44646,6 +44707,11 @@ paths:
                       configured:
                         type: boolean
                         description: Whether a person set this value. False means the market is unpriced, whatever points_amount holds; a market with no stored value reports 1, and one whose value nobody set reports the amount it holds.
+                      price:
+                        description: The stored price as a pair, per one unit of the currency, or null for a market with no stored value, or whose currency code is not one the money gem knows, so its minor units are unknown.
+                        oneOf:
+                          - $ref: '#/components/schemas/PointsPricePair'
+                          - type: 'null'
                   meta:
                     $ref: '#/components/schemas/Meta'
                 additionalProperties: false
