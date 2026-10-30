@@ -24,6 +24,8 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Build a first integration | https://docs.fluid.app/quickstart |
 | Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
 | Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
+| Build a member site: a site a member or the company owns, with its own pages, served at `/accounts/<handle>` | https://docs.fluid.app/member-sites/overview, then https://docs.fluid.app/member-sites/build-with-the-api or https://docs.fluid.app/member-sites/cli-reference |
+| Write JavaScript for a member site's pages (`window.fluid`) | https://docs.fluid.app/member-sites/site-sdk |
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
@@ -47,6 +49,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
+| Member site, site for my members | A member site: a site a member or the company owns and builds, at `/accounts/<handle>`. It is not MySite, and not a theme's member storefront site. | https://docs.fluid.app/member-sites/overview |
 | Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
@@ -56,6 +59,18 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
 - **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
 - **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
+
+## Member sites
+
+A member site is owned by a member or by the company. Ask who owns it, then use the route for that owner:
+
+- **A member's own site:** the member API, `/api/member/v2026-10/sites`, with the member's own credential, or `fluid member-site` with `--as member`. A member can own at most 25 sites.
+- **A company site:** the company API, `/api/company/v2026-10/member-sites`, with a signed-in admin who may change themes, or `fluid member-site` with `--as admin`. A company API token can read but not write.
+- **Neither route reaches the other owner's sites.** A company admin can't change a member's site, and a member can't change a company site.
+- **Member sites must be turned on for the company.** Without them every route answers `404`. Tell the user to ask Fluid.
+- **Build, then publish.** Write files and pages, which are saved as drafts, and publish only when the user asks.
+
+Don't use `fluid mysite` or `fluid theme` for a member site. The steps are at https://docs.fluid.app/member-sites/build-with-the-api.
 
 ## Before you build a Droplet
 
@@ -116,8 +131,9 @@ Use only commands the CLI reference pages list. If a command isn't on those page
 - **Themes** (https://docs.fluid.app/themes/cli): `fluid login`, `fluid theme init`, `fluid theme pull`, `fluid theme dev`, `fluid theme lint`, `fluid theme push`, `fluid theme crawl`. Which theme a push lands on: https://docs.fluid.app/themes/cli#choose-the-theme-a-command-uses
 - **MySite themes** (https://docs.fluid.app/themes/mysite-themes#work-on-a-theme-with-the-cli): `fluid mysite list`, `fluid mysite pull`, `fluid mysite dev`, `fluid mysite publish`. A publish changes every MySite on that theme at once.
 - **Media** (https://docs.fluid.app/api/dam-upload#upload-from-the-command-line): `fluid assets upload`.
+- **Member sites** (https://docs.fluid.app/member-sites/cli-reference): `fluid member-site list`, `fluid member-site create`, `fluid member-site pull`, `fluid member-site push`, `fluid member-site publish`, `fluid member-site lint`, from `@fluid-app/fluid-cli-member-site`. Pass `--as member` or `--as admin` to say which login you hold. `push` never publishes unless you pass `--publish`, and a `409` means pull again.
 - **Guided setups** (https://docs.fluid.app/setup/overview): `fluid setup list`, `fluid setup show`, `fluid setup run`.
-- **Publishing live:** never publish a theme, MySite or portal unless the user asks for that publish: https://docs.fluid.app/guides/connect-ai-tools#keep-agents-from-publishing-on-their-own
+- **Publishing live:** never publish a theme, MySite, member site or portal unless the user asks for that publish: https://docs.fluid.app/guides/connect-ai-tools#keep-agents-from-publishing-on-their-own
 - **Portal Definitions** (https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference): `fluid portal pull`, `fluid portal dev`, `fluid portal doctor` (reports drift in generated project files), `fluid portal push` (`--yes --activate` without prompts: https://docs.fluid.app/portal-widgets/portal-definitions/cli-reference#push-without-prompts), `fluid portal version`.
 - **Widget Packages** (https://docs.fluid.app/portal-widgets/widget-packages/cli-reference): `fluid widget create`, `fluid widget dev`, `fluid widget validate`, `fluid widget build`, `fluid widget push` (publish with this; it also records your source), `fluid widget publish`.
 - **Mist apps** (https://docs.fluid.app/mist-apps/quickstart): `fluid mist create`, `fluid mist clone`, `fluid mist open`, `fluid mist push`, `fluid mist show`, `fluid mist deployments`, `fluid mist logs`, `fluid mist env list`, `fluid mist env set`, `fluid mist env unset`, `fluid mist env pull`, `fluid mist staging`, `fluid mist attach`, `fluid mist droplet repair`, `fluid mist droplet reinstall` (https://docs.fluid.app/mist-apps/troubleshooting#reinstall-a-droplet), `fluid mist droplet egress-proxy`, `fluid mist restore`. Mist app custom domains have no CLI command; `fluid domains` manages storefront domains only.
