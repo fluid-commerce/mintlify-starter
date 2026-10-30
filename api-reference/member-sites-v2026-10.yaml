@@ -1,0 +1,2689 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Member API v2026-10 — Sites
+  description: |
+    The authenticated member's own sites: list, create, read, change, delete, publish and copy, with the files and pages that make up each site. The credential alone determines the member and company; a site and a page are identified by their public ids, never by a numeric id. A member can read and change only the sites they own. Any other id, and any id of a site in another company, returns 404.
+
+    These operations take a bearer only, the site menu, the site removals and the share-target search included. On the same-origin cookie mount, a request with a valid member session is refused with `403`, with or without an `X-Fluid-Member-Site` header, because a script on the company's storefront shares that origin and would otherwise act as the visiting member, so no cookie path to them can be kept from it; a request with a missing or unusable session is refused with `401` first, as on every cookie-mount route. A page that draws the account menu holds the member's bearer and sends it itself.
+
+    Every operation returns 404 while member sites are not enabled for the member's company (the `MEMBER_SITES` company feature). A credential that is refused is still refused with 401 or 403 first, so a refused credential never learns whether the feature is enabled.
+
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation refuses a credential for it with `403` and the standard error
+    envelope, before the operation runs.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  version: 2026-10
+security:
+- MemberBearer: []
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+- url: https://api.fluid.test
+  description: Local development server
+tags:
+- name: sites
+  x-fluid-section: Members
+  description: The signed-in member's own sites, with publishing, copying and optimistic locking.
+- name: site-files
+  x-fluid-section: Members
+  description: The files of one of the member's sites (layouts, sections, snippets, assets, page content, settings and menus), addressed by theme-style path.
+- name: site-shares
+  x-fluid-section: Members
+  description: Who one of the member's sites is shared with, a named member, the member's downline or a segment of the company's members, each with a view or copy permission.
+- name: site-pages
+  x-fluid-section: Members
+  description: The pages of one of the member's sites, each with the template that holds its content.
+- name: site-menu
+  x-fluid-section: Members
+  description: The member's account menu, grouped into the company's sites, the sites they built, the sites shared with them and the sites they removed.
+- name: site-removals
+  x-fluid-section: Members
+  description: Taking a site out of the member's own account menu, and putting it back. A removal changes nothing for the site's owner or for anyone else.
+- name: site-share-targets
+  x-fluid-section: Members
+  description: Whom the member may share a site with, inside the reach their company's messaging policy gives them.
+components:
+  securitySchemes:
+    MemberBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A member credential in the `Authorization: Bearer` header: a member
+        session JWT, a portal JWT whose login is linked to a membership in
+        that company, an opaque member token, or a verified One Auth identity
+        access token. The credential alone identifies the member and company.
+        Member session and portal JWTs are read-only and are refused with 403
+        on every write.
+  headers:
+    ETag:
+      description: Fingerprint of this member's representation. Send it back in If-None-Match to skip the body while it is unchanged.
+      schema:
+        type: string
+    CacheControl:
+      description: Standard HTTP Cache-Control directive. Always private for this surface.
+      schema:
+        type: string
+        example: "max-age=0, private"
+    RateLimitLimit:
+      description: Searches allowed per minute for this credential.
+      schema:
+        type: string
+        example: '30'
+    RateLimitRemaining:
+      description: Searches left in the current minute; always 0 on a refused request.
+      schema:
+        type: string
+        example: '0'
+    RateLimitReset:
+      description: When the current minute ends and the credential's search budget is restored, as a UTC timestamp.
+      schema:
+        type: string
+        example: 2026-09-30 18:25:00 UTC
+  schemas:
+    ResponseMeta:
+      type: object
+      description: Envelope metadata present on every response.
+      properties:
+        request_uuid:
+          type: string
+          format: uuid
+          description: Server-generated UUIDv7 uniquely identifying this response.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the server produced the response.
+      required:
+      - request_uuid
+      - timestamp
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      description: Standard error envelope.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        error:
+          type: object
+          description: The error message and field-keyed details.
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            details:
+              type: object
+              description: Machine-readable details, keyed by field where a field is at fault.
+              additionalProperties: true
+          required:
+          - message
+          - details
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - error
+      - meta
+    RateLimitError:
+      type: object
+      description: >-
+        The rate limiter's refusal. It is sent before the request reaches the API, so it has no status, error
+        or meta envelope.
+      properties:
+        error:
+          type: string
+          description: Always `Rate limit exceeded`.
+          example: Rate limit exceeded
+        message:
+          type: string
+          description: Human-readable explanation.
+          example: Too many requests. Please wait before trying again.
+        retry_after:
+          type: integer
+          minimum: 1
+          description: Seconds until the credential's search budget is restored.
+          example: 42
+      required:
+      - error
+      - message
+      - retry_after
+    Site:
+      type: object
+      description: One of the member's sites.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Public site id. It never changes, including when the handle changes.
+        handle:
+          type: string
+          description: The site's URL segment, unique in the company without regard to letter case.
+        name:
+          type: string
+          description: Display name.
+        visibility:
+          type: string
+          enum:
+          - private
+          - public
+          description: Who may open the site once it is published.
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - taken_down
+          description: Whether the site is a draft, published, or taken down by a company admin. The owner cannot publish a site that was taken down.
+        owner_kind:
+          type: string
+          enum:
+          - company
+          - member
+          description: Who owns the site. The sites this API returns are owned by the member.
+        copied_from_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Public id of the site this one was copied from, or null for a site that was not copied. It becomes null when the original is deleted. A member who can no longer open the original keeps the id, which names no content.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          description: The default layout for the site's pages, or null to use the site's own `site` layout.
+        settings:
+          type: object
+          additionalProperties: true
+          description: Design tokens such as colors and fonts, read as `settings` in the site's templates.
+        content_version:
+          type: string
+          format: uuid
+          description: Replaced on every publish.
+        lock_version:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+          description: Optimistic locking version. Send it back as `lock_version` when changing the site, to refuse the change if the site changed since it was read. It also changes when a page of the site is added, changed or removed, and when `config/menus.json` is written, so read the site again before a versioned change.
+        created_at:
+          type: string
+          format: date-time
+          description: When the site was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the site last changed.
+      required:
+      - id
+      - handle
+      - name
+      - visibility
+      - status
+      - owner_kind
+      - copied_from_id
+      - layout_name
+      - settings
+      - content_version
+      - lock_version
+      - created_at
+      - updated_at
+    SiteCreate:
+      type: object
+      description: A new site. Fields a member cannot set, such as `required` and `position`, are refused as unknown fields.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: Display name.
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          description: Lowercase letters and digits separated by single hyphens, not reserved and not used by another site in the company. Omit it to have one proposed from the name.
+        visibility:
+          type: string
+          enum:
+          - private
+          - public
+          description: Who may open the site once it is published. Defaults to private.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The default layout for the site's pages. Null or omitted uses the site's own `site` layout.
+        settings:
+          type: object
+          additionalProperties: true
+          description: Design tokens such as colors and fonts.
+      required:
+      - name
+    SiteUpdate:
+      type: object
+      description: Changes to a site. Send at least one field besides `lock_version`. Fields a member cannot set, such as `required` and `position`, are refused as unknown fields.
+      additionalProperties: false
+      anyOf:
+      - required:
+        - name
+      - required:
+        - handle
+      - required:
+        - visibility
+      - required:
+        - layout_name
+      - required:
+        - settings
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: Display name.
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          description: Lowercase letters and digits separated by single hyphens, not reserved and not used by another site in the company. The site keeps its public id.
+        visibility:
+          type: string
+          enum:
+          - private
+          - public
+          description: Who may open the site once it is published.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The default layout for the site's pages. Null uses the site's own `site` layout.
+        settings:
+          type: object
+          additionalProperties: true
+          description: Design tokens such as colors and fonts. Replaces the whole object.
+        lock_version:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: The `lock_version` the caller last read. The change is refused with 409 if the site changed since, including by a change to one of its pages or menus.
+    SiteCopy:
+      type: object
+      description: Optional choices for a copy. Any other field, such as `visibility`, is refused as an unknown field.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: Display name of the copy. Omit it to use "Copy of" followed by the original's name.
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          description: Lowercase letters and digits separated by single hyphens, not reserved and not used by another site in the company. Omit it to have one proposed from the name.
+    SiteEnvelope:
+      type: object
+      description: One site.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/Site"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SitesEnvelope:
+      type: object
+      description: All of the member's sites.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The member's sites, newest first.
+          items:
+            "$ref": "#/components/schemas/Site"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteFile:
+      type: object
+      description: One file of a site.
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: The theme-style path of the file, such as `layouts/site.liquid`.
+        content:
+          type: string
+          description: The file's content. `config/settings.json`, `config/menus.json` and `config/pages.json` hold JSON documents.
+        lock_version:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          maximum: 2147483647
+          description: The version of the site's settings, for `config/settings.json` only. Send it back as `lock_version` when writing the settings. It also changes when a page of the site is added, changed or removed, and when `config/menus.json` is written, so read the settings again before a versioned write. Null for every other file; they are versioned by `version`.
+        version:
+          type: string
+          description: >-
+            The version of the file, to send back as `version` when writing it (the request body) or removing it (the query parameter), so the change is refused with 409 if the file changed since. For an asset it is a digest of the content. For a layout, section, snippet or page file it is a digest of the draft content and of the published copy, so a publish changes it too: read the files again after publishing. For `config/menus.json` and `config/pages.json` it is a digest of the document. For `config/settings.json` it is the `lock_version` as a string, which also changes when a page is added, changed or removed and when `config/menus.json` is written.
+            Treat it as opaque.
+      required:
+      - path
+      - content
+      - lock_version
+      - version
+    SiteFileWrite:
+      type: object
+      description: The content of a file. The path is in the URL.
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+          pattern: '^[^\u0000]*$'
+          description: The whole new content of the file. An asset must not be empty. `config/settings.json` takes a JSON object, and `config/menus.json` a JSON document of menus, and `config/pages.json` a JSON document of the site's default layout and page settings.
+        lock_version:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+          description: The `lock_version` of `config/settings.json` the caller last read. The write is refused with 409 if the settings changed since. Ignored for every other file. Send either this or `version`, not both.
+        version:
+          type: string
+          maxLength: 255
+          pattern: '^[^\u0000]*$'
+          description: >-
+            The `version` of the file the caller last read. The write is refused with 409 if the file has changed or been removed since, and nothing is written. For `config/settings.json` it is the `lock_version` as a string, and for `config/menus.json` and `config/pages.json` the digest of the document.
+            Without `version` or `must_not_exist`, the write replaces whatever is at the path. Cannot be sent with `must_not_exist` or `lock_version`.
+        must_not_exist:
+          type: boolean
+          description: Send `true` to create the file only if the path holds none. The write is refused with 409 if a file is already there, so a file another writer created since the caller listed the files is not replaced. `config/settings.json`, `config/menus.json` and `config/pages.json` always exist, so it is always refused for them. Cannot be sent with `version`.
+      required:
+      - content
+    SiteFileEnvelope:
+      type: object
+      description: One site file.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteFile"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteFileEntry:
+      type: object
+      description: The metadata of one file of a site, without its content. Read the file with `GET /sites/{site_id}/files/{path}`.
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: The theme-style path of the file, such as `layouts/site.liquid`.
+        kind:
+          type: string
+          enum:
+          - layout
+          - section
+          - snippet
+          - page
+          - asset
+          - settings
+          - menus
+          - pages
+          description: What the file is.
+        content_type:
+          type: string
+          description: The content type of the file, such as `text/x-liquid` for a layout, section, snippet or page and `text/css` for a stylesheet. `config/settings.json`, `config/menus.json` and `config/pages.json` are `application/json`.
+        byte_size:
+          type: integer
+          minimum: 0
+          description: The size in bytes of the content that reading the file returns.
+        lock_version:
+          type:
+          - integer
+          - 'null'
+          maximum: 2147483647
+          minimum: 0
+          description: The version of the site's settings, for `config/settings.json` only. Null for every other file; they are versioned by `version`.
+        version:
+          type: string
+          description: The version of the file, to send back as `version` when writing or removing it. See the `version` of a read file.
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the file last changed. Null for `config/menus.json` and `config/pages.json`, which have no time of their own.
+      required:
+      - path
+      - kind
+      - content_type
+      - byte_size
+      - lock_version
+      - version
+      - updated_at
+    PaginationMeta:
+      type: object
+      description: Keyset pagination state for a list.
+      additionalProperties: false
+      properties:
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Send as `page[cursor]` for the next page; null on the last page.
+      required:
+      - next_cursor
+    SiteFileEntriesEnvelope:
+      type: object
+      description: One page of the files of a site, as metadata.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The files of the page, sorted by path.
+          items:
+            "$ref": "#/components/schemas/SiteFileEntry"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteShare:
+      type: object
+      description: One audience a site is shared with. It never carries an email address.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the share.
+        audience_kind:
+          type: string
+          enum:
+          - member
+          - downline
+          - segment
+          description: Who the site is shared with. `member` names one member, `downline` is the downline of the member who shared it, and `segment` is the company's members of a member type, in a country, both or neither (every member).
+        member:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The member a `member` share names. Null for every other kind.
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Id of the member.
+            name:
+              type:
+              - string
+              - 'null'
+              description: The member's name, or null when they have none.
+          required:
+          - id
+          - name
+        member_type:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The member type a `segment` share names. Null when it names none, and for every other kind.
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Id of the member type.
+            name:
+              type: string
+              description: Name of the member type.
+          required:
+          - id
+          - name
+        country:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The country a `segment` share names. Null when it names none, and for every other kind.
+          properties:
+            code:
+              type: string
+              description: ISO 3166-1 alpha-2 code of the country.
+            name:
+              type: string
+              description: Name of the country.
+          required:
+          - code
+          - name
+        label:
+          type: string
+          description: The audience in words. A member share is the member's name, or "A member" when they have none; a downline share is "Downline of" the member who shared it; a segment share is "Customer in United States", "Customer", "Members in United States" or "All members".
+        permission:
+          type: string
+          enum:
+          - view
+          - copy
+          description: What the audience may do with the site. `view` opens it; `copy` also lets them copy it into a site of their own.
+        created_at:
+          type: string
+          format: date-time
+          description: When the site was shared with the audience.
+      required:
+      - id
+      - audience_kind
+      - member
+      - member_type
+      - country
+      - label
+      - permission
+      - created_at
+    SiteShareCreate:
+      type: object
+      description: Share a site with one audience. Each audience kind takes its own targets, and sending a target the kind does not take is refused with 422.
+      additionalProperties: false
+      properties:
+        audience_kind:
+          type: string
+          enum:
+          - member
+          - downline
+          - segment
+          description: Who to share with. A `member` share needs `member_id` and takes no other target. A `downline` share takes none. A `segment` share takes `member_type_id`, `country_code`, both or neither, and neither shares with every member the company's messaging policy lets you reach.
+        member_id:
+          type: string
+          format: uuid
+          description: Id of the member to share with. A member of another company is refused with 422.
+        member_type_id:
+          type: string
+          format: uuid
+          description: Id of the member type of a segment.
+        country_code:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: ISO 3166-1 alpha-2 code of the country of a segment, one of the countries the company sells in.
+        permission:
+          type: string
+          enum:
+          - view
+          - copy
+          default: view
+          description: What the audience may do with the site. Ignored for an audience that is already shared; change it with `PATCH`.
+      required:
+      - audience_kind
+    SiteShareUpdate:
+      type: object
+      description: The change to a share. Only the permission changes; to change who a share names, delete it and add another.
+      additionalProperties: false
+      properties:
+        permission:
+          type: string
+          enum:
+          - view
+          - copy
+          description: What the audience may do with the site.
+      required:
+      - permission
+    SiteShareEnvelope:
+      type: object
+      description: One share.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteShare"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteSharesEnvelope:
+      type: object
+      description: One page of the shares of a site.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The shares of the page, oldest first.
+          items:
+            "$ref": "#/components/schemas/SiteShare"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SitePage:
+      type: object
+      description: One page of a site. Its content is the site file `pages/<slug>.liquid`, not part of the page.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Public page id. It never changes, including when the slug changes.
+        slug:
+          type: string
+          description: The page's URL segment, unique in the site, or `/` for the home page.
+        title:
+          type: string
+          description: Display title.
+        position:
+          type: integer
+          description: Order of the page among the site's pages.
+        published:
+          type: boolean
+          description: Whether the page is shown once the site is published.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          description: The layout this page uses, or null to use the site's default.
+        menu:
+          type:
+          - string
+          - 'null'
+          description: The slug of the site's menu assigned to the page, or null for none. Menus are defined in `config/menus.json`.
+        lock_version:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+          description: Optimistic locking version. Send it back as `lock_version` when changing the page (the request body) or removing it (the query parameter), to refuse the change if the page changed since it was read. It also changes when the page's content is written, through the page or through its file `pages/<slug>.liquid`, and when the page's content is published, by publishing the site or its file.
+        created_at:
+          type: string
+          format: date-time
+          description: When the page was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the page last changed.
+      required:
+      - id
+      - slug
+      - title
+      - position
+      - published
+      - layout_name
+      - menu
+      - lock_version
+      - created_at
+      - updated_at
+    SitePageCreate:
+      type: object
+      description: A new page. Fields a member cannot set are refused as unknown fields.
+      additionalProperties: false
+      properties:
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^(/|[a-z0-9]+(-[a-z0-9]+)*)$'
+          description: Lowercase letters and digits separated by single hyphens, unique in the site, or `/` for the home page. `index` is reserved for the home page.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: Display title.
+        position:
+          type: integer
+          description: Order of the page among the site's pages. Defaults to 0.
+        published:
+          type: boolean
+          description: Whether the page is shown once the site is published. Defaults to false.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The layout this page uses. Null or omitted uses the site's default.
+        menu:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The slug of one of the site's own menus. A menu of another site is refused. Null or omitted assigns none.
+        content:
+          type: string
+          pattern: '^[^\u0000]*$'
+          description: The page's content, kept in the site file `pages/<slug>.liquid`. Empty by default.
+      required:
+      - slug
+      - title
+    SitePageUpdate:
+      type: object
+      description: Changes to a page. Send at least one field besides `lock_version`. Fields a member cannot set are refused as unknown fields.
+      additionalProperties: false
+      anyOf:
+      - required:
+        - slug
+      - required:
+        - title
+      - required:
+        - position
+      - required:
+        - published
+      - required:
+        - layout_name
+      - required:
+        - menu
+      - required:
+        - content
+      properties:
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^(/|[a-z0-9]+(-[a-z0-9]+)*)$'
+          description: Lowercase letters and digits separated by single hyphens, unique in the site, or `/` for the home page. The page keeps its public id, and its content moves with it.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: Display title.
+        position:
+          type: integer
+          description: Order of the page among the site's pages.
+        published:
+          type: boolean
+          description: Whether the page is shown once the site is published.
+        layout_name:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The layout this page uses. Null uses the site's default.
+        menu:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The slug of one of the site's own menus. A menu of another site is refused. Null removes the page's menu.
+        content:
+          type: string
+          pattern: '^[^\u0000]*$'
+          description: The page's new content. Refused with 403 for a page that uses a template the site does not own.
+        lock_version:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: The `lock_version` the caller last read. The change is refused with 409 if the page changed since.
+    SitePageEnvelope:
+      type: object
+      description: One page.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SitePage"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SitePagesEnvelope:
+      type: object
+      description: All of a site's pages.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The site's pages in order, by position.
+          items:
+            "$ref": "#/components/schemas/SitePage"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteMenuEntry:
+      type: object
+      description: One site in the member's account menu.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Public id of the site.
+        handle:
+          type: string
+          description: The site's URL segment.
+        name:
+          type: string
+          description: Display name.
+        status:
+          type: string
+          enum:
+          - draft
+          - published
+          - taken_down
+          description: Whether the site is a draft or published. Only the member's own sites can be drafts.
+        visibility:
+          type: string
+          enum:
+          - private
+          - public
+          description: Who may open the site once it is published.
+        owner_kind:
+          type: string
+          enum:
+          - company
+          - member
+          description: Who owns the site.
+        owner_name:
+          type:
+          - string
+          - 'null'
+          description: The name to show for the owner. The company's name for a company site, otherwise the owning member's name. It is null for a member who has no name.
+        removable:
+          type: boolean
+          description: Whether the member may remove the site from their menu. A required company site and the member's own site cannot be removed.
+        removal_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Id of the member's removal of the site, to restore it with `DELETE /site-removals/{id}`. Null unless the site is in `removed_sites`.
+      required:
+      - id
+      - handle
+      - name
+      - status
+      - visibility
+      - owner_kind
+      - owner_name
+      - removable
+      - removal_id
+    SiteMenu:
+      type: object
+      description: The member's account menu, read when the request was made.
+      additionalProperties: false
+      properties:
+        company_sites:
+          type: array
+          description: Published company sites the member is shared, in the company's order. A required site is always here, whatever the member removed.
+          items:
+            "$ref": "#/components/schemas/SiteMenuEntry"
+        own_sites:
+          type: array
+          description: The member's own sites, drafts included, oldest first. A site an admin took down is not listed.
+          items:
+            "$ref": "#/components/schemas/SiteMenuEntry"
+        shared_sites:
+          type: array
+          description: Published sites other members own that are shared with the member and that they have not removed. At most the newest 100, oldest first; `shared_sites_omitted` counts the rest.
+          items:
+            "$ref": "#/components/schemas/SiteMenuEntry"
+        removed_sites:
+          type: array
+          description: Sites the member removed from their menu that are still shared with them, oldest first. Each carries its `removal_id`.
+          items:
+            "$ref": "#/components/schemas/SiteMenuEntry"
+        landing_site_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Id of the site `/accounts` opens, which is also the id of one of the entries above. The first company site the member has not removed, else the first company site, else their newest own site. Null when there is none.
+        shared_sites_omitted:
+          type: integer
+          minimum: 0
+          description: How many shared sites are not listed in `shared_sites` because of its limit.
+      required:
+      - company_sites
+      - own_sites
+      - shared_sites
+      - removed_sites
+      - landing_site_id
+      - shared_sites_omitted
+    SiteMenuEnvelope:
+      type: object
+      description: The member's account menu.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteMenu"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteRemoval:
+      type: object
+      description: A member's removal of one site from their menu.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the removal. Send it to `DELETE /site-removals/{id}` to restore the site.
+        site_id:
+          type: string
+          format: uuid
+          description: Public id of the site that was removed from the menu.
+        created_at:
+          type: string
+          format: date-time
+          description: When the site was removed.
+      required:
+      - id
+      - site_id
+      - created_at
+    SiteRemovalCreate:
+      type: object
+      description: The site to remove from the member's menu. Any other field is refused as an unknown field.
+      additionalProperties: false
+      properties:
+        site_id:
+          type: string
+          format: uuid
+          description: Public id of the site, as listed in the member's menu.
+      required:
+      - site_id
+    SiteRemovalEnvelope:
+      type: object
+      description: One removal.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteRemoval"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteShareTargetMember:
+      type: object
+      description: A member the caller may share a site with by name.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the member, to name them in a `member` share.
+        name:
+          type:
+          - string
+          - 'null'
+          description: The name to show. Null for a member who has no name.
+        email:
+          type:
+          - string
+          - 'null'
+          description: The member's email address. Null unless `emails_visible` is true.
+      required:
+      - id
+      - name
+      - email
+    SiteShareTargetMemberType:
+      type: object
+      description: A member type of the company, which a `segment` share may name.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the member type.
+        name:
+          type: string
+          description: Display name.
+      required:
+      - id
+      - name
+    SiteShareTargetCountry:
+      type: object
+      description: A country the company sells in, which a `segment` share may name.
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        name:
+          type: string
+          description: Display name.
+      required:
+      - code
+      - name
+    SiteShareTargets:
+      type: object
+      description: Whom the member may share a site with.
+      additionalProperties: false
+      properties:
+        members:
+          type: array
+          description: Members matching `q`, by name, or by email address where `emails_visible` is true, sorted by name. At most 20, and never the caller or a member outside their messaging scope. Empty when `member` is not in `allowed`, or when `q` has no part of 3 characters.
+          items:
+            "$ref": "#/components/schemas/SiteShareTargetMember"
+        member_types:
+          type: array
+          description: The company's active member types. Empty unless `segment` is in `allowed`.
+          items:
+            "$ref": "#/components/schemas/SiteShareTargetMemberType"
+        countries:
+          type: array
+          description: The countries the company sells in. Empty unless `segment` is in `allowed`.
+          items:
+            "$ref": "#/components/schemas/SiteShareTargetCountry"
+        downline_count:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          description: How many members a `downline` share by the caller reaches, at most 1000. These are the kept members below the caller on the enrollment tree, and under `team_graph` only those in the caller's Team Graph, which excludes members without a legacy id. Null unless `downline` is in `allowed`.
+        downline_count_capped:
+          type: boolean
+          description: Whether the downline is larger than `downline_count`, which is then 1000 ("1,000+").
+        allowed:
+          type: array
+          description: The audience kinds the caller may share with. All three under `all_members`, `member` and `downline` under `team_graph`, none under `no_direct_messages`.
+          items:
+            type: string
+            enum:
+            - member
+            - downline
+            - segment
+        emails_visible:
+          type: boolean
+          description: Whether the messaging policy shows members' email addresses. When false every `email` is null and a search does not match addresses.
+      required:
+      - members
+      - member_types
+      - countries
+      - downline_count
+      - downline_count_capped
+      - allowed
+      - emails_visible
+    SiteShareTargetsEnvelope:
+      type: object
+      description: Whom the member may share a site with.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteShareTargets"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+  responses:
+    Unauthorized:
+      description: Missing or unusable member credential.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    ReadOnlyCredential:
+      description: The valid member credential is read-only (a member or portal JWT), or belongs to a sandbox test company that cannot be reached now, because sandbox access is turned off for its live company or the live company was deleted.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    SandboxTwin:
+      description: The credential belongs to a sandbox test company that cannot be reached now, because sandbox access is turned off for its live company or the live company was deleted.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    SandboxTwinOrCookieMount:
+      description: The credential belongs to a sandbox test company that cannot be reached now, because sandbox access is turned off for its live company or the live company was deleted; or the request is on the cookie mount, which this operation never serves, with or without the `X-Fluid-Member-Site` header.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    WriteRefused:
+      description: The valid member credential is read-only (a member or portal JWT); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never serves site removals.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: No site of the member's has this id, the site has no such file or page, or member sites are not enabled for the member's company.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    Conflict:
+      description: The site, its settings, the page or the file changed since it was read, or a file to be created already exists. Read it again and retry.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+  parameters:
+    SiteId:
+      name: id
+      in: path
+      required: true
+      description: Public id of one of the member's sites.
+      schema:
+        type: string
+        format: uuid
+    SiteIdPath:
+      name: site_id
+      in: path
+      required: true
+      description: Public id of one of the member's sites.
+      schema:
+        type: string
+        format: uuid
+    FilePath:
+      name: path
+      in: path
+      required: true
+      description: 'The theme-style path of the file, with its slash: `layouts/<name>.liquid`, `sections/<name>.liquid`, `snippets/<name>.liquid`, `pages/<slug>.liquid` (`pages/index.liquid` for the home page), `assets/<file>` (a css, js, json, txt or html file), `config/settings.json`, `config/menus.json` or `config/pages.json`. Names use lowercase letters, digits, hyphens and underscores, with no subfolders. Any other path is refused with 422.'
+      schema:
+        type: string
+        pattern: '^.+$'
+    ShareId:
+      name: id
+      in: path
+      required: true
+      description: Id of one of the site's shares.
+      schema:
+        type: string
+        format: uuid
+    PageId:
+      name: page_id
+      in: path
+      required: true
+      description: Public id of one of the site's pages.
+      schema:
+        type: string
+        format: uuid
+    RemovalId:
+      name: id
+      in: path
+      required: true
+      description: Id of one of the member's removals, from `removal_id` in the menu or `id` in a removal.
+      schema:
+        type: string
+        format: uuid
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: ETag from a previous response.
+      schema:
+        type: string
+    ShareTargetQuery:
+      name: q
+      in: query
+      required: false
+      description: What a member's name starts with, or their email address where the company's policy shows it. Leading and trailing spaces are ignored. Blank lists the first members the caller may share with. Otherwise it needs 3 to 200 characters and is refused with 422 outside that range. Searching also needs the first word or the rest of the query to have 3 characters; a query where neither does matches no members, and the other targets are still returned.
+      schema:
+        type: string
+        maxLength: 200
+    FileVersionQuery:
+      name: version
+      in: query
+      required: false
+      description: The `version` of the file the caller last read. The file is removed only if it is still at that version, and the request is refused with 409 if it changed. Without it the file is removed as it is.
+      schema:
+        type: string
+        maxLength: 255
+    PageLockVersionQuery:
+      name: lock_version
+      in: query
+      required: false
+      description: The `lock_version` of the page the caller last read. The page is removed only if it is still at that version, and the request is refused with 409 if it changed. Without it the page is removed as it is.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 2147483647
+paths:
+  "/api/member/v2026-10/sites":
+    get:
+      summary: List the member's sites
+      description: Every site the member owns, newest first. A member owns at most 25 sites, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+      operationId: member_sites_index
+      tags:
+      - sites
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The member's sites.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SitesEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop
+                  name: Riley's Shop
+                  visibility: private
+                  status: draft
+                  owner_kind: member
+                  copied_from_id:
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
+                  lock_version: 0
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The representation is unchanged; authentication is checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwin"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+    post:
+      summary: Add a site
+      description: Adds a site owned by the member, as a draft. Without a handle one is proposed from the name, and a number is added when it is taken. A member can own at most 25 sites.
+      operationId: member_sites_create
+      tags:
+      - sites
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteCreate"
+            example:
+              name: Riley's Shop
+              visibility: private
+              settings:
+                primary_color: "#112233"
+      responses:
+        '201':
+          description: The new site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop
+                  name: Riley's Shop
+                  visibility: private
+                  status: draft
+                  owner_kind: member
+                  copied_from_id:
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
+                  lock_version: 0
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          description: A missing or blank name, a handle that is malformed, reserved or taken, a field a member cannot set, an unknown field, or the member already owns 25 sites.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteId"
+    get:
+      summary: Show a site
+      description: One of the member's sites. Another member's site, a missing one and a malformed id all return 404. Privately cacheable with revalidation on every read.
+      operationId: member_sites_show
+      tags:
+      - sites
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The site.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop
+                  name: Riley's Shop
+                  visibility: private
+                  status: draft
+                  owner_kind: member
+                  copied_from_id:
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
+                  lock_version: 0
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwin"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+    patch:
+      summary: Change a site
+      description: Changes the supplied fields. Send the `lock_version` you last read to refuse the change if the site changed since; without it the change is applied to the current site. A handle change keeps the site's public id.
+      operationId: member_sites_update
+      tags:
+      - sites
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteUpdate"
+            example:
+              name: Riley's Fall Shop
+              lock_version: 0
+      responses:
+        '200':
+          description: The changed site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop
+                  name: Riley's Fall Shop
+                  visibility: private
+                  status: draft
+                  owner_kind: member
+                  copied_from_id:
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
+                  lock_version: 1
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:05:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: An empty body, a blank name, a handle that is malformed, reserved or taken, an invalid visibility, a field a member cannot set, or an unknown field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Delete a site
+      description: Deletes the site and its pages.
+      operationId: member_sites_destroy
+      tags:
+      - sites
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The site was deleted.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+  "/api/member/v2026-10/sites/{id}/publish":
+    parameters:
+    - "$ref": "#/components/parameters/SiteId"
+    post:
+      summary: Publish a site
+      description: Marks the site published and replaces its `content_version`. Publishing a site that is already published publishes its current content again. The request has no body.
+      operationId: member_sites_publish
+      tags:
+      - sites
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The published site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop
+                  name: Riley's Shop
+                  visibility: private
+                  status: published
+                  owner_kind: member
+                  copied_from_id:
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d99'
+                  lock_version: 1
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:10:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: A company admin took the site down, so its owner cannot publish it again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{id}/copy":
+    parameters:
+    - "$ref": "#/components/parameters/SiteId"
+    post:
+      summary: Copy a site
+      description: |
+        Copies the published content of a site into a new draft site the member owns. The copy holds the site's published layouts, sections and snippets, its published pages, its published settings, its text assets and its menus. It never holds a draft above a published file, a file that was never published, or a page that is not published. A menu item that links to a page that was not copied is left out with the items below it. The copy is always private, is not published, and is not required; it counts toward the 25-site limit. The original is not changed, and the copy shares no rows with it: the content of each is independent, so changing either one never changes the other, and deleting either one never deletes the other. The new site's `copied_from_id` is the original's id; deleting the original sets the copy's `copied_from_id` to null and keeps the copy.
+
+        A member can copy a site they own, and a published site that a share with `copy` permission opens to them; when several shares match, the highest permission counts. A member who can open the site, such as a published public site with no share for them or one shared with them to view, but may not copy it gets 403. A site the member cannot open, such as another member's draft, a draft or taken-down site shared with them, a private site no share matches, a site in another company and an unknown id, returns 404, whatever the body holds. A member who owns a site an admin took down gets 422. The body is optional.
+      operationId: member_sites_copy
+      tags:
+      - sites
+      x-fluid-audience: member
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteCopy"
+            example:
+              name: Riley's Fall Shop
+              handle: fall-shop
+      responses:
+        '201':
+          description: The new site, a draft owned by the member.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e01'
+                  handle: fall-shop
+                  name: Riley's Fall Shop
+                  visibility: private
+                  status: draft
+                  owner_kind: member
+                  copied_from_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  layout_name:
+                  settings:
+                    primary_color: "#112233"
+                  content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e02'
+                  lock_version: 0
+                  created_at: '2026-09-02T10:00:00.000000Z'
+                  updated_at: '2026-09-02T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member or portal JWT), it belongs to a sandbox test company that cannot be reached now, or the member may open the site but may not copy it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: The member already owns 25 sites, the site was taken down, the site holds a file that cannot be copied (such as a binary asset), the site holds more pages than a site may, a name or handle is malformed, reserved or taken, or the body holds an unknown field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/files":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's files
+      description: The files of one of the member's sites as metadata (path, kind, content type, size, version and time), sorted by path, without their content. It lists each layout, section and snippet, each page whose template the site owns, each asset, `config/menus.json`, `config/pages.json` and `config/settings.json`. Each entry's `version` is the one to send back when writing or removing the file. Read a file's content with `GET /sites/{site_id}/files/{path}`. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every file. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+      operationId: member_site_files_index
+      tags:
+      - site-files
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      - name: page[cursor]
+        in: query
+        required: false
+        description: >-
+          Opaque cursor from `meta.pagination.next_cursor`, valid only for the same site.
+          A malformed, tampered or mismatched cursor returns 400.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Page size. Defaults to 25, at most 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the site's files.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteFileEntriesEnvelope"
+              example:
+                status: 200
+                data:
+                - path: assets/site.css
+                  kind: asset
+                  content_type: text/css
+                  byte_size: 19
+                  lock_version:
+                  version: 3e67b4a9505b24600272f1ce6b6776c4ae2ebde88f76559d4a2a51f602d800c4
+                  updated_at: '2026-09-30T15:02:11.482913Z'
+                - path: config/menus.json
+                  kind: menus
+                  content_type: application/json
+                  byte_size: 13
+                  lock_version:
+                  version: 83c16a26a7e791cacf1b6ab0d4daf34278b1d82815989a437cf2415a523d2e7d
+                  updated_at:
+                - path: config/pages.json
+                  kind: pages
+                  content_type: application/json
+                  byte_size: 35
+                  lock_version:
+                  version: f8aba6e163e6c6def5318179c27235af899675da39b7b9bcc1f6bcad2164cd22
+                  updated_at:
+                - path: config/settings.json
+                  kind: settings
+                  content_type: application/json
+                  byte_size: 28
+                  lock_version: 0
+                  version: '0'
+                  updated_at: '2026-09-30T15:00:03.120044Z'
+                - path: layouts/site.liquid
+                  kind: layout
+                  content_type: text/x-liquid
+                  byte_size: 24
+                  lock_version:
+                  version: 4c4127c0f28a648e32ccb71b3b6d1c7cf4c8c8cf8d4459c25a14dfab782049de
+                  updated_at: '2026-09-30T15:01:47.903318Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: The pagination cursor is malformed, tampered with or was issued for another site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwin"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          description: A `page[limit]` that is not an integer from 1 to 100, or a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/files/{path}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/FilePath"
+    get:
+      summary: Show a site file
+      description: One file of the site. A file that does not exist is 404, and a path that is none of the supported ones is 422. A page's content is a file only when the site owns the page's template. The file is not cached (`max-age=0`) and can be revalidated with an ETag.
+      operationId: member_site_files_show
+      tags:
+      - site-files
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The file.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteFileEnvelope"
+              example:
+                status: 200
+                data:
+                  path: layouts/site.liquid
+                  content: '{{ content_for_layout }}'
+                  lock_version:
+                  version: 4c4127c0f28a648e32ccb71b3b6d1c7cf4c8c8cf8d4459c25a14dfab782049de
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwin"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          description: The path is none of the supported ones, such as an unknown folder, a subfolder, or a path with `..`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    put:
+      summary: Write a site file
+      description: Creates the file, or replaces its content. Send the `version` of the file you read to refuse the write with 409 if the file changed or was removed since, or `must_not_exist` to create a file only if the path is free; without either the write replaces whatever is there, so the last write wins. The check and the write are one step, so a write that loses a race changes nothing. A page's file must already exist; add the page first. Writing `config/menus.json` replaces all of the site's menus, writing `config/pages.json` adds, changes and removes pages to match it and sets the site's default layout (a page added this way starts with an empty file), and writing `config/settings.json` replaces its settings. Layouts, sections, snippets and pages are saved as drafts until the site is published. Assets must be css, js, json, txt or html text files.
+      operationId: member_site_files_update
+      tags:
+      - site-files
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteFileWrite"
+            example:
+              content: '{{ content_for_layout }}'
+      responses:
+        '200':
+          description: The saved file, whether it was created or replaced.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteFileEnvelope"
+              example:
+                status: 200
+                data:
+                  path: layouts/site.liquid
+                  content: '{{ content_for_layout }}'
+                  lock_version:
+                  version: 4c4127c0f28a648e32ccb71b3b6d1c7cf4c8c8cf8d4459c25a14dfab782049de
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: A missing or invalid body, `version` sent with `must_not_exist` or `lock_version`, a path that is none of the supported ones, an asset that is not a text file or is empty, settings that are not a JSON object, menus that are not a valid document, or a template that is invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Remove a site file
+      description: Removes a layout, section, snippet or asset. Send the `version` of the file you read to refuse the removal with 409 if the file changed since; without it the file is removed as it is. A file that does not exist is 404 whatever the version. A page is removed with the pages API, and the settings and menus cannot be removed (write an empty menus document to clear the menus).
+      operationId: member_site_files_destroy
+      tags:
+      - site-files
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/FileVersionQuery"
+      responses:
+        '204':
+          description: The file was removed.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: The path is none of the supported ones, or is a page, the settings, the menus or the page settings, which cannot be removed here, or the query holds a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/shares":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's shares
+      description: |
+        The audiences one of the member's sites is shared with, oldest first, each with its permission and a label that names it. A share names a member by id and name, never by email address. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every share. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        A bearer only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header. A member JWT, which travels in order and subscription email links, is refused with `403` too, so a forwarded email never lists who a site is shared with. A portal JWT can read.
+      operationId: member_site_shares_index
+      tags:
+      - site-shares
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      - name: page[cursor]
+        in: query
+        required: false
+        description: >-
+          Opaque cursor from `meta.pagination.next_cursor`, valid only for the same site.
+          A malformed, tampered or expired cursor returns 400.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Page size. Defaults to 25, at most 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the site's shares.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteSharesEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d01'
+                  audience_kind: member
+                  member:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+                    name: Nathan Cho
+                  member_type:
+                  country:
+                  label: Nathan Cho
+                  permission: view
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d02'
+                  audience_kind: downline
+                  member:
+                  member_type:
+                  country:
+                  label: Downline of Riley Kim
+                  permission: copy
+                  created_at: '2026-09-01T10:05:00.000000Z'
+                - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d03'
+                  audience_kind: segment
+                  member:
+                  member_type:
+                    id: '0192f4e5-2b01-7b8c-9d0e-1f2a3b4c5d21'
+                    name: Customer
+                  country:
+                    code: US
+                    name: United States
+                  label: Customer in United States
+                  permission: view
+                  created_at: '2026-09-01T10:10:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: The pagination cursor is malformed, tampered with or expired.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, it is a member JWT (the credential of email links, which never reads shares), or the request is on the cookie mount, which never serves sharing.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the site has no such share, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A `page[limit]` that is not an integer from 1 to 100, or a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    post:
+      summary: Share a site
+      description: |
+        Shares one of the member's sites with an audience: one member, the member's downline, or a segment of the company's members by member type and country. Sharing an audience that is already shared writes nothing and returns the share that exists, with `200` instead of `201`; its permission is not changed, so change it with `PATCH`.
+
+        Sharing is checked against the company's messaging policy when it is made: a member, or an audience, outside the audiences the policy lets the member reach is refused with `403` and its reason. Sharing with oneself, with a member of another company, with an unknown member type or country, or with a target the audience kind does not take is refused with `422`. A request that loses a race with another change to the site's shares, and finds no share for the audience afterwards, is refused with `409`: send it again.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member or portal JWT.
+      operationId: member_site_shares_create
+      tags:
+      - site-shares
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteShareCreate"
+            example:
+              audience_kind: member
+              member_id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+              permission: view
+      responses:
+        '200':
+          description: The audience was already shared, so this is the share that exists, unchanged.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteShareEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d01'
+                  audience_kind: member
+                  member:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+                    name: Nathan Cho
+                  member_type:
+                  country:
+                  label: Nathan Cho
+                  permission: view
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '201':
+          description: The new share.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteShareEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d04'
+                  audience_kind: segment
+                  member:
+                  member_type:
+                    id: '0192f4e5-2b01-7b8c-9d0e-1f2a3b4c5d21'
+                    name: Customer
+                  country:
+                  label: Customer
+                  permission: view
+                  created_at: '2026-09-30T15:08:21.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member or portal JWT, and a member JWT is refused on every verb) or belongs to a sandbox test company that cannot be reached now; the request is on the cookie mount, which never serves sharing; or the company's messaging policy does not let the member share with this audience. A policy refusal names its reason in `error.details.error` as `outside_messaging_scope`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 403
+                error:
+                  message: Your company's messaging policy does not let you share with this audience
+                  details:
+                    error: outside_messaging_scope
+                    audience_kind:
+                    - member
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '404':
+          description: No site of the member's has this id, the site has no such share, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Another request changed the site's shares at the same moment and the share could not be written; no share exists for the audience. Send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: The site is being changed, try again
+                  details: {}
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '422':
+          description: A missing or unknown audience kind or permission, a target the audience kind does not take or lacks, a member, member type or country the company does not hold, a share with oneself, or an unknown field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/shares/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/ShareId"
+    patch:
+      summary: Change a share's permission
+      description: Changes the permission of a share and nothing else; to change who it names, delete it and add another. A bearer with write access only. A request on the cookie mount, a member JWT and a portal JWT are refused with `403`.
+      operationId: member_site_shares_update
+      tags:
+      - site-shares
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteShareUpdate"
+            example:
+              permission: copy
+      responses:
+        '200':
+          description: The changed share.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteShareEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d01'
+                  audience_kind: member
+                  member:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+                    name: Nathan Cho
+                  member_type:
+                  country:
+                  label: Nathan Cho
+                  permission: copy
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: No site of the member's has this id, the site has no such share, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A missing or unknown permission, or a field this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Stop sharing with an audience
+      description: Deletes the share, so the audience no longer opens the site on their next request. A bearer with write access only. A request on the cookie mount, a member JWT and a portal JWT are refused with `403`.
+      operationId: member_site_shares_destroy
+      tags:
+      - site-shares
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The share was deleted.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: No site of the member's has this id, the site has no such share, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/pages":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's pages
+      description: Every page of one of the member's sites, in order by position. A site holds at most 50 pages, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+      operationId: member_site_pages_index
+      tags:
+      - site-pages
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The site's pages.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SitePagesEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4e5-7a01-7b8c-9d0e-1f2a3b4c5d01'
+                  slug: "/"
+                  title: Home
+                  position: 0
+                  published: true
+                  layout_name:
+                  menu: main
+                  lock_version: 0
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwin"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+    post:
+      summary: Add a page
+      description: Adds a page and the template that holds its content, in one step. A site holds at most 50 pages. The page can use one of the site's own menus, named by its slug.
+      operationId: member_site_pages_create
+      tags:
+      - site-pages
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SitePageCreate"
+            example:
+              slug: about
+              title: About us
+              published: true
+              content: '<h1>About us</h1>'
+      responses:
+        '201':
+          description: The new page.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SitePageEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-7a01-7b8c-9d0e-1f2a3b4c5d02'
+                  slug: about
+                  title: About us
+                  position: 0
+                  published: true
+                  layout_name:
+                  menu:
+                  lock_version: 0
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: A missing field, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, an unknown field, or the site already holds 50 pages.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/pages/{page_id}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/PageId"
+    patch:
+      summary: Change a page
+      description: Changes the supplied fields, and the page's content when given. A new slug renames the page's template with it. Send the `lock_version` you last read to refuse the change if the page changed since; without it the change is applied to the current page.
+      operationId: member_site_pages_update
+      tags:
+      - site-pages
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SitePageUpdate"
+            example:
+              title: About Riley
+              lock_version: 0
+      responses:
+        '200':
+          description: The changed page.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SitePageEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-7a01-7b8c-9d0e-1f2a3b4c5d02'
+                  slug: about
+                  title: About Riley
+                  position: 0
+                  published: true
+                  layout_name:
+                  menu:
+                  lock_version: 1
+                  created_at: '2026-09-01T10:00:00.000000Z'
+                  updated_at: '2026-09-01T10:05:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member or portal JWT) or belongs to a sandbox test company that cannot be reached now, or `content` was sent for a page that uses a template the site does not own, such as a theme's, which is never written here.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: An empty body, a blank title, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, or an unknown field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Remove a page
+      description: Removes the page and, when the site owns it, the template that holds its content. Send the `lock_version` you last read to refuse the removal with 409 if the page changed since, including by a write or publish of its content; without it the page is removed as it is.
+      operationId: member_site_pages_destroy
+      tags:
+      - site-pages
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/PageLockVersionQuery"
+      responses:
+        '204':
+          description: The page was removed.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '422':
+          description: The query holds a parameter this operation does not take, or a `lock_version` that is not an integer from 0 to 2147483647.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-menu":
+    get:
+      summary: Show the member's account menu
+      description: |
+        The sites in the member's account menu, in four groups: the company's sites, the sites they built, the sites shared with them and the sites they removed. The menu is read when the request is made, so a removal or a restored site shows in the next read. A site no share reaches the member for is in none of the groups, public or not. The menu is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        A bearer only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, because a script on the company's storefront shares that origin and would otherwise read the names, handles and owners of the member's sites. A portal JWT can read. A member JWT, the credential of email links, is refused with `403`.
+      operationId: member_site_menu_show
+      tags:
+      - site-menu
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The member's menu.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteMenuEnvelope"
+              example:
+                status: 200
+                data:
+                  company_sites:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01'
+                    handle: acme-launch
+                    name: Acme Launch
+                    status: published
+                    visibility: public
+                    owner_kind: company
+                    owner_name: Acme
+                    removable: false
+                    removal_id:
+                  own_sites:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d02'
+                    handle: my-shop
+                    name: My Shop
+                    status: draft
+                    visibility: private
+                    owner_kind: member
+                    owner_name: Sam Lee
+                    removable: false
+                    removal_id:
+                  shared_sites:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                    handle: rileys-shop
+                    name: Riley's Shop
+                    status: published
+                    visibility: private
+                    owner_kind: member
+                    owner_name: Riley Kim
+                    removable: true
+                    removal_id:
+                  removed_sites:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d03'
+                    handle: team-hub
+                    name: Team Hub
+                    status: published
+                    visibility: private
+                    owner_kind: member
+                    owner_name: Jo Park
+                    removable: true
+                    removal_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d90'
+                  landing_site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01'
+                  shared_sites_omitted: 0
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The menu is unchanged; authentication is checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential is an email-link credential, which cannot read the menu; the request came from a sandbox twin; or the request is on the cookie mount, which never serves the menu.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-removals":
+    post:
+      summary: Remove a site from the member's menu
+      description: |
+        Takes a site out of the member's own menu, which moves it to `removed_sites`. A removal changes nothing for the site's owner, for anyone else it is shared with or for who may open the site by its address, and it stays when the site is unshared and shared again. Removing a site that is already removed answers `200` with the existing removal.
+
+        A required company site and the member's own site cannot be removed: both are `422`. A site the member cannot open, a site that is not in their menu and a site that does not exist are the same `404`, so the request cannot be used to discover sites. The menu lists at most 100 shared sites, so a site beyond them cannot be removed until a newer one is removed or unshared.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member or portal JWT.
+      operationId: member_site_removals_create
+      tags:
+      - site-removals
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteRemovalCreate"
+            example:
+              site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+      responses:
+        '200':
+          description: The site was already removed. The existing removal.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteRemovalEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d90'
+                  site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  created_at: '2026-09-30T15:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '201':
+          description: The site was removed from the menu.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteRemovalEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d90'
+                  site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  created_at: '2026-09-30T15:08:21.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '400':
+          description: The body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/WriteRefused"
+        '404':
+          description: The site is not in the member's menu (it is missing, a draft, or no share reaches the member), or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Another request removed and restored the site while this one was written. Send it again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The site is a required company site or the member's own site (the field error is on `site_id`), or `site_id` is missing, is not a site id, or the body holds an unknown field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-removals/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/RemovalId"
+    delete:
+      summary: Restore a removed site
+      description: |
+        Deletes the member's removal, which puts the site back in the group the menu gives it. Another member's removal, a removal that no longer exists and a malformed id are the same `404`.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member or portal JWT.
+      operationId: member_site_removals_destroy
+      tags:
+      - site-removals
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The site was restored to the menu.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/WriteRefused"
+        '404':
+          description: No removal of the member's has this id, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-share-targets":
+    get:
+      summary: Search the share targets
+      description: |
+        Whom the member may share a site with: the members matching `q`, the member types and countries a segment may name, how many members are below them, and which audiences their company's messaging policy allows. A member the caller could not message is never listed, and under `no_direct_messages` nothing is. The search is not paged; it returns at most 20 members. It is not cached (`max-age=0`) and can be revalidated with an ETag. A credential may make 30 requests a minute to this route and to the messaging recipient search together; more are refused with `429`.
+
+        Bearer only. A request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header. A member session JWT, the kind order and subscription email links carry, is also refused with `403`: the results are other members' names and emails.
+      operationId: member_site_share_targets_index
+      tags:
+      - site-share-targets
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/ShareTargetQuery"
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The share targets.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteShareTargetsEnvelope"
+              example:
+                status: 200
+                data:
+                  members:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e01'
+                    name: Nathan Rivera
+                    email: nathan@example.com
+                  member_types:
+                  - id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e11'
+                    name: Preferred Customer
+                  countries:
+                  - code: CA
+                    name: Canada
+                  - code: US
+                    name: United States
+                  downline_count: 42
+                  downline_count_capped: false
+                  allowed:
+                  - member
+                  - downline
+                  - segment
+                  emails_visible: true
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '304':
+          description: The targets are unchanged; authentication is checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry, which cannot search the share targets; the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which this operation never serves, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A `q` that is not blank and has fewer than 3 or more than 200 characters, or an unknown parameter such as `page` or `limit`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '429':
+          description: >-
+            The credential made more than 30 searches in a minute, counting the messaging recipient search too.
+            Wait `retry_after` seconds before searching again. Unlike other responses it carries no Cache-Control header.
+          headers:
+            X-RateLimit-Limit:
+              "$ref": "#/components/headers/RateLimitLimit"
+            X-RateLimit-Remaining:
+              "$ref": "#/components/headers/RateLimitRemaining"
+            X-RateLimit-Reset:
+              "$ref": "#/components/headers/RateLimitReset"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/RateLimitError"
+              example:
+                error: Rate limit exceeded
+                message: Too many requests. Please wait before trying again.
+                retry_after: 42
