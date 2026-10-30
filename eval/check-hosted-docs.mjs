@@ -221,6 +221,11 @@ const OFFSET_PAGINATED_PAGES = new Set([
   // themes-v0
   "applicationthemetemplates/returns-all-available-themeables-for-theme-template",
   "file-resources/returns-a-list-of-file-resources",
+  // member-exigo-v2026-10: the team list and the earnings ledger and payouts are read
+  // from Exigo a page number at a time (`page`, `ledger_page`, `payouts_page`, 25 each),
+  // and each answer reports its `page`, `per_page` and `total`.
+  "exigo/read-the-members-exigo-figures",
+  "exigo/read-a-team-members-exigo-figures",
 ]);
 
 // Hand-written pages whose `per_page` is not a leak: they document the storefront's own
