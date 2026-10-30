@@ -2926,3 +2926,12 @@ Durable decisions:
 - **Today's benefits are product facts.** Posting never notifies anyone (the
   Flow settings copy says so); the large-community rationale comes from the
   product owner.
+
+## Build a site with the API (`member-sites/build-with-the-api.mdx`, 2026-10-30)
+
+The guide builds a site with the member API and the company API. It is bound to the claims registry like any task guide.
+
+- **Member routes are mechanical.** `guideSpecs` points the guide at `api-reference/member-sites-v2026-10.yaml`, so the paths, statuses, request fields, response fields and example payloads of the member routes are checked against the spec.
+- **Company routes are semantic for now.** The company member sites spec is not published yet. It lives under `internal/` in the Fluid repository and is not mirrored, so it is not in `.github/synced-api-references.json`. The guide's company claims are `behavior` claims, checked for quote presence only. Once the spec is published and synced, add it to `guideSpecs` for this guide and turn the company endpoint, status and field claims into mechanical ones.
+- **Claims that no spec states.** Two behaviors come from the Fluid CLI plugin's reference rather than a spec: a write to an asset or to `config/menus.json` takes effect without a publish, and a publish makes the drafts of layouts, sections, snippets, pages and settings live. They are semantic claims.
+- **Left out on purpose.** The shape of the `config/menus.json` document is not in either spec, so the guide does not describe it. Shares, the account menu and site removals have generated reference pages and are not covered here.
