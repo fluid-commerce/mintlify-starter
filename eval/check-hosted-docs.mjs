@@ -450,6 +450,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["orders/get-order-statistics", "GET /api/v202506/orders/stats"],
   ["orders/import-an-order", "POST /api/v2025-06/orders"],
   ["orders/list-orders", "GET /api/v202506/orders"],
+  ["orders/preview-the-points-a-refund-returns", "POST /api/v202506/orders/{id}/refund-points-preview"],
   ["partner-tokens/creates-a-new-partner-token", "POST /api/v2025-06/partner_tokens"],
   ["partner-tokens/deletes-a-partner-token", "DELETE /api/v2025-06/partner_tokens/{id}"],
   ["partner-tokens/returns-a-specific-partner-token", "GET /api/v2025-06/partner_tokens/{id}"],
