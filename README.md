@@ -15,7 +15,7 @@ The site has four tabs. A page's URL is its file path, and `docs.json` decides w
 | Tab | Audience | Where the files live |
 | -- | -- | -- |
 | **Help Center** | Merchants, admins and reps | `help/**`, plus `introduction.mdx`, the site's landing page |
-| **Developer Platform** | Developers building on Fluid | `quickstart.mdx`, `platform-overview.mdx`, `concepts/`, `guides/`, `storefront/`, `setup/`, `sdk/`, `mist-apps/`, `portal-widgets/` and `migration/` |
+| **Developer Platform** | Developers building on Fluid | `quickstart.mdx`, `platform-overview.mdx`, `concepts/`, `guides/`, `storefront/`, `member-sites/`, `setup/`, `sdk/`, `mist-apps/`, `portal-widgets/` and `migration/` |
 | **Themes** | Theme developers | `themes/**` |
 | **API Reference** | API integrators | `api/**`, plus the generated `api-reference/**` |
 
