@@ -1,0 +1,167 @@
+---
+title: "Site SDK: window.fluid"
+sidebarTitle: "Site SDK"
+description: "Read and act for the signed-in member from a member site's own JavaScript with window.fluid: the calls, the errors, what a guest gets, and the routes a site can't reach."
+---
+
+A site's pages run in a sandboxed frame. The browser gives the frame an anonymous origin, so a script in your site can never use the viewer's login. This is deliberate. Without it, a script on a shared site could read a viewer's account or send messages as them.
+
+`window.fluid` is how your site's JavaScript gets the viewer's data anyway. Each call goes over a bridge to the company page around the frame. The bridge forwards only routes on a fixed list and labels every request with your site's id.
+
+<Note>
+  Member sites must be turned on for your company by Fluid. Without them, there are no site frames and no `window.fluid`.
+</Note>
+
+## Know what a site can't do
+
+**A plain `fetch` from a site carries no login.** A `fetch` to a Fluid API from a site page is sent without the viewer's cookie, so the API answers `401`, as it does for a signed-out visitor. Use `window.fluid` instead. It doesn't replace `window.fetch`.
+
+**The SDK exists only in a site frame.** Fluid loads it into a site's pages, so there's nothing to install. In any other page, `window.fluid` is `undefined`. Check for it before you call it:
+
+```js
+if (window.fluid) {
+  const viewer = window.fluid.viewer();
+}
+```
+
+**Print `{{ content_for_header }}`.** Fluid loads the SDK through `content_for_header`, which also holds the link to your `assets/site.css`. Print it once, in your layout's `<head>` or in a page that uses no layout. A page that never prints it has no `window.fluid`.
+
+**Only the owner gets data today.** A call reaches the viewer's data only when the signed-in viewer owns the site and the site is published. For any other signed-in viewer, including a company admin and every viewer of a company site, each data call fails with `refused` and no request is made. A guest's calls fail with `guest`.
+
+**Use Liquid where you can.** A page's Liquid already reads `member` for a signed-in viewer, with `first_name` and `avatar_url` and nothing more, unless the viewer owns the site. You only need `window.fluid` for data that isn't in Liquid, or to act for the viewer.
+
+## Make your first calls
+
+| Call | What it does |
+| --- | --- |
+| `fluid.viewer()` | Who is viewing: `"member"` or `"guest"`. Never throws |
+| `fluid.me.get()` | The signed-in member |
+| `fluid.me.update(fields)` | Changes the member's own details |
+| `fluid.tasks.list()` | The member's tasks |
+| `fluid.tasks.complete(id)` and `fluid.tasks.reopen(id)` | Complete or reopen a task |
+| `fluid.team.list({ under })` | The member's team, as a tree |
+| `fluid.fetch(path, init)` | Any request on the list of routes below, with the same arguments and result as `fetch` |
+
+Every call returns a promise.
+
+### Check who is viewing
+
+```js
+const viewer = fluid.viewer(); // "member" or "guest"
+```
+
+### Read the member
+
+```js
+const me = await fluid.me.get();
+```
+
+`me.get()` returns the member from [Show the signed-in member](/api-reference/me/show-the-signed-in-member): `id`, `username`, `first_name`, `last_name`, `display_name`, `email`, `avatar_url`, `language`, `country`, `time_zone`, `member_type`, `rank`, `company`, `mysite_url` and `created_at`.
+
+### Change the member's details
+
+```js
+const me = await fluid.me.update({ language: "es" });
+```
+
+`update` takes at least one of `first_name`, `last_name`, `language`, `country`, `time_zone` and `avatar_upload_id`, sends a `PATCH` as JSON, and returns the updated member. See [Update the signed-in member](/api-reference/me/update-the-signed-in-member). An update the API refuses fails with an `http` error that carries the API's status and body.
+
+### Work with tasks
+
+```js
+const tasks = await fluid.tasks.list();
+const done = await fluid.tasks.complete(tasks[0].id);
+const reopened = await fluid.tasks.reopen(done.id);
+```
+
+A task has `id`, `title`, `notes`, `due_at`, `status` (`active` or `completed`), `completed_at`, `priority` (`low`, `normal` or `high`), `contact`, `created_at` and `updated_at`. Tasks are for the rep member type. For any other member the call fails with an `http` error and the status `403`. See [Member APIs](/api/member-apis#credentials). An id that isn't a non-empty string rejects with a `TypeError` before anything is sent.
+
+### Read the member's team
+
+```js
+const widget = await fluid.team.list();
+const branch = await fluid.team.list({ under: widget.tree.children[0].id });
+```
+
+`team.list` returns `state`, `tree`, `partial`, `root_id` and `current_id`. Each node of the tree has `id`, `title`, `active`, `has_children` and `children`. `partial` is `true` when the tree stops short of the member's whole team, so call again with `under` set to a node's `id` to read that branch. A viewer who may not read a team fails with an `http` error.
+
+### Call any allowed route
+
+```js
+const response = await fluid.fetch("/api/member/v2026-10/orders");
+if (response.ok) {
+  const { data } = await response.json();
+}
+```
+
+`fluid.fetch` takes a path that starts with `/api/`. It resolves to a `Response`, even when the shell refuses the request. See [the answers `fluid.fetch` gives](#handle-errors).
+
+## Handle errors
+
+The named calls reject with an error whose `code` says what happened. It also carries the `status`, the `path` and, for an `http` error, the parsed `body`.
+
+| `code` | Meaning |
+| --- | --- |
+| `guest` | The viewer is signed out. Nothing was sent |
+| `refused` | The route is not on the list, or the viewer can't act through this site. Nothing was sent |
+| `busy` | Too many requests at once or in the last minute. Nothing was sent |
+| `too_large` | The request body or the response was too large |
+| `unsupported_body` | The request body wasn't sent as JSON |
+| `http` | The API answered with an error status. `status` and `body` carry it |
+| `invalid_response` | The call succeeded but the payload wasn't what the call expects |
+
+```js
+try {
+  await fluid.tasks.list();
+} catch (error) {
+  if (error.code === "guest") {
+    // Show a sign-in prompt.
+  } else if (error.code === "http" && error.status === 403) {
+    // The member can't use tasks.
+  } else {
+    throw error;
+  }
+}
+```
+
+`fluid.fetch` doesn't throw for the shell's own answers. It resolves to a `Response` with a JSON body:
+
+| Code | Status | Body |
+| --- | --- | --- |
+| `guest` | `401` | `{ "error": "guest" }` |
+| `refused` | `403` | `{ "error": "bridge_refused" }` |
+| `busy` | `429` | `{ "error": "bridge_busy" }` |
+| `too_large` | `413` | `{ "error": "bridge_too_large" }` |
+| `unsupported_body` | `415` | `{ "error": "bridge_unsupported_body" }` |
+
+An aborted request rejects with an `AbortError`. A request that takes longer than 15 seconds rejects with a `TypeError`, as a failed network request does.
+
+## Know the limits
+
+- **Body size.** A request body holds at most 256 KiB, and must be JSON. A response over 2 MiB is `too_large`.
+- **Rate.** A page makes at most 16 requests at once, and at most 300 reads and 60 writes a minute.
+- **Headers.** Only `accept` and `content-type` matter. Fluid drops `authorization`, `cookie` and every other header you set, and adds the site's id to the request itself.
+- **Live sites only.** Fluid checks the site on every request. Once a site isn't published, for example after an admin takes it down, its requests are refused with `403`.
+- **Requests carry the site's id.** Every request from a site is recorded with the site's id, so a request can be traced to the site that made it.
+
+## Know which routes the bridge refuses
+
+The bridge forwards only routes on a fixed list: the member API under `/api/member/v2026-10/`, the member storefront's native widget routes and two bootstrap routes that Fluid's own scripts use. It refuses everything else without sending a request, including cart routes, sign-out, and a path with `..`, `//`, `\` or an encoded slash.
+
+The member API entry also applies the rules of the member routes a browser can reach. Fluid keeps these areas off those routes, because a script in a browser must not be able to act as the member there.
+
+**Refused for every method with `403`:**
+
+- Saved payment methods and card verification (`/payment-methods`).
+- The member's companies (`/companies`) and Exigo member data (`/exigo`).
+- Admitting a realtime socket (`/messaging/realtime/auth`).
+- A contact's activities, orders and subscriptions.
+- Site management, shares, the account menu, removals and share targets (`/sites`, `/site-menu`, `/site-removals` and `/site-share-targets`). These take the member's bearer credential only.
+
+**Readable, but every write is refused with `403`:**
+
+- Push devices (`/notifications/devices`) and saved addresses (`/addresses`).
+- Subscriptions and their bundles, pauses, skips, cancellations, discounts and waivers.
+- Droplet queries (`/droplet-queries`).
+
+The two native widget routes that skip a subscription or undo a skip are refused as well.
