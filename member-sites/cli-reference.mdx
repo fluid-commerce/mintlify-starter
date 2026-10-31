@@ -1,0 +1,188 @@
+---
+title: "fluid member-site CLI reference"
+sidebarTitle: "CLI reference"
+description: "Create, pull, edit, lint, push and publish a member site from the terminal with fluid member-site: the login each site needs, conflicts, and what a push sends."
+---
+
+`fluid member-site` works with the member API for a member's own sites and the company API for company sites. See [Build a site with the API](/member-sites/build-with-the-api) for the requests it sends.
+
+It isn't `fluid mysite`, which manages MySite themes, and it isn't `fluid theme`. See the [member sites overview](/member-sites/overview) for what a site is.
+
+<Note>
+  Member sites must be turned on for your company by Fluid. Without them, the commands report that member sites aren't enabled.
+</Note>
+
+## Install and sign in
+
+Install the Fluid CLI and the member site plugin from npm:
+
+```bash
+npm install -g @fluid-app/fluid-cli @fluid-app/fluid-cli-member-site
+```
+
+The plugin keeps no credential of its own. It uses the login, profiles and `.fluidrc` of the Fluid CLI, so `FLUID_TOKEN`, a project's `.fluidrc` profile and the active profile apply as they do for every other command.
+
+The credential follows the owner of the site:
+
+| Site owner | Login |
+| --- | --- |
+| A member | The member's own login |
+| The company | A signed-in admin who may change themes |
+
+- **A company site** needs an admin's user login, from `fluid login`.
+- **A member's site** needs the member's own token, set in `FLUID_TOKEN`. `fluid login` signs in admins and reps as users, so it doesn't produce a member's token.
+- **A member who is also an admin** of the same company builds company sites only, because the member API refuses that login.
+
+The API base follows the login: `FLUID_API_BASE` if it is set, otherwise the base the stored profile was made for. A token from `FLUID_TOKEN`, or a profile with no recorded base, needs `FLUID_API_BASE`. With neither, the command stops with `No API base for this login` before it sends a request.
+
+The CLI can't tell a member's token from an admin's before it sends a request. Pass `--as member` or `--as admin` to say which it is. A site of the other owner kind is then refused before any request, and the message names the login it needs. Without `--as`, the server decides, and a refusal names the login the site needs.
+
+## Commands
+
+| Command | What it does | Login |
+| --- | --- | --- |
+| `fluid member-site list` | Lists sites | Member or admin |
+| `fluid member-site create <handle>` | Creates a draft site | Member, or admin with `--company` |
+| `fluid member-site pull <site> [dir]` | Writes a site to a local folder | The site's owner kind |
+| `fluid member-site push [dir]` | Sends the folder's changes to its site | The site's owner kind |
+| `fluid member-site publish [dir]` | Publishes the site of a folder | The site's owner kind |
+| `fluid member-site lint [dir]` | Checks a folder on disk | None |
+
+### list
+
+With a member login, it lists the member's own sites. With an admin login, it lists every site in the company with its owner and status. A member's site is read-only there, because its owner builds it.
+
+```bash
+fluid member-site list
+fluid member-site list --as member
+```
+
+Without `--as`, the CLI tries the company API first, and the member API when the company API refuses the login.
+
+### create
+
+Creates a site as a draft. The handle is lowercase letters, digits and single hyphens, at most 40 characters. The name defaults to the handle in words.
+
+```bash
+fluid member-site create rileys-shop --name "Riley's Shop"
+fluid member-site create fall-launch --company --as admin
+```
+
+`--company` creates a company site and needs an admin login.
+
+### pull
+
+Pulls a site into a local folder. `<site>` is the site's handle or id, and `dir` defaults to the handle.
+
+```bash
+fluid member-site pull rileys-shop --as member
+fluid member-site pull fall-launch ./site --as admin
+```
+
+The folder is the API: a path in it is the path the file API uses. See [Lay out the files](/member-sites/overview#lay-out-the-files) for the layout.
+
+- **Pages.** Each page's row goes to `config/pages.json`, with its `slug`, `title`, `position`, `published`, `layout` and `menu`. Its content goes to `pages/<slug>.liquid`. A page whose template the site doesn't own has a row and no file.
+- **The binding file.** `.member-site.json` records the site, where the folder came from, and the version of every file and page. A push uses it to tell what you changed. It is local state and is never pushed.
+- **Text assets only.** A site holds css, js, json, txt and html assets. A listed asset that isn't text is skipped and named in the summary.
+- **All or nothing.** A pull reads every file before it writes any, so a failed read leaves the folder as it was. A second pull of an unchanged site changes nothing.
+- **Local edits are protected.** A folder that isn't empty and isn't bound to this site is refused, and so is a pull that would overwrite a file you edited since the last pull. `--force` writes anyway. A pull never removes files that aren't on the server.
+- **Symbolic links.** A pull never writes through one. A file or folder that is, or is inside, a link is refused, with or without `--force`.
+- **The owner's login.** An admin login can't pull a member's site. With `--as admin`, or in a folder bound to a member's site, the command stops before any request and names the login the site needs.
+
+### push
+
+Pushes the changes in a pulled folder to its site. Run it in the folder, or pass the folder. The folder's binding names the site and its owner kind, so a member's site goes through the member API and a company site through the company API.
+
+```bash
+fluid member-site push --dry-run
+fluid member-site push --as member
+fluid member-site push --publish
+```
+
+A push compares the folder with the binding and sends only what changed. A pull followed by a push with no edit sends nothing. A push without `--publish` never publishes.
+
+In order, it sends:
+
+1. `config/settings.json`, first, because every page write moves the settings' version.
+2. Each changed or new layout, section, snippet and asset.
+3. Each new page, then each changed page, with the page's content.
+4. `config/menus.json`, when it changed. It replaces every menu of the site.
+5. Each page's menu assignment.
+6. Each removed page, then each removed layout, section, snippet and asset.
+
+Removals go last, so a write that fails never leaves a menu pointing at a page that is gone. A page is removed by taking its row out of `config/pages.json` and its file out of the folder. A page renamed in `config/pages.json` is a new page and a removal.
+
+`--dry-run` prints the plan, removals included, and sends no request. With `--publish`, it also says that a publish would follow.
+
+#### Conflicts
+
+Every write and delete carries the version the binding recorded for it. The server refuses it with `409` if the file or page changed since. A path the binding never saw is created only if the path is still free, so a file another writer created after your pull isn't replaced.
+
+The first stale version stops the push. It names the file or page, tells you to pull, lists what it already wrote, and sends nothing after it. A push never overwrites or deletes a copy that moved on the server.
+
+A push isn't atomic, because the API has no batch write. What was written stays written. Pull again, resolve the difference and push again. A push that stops can be run again after a pull.
+
+A publish by someone else moves the version of every page, layout, section and snippet it publishes. The push then stops at the first of those it writes, so pull again first.
+
+#### What takes effect without a publish
+
+Before the first write, a push lists the changes that are live as soon as they are written: assets, any removed file, `config/menus.json`, and page rows (a new page, a changed row field, a menu assignment, a removed page). Changes to layouts, sections, snippets, page content and the settings are saved as drafts. Removing a layout, section or snippet deletes it and its published copy at once, so the site stops rendering it without a publish.
+
+#### What a push refuses
+
+Everything that can be refused is refused before the first request, and every refusal is listed at once:
+
+- A file that isn't a text asset: an asset must be css, js, json, txt or html, valid UTF-8 and not empty.
+- A path outside `layouts`, `sections`, `snippets`, `pages`, `assets` and `config`, a path in a subfolder, a symbolic link, and a name outside lowercase letters, digits, hyphens and underscores. A page's name is lowercase letters and digits separated by single hyphens. Names that start with a dot are ignored.
+- A page file with no row in `config/pages.json`, and a new page row with no file. A page goes with its file, so remove both or neither.
+- A `config/pages.json` that isn't valid, a slug `index` (the home page is `/`), and a menu that `config/menus.json` doesn't define.
+- Settings that aren't a JSON object, and menus that aren't shaped as the API takes them.
+- More than 50 pages in a site. Removals are sent after the new pages are created, so push the removals first. `--dry-run` sends no request, so it doesn't check the site's page count and says so.
+- A file or menu with no recorded version, from a binding made before the API reported versions. Pull the site again first.
+- A menu link whose `url` isn't a well-formed `http` or `https` address with a host.
+
+### publish
+
+Publishes the site of a pulled folder: the drafts of its layouts, sections, snippets, pages and settings become the live site. Run it in the folder, or pass the folder.
+
+```bash
+fluid member-site publish
+fluid member-site publish ./rileys-shop --as member
+```
+
+It makes one publish request and sends no file, so a local edit that you didn't push isn't published. Push first. It prints the site's `status` and its new `content_version`.
+
+- **Taken down.** A site that an admin took down can't be published again. The command prints the API's message, exits with a non-zero code and doesn't retry.
+- **Conflict.** A `409` means the site changed while it was being published, so it wasn't published. Run the command again.
+- **Versions.** A publish moves the version of every layout, section, snippet and page, and of the settings. The command records a new version in the binding only when it can prove the publish published what the folder holds. Otherwise it names what it kept, and the next push stops there and asks for a pull. A file you edited and didn't push keeps its old version, so push before you publish.
+
+### lint
+
+Checks a site folder on disk and sends no request. It needs no login and no binding file, so it works on a folder that was never pulled.
+
+```bash
+fluid member-site lint
+fluid member-site lint ./rileys-shop
+```
+
+A clean folder prints nothing and exits `0`. An error exits `1`, and each finding names its file. Warnings are printed and don't fail the command.
+
+It checks:
+
+- **Liquid** in layouts, sections, snippets and pages, the way `fluid theme lint` checks it: the `{% schema %}` block and the pairing of block tags such as `{% if %}` and `{% endif %}`. The theme linter's cart, missing-section and routed-template checks are theme rules and aren't run.
+- **The file rules a push enforces**, with the same messages.
+- **`config/pages.json`**, which must be valid and list at most 50 pages.
+- **`config/menus.json`**, which must have the shape the API takes, and each menu link must name a page that `config/pages.json` lists.
+
+## Errors
+
+| API answer | What the command says |
+| --- | --- |
+| `404` | Member sites aren't enabled for this company, or the site isn't yours |
+| `401` | The login wasn't accepted, and which login the site needs |
+| `403` | The API's message, and which login the site needs |
+| `409` | The site, file or page changed on the server. On a publish, a conflict to run again |
+| `422` | The API's message and each field error |
+| Other | The API's message and the request ID |
+
+A `404` is the same answer for a company without member sites, a missing site and another owner's site, so the command names the first and the last. It is never retried. A read that fails with `502`, `503` or `504` is retried twice. A write is never retried.
