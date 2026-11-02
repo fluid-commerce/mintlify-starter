@@ -18,6 +18,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | --- | --- |
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
 | Collect extra details at enrollment checkout (forms, after payment, per country) | https://docs.fluid.app/guides/checkout-forms, then https://docs.fluid.app/help/admin/forms |
+| Build a standalone form with the API and share it by link or embed (create, publish, read responses) | https://docs.fluid.app/guides/build-and-share-a-form |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
 | Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
 | Connect an AI agent: docs MCP server, Fluid CLI, Mist | https://docs.fluid.app/guides/connect-ai-tools |
