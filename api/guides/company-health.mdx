@@ -1,0 +1,307 @@
+---
+title: "Company health"
+sidebarTitle: "Company health"
+description: "What Fluid's hourly health checks look at in each area of your store, what they report back, and why each finding matters."
+---
+
+Company health tells you which parts of your store need attention, so you or a bot know where to look first. Fluid checks 12 areas of your company on a schedule and stores each result. You read the latest results with [Read company health](/api-reference/company_health/read-company-health), one area with [Read one area's health](/api-reference/company_health/read-one-areas-health), and earlier results with [Read one area's history](/api-reference/company_health/read-one-areas-history).
+
+This guide covers what each check looks at, the figures it reports, the findings it can raise, and why each one matters.
+
+## How the checks run
+
+Fluid checks every area hourly, except fulfillment, which it checks every six hours. Reading health never runs a check. The endpoints only return what the last check stored.
+
+Each check stores one record with the area's state, its figures (`metrics`) and its findings. Fluid keeps checks for 90 days, and always keeps each area's latest one.
+
+Checks only read. They don't change your settings, contact your customers or retry anything for you.
+
+## What the states mean
+
+| State | Meaning | What to do |
+| --- | --- | --- |
+| `idle` | The area has nothing to check, such as a company with no Connect integration. | Nothing. |
+| `healthy` | The check ran and found nothing wrong. | Nothing. |
+| `unknown` | Fluid couldn't reach a conclusion. The check failed, ran out of time, couldn't reach a service, or hasn't run recently enough. | Read the finding. If it persists, contact Fluid support. |
+| `degraded` | Something is off but still working, such as a rise in failures or a few stuck records. | Look at it soon. |
+| `failing` | Something is broken or far outside your usual pattern. | Look at it now. |
+
+An area with no check yet reads `unknown`. So does an area whose last check is older than it should be: two hours for most areas, and 12 hours for fulfillment. In that case the area shows `stale: true` and keeps its last figures and findings.
+
+A check that fails stores `unknown` with a finding coded `<area>.check_failed`. A check that runs out of time stores `<area>.check_timed_out`. An unknown area never reads `healthy`.
+
+### Your company's overall state
+
+The response's top-level `state` sums up the areas you can see:
+
+1. Any `failing` area makes the company `failing`. Otherwise, any `degraded` area makes it `degraded`.
+2. With no problems, any `unknown` area makes it `unknown`, so an area Fluid couldn't check is never hidden behind healthy ones.
+3. Otherwise it's `healthy`. It reads `idle` only when every area is idle.
+
+## Compared with your usual pattern
+
+Many checks compare a figure with what's normal for your store, not with a fixed number. Fluid's baseline for an area is the average of that figure at the same weekday and hour over the previous four weeks. A Sunday 2pm check is compared with the four Sundays before at 2pm, so a quiet weekend isn't compared with a busy weekday.
+
+A baseline needs at least two earlier checks. Until your store has them, a check either uses a fixed fallback threshold or doesn't flag that figure at all. Each area below says which.
+
+Orders-based checks need enough volume to judge. When the window has fewer than 20 orders or attempts, the check marks its figures `low_volume`, doesn't judge the share, and leaves that hour out of later baselines. A quiet hour can't drag your usual pattern down.
+
+An area that compares with your usual pattern reports the `baseline` it used in its `metrics`.
+
+## What a finding tells you
+
+A finding names one thing a check found wrong. It has a `code` such as `tax.zero_tax_spike`, a severity, and a summary sentence you can pass on to a person. When it's about one thing, such as one droplet, it names that thing as the `subject`. It often carries a `count`.
+
+Findings never include error text or record IDs. Each one has a `next_step` that names the call holding the detail, such as the Connect integration's status or the area's history. See [Read company health](/api-reference/company_health/read-company-health) for the full response.
+
+## What each area checks
+
+### Droplets
+
+**Applies when** your company has an active droplet installation.
+
+**What it looks at:** each installed droplet's health over the last hour. Fluid already rolls up droplet health every 10 minutes, and this check reads that verdict.
+
+**Figures:** `installations`, plus a count of installations in each health state.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `droplets.degraded` | degraded | A droplet's health is degraded for your company. |
+| `droplets.failing` | failing | A droplet's health is failing for your company. |
+
+Each finding names the droplet and points at [Check a droplet's health](/api-reference/droplets/check-a-droplets-health).
+
+**Why it matters:** droplets extend your store. A failing droplet can mean a missing integration, broken widgets or lost data, and the droplet's own health shows which signal is failing.
+
+### Connect
+
+**Applies when** your company has a Connect integration.
+
+**What it looks at:** for each Connect integration, the last 24 hours of sync from its status, then two reconciliations:
+
+- **Fluid against Connect:** orders and customers created in Fluid between 24.5 hours and 30 minutes ago that never got an external ID, and that the integration doesn't show as a sync issue.
+- **Your provider against Fluid:** over the hour ending 30 minutes ago, orders and customers in your provider that are missing from Fluid. For an integration that sends Fluid records to your provider, it also counts Fluid records missing from the provider.
+
+The windows end 30 minutes ago so records still syncing aren't counted as missing.
+
+**Figures:** `integrations` and `connected`, and for each integration under `by_integration`: `success_rate`, `failed_24h`, `tier`, `reconciliation` and `provider_reconciliation`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `connect.tier_attention` | failing | The sync success rate over 24 hours is in the attention tier. The summary names the largest failure category. |
+| `connect.tier_below` | degraded | The sync success rate is below its healthy tier. |
+| `connect.live_sync_degraded` | failing | The integration's live sync is degraded. |
+| `connect.quarantined` | degraded | The integration has quarantined records in the last 24 hours. |
+| `connect.sync_stalled` | degraded | Live sync is armed, but nothing has synced in 7 days. |
+| `connect.unaccounted_orders`, `connect.unaccounted_customers` | failing | Records created in Fluid reached the integration with no sync and no error. |
+| `connect.missing_in_fluid_orders`, `connect.missing_in_fluid_customers` | failing | Records in your provider are missing from Fluid. |
+| `connect.missing_in_provider_orders`, `connect.missing_in_provider_customers` | failing | Records created in Fluid are missing from your provider. |
+| `connect.unreachable` | unknown | Fluid couldn't read the integration's status. |
+
+An integration that was never set up raises no finding. Findings point at the integration's status, or at its provider reconciliation for the missing-record findings.
+
+Some reconciliations are skipped, and the figures say why:
+
+- `import_only`: the integration only brings records into Fluid, so Fluid records without an external ID are expected.
+- `multiple_integrations`: your company has more than one Connect integration. A record has one external ID, so Fluid can't tell which integration set it.
+- `unsupported` or `not_synced`: Fluid can't read that record type from your provider, or your sync settings turn it off.
+
+**Why it matters:** Connect moves orders and customers between Fluid and your back office. A record that silently misses the sync can mean a missing commission, an unshipped order or a customer your ERP doesn't know about. The reconciliation findings catch records that fail without any error.
+
+### Payments
+
+**Applies when** your company has a payment account.
+
+**What it looks at:** the last hour's charge attempts on live payment accounts (card checks and Points are left out), dunning retries, your Stripe accounts' standing, and disputes.
+
+**Figures:** `attempts`, `approved`, `declined`, `approval_share`, `dunning_retries_stuck`, `accounts_live`, `accounts_onboarding`, `accounts_rejected`, `accounts_restricted`, `disputes_last_24_hours` and `disputes_last_30_days`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `payments.approval_drop` | degraded or failing | The approval share fell at least 15 points below your usual hour and the decline share at least doubled. It's failing at 35 points below. With no baseline yet, it's flagged when 25% or fewer attempts were approved. Needs 20 answered attempts. |
+| `payments.dunning_retries_stuck` | degraded or failing | Past-due subscriptions have a scheduled payment retry that's overdue and hasn't run. Any is degraded; 50 or more is failing. |
+| `payments.account_rejected` | failing | Stripe rejected a live payment account. |
+| `payments.account_restricted` | degraded | A live payment account has Stripe requirements past due, or was disconnected while still active. |
+| `payments.disputes_spike` | degraded | 3 or more disputes arrived in the last 24 hours, and that's at least three times your daily average over the 29 days before. |
+
+**Why it matters:** a sudden drop in approvals usually means a gateway or checkout problem, not a change in your customers. A rejected or restricted account can stop payouts or charges, and stuck retries leave past-due subscriptions uncollected. A dispute spike can point to fraud or a fulfillment problem before it affects your account standing.
+
+### Checkout
+
+**Applies when** your company has completed a checkout in the last 30 days.
+
+**What it looks at:** checkout completions from the last six hours, and the share of the last 24 hours' checkout attempts that hit a technical error. Fluid judges each attempt an hour after it happens, so the error share uses a full day to have enough attempts.
+
+**Figures:** `completions`, `completions_stuck`, `tail_never_ran`, `stuck_enqueue`, `dispatch_unfinished`, `checkout_attempts`, `technical_errors` and `technical_error_share`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `checkout.completions_stuck` | degraded or failing | Checkout completions have been pending for over 15 minutes. Any is degraded; 10, or one in ten of the window's completions, is failing. |
+| `checkout.protocol_breaches` | degraded | A completed checkout's follow-up work didn't happen: its after-order steps never ran (`tail_never_ran`), its confirmation or delivery was never queued (`stuck_enqueue`), or its delivery never finished dispatching (`dispatch_unfinished`). |
+| `checkout.error_rate_spike` | degraded or failing | The error share rose at least 15 points above your usual and at least doubled. It's failing at 35 points above. With no baseline yet, it's flagged when half the attempts hit an error. Needs 20 judged attempts. |
+
+**Why it matters:** a stuck completion is an order the shopper paid for that hasn't finished. A missed follow-up step can mean no confirmation email or an order your fulfillment never receives. A rising error share means shoppers are failing to check out.
+
+### Tax
+
+**Applies when** your company has had an order in the last 30 days.
+
+**What it looks at:** the share of the last hour's orders charged $0 tax, in the countries where you collect tax. Cancelled and archived orders are left out, and so are countries you've set as tax-free.
+
+**Figures:** `orders`, `zero_tax_orders` and `zero_tax_share`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `tax.zero_tax_spike` | degraded or failing | The $0-tax share rose at least 25 points above your usual and at least doubled. It's failing at 50 points above. With no baseline yet, it's flagged when 90% or more of orders paid no tax. Needs 20 orders. |
+
+**Why it matters:** a sudden rise in untaxed orders usually means a broken tax setup. Every one of those orders is tax you may still owe but didn't collect.
+
+### Shipping
+
+**Applies when** your company has had an order in the last 30 days.
+
+**What it looks at:** the share of the last hour's orders charged $0 shipping, and the average shipping charge per order.
+
+**Figures:** `orders`, `zero_shipping_orders`, `zero_shipping_share` and `average_shipping_cents`. The average is in the platform's base currency.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `shipping.zero_shipping_spike` | degraded | The $0-shipping share rose at least 25 points above your usual and at least doubled. |
+| `shipping.average_dropped` | degraded | The average shipping charge fell below half your usual. |
+
+Both findings need a baseline and 20 orders. Many stores ship free on every order, so a high $0 share is never flagged on its own.
+
+**Why it matters:** a sudden drop in shipping charges usually means a shipping rate or zone stopped applying. You pay the carrier while the shopper pays nothing.
+
+### Fulfillment
+
+**Applies when** your company has had an order in the last 30 days. It runs every six hours, because it measures a daily rhythm.
+
+**What it looks at:** the last 24 hours' orders: how many are fulfilled or partially fulfilled, and the average time from order to first fulfillment.
+
+**Figures:** `orders`, `fulfilled`, `fulfilled_share` and `average_hours_to_fulfill`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `fulfillment.behind` | degraded or failing | The fulfilled share is at least 30 points below your usual. It's failing at 50 points below. |
+| `fulfillment.slow` | degraded | Orders took over twice as long as usual to fulfill, and at least 12 hours longer. |
+
+Both findings need a baseline and 20 orders.
+
+**Why it matters:** orders falling behind usually means a warehouse or fulfillment integration stopped receiving them. Shoppers notice late shipments before you do.
+
+### Subscriptions
+
+**Applies when** your company has an active or past-due subscription.
+
+**What it looks at:** renewals that are due but haven't billed, renewal failures in the last hour, renewals held in pricing quarantine, and renewal runs that are stuck. Fluid looks for due renewals every minute. A renewal more than two hours past its date means billing has stopped for it.
+
+**Figures:** `active`, `past_due`, `overdue`, `failed_last_hour`, `pricing_quarantined` and `runs_stuck`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `subscriptions.renewals_overdue` | degraded or failing | Active subscriptions are more than two hours past their renewal date and haven't billed. Any is degraded; 50, or one in ten active subscriptions, is failing. |
+| `subscriptions.failures_spike` | degraded | 5 or more renewals failed in the last hour, and at least twice your usual. |
+| `subscriptions.pricing_quarantined` | degraded | Renewals are held in pricing quarantine. |
+| `subscriptions.runs_stuck` | degraded | Renewal runs have been in progress for over an hour. |
+
+**Why it matters:** subscriptions are recurring revenue. An overdue renewal is a payment you aren't collecting and a shipment a customer expects.
+
+### Mist apps
+
+**Applies when** your company has a live or failed Mist app.
+
+**What it looks at:** the last hour's Mist deployments, apps in a failed state, each app's latest production deployment, and Vercel's alerts about unusual error responses. Fluid reads deployment state from the events Vercel sends it.
+
+**Figures:** `apps`, `apps_failed`, `deployments`, `failed_deployments` and `events_unapplied`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `mist_apps.production_deploy_failed` | degraded | An app's latest production deployment failed. The previous deployment is still live. |
+| `mist_apps.error_spike` | degraded or failing | Vercel reported an unusual spike in an app's error responses in the last hour. It's failing when Vercel rated the alert high or critical. |
+| `mist_apps.deployments_failed` | degraded | 3 or more deployments failed in the last hour, and at least twice your usual. |
+| `mist_apps.apps_failed` | degraded | Mist apps are in a failed state. |
+| `mist_apps.events_unapplied` | degraded | Deployment events couldn't be applied, so deployment states may be out of date. |
+| `mist_apps.vercel_unconfigured` | unknown | Fluid isn't receiving deployment events, so it can't tell deployment state. |
+
+**Why it matters:** a failed production deploy means your latest code didn't ship, even though the site is still up. An error spike means visitors are seeing errors now.
+
+### Themes
+
+**Applies when** your company has a theme of its own.
+
+**What it looks at:** themes in error, theme git connections and git sync in error, and the last hour's branch publishes.
+
+**Figures:** `themes`, `themes_in_error`, `themes_recently_in_error`, `git_connections`, `git_connections_in_error`, `git_repos`, `git_repos_in_error`, `publishes_last_hour` and `failed_publishes_last_hour`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `themes.in_error` | degraded | Themes went into error in the last 7 days, for example after a failed import. |
+| `themes.git_connection_error` | degraded | Theme git connections are in error. |
+| `themes.git_sync_error` | degraded | Theme git sync repositories are in error. |
+| `themes.publish_failed` | degraded or failing | Branch publishes failed in the last hour. Any is degraded; 3 or more with none succeeding is failing. |
+
+A theme that has been in error for over 7 days still counts in `themes_in_error`, but raises no finding. Only branch publishes are counted. A classic publish fails straight away when you run it, so you already see that failure.
+
+**Why it matters:** a failed publish or a broken git sync means the storefront isn't showing your latest theme changes.
+
+### Auth
+
+**Applies when** your company has an admin.
+
+**What it looks at:** locked admins and members, multi-factor authentication (MFA) challenges, and legacy credential and session use. MFA is read for the hour ending 15 minutes ago, so a code sent a minute ago isn't counted as unverified.
+
+**Figures:** `admins_locked`, `members_locked`, `locked_last_hour`, `mfa_challenges`, `mfa_verified`, `mfa_failed`, `mfa_exhausted`, `legacy_credential_uses` and `legacy_session_uses`. Legacy use is counted for the previous UTC day. When Fluid can't count it, the figures show `legacy_usage_measured: false` instead of a zero.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `auth.mfa_not_verifying` | failing | 10 or more MFA challenges in the hour, and not one was verified. Codes may not be arriving. |
+| `auth.mfa_failures_spike` | degraded | 5 or more MFA challenges had a wrong code, and at least twice your usual. |
+| `auth.lockouts_spike` | degraded | 5 or more admins and members were locked in the last hour, and at least twice your usual. |
+| `auth.legacy_sessions_before_cutoff` | degraded | Legacy sessions were used yesterday, and your company's cutoff for legacy sessions is less than 14 days away. |
+
+Failed password attempts aren't stored per company, so this area doesn't count them.
+
+**Why it matters:** if MFA codes stop arriving, nobody can sign in. A lockout spike can mean an attack or a broken sign-in. Legacy sessions still in use near the cutoff mean people are about to be signed out.
+
+### FairShare
+
+**Applies when** your company has had an order go through FairShare attribution in the last 7 days.
+
+**What it looks at:** orders from the 24 hours ending 30 minutes ago that went through attribution. Imported orders are left out. The window ends 30 minutes ago, so attribution still running on new orders isn't counted.
+
+**Figures:** `orders`, `settled`, `unattributed`, `unattributed_share`, `attribution_failed` and `attribution_stuck`.
+
+| Finding | Severity | When |
+| --- | --- | --- |
+| `fairshare.attribution_failed` | degraded | Orders failed attribution in the last day. |
+| `fairshare.attribution_stuck` | degraded | Orders have waited over 2 hours for attribution. |
+| `fairshare.unattributed_spike` | degraded | The share of settled orders credited to no one rose at least 25 points above your usual and at least doubled. Needs a baseline and 20 settled orders. |
+
+A quiet day still reports failed and stuck attribution. Many companies credit most orders to no one by design, so a high unattributed share is never flagged without a baseline.
+
+**Why it matters:** attribution decides which member gets credit for a sale. An order that fails or never finishes attribution can leave a member without credit they earned. See [FairShare](/concepts/fair-share).
+
+## Who can see each area
+
+Every health endpoint needs a company admin credential sent as a Bearer token (`Authorization: Bearer <token>`) with the `company_settings.view` permission. Each area also needs the permissions its own data sits behind:
+
+| Area | Also needs |
+| --- | --- |
+| Droplets | `droplets.view` |
+| Connect | `droplets.view`, `orders.view` and `members.view` |
+| Payments | `payment_accounts.view` and `reports.view` |
+| Checkout | `orders.view` and `reports.view` |
+| Tax, Shipping, Fulfillment, FairShare | `orders.view` |
+| Subscriptions | `subscriptions.view` |
+| Mist apps | `mist.code` |
+| Themes | `application_themes.view` and `application_themes.update` |
+| Auth | `members.view`, `company_admins.view` and `developer.view` |
+
+An area you can't see is left out of the response and out of the overall state. A droplet installation token with the `settings` scope sees only the areas its scopes cover, and never Mist apps.
+
+## Get told when health changes
+
+You don't need to poll. Subscribe a company webhook to resource `company_health`, event `changed`, or give a [We-Bot](/api/guides/we-bots) the `company_health.changed` trigger. It fires when an area's state changes, and on an area's first check when that check is `degraded`, `failing` or `unknown`. An hour where nothing changed sends nothing.
+
+The event names no area or state. When it arrives, read company health with your own token and compare each area's `state` with its `previous_state`. See [Company health changes](/api/guides/webhooks#company-health-changes) for the delivery payload.
