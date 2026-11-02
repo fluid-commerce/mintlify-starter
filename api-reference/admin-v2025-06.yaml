@@ -39,6 +39,9 @@ tags:
   - name: ads
     description: The ad accounts a company advertises from. List what a connected Meta Business token can see and pick the ad account, Facebook Page and Instagram account Fluid launches ads into. Campaigns themselves stay on Meta.
     x-fluid-section: Sales channels
+  - name: members
+    description: Members and the member types that group them, including the company's default shopper member type.
+    x-fluid-section: Members
 components:
   parameters:
     CheckoutJourneyId:
@@ -501,6 +504,28 @@ components:
           const: 200
         meta:
           $ref: '#/components/schemas/Meta'
+    DefaultShopperMemberTypeResponse:
+      type: object
+      required:
+        - default_shopper_member_type_id
+        - status
+        - meta
+      additionalProperties: false
+      properties:
+        default_shopper_member_type_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        status:
+          type: integer
+          const: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    DefaultShopperMemberTypeForbiddenResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ManagedMemberTypeForbiddenResponse'
+        - $ref: '#/components/schemas/ManagedMemberTypeErrorResponse'
     ManagedMemberTypeUnauthorizedResponse:
       type: object
       required:
@@ -688,7 +713,7 @@ components:
         points:
           type: integer
     CatalogSubscriptionPrice:
-      description: 'An explicit subscription catalog price, or a marker that the plan-less subscription list exists but carries no row for this variant, meaning the price follows the one-time price. See features/member-pricing/DECISION-UNSET-SUBSCRIPTION-PRICE.md: a missing subscription LIST (not this object at all -- `subscription: null` on the row) is a separate, unrelated miss. price is a decimal string at the currency''s exponent, matching CatalogOneTimePrice; cv and qv are the same format but nullable. volume_overrides_one_time is always emitted on an explicit row (PLAN-SUBSCRIPTION-VOLUME.md slice S1c): true when this row''s cv/qv was explicitly set apart from its tier''s one-time cv/qv.'
+      description: 'An explicit subscription catalog price, or a marker that the plan-less subscription list exists but carries no row for this variant, meaning the price follows the one-time price. See features/member-pricing/DECISION-UNSET-SUBSCRIPTION-PRICE.md: a missing subscription LIST (not this object at all -- `subscription: null` on the row) is a separate, unrelated miss. For a company priced without the one-time fallback, a plan-less list with no row for this variant is reported as `{unset: true}` (nothing to follow; the cell is editable, and any stored one-time price stays on the row) rather than the follows-one-time marker. price is a decimal string at the currency''s exponent, matching CatalogOneTimePrice; cv and qv are the same format but nullable. volume_overrides_one_time is always emitted on an explicit row (PLAN-SUBSCRIPTION-VOLUME.md slice S1c): true when this row''s cv/qv was explicitly set apart from its tier''s one-time cv/qv.'
       oneOf:
         - type: object
           required:
@@ -719,6 +744,14 @@ components:
           additionalProperties: false
           properties:
             follows_one_time:
+              type: boolean
+              const: true
+        - type: object
+          required:
+            - unset
+          additionalProperties: false
+          properties:
+            unset:
               type: boolean
               const: true
     CatalogPriceVariant:
@@ -798,12 +831,13 @@ components:
             - type: 'null'
     CatalogPricesResponse:
       type: object
-      description: 'Every active price type''s explicit catalog prices, across every market and currency, for a set of variants. Rows are sparse: a (variant, market, currency, price type) cell with nothing explicitly priced produces no row.'
+      description: 'Every active price type''s explicit catalog prices, across every market and currency, for a set of variants. Rows are sparse: a (variant, market, currency, price type) cell with nothing explicitly priced produces no row. The exception is a company priced without the one-time fallback: wherever a plan-less subscription list exists with no row for the variant, a row is emitted with `subscription: {unset: true}`, and its `one_time` is whatever is stored for the variant (null only when nothing is stored).'
       required:
         - price_types
         - markets
         - variants
         - rows
+        - no_fallback
         - status
         - meta
       additionalProperties: false
@@ -824,6 +858,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogPriceRow'
+        no_fallback:
+          type: boolean
+          description: Whether the company is on the no-fallback pricing gate. When true, a cleared explicit subscription price is refused (price_required) rather than falling back to the one-time price.
         status:
           type: integer
           const: 200
@@ -1426,7 +1463,7 @@ components:
             - string
             - number
             - 'null'
-          description: 'A decimal amount ("19.99") or a JSON number; required for a one_time cell. Must be finite -- NaN and Infinity (including a JSON number too large for a double, such as 1e400) are refused per cell rather than reaching Money arithmetic -- and must fit its destination column: `price_list_prices.price_cents` (bigint, custom price types) or `variant_countries.price` / `wholesale` (decimal(15,5), system Retail/Wholesale). A finite but oversized amount (1e100) is refused the same way, per cell. Required for a one_time cell; on a subscription cell, omitting the key leaves the row''s current price alone (refused if no row exists yet, since there is then nothing to leave alone). An explicit null, or exactly 0, removes a custom price type''s subscription price, or writes a system tier''s legacy "unset" value -- both read as "follows the one-time price" (decision option 1: 0 means unset, the same rule as a blank price).'
+          description: 'A decimal amount ("19.99") or a JSON number; required for a one_time cell. Must be finite -- NaN and Infinity (including a JSON number too large for a double, such as 1e400) are refused per cell rather than reaching Money arithmetic -- and must fit its destination column: `price_list_prices.price_cents` (bigint, custom price types) or `variant_countries.price` / `wholesale` (decimal(15,5), system Retail/Wholesale). A finite but oversized amount (1e100) is refused the same way, per cell. Required for a one_time cell; on a subscription cell, omitting the key leaves the row''s current price alone (refused if no row exists yet, since there is then nothing to leave alone). For a company priced with the one-time fallback, an explicit null, or exactly 0, removes a custom price type''s subscription price, or writes a system tier''s legacy "unset" value -- both read as "follows the one-time price" (decision option 1: 0 means unset, the same rule as a blank price). For a no-fallback company a blank or 0 subscription price is refused with price_required and the row is kept.'
         compare_at_price:
           type:
             - string
@@ -51510,6 +51547,99 @@ paths:
                 $ref: '#/components/schemas/ManagedMemberTypeForbiddenResponse'
         '422':
           description: Invalid parameters or a duplicate/invalid member type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedMemberTypeErrorResponse'
+  /api/v2025-06/member-types/default-shopper:
+    get:
+      operationId: admin_v2025_06_member_types_default_shopper_show
+      summary: Show the default shopper member type
+      description: Returns the id of the member type recorded as this company's default shopper type, or null when none is set. It is used only while the customer member type is archived. Requires admin tier and member_types.view permission.
+      tags:
+        - members
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: The current default shopper member type id.
+          content:
+            application/json:
+              example:
+                default_shopper_member_type_id: 0199a8f0-2d6b-7a18-8e45-c3b17f9d2a06
+                status: 200
+                meta:
+                  request_id: d4a0c6f2-9e3b-47d1-8a65-1f7b2e9c3d84
+                  timestamp: '2026-09-16T08:47:19Z'
+              schema:
+                $ref: '#/components/schemas/DefaultShopperMemberTypeResponse'
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedMemberTypeUnauthorizedResponse'
+        '403':
+          description: The caller is not admin tier, lacks member_types.view permission, or is a droplet installation, which this endpoint refuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefaultShopperMemberTypeForbiddenResponse'
+    put:
+      operationId: admin_v2025_06_member_types_default_shopper_update
+      summary: Set or clear the default shopper member type
+      description: 'Sets or clears the company''s default shopper member type and writes no other company column. The default is used only while the customer member type is archived: new customers then join it instead. The target must be an active shopper (not rep-eligible, unless it is the seeded customer or preferred type) member type of this company; an id that names no such type, including another company''s type, is refused with 422. Clearing is refused with 422 while the customer member type is archived. Requires admin tier and member_types.manage permission.'
+      tags:
+        - members
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              default_shopper_member_type_id: 0199a8f0-2d6b-7a18-8e45-c3b17f9d2a06
+            schema:
+              type: object
+              required:
+                - default_shopper_member_type_id
+              additionalProperties: false
+              properties:
+                default_shopper_member_type_id:
+                  type:
+                    - string
+                    - 'null'
+                  format: uuid
+                  description: The member type to use, or null to clear the default.
+      responses:
+        '200':
+          description: The default shopper member type after the write.
+          content:
+            application/json:
+              example:
+                default_shopper_member_type_id: 0199a8f0-2d6b-7a18-8e45-c3b17f9d2a06
+                status: 200
+                meta:
+                  request_id: d4a0c6f2-9e3b-47d1-8a65-1f7b2e9c3d84
+                  timestamp: '2026-09-16T08:47:19Z'
+              schema:
+                $ref: '#/components/schemas/DefaultShopperMemberTypeResponse'
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedMemberTypeUnauthorizedResponse'
+        '403':
+          description: The caller is not admin tier, lacks member_types.manage permission, or is a droplet installation, which this endpoint refuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefaultShopperMemberTypeForbiddenResponse'
+        '422':
+          description: Malformed id, a type that is not an active shopper type of this company, or a clear refused while the customer type is archived.
           content:
             application/json:
               schema:
