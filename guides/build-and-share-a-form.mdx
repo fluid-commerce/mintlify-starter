@@ -1,0 +1,201 @@
+---
+title: "Build and Share a Standalone Form with the API"
+sidebarTitle: "Build a Form (API)"
+description: "Create a standalone form, make it public, embed or share it, and read its responses — all through the Forms API."
+---
+
+A **standalone form** is a form you share by link or embed, rather than one checkout shows during enrollment. Use it for a reseller application, an event RSVP, a product-interest survey — anything you want people to fill in outside of a purchase. This guide builds one end to end with the Forms API: write its fields, publish it, hand out its link, and read what comes back.
+
+If you instead want a form that appears at **enrollment checkout** after payment, read [Checkout Forms](/guides/checkout-forms). The field model is the same; the way the form reaches people is different.
+
+## The model
+
+A standalone form is a `general` form. Unlike a checkout form, it has no country targeting and no cart — it is reached through a **public token**. Once the form is active and has a token, Fluid gives you a share link and an embed snippet, and anyone with the link can respond. You read the responses back through the same API.
+
+The lifecycle is: **create a draft → activate it (which mints the share token) → share or embed it → read responses → revoke access when you're done.**
+
+## Build a form through the API
+
+Every request takes a company Bearer token. Reading needs the forms view permission, and writing needs the forms update permission. The steps below build Dunder Mifflin's reseller application. Each operation's reference page holds its full parameters and responses.
+
+### Write the fields
+
+Each field is a component: an object with an `element_type` and its settings. [List form elements](/api-reference/form-elements/list-form-elements) describes every element type. Dunder Mifflin saves the fields in `reseller-application.json`:
+
+```json reseller-application.json
+[
+  {
+    "element_type": "input",
+    "puck_type": "legal_name",
+    "label": "Business legal name",
+    "required": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "input",
+    "puck_type": "email",
+    "label": "Contact email",
+    "required": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "multiple_choice_entry",
+    "label": "Business type",
+    "multiple_choice_options": [
+      { "label": "Independent retailer" },
+      { "label": "Wholesaler" },
+      { "label": "Online only" },
+      { "label": "Other" }
+    ],
+    "required": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "short_text_entry",
+    "label": "Employer Identification Number (EIN)",
+    "placeholder": "12-3456789",
+    "required": true,
+    "sensitive_info": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "short_text_entry",
+    "label": "Referral code",
+    "placeholder": "SPRING-Reseller",
+    "required": false,
+    "case_sensitive": true,
+    "is_form_field": true
+  },
+  {
+    "element_type": "long_text_entry",
+    "label": "Tell us about your business",
+    "required": false,
+    "is_form_field": true
+  }
+]
+```
+
+- Set `is_form_field` to `true` on every component that collects an answer. Structural blocks such as headers and section labels leave it off.
+- An identity field is an `input` whose `puck_type` names it, such as `legal_name`, `email`, or `phone_number`.
+- Mark a field `sensitive_info` to have Fluid treat its answers as sensitive: they are masked on read and export unless the caller holds the forms view-sensitive permission. The EIN above is one such field.
+- Mark a text field `case_sensitive` when capital letters are meaningful, like the referral code above. Fluid stores the flag on the field and returns it in the field's metadata so exports and integrations can honor it; the API itself does not change or validate the answer.
+- Fields appear in the order you list them.
+
+### Create the form as a draft
+
+`form_components` is a JSON-encoded string, not an array. Let `jq` encode the file into the request body, and set `form_type` to `general`:
+
+```bash
+jq -n --arg components "$(jq -c . reseller-application.json)" '{
+  form: {
+    title: "Reseller application",
+    form_type: "general",
+    status: "draft",
+    form_components: $components
+  }
+}' > create-form.json
+
+curl -X POST "https://api.fluid.app/api/forms" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: reseller-application-2026-11" \
+  --data @create-form.json
+```
+
+- Send the fields inside the `form` object. The API reads nothing outside it.
+- Set `form_type` to `general` for a standalone form. `post_purchase` makes a checkout form instead, and `pre_purchase` is retired and returns `422`.
+- A new form is a `draft` unless you set `status`, so no one sees it while you check it.
+- Marking a field `sensitive_info` needs the forms manage-sensitive permission. Without it, the request returns `422` and creates nothing.
+- The `Idempotency-Key` header makes a retry safe: the same request with the same key returns the form the first request created.
+
+See [Create a form](/api-reference/forms/create-a-form) for the full request and response. The response returns the form with its `id`, here `5821`, and its `form_components` carry each element's `id`. Save the response; you need those IDs to change the fields later.
+
+### Activate it, which mints the share token
+
+A standalone form is reachable only when it is **active and holds a public token**. Activating the form mints that token for you, so send the status change as an update:
+
+```bash
+curl -X PUT "https://api.fluid.app/api/forms/5821" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"form": {"status": "active"}}'
+```
+
+<Warning>
+  Activate the form by **changing** its status to `active`; don't create it `active` in one step. The token is minted on the transition to active, so a form created directly as `active` is live but has no share link until you call [Generate a public token](/api-reference/forms/generate-a-public-token).
+</Warning>
+
+To rotate the token later — for example if a link leaks — call [Generate a public token](/api-reference/forms/generate-a-public-token) (`POST /api/forms/{id}/generate_token`). It replaces the current token with a new one, so the old link stops working.
+
+### Set who can reach it
+
+A standalone form is public by default once it has a token. Tighten access with [Update embed settings](/api-reference/forms/update-embed-settings) (`PATCH /api/forms/{id}/embed_settings`). Send only the controls you want; each is optional:
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/forms/5821/embed_settings" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "embed_settings": {
+      "allowed_domains": ["partners.dundermifflin.com"],
+      "expires_at": "2026-12-31T23:59:59Z",
+      "max_submissions": 500,
+      "require_contact": true
+    }
+  }'
+```
+
+- `allowed_domains` limits which sites may embed the form.
+- `expires_at` closes the form at a datetime; `max_submissions` closes it after a number of responses.
+- `require_contact` makes every public submission include a contact email.
+- To password-protect the form, send a `password`; send `remove_password` to clear it.
+
+### Share it or embed it
+
+Once the form is active and has a token, [Get embed code](/api-reference/forms/get-embed-code) (`GET /api/forms/{id}/embed_code`) returns everything you need to publish it:
+
+```bash
+curl "https://api.fluid.app/api/forms/5821/embed_code" \
+  -H "Authorization: Bearer <token>"
+```
+
+The response carries:
+
+- `share_url` — the hosted link to send people or post anywhere.
+- `embed_url` — the same form for embedding in an `iframe`.
+- `iframe_snippet` and `script_snippet` — ready-to-paste HTML for your own site.
+
+<Note>
+  This endpoint needs a public token. If the form has none yet, it fails — activate the form or generate a token first, then call it again.
+</Note>
+
+### Read the responses
+
+Each submission is a respondent with their answers. List them with [List form respondents](/api-reference/forms/list-form-respondents) (`GET /api/forms/{id}/respondents`), or pull everything at once with [Export form responses as CSV](/api-reference/forms/export-form-responses-as-csv) (`POST /api/forms/{id}/export_csv`):
+
+```bash
+curl "https://api.fluid.app/api/forms/5821/respondents" \
+  -H "Authorization: Bearer <token>"
+```
+
+A sensitive field's answer comes back masked as `********` unless the caller holds the forms view-sensitive permission, is a root admin, or uses a droplet token. A CSV export additionally needs `include_sensitive=true` to return those answers unmasked; without it, even a permitted caller gets masked values.
+
+### Turn access back off
+
+When the form has run its course, revoke its public token with [Revoke the public token](/api-reference/forms/revoke-the-public-token) (`DELETE /api/forms/{id}/revoke_token`). The share link and embed stop working, and the form's existing responses are kept. Revoking doesn't change the form's status, so to share it again you call [Generate a public token](/api-reference/forms/generate-a-public-token) to mint a fresh token.
+
+### Change fields without dropping answers
+
+To edit a live form, send its components back to [Update a form](/api-reference/forms/update-a-form) with their IDs. A component that carries the `id` of one of this form's elements updates that element in place; a component without an `id` adds a new element; an element you leave out is deactivated, and its stored answers are kept. Take the IDs from the create or update response's `form_components`, not from [List form elements](/api-reference/form-elements/list-form-elements), which also lists deactivated elements.
+
+## Gotchas
+
+- **A form created `active` has no share link.** The token is minted when status changes to active, so create a draft and then activate it, or call [Generate a public token](/api-reference/forms/generate-a-public-token).
+- **`form_components` is a JSON-encoded string**, not a JSON array. Encode the array into a string before you send it.
+- **`sensitive_info` is permission-gated.** Changing which fields are sensitive needs the forms manage-sensitive permission, or the request returns `422`.
+- **`case_sensitive` is a stored hint**, not a validation. Fluid keeps it on the field and returns it in metadata for exports and integrations; it does not alter the stored answer.
+
+## Related pages
+
+- [Checkout Forms](/guides/checkout-forms) — forms shown at enrollment checkout after payment.
+- [Forms API reference](/api-reference/forms/list-forms) — every form operation in full.
