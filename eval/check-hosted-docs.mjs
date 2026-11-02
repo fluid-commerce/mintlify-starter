@@ -237,7 +237,7 @@ const PER_PAGE_PROSE_PAGES = new Set([
   "themes/theme-variables",
 ]);
 
-// The 74 generated reference pages of `public-v2025-06` — the Public SDK surface the
+// The generated reference pages of `public-v2025-06` — the Public SDK surface the
 // `@fluid-app` SDK actually calls, adopted in Phase 9.6f. Its paths are genuinely
 // `/api/public/v2025-06/...` and `/api/v202506/carts/...`, so every one of these pages
 // carries a version marker the legacy scan otherwise treats as a leak.
@@ -292,6 +292,7 @@ const PUBLIC_SDK_V2025_06_PAGES = new Map([
   ["carts/syncs-cart-with-authenticated-customer", "POST /api/public/v2025-06/commerce/carts/{cart_token}/sync_customer"],
   ["carts/updates-a-cart", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}"],
   ["carts/updates-a-cart-items-variant", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/variant"],
+  ["carts/updates-a-cart-put", "PUT /api/public/v2025-06/commerce/carts/{cart_token}"],
   ["carts/updates-cart-address", "POST /api/public/v2025-06/commerce/carts/{cart_token}/address"],
   ["carts/updates-subscribe:false-to-cart-item", "DELETE /api/public/v2025-06/commerce/carts/{cart_token}/items/{item_id}/subscribe"],
   ["carts/updates-the-country-of-a-cart-also-updates-the-currency-code", "PATCH /api/public/v2025-06/commerce/carts/{cart_token}/update_country"],
@@ -410,6 +411,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["customers/get-a-customer", "GET /api/v2025-06/customers/{id}"],
   ["customers/list-customers", "GET /api/v2025-06/customers"],
   ["customers/update-a-customer", "PATCH /api/v2025-06/customers/{id}"],
+  ["customers/update-a-customer-put", "PUT /api/v2025-06/customers/{id}"],
   ["discounts/copy-a-promo-code-discount", "POST /api/v2025-06/discounts/{id}/clone"],
   ["discounts/create-a-promo-code-discount", "POST /api/v2025-06/discounts"],
   ["discounts/delete-a-promo-code-discount", "DELETE /api/v2025-06/discounts/{id}"],
@@ -437,6 +439,8 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["members/list-company-member-types", "GET /api/v2025-06/member-types"],
   ["members/list-company-pricing-tiers", "GET /api/v2025-06/pricing-tiers"],
   ["members/rename-a-price-type", "PATCH /api/v2025-06/pricing-tiers/{id}"],
+  ["members/set-or-clear-the-default-shopper-member-type", "PUT /api/v2025-06/member-types/default-shopper"],
+  ["members/show-the-default-shopper-member-type", "GET /api/v2025-06/member-types/default-shopper"],
   ["members/update-a-member-type", "PATCH /api/v2025-06/member-types/{slug}"],
   ["meta/disconnect-the-companys-meta-commerce-connection", "DELETE /api/v202506/meta/connection"],
   ["meta/get-the-companys-meta-catalog-ads-readiness", "GET /api/v202506/meta/ads_readiness"],
