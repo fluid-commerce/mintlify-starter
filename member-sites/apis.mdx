@@ -1,0 +1,192 @@
+---
+title: "Build member sites with the APIs"
+sidebarTitle: "APIs"
+description: "Build, publish, share and oversee member sites without the CLI: the member API and the company API, which credentials each takes, the file and page APIs, and every operation in the API Reference."
+---
+
+The [`fluid member-site` CLI](/member-sites/cli) is a client of two APIs. You can call them yourself to build a member site from your own code, a droplet or a script. This page covers which API to use, how to authenticate, how the file and page APIs behave, and where to find each operation. It doesn't restate request or response schemas: each operation's generated page in the API Reference holds those.
+
+<Note>
+  Member sites must be turned on for your company by Fluid. Until they are, every request to either API answers `404`. To ask for them, [contact support](/help/getting-help).
+</Note>
+
+## Choose the API
+
+The owner of a site decides which API builds it.
+
+| Owner | API | Base path | Credential |
+| --- | --- | --- | --- |
+| A member | The member API | `/api/member/v2026-10/sites` | The member's own token |
+| The company | The company API | `/api/company/v2026-10/member-sites` | A signed-in company admin |
+
+- **The member API reaches only the signed-in member's own sites.** The one exception is copying, which also reaches a published site shared with the member with `copy` permission. A site another member owns, a site in another company and a malformed id all answer `404`. A site is addressed by its public `id`, never by a numeric id.
+- **The company API reaches every site in the company.** An admin lists, reads, takes down, deletes and copies a member's site, and can list and restore its versions. An admin builds a company site: its files, pages and publishing.
+- **An admin can't change a member's site.** For a member's site, the company API's file, page and publish routes answer `403`, and its routes that create a branch or a share answer `404`. The owner builds it. The CLI follows the same rule: see [Choose the login](/member-sites/cli#choose-the-login).
+
+Send the credential as a Bearer token to `https://api.fluid.app`.
+
+## Authenticate
+
+### The member API
+
+The member API acts as the signed-in member. The credential alone decides which member and which company a request is about. Its credentials are the member's own: an opaque member token, a member session JWT, a portal JWT linked to a membership in that company, or a verified One Auth identity access token. See [Member APIs](/api/member-apis#credentials).
+
+```bash
+curl "https://api.fluid.app/api/member/v2026-10/sites" \
+  -H "Authorization: Bearer $MEMBER_TOKEN"
+```
+
+- **It refuses company, partner, public and droplet installation tokens.** It also refuses an admin credential, and a credential for a member who is also an admin of that company. That is why the CLI says a member who is an admin builds company sites only.
+- **It takes a bearer token only.** A request on the same-origin cookie mount is refused with `403`, even with a valid member session, because a script on your company's storefront shares that origin.
+- **A member session JWT and a portal JWT are read-only.** A write with either answers `403`. Use a member token to build. The credential that order and subscription emails carry is a member session JWT. It is also refused on the account menu, the shares and the share-target search.
+- **Any member can build.** A member needs no particular member type to own sites.
+
+### The company API
+
+The company API takes a company admin credential. Reading needs the `application_themes.view` permission and writing needs `application_themes.update`, the permissions the theme API uses.
+
+- **A write needs a signed-in admin.** A company API token, a droplet installation token and any other credential with no user can read, and every write answers `403`.
+- **A company API token reads sites, pages, versions, shares, branches and the featured list.** It can't read files, which hold a site's code, and it can't preview a draft.
+- **A droplet installation token with the `website` scope can read** sites, pages and the featured list, and versions when its installation role grants `application_themes.view`. It is refused on files, shares and branches.
+- **An OAuth client token is refused on shares and branches**, whatever its scopes.
+
+See [Authentication](/api/authentication) for the token types.
+
+### Know the order of the checks
+
+A refused credential answers `401` or `403` before anything else, so a refused credential never learns whether member sites are on. A valid credential for a company without member sites then answers `404`. A `404` can therefore mean the feature is off, the site is missing, or the site belongs to someone else.
+
+## Build a member's site
+
+This builds a site with the member API: create it, write a layout, add a page and publish. The CLI does the same steps from a folder.
+
+```bash
+# Create the site. It starts as a private draft.
+curl -X POST "https://api.fluid.app/api/member/v2026-10/sites" \
+  -H "Authorization: Bearer $MEMBER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Riley'\''s Shop", "visibility": "private" }'
+
+# Write a layout. $SITE_ID is the site's id from the response above.
+curl -X PUT "https://api.fluid.app/api/member/v2026-10/sites/$SITE_ID/files/layouts/site.liquid" \
+  -H "Authorization: Bearer $MEMBER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "content": "<main>{{ content_for_layout }}</main>", "must_not_exist": true }'
+
+# Add a page and its content.
+curl -X POST "https://api.fluid.app/api/member/v2026-10/sites/$SITE_ID/pages" \
+  -H "Authorization: Bearer $MEMBER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "slug": "/", "title": "Home", "published": true, "content": "<h1>Welcome</h1>" }'
+
+# Publish. The request has no body.
+curl -X POST "https://api.fluid.app/api/member/v2026-10/sites/$SITE_ID/publish" \
+  -H "Authorization: Bearer $MEMBER_TOKEN"
+```
+
+A member's site opens at `/accounts/rileys-shop` once it is published and the member can open it. See [Share a member site](/member-sites/sharing).
+
+The member API's bodies are plain JSON objects, and its responses carry the record under `data`. The company API wraps its bodies and responses in a named key instead: `member_site`, `member_site_file`, `member_site_page`, `member_site_share` and so on. A company site is created with `{ "member_site": { "name": "Fall Launch", "visibility": "public" } }`. The generated page for each operation shows its exact body.
+
+## Use the file API
+
+A site's files have theme-style paths with no subfolders: `layouts/`, `sections/`, `snippets/`, `pages/`, `assets/` and `config/`. [Pages and menus](/member-sites/pages-and-menus) and [Build pages with Liquid](/member-sites/templates#know-the-folder) describe what each holds.
+
+- **One call creates and replaces.** [Write a site file](/api-reference/site-files/write-a-site-file) takes the whole new content of the file at the path in the URL.
+- **Every file has a `version`.** Send it back to write the file only if it hasn't changed since you read it. Send `must_not_exist` to create a file only if the path is free. Send one of the two, not both. With neither, the write replaces whatever is there and the last write wins. A stale `version`, or a file that exists under `must_not_exist`, answers `409`, and nothing is written.
+- **`config/settings.json` is versioned by the settings' `lock_version`.** It moves when a page changes or when `config/menus.json` is written, so read the settings again before a versioned write.
+- **A page's file must exist before you write it.** Add the page first. Pages can't be removed through the file API: use [Remove a page](/api-reference/site-pages/remove-a-page).
+- **Writing a config file does more than save it.** `config/menus.json` replaces every menu, and `config/pages.json` adds, changes and removes pages to match it. `config/access.json` is a member site's draft declaration, and a company site refuses it.
+- **Assets are text only.** An asset is css, js, json, txt or html, and isn't empty.
+- **Layouts, sections, snippets and pages are drafts** until you publish. See [Know what is live at once](/member-sites/pages-and-menus#know-what-is-live-at-once).
+
+[List a site's files](/api-reference/site-files/list-a-sites-files) returns each file's metadata without its content, a cursor page at a time: send `page[cursor]` and `page[limit]`, and follow `meta.pagination.next_cursor` until it is `null`. A page holds 25 files by default and at most 100. A cursor works only for the site that issued it. A bad cursor answers `400` from the member API and `422` from the company API.
+
+## Use the page API
+
+The page API changes one page and its content in one step. A site holds at most 50 pages, so the page list isn't paged. A member holds at most 25 sites, so that list isn't paged either. The company's list of sites is paged with `page[cursor]` and `page[limit]`, and filters with `filter[owner_kind]` and `filter[status]`.
+
+Send the `lock_version` you last read when you change or remove a page or a site, and the request answers `409` if it changed since. Without it the change is applied to the current record.
+
+## Preview a draft
+
+The preview operations return a site's draft as HTML or text, so you can check a page before you publish. They take a bearer token. Only the owner sees a member's draft, and a company site's draft needs a signed-in admin. See [Preview the draft](/member-sites/publishing#preview-the-draft).
+
+## Find every operation
+
+The generated pages hold each operation's parameters, bodies and responses.
+
+### Sites
+
+| Task | Member API | Company API |
+| --- | --- | --- |
+| List sites | [List the member's sites](/api-reference/sites/list-the-members-sites) | [List member sites](/api-reference/member-sites/list-member-sites) |
+| Create a site | [Add a site](/api-reference/sites/add-a-site) | [Create a company site](/api-reference/member-sites/create-a-company-site) |
+| Read a site | [Show a site](/api-reference/sites/show-a-site) | [Get a member site](/api-reference/member-sites/get-a-member-site) |
+| Change a site | [Change a site](/api-reference/sites/change-a-site) | [Change a member site](/api-reference/member-sites/change-a-member-site) |
+| Delete a site | [Delete a site](/api-reference/sites/delete-a-site) | [Delete a member site](/api-reference/member-sites/delete-a-member-site) |
+| Take a site down | Not available | [Take a member site down](/api-reference/member-sites/take-a-member-site-down) |
+| Copy a site | [Copy a site](/api-reference/sites/copy-a-site) | [Copy a member site](/api-reference/member-sites/copy-a-member-site) |
+
+### Files, pages and preview
+
+| Task | Member API | Company API |
+| --- | --- | --- |
+| List files | [List a site's files](/api-reference/site-files/list-a-sites-files) | [List a site's files](/api-reference/member-site-files/list-a-sites-files) |
+| Read a file | [Show a site file](/api-reference/site-files/show-a-site-file) | [Show a site file](/api-reference/member-site-files/show-a-site-file) |
+| Write a file | [Write a site file](/api-reference/site-files/write-a-site-file) | [Write a site file](/api-reference/member-site-files/write-a-site-file) |
+| Remove a file | [Remove a site file](/api-reference/site-files/remove-a-site-file) | [Remove a site file](/api-reference/member-site-files/remove-a-site-file) |
+| List pages | [List a site's pages](/api-reference/site-pages/list-a-sites-pages) | [List a site's pages](/api-reference/member-site-pages/list-a-sites-pages) |
+| Add a page | [Add a page](/api-reference/site-pages/add-a-page) | [Add a page](/api-reference/member-site-pages/add-a-page) |
+| Change a page | [Change a page](/api-reference/site-pages/change-a-page) | [Change a page](/api-reference/member-site-pages/change-a-page) |
+| Remove a page | [Remove a page](/api-reference/site-pages/remove-a-page) | [Remove a page](/api-reference/member-site-pages/remove-a-page) |
+| Preview the home page | [Preview the home page of a site's draft](/api-reference/site-preview/preview-the-home-page-of-a-sites-draft) | [Preview the home page of a company site's draft](/api-reference/member-site-preview/preview-the-home-page-of-a-company-sites-draft) |
+| Preview a page | [Preview a page of a site's draft](/api-reference/site-preview/preview-a-page-of-a-sites-draft) | [Preview a page of a company site's draft](/api-reference/member-site-preview/preview-a-page-of-a-company-sites-draft) |
+| Read a draft asset | [Read a text asset of a site's draft](/api-reference/site-preview/read-a-text-asset-of-a-sites-draft) | [Read a text asset of a company site](/api-reference/member-site-preview/read-a-text-asset-of-a-company-site) |
+
+### Publishing, versions and branches
+
+| Task | Member API | Company API |
+| --- | --- | --- |
+| Publish | [Publish a site](/api-reference/sites/publish-a-site) | [Publish a company site](/api-reference/member-sites/publish-a-company-site) |
+| List versions | [List a site's versions](/api-reference/sites/list-a-sites-versions) | [List a site's versions](/api-reference/member-sites/list-a-sites-versions) |
+| Restore a version | [Restore a site to a version](/api-reference/sites/restore-a-site-to-a-version) | [Restore a site to a version](/api-reference/member-sites/restore-a-site-to-a-version) |
+| List branches | [List a site's branches](/api-reference/site-branches/list-a-sites-branches) | [List a site's branches](/api-reference/member-site-branches/list-a-sites-branches) |
+| Make a branch | [Branch a site](/api-reference/site-branches/branch-a-site) | [Branch a company site](/api-reference/member-site-branches/branch-a-company-site) |
+| Read a branch | [Read a site's branch](/api-reference/site-branches/read-a-sites-branch) | [Read a site's branch](/api-reference/member-site-branches/read-a-sites-branch) |
+| Delete a branch | [Delete a site's branch](/api-reference/site-branches/delete-a-sites-branch) | [Delete a site's branch](/api-reference/member-site-branches/delete-a-sites-branch) |
+
+See [Publish, restore, copy and take down a member site](/member-sites/publishing) for how these behave.
+
+### Shares
+
+| Task | Member API | Company API |
+| --- | --- | --- |
+| List shares | [List a site's shares](/api-reference/site-shares/list-a-sites-shares) | [List a site's shares](/api-reference/member-site-shares/list-a-sites-shares) |
+| Share a site | [Share a site](/api-reference/site-shares/share-a-site) | [Share a company site](/api-reference/member-site-shares/share-a-company-site) |
+| Change a share's permission | [Change a share's permission](/api-reference/site-shares/change-a-shares-permission) | [Change a share's permission](/api-reference/member-site-shares/change-a-shares-permission) |
+| Stop sharing | [Stop sharing with an audience](/api-reference/site-shares/stop-sharing-with-an-audience) | [Delete a share](/api-reference/member-site-shares/delete-a-share) |
+| Find whom to share with | [Search the share targets](/api-reference/site-share-targets/search-the-share-targets) | Not available |
+
+See [Share a member site](/member-sites/sharing).
+
+### The account menu, pins and home
+
+These belong to the signed-in member, so only the member API has them. Featuring is the company's version.
+
+| Task | Operation |
+| --- | --- |
+| Read the account menu | [Show the member's account menu](/api-reference/site-menu/show-the-members-account-menu) |
+| Remove a site from the menu | [Remove a site from the member's menu](/api-reference/site-removals/remove-a-site-from-the-members-menu) |
+| Restore a removed site | [Restore a removed site](/api-reference/site-removals/restore-a-removed-site) |
+| Pin a site | [Pin a site to the member's menu](/api-reference/site-pins/pin-a-site-to-the-members-menu) |
+| Unpin a site | [Unpin a site](/api-reference/site-pins/unpin-a-site) |
+| Order the pins | [Order the member's pins](/api-reference/site-pins/order-the-members-pins) |
+| Choose a home site | [Choose the member's home site](/api-reference/site-home/choose-the-members-home-site) |
+| Clear the home site | [Clear the member's home site](/api-reference/site-home/clear-the-members-home-site) |
+| List the featured sites (company) | [List the featured sites](/api-reference/member-site-features/list-the-featured-sites) |
+| Feature a site (company) | [Feature a site](/api-reference/member-site-features/feature-a-site) |
+| Stop featuring a site (company) | [Stop featuring a site](/api-reference/member-site-features/stop-featuring-a-site) |
+| Order the featured sites (company) | [Order the featured sites](/api-reference/member-site-features/order-the-featured-sites) |
+
+See [Member sites in the account menu](/member-sites/sites-home).
