@@ -4153,6 +4153,7 @@ components:
       - gift
       - price_label
       - occurrence
+      - decline_key
       properties:
         product_title:
           type: string
@@ -4181,6 +4182,15 @@ components:
           - 'null'
         occurrence:
           "$ref": "#/components/schemas/SubscriptionMilestoneOccurrence"
+        decline_key:
+          description: |
+            The key to send to the milestone decline endpoint to take this paid
+            item off the next order before it bills, so it is not charged.
+            `null` for a gift and for every item of `next_milestone`.
+          type:
+          - string
+          - 'null'
+          pattern: "^[0-9a-f]{32}$"
     SubscriptionNextMilestone:
       description: |
         The nearest milestone after the next order and how far it is:
@@ -4594,6 +4604,7 @@ components:
       additionalProperties: false
       required:
       - subscriptions
+      - milestones
       - meta
       properties:
         subscriptions:
@@ -4601,6 +4612,64 @@ components:
           description: One entry per subscription.
           items:
             "$ref": "#/components/schemas/ManageLinkSubscription"
+        milestones:
+          description: |
+            The Subscription Pro milestone items of the next order of the first
+            subscription, as the subscription show gives them; `null` when
+            milestone items are off for the company or nothing is ahead. A paid
+            item carries the `decline_key` the manage link decline takes.
+          anyOf:
+          - type: 'null'
+          - "$ref": "#/components/schemas/SubscriptionMilestones"
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+    MilestoneDeclineRequest:
+      description: The paid milestone item to take off the next order.
+      type: object
+      additionalProperties: false
+      required:
+      - decline_key
+      properties:
+        decline_key:
+          description: The `decline_key` of an item in `milestones.upcoming`.
+          type: string
+          pattern: "^[0-9a-f]{32}$"
+    MilestoneDeclineResponse:
+      description: The milestone block of the next order after the decline.
+      type: object
+      additionalProperties: false
+      required:
+      - milestones
+      - meta
+      properties:
+        milestones:
+          description: The milestone block as the subscription show gives it now; `null` when nothing is left ahead.
+          anyOf:
+          - type: 'null'
+          - "$ref": "#/components/schemas/SubscriptionMilestones"
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+    MilestoneDeclineRefusalResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - error_code
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        error_code:
+          type: string
+          enum:
+          - invalid_params
+          - subscription_not_found
+          - milestone_item_not_found
+          - billing_in_progress
+          description: Why the decline was refused.
+        errors:
+          "$ref": "#/components/schemas/ErrorBag"
         meta:
           "$ref": "#/components/schemas/CheckoutMeta"
     SubscriptionTenureTier:
@@ -30018,6 +30087,7 @@ paths:
                       occurrence:
                         type: order
                         order_number: 6
+                      decline_key: null
                     next_milestone:
                       occurrence:
                         type: anniversary
@@ -30033,6 +30103,7 @@ paths:
                         occurrence:
                           type: anniversary
                           months: 12
+                        decline_key: null
                   profile: null
                   tenure:
                     axis: paid_orders
@@ -33756,6 +33827,100 @@ paths:
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
+  "/api/checkout/v2026-04/subscriptions/{token}/milestone-declines":
+    post:
+      summary: Decline a paid milestone item of the next order
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_decline_subscription_milestone
+      x-fluid-audience: company
+      description: |
+        Takes a paid Subscription Pro milestone item off the subscription's
+        next order before it bills, so the order neither carries nor charges
+        it. Name the item by the `decline_key` the subscription show gives it
+        in `milestones.upcoming`. The item may belong to another subscription
+        that renews with this one. A declined item is never offered again for
+        that occurrence. A gift cannot be declined.
+
+        Requires the bearer token of the customer who owns the subscription. A
+        manage link token (`sml_...`), an operator or a machine token gets
+        `404`, as does a subscription that is not the customer's. Returns `404`
+        with `milestone_item_not_found` when no paid item of the next order has
+        that key, `409` with `billing_in_progress` while the next order is
+        being built, `422` with `invalid_params` for a malformed body, and
+        `401` when unauthenticated.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: Subscription token
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/MilestoneDeclineRequest"
+            example:
+              decline_key: 3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c
+      responses:
+        '200':
+          description: The item was declined
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineResponse"
+              example:
+                milestones:
+                  upcoming:
+                  - product_title: Dunder Mifflin Mug
+                    variant_title: White
+                    image_url: https://cdn.example.com/mug.png
+                    quantity: 1
+                    gift: true
+                    price_label: null
+                    occurrence:
+                      type: order
+                      order_number: 6
+                    decline_key: null
+                  next_milestone: null
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2026-10-12T15:22:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/UnauthorizedResponse"
+        '404':
+          description: Subscription not found, or no paid item of the next order has that key
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
+        '409':
+          description: The next order is being built
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
+              example:
+                error_message: The next order is being built; try again in a few minutes
+                error_code: billing_in_progress
+                errors: {}
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2026-10-12T15:22:08Z'
+        '422':
+          description: The body is invalid
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
   "/api/checkout/v2026-04/users":
     get:
       summary: List users
@@ -33876,6 +34041,7 @@ paths:
                       sku: GRN-30
                       title: 30 servings
                     image_url: https://cdn.fluid.app/products/daily-greens.jpg
+                milestones: null
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-10T15:22:08Z'
@@ -33891,6 +34057,102 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+  "/api/checkout/v2026-04/manage-link/subscriptions/{token}/milestone-declines":
+    post:
+      summary: Decline a paid milestone item of the next order
+      tags:
+      - subscription-manage-link
+      operationId: checkout_v2026_04_manage_link_decline_subscription_milestone
+      x-fluid-audience: company
+      description: |
+        Takes a paid Subscription Pro milestone item off the next order of the
+        subscription before it bills, so the order neither carries nor charges
+        it. Name the item by the `decline_key` the manage link list gives it in
+        `milestones.upcoming`. Requires a manage link token that names the
+        subscription and allows the action; a token issued before the action
+        existed gets `403`. Returns `404` with `subscription_not_found` for a
+        subscription that is not the token's or is disabled, `404` with
+        `milestone_item_not_found` when no paid item of the next order has
+        that key, `409` with `billing_in_progress` while the next order is
+        being built, and `422` with `invalid_params` for a malformed body.
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: Subscription token, one of the manage link's subscriptions.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/MilestoneDeclineRequest"
+            example:
+              decline_key: 3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c
+      responses:
+        '200':
+          description: The item was declined
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineResponse"
+              example:
+                milestones:
+                  upcoming:
+                  - product_title: Dunder Mifflin Mug
+                    variant_title: White
+                    image_url: https://cdn.example.com/mug.png
+                    quantity: 1
+                    gift: true
+                    price_label: null
+                    occurrence:
+                      type: order
+                      order_number: 6
+                    decline_key: null
+                  next_milestone: null
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2026-10-12T15:22:08Z'
+        '401':
+          description: The token is missing, invalid or expired, or the company no longer runs subscriptions.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The token does not allow this action.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: The subscription is not one of the token's, or no paid item of the next order has that key.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
+        '409':
+          description: The next order is being built.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
+              example:
+                error_message: The next order is being built; try again in a few minutes
+                error_code: billing_in_progress
+                errors: {}
+                meta:
+                  request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
+                  timestamp: '2026-10-12T15:22:08Z'
+        '422':
+          description: The body is invalid.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MilestoneDeclineRefusalResponse"
   "/api/checkout/v2026-04/manage-link/subscriptions/{token}/skip":
     post:
       summary: Skip a subscription's next order
