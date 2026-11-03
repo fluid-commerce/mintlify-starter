@@ -221,7 +221,12 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`broken-docs-link`) carrying the `FAIL` lines. `validate.yml` stays red on `main`
   until a PR fixes the link or adds a redirect. The next sync whose link check passes
   closes the issue; the check runs only when a sync changes something, so the PR that
-  fixes the links can close it sooner.
+  fixes the links can close it sooner. The run also runs `validate.yml`'s eval harness
+  unit tests (`node --test` in `eval/`) the same way, with the `eval-tests-failing`
+  label. They read `docs.json`, so a synced `admin-v2025-06`, `members-v2025-06` or
+  `public-v2025-06` operation fails them until a PR adds its page to the hosted
+  checker's page map. The sync can't do that itself: the map is keyed by the page
+  slug Mintlify publishes, which exists only after the deploy.
 - **`external-links.yml`** — weekly (Mondays) and on demand. Runs
   `node eval/check-broken-links.mjs --external` twice, 15 minutes apart, and keeps only
   the external links broken on both passes, because the CLI also counts a timeout or
@@ -1397,7 +1402,7 @@ against the archive before publication. The redirect remains temporary per Phase
 
 ### The leakage exception is exact by page and marker
 
-`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption, 74 since
+`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption and 74 after
 the ENG-1186 refresh (mintlify-starter#151). Since ENG-2784 it maps each page to its operation.
 `PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
 the hand-written pages that must name the SDK's real version. Both sets forgive only the

@@ -30,7 +30,7 @@ info:
 
     ## Settings and history
 
-    A bot's owner and stewards change its instructions, model, capabilities and limits with `PATCH /bots/{id}/settings`. Capabilities (`GET /bots/{bot_id}/capabilities`) switch the bot's tools on and off within its owner's permissions: a new bot starts with only `use_ai` enabled, so it can talk and keep its own persona and memory; enable more as you need them. Every change, including a rename through `PATCH /bots/{id}`, is a new numbered settings version that records who made it and which fields changed; `GET /bots/{bot_id}/settings-versions` lists them. A change names the version it was based on and is refused if someone changed the settings since. A run uses the settings version that was current when it started, and `GET /bots/{bot_id}/runs` lists every run, refused starts included, with the version it used.
+    A bot's owner and stewards change its instructions, model, capabilities and limits with `PATCH /bots/{id}/settings`. A bot can do what its owner's permissions allow: `GET /bots/{bot_id}/capabilities` shows each capability and whether the owner's keys cover it. No setting or template switches one off. Every change, including a rename through `PATCH /bots/{id}`, is a new numbered settings version that records who made it and which fields changed; `GET /bots/{bot_id}/settings-versions` lists them. A change names the version it was based on and is refused if someone changed the settings since. A run uses the settings version that was current when it started, and `GET /bots/{bot_id}/runs` lists every run, refused starts included, with the version it used.
 
     ## Seating a bot in a conversation
 
@@ -136,6 +136,15 @@ components:
         - persona
         - memory
       example: persona
+    CanvasSlug:
+      name: slug
+      in: path
+      required: true
+      description: The page's slug, lowercase letters, digits and hyphens, starting with a letter or digit, at most 40 characters.
+      schema:
+        type: string
+        pattern: ^[a-z0-9][a-z0-9-]{0,39}$
+      example: weekly-sales
   schemas:
     Meta:
       type: object
@@ -883,7 +892,7 @@ components:
               items:
                 $ref: '#/components/schemas/BotMessageBlock'
     BotMessageBlock:
-      description: An interactive card. A `choices` card asks one question with two to four options, and `answered_option_id` records the first pick. An `integration` card offers a connection the bot can use.
+      description: A card on a bot's message. A `choices` card asks one question with two to four options, and `answered_option_id` records the first pick. An `integration` card offers a connection the bot can use. A `canvas` card opens a page of the bot's canvas by its slug. A `chart` card draws figures over time or side by side.
       oneOf:
       - type: object
         additionalProperties: false
@@ -941,6 +950,91 @@ components:
             enum:
             - available
             - added
+      - type: object
+        additionalProperties: false
+        required:
+        - type
+        - page
+        - title
+        properties:
+          type:
+            type: string
+            enum:
+            - canvas
+          page:
+            type: string
+            pattern: ^[a-z0-9][a-z0-9-]{0,39}$
+            description: The slug of the page of the bot's canvas the card opens.
+          title:
+            type: string
+            maxLength: 80
+            description: The page's title, shown on the card.
+      - type: object
+        additionalProperties: false
+        required:
+        - type
+        - kind
+        - title
+        - labels
+        - series
+        properties:
+          type:
+            type: string
+            enum:
+            - chart
+          kind:
+            type: string
+            enum:
+            - bar
+            - line
+            - area
+            - donut
+            - stat
+            description: How the chart is drawn. A `donut` has one series and at most 8 labels; a `stat` shows at most 4 headline figures, its optional second series the period they are compared with.
+          title:
+            type: string
+            maxLength: 80
+          caption:
+            type: string
+            maxLength: 200
+          format:
+            type: string
+            enum:
+            - number
+            - currency
+            - percent
+            description: How the values are written; `number` when not sent.
+          currency:
+            type: string
+            pattern: ^[A-Z]{3}$
+            description: The ISO 4217 code of a `currency` chart's values, such as USD.
+          labels:
+            type: array
+            minItems: 1
+            maxItems: 24
+            items:
+              type: string
+              maxLength: 40
+            description: The x axis, or the donut's slices, or the stat's figures.
+          series:
+            type: array
+            minItems: 1
+            maxItems: 4
+            items:
+              type: object
+              additionalProperties: false
+              required:
+              - name
+              - values
+              properties:
+                name:
+                  type: string
+                  maxLength: 40
+                values:
+                  type: array
+                  description: One value per label.
+                  items:
+                    type: number
     BotActionClass:
       type: object
       description: One kind of action a bot can take, the modes an owner may choose for it, and the permission keys it covers.
@@ -1168,6 +1262,28 @@ components:
         - inputs
         - can_decide
         properties:
+          summary:
+            type: object
+            additionalProperties: false
+            required:
+            - title
+            - action
+            - detail
+            description: The approval in plain words, for the card to lead with; the request and its inputs are its details. Always sent; optional so cards from servers before it still read.
+            properties:
+              title:
+                type: string
+                description: A short title, such as "Start Mist work" or the kind of change.
+                example: Change the store
+              action:
+                type: string
+                description: What the bot will do.
+                example: Change the store (PATCH /api/orders/1234)
+              detail:
+                type:
+                - string
+                - 'null'
+                description: For Mist work, what the bot asked Mist to do, as it wrote it; null otherwise.
           inputs:
             type: object
             description: The request's canonical JSON body.
@@ -1471,7 +1587,7 @@ components:
             - 'null'
             items:
               type: string
-            description: The enabled capabilities after this change, or null for every capability.
+            description: The capability list stored with this change, or null. Kept for older clients; it no longer switches tools on or off, which follow the owner's permissions.
           limits:
             $ref: '#/components/schemas/BotLimits'
     BotSettingsVersionResponse:
@@ -1534,10 +1650,10 @@ components:
           description: The permission keys the capability needs.
         enabled:
           type: boolean
-          description: Whether the bot's current settings enable it.
+          description: Whether the bot is offered it now, the same as `available`. The owner's permissions decide it, not the bot's settings.
         available:
           type: boolean
-          description: Whether the bot's owner holds every key it needs now. An enabled capability that is not available does nothing until the owner holds them.
+          description: Whether the bot's owner holds every key it needs now.
         missing_keys:
           type: array
           items:
@@ -2605,6 +2721,129 @@ components:
               type: integer
               minimum: 1
               description: A saved version of this document.
+    BotCanvasPageSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - slug
+      - title
+      - version
+      - updated_at
+      properties:
+        slug:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9-]{0,39}$
+          description: The page's slug, unique on the bot's canvas.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: The page's title.
+        version:
+          type: integer
+          minimum: 1
+          description: The page's current version. Each save adds one.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the current version was saved.
+    BotCanvasPage:
+      type: object
+      additionalProperties: false
+      required:
+      - slug
+      - title
+      - version
+      - updated_at
+      - html
+      properties:
+        slug:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9-]{0,39}$
+          description: The page's slug, unique on the bot's canvas.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: The page's title.
+        version:
+          type: integer
+          minimum: 1
+          description: The page's current version. Each save adds one.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the current version was saved.
+        html:
+          type: string
+          description: The whole page, as the bot wrote it, at most 256 KB. It is not sanitized; render it in a sandboxed frame.
+    BotCanvasListResponse:
+      type: object
+      required:
+      - pages
+      - status
+      - meta
+      properties:
+        pages:
+          type: array
+          maxItems: 12
+          items:
+            $ref: '#/components/schemas/BotCanvasPageSummary'
+          description: The canvas's pages, most recently changed first, without their html.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BotCanvasPageResponse:
+      type: object
+      required:
+      - page
+      - status
+      - meta
+      properties:
+        page:
+          $ref: '#/components/schemas/BotCanvasPage'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BotCanvasPageSavedResponse:
+      type: object
+      required:
+      - page
+      - status
+      - meta
+      properties:
+        page:
+          $ref: '#/components/schemas/BotCanvasPageSummary'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BotCanvasPageSaveRequest:
+      type: object
+      required:
+      - page
+      properties:
+        page:
+          type: object
+          additionalProperties: false
+          required:
+          - title
+          - html
+          description: The page's new version.
+          properties:
+            title:
+              type: string
+              minLength: 1
+              maxLength: 80
+              description: The page's title, 1 to 80 characters once trimmed.
+            html:
+              type: string
+              description: The whole page, at most 256 KB. It replaces the current version.
     BotRunAction:
       type: object
       required:
@@ -3076,6 +3315,21 @@ components:
             meta:
               request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
               timestamp: '2026-10-26T15:32:08Z'
+    CanvasPageNotFound:
+      description: No bot by that id that you own or steward, or its canvas has no such page (`unknown_page`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Page not found
+              details:
+                type: unknown_page
+            status: 404
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-10-28T15:45:00Z'
     NoSkillCatalog:
       description: No bot or run by those ids you own or steward, or no skill catalog has been synced (`no_catalog`); the runtime then uses its bundled skills.
       content:
@@ -3237,7 +3491,7 @@ paths:
       operationId: companyBotsCreate
       summary: Create a bot
       description: |-
-        Create a bot that you own. It starts active, acting with your permissions, with only `use_ai` enabled: enable more capabilities in its settings. Its first settings version records that.
+        Create a bot that you own. It starts active and can do what your permissions allow. Its first settings version names you.
 
         Refused with `company_roles_missing` when your company has no roles: a company without roles gives every admin every permission, so there is nothing to bound a bot by.
 
@@ -4196,9 +4450,7 @@ paths:
       operationId: companyBotCapabilitiesIndex
       summary: List a bot's capabilities
       description: |-
-        Everything a bot you own or steward can be allowed to do, with whether its current settings enable each one and whether its owner's keys cover it. Switch capabilities on and off with `capabilities` in `PATCH /bots/{id}/settings`; that never changes anyone's permissions.
-
-        A bot uses only the keys its enabled capabilities need, so switching one off stops the bot calling what it needed at the next run. A new bot starts with none enabled, and a capability Fluid adds later is off until you enable it. `use_ai` lets the bot use your company's AI models; without it a bot cannot think or reply.
+        Everything a bot you own or steward can do, with whether its owner's keys cover each one. A bot is offered every capability its owner's permissions cover; `capabilities` in `PATCH /bots/{id}/settings` is still stored but switches nothing on or off. `use_ai` lets the bot use your company's AI models; without it a bot cannot think or reply.
 
         Needs the `we_bots.view` permission.
       tags:
@@ -6323,6 +6575,10 @@ paths:
                   inputs:
                     order:
                       order_status: cancelled
+                  summary:
+                    title: Change the store
+                    action: Change the store (PATCH /api/orders/1234)
+                    detail:
                   can_decide: true
                 status: 200
                 meta:
@@ -6394,6 +6650,10 @@ paths:
                   inputs:
                     order:
                       order_status: cancelled
+                  summary:
+                    title: Change the store
+                    action: Change the store (PATCH /api/orders/1234)
+                    detail:
                   can_decide: false
                 status: 200
                 meta:
@@ -6481,6 +6741,10 @@ paths:
                   inputs:
                     order:
                       order_status: cancelled
+                  summary:
+                    title: Change the store
+                    action: Change the store (PATCH /api/orders/1234)
+                    detail:
                   can_decide: false
                 status: 200
                 meta:
@@ -7158,6 +7422,105 @@ paths:
                 meta:
                   request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
                   timestamp: '2026-10-22T15:45:00Z'
+  /api/company/v2026-10/bots/{bot_id}/canvas:
+    parameters:
+    - $ref: '#/components/parameters/NestedBotId'
+    get:
+      operationId: companyBotCanvasIndex
+      summary: List a bot's canvas pages
+      description: |-
+        The pages of a bot's canvas, for a bot you own or steward: the HTML pages its runs write (a dashboard, notes, a task list), shown beside its chat. Most recently changed first, at most 12, without their html.
+
+        Needs the `we_bots.view` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The pages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotCanvasListResponse'
+              example:
+                pages:
+                - slug: weekly-sales
+                  title: Weekly sales
+                  version: 3
+                  updated_at: '2026-10-28T15:45:00.000Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-28T15:45:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/company/v2026-10/bots/{bot_id}/canvas/pages/{slug}:
+    parameters:
+    - $ref: '#/components/parameters/NestedBotId'
+    - $ref: '#/components/parameters/CanvasSlug'
+    get:
+      operationId: companyBotCanvasPagesShow
+      summary: Read a canvas page
+      description: |-
+        The current version of one page of a bot's canvas, for a bot you own or steward, with its html as the bot wrote it. The html is not sanitized: render it in a sandboxed frame.
+
+        Needs the `we_bots.view` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotCanvasPageResponse'
+              example:
+                page:
+                  slug: weekly-sales
+                  title: Weekly sales
+                  version: 3
+                  updated_at: '2026-10-28T15:45:00.000Z'
+                  html: "<h1>Weekly sales</h1><p>Up 12% on last week.</p>"
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-28T15:45:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/CanvasPageNotFound'
+    delete:
+      operationId: companyBotCanvasPagesDestroy
+      summary: Remove a canvas page
+      description: |-
+        Take a page off a bot's canvas, for a bot you own or steward. The removal is saved as a new version naming you, so the page's history is kept; the bot may write the page again later.
+
+        Needs the `we_bots.update` permission.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '204':
+          description: The page is off the canvas.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/CanvasPageNotFound'
   /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/api-check:
     parameters:
     - $ref: '#/components/parameters/NestedBotId'
@@ -7286,6 +7649,103 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/canvas/pages/{slug}:
+    parameters:
+    - $ref: '#/components/parameters/NestedBotId'
+    - $ref: '#/components/parameters/RunId'
+    - $ref: '#/components/parameters/CanvasSlug'
+    put:
+      operationId: companyBotRunCanvasPagesUpdate
+      summary: Write a canvas page
+      description: The bot saves a page of its canvas (`edit_canvas`), creating it when the slug is new. Each save is a new version naming the run, the admin it acts for and the message that woke it. A canvas holds at most 12 pages.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BotCanvasPageSaveRequest'
+            example:
+              page:
+                title: Weekly sales
+                html: "<h1>Weekly sales</h1><p>Up 12% on last week.</p>"
+      responses:
+        '201':
+          description: The new version, without its html.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotCanvasPageSavedResponse'
+              example:
+                page:
+                  slug: weekly-sales
+                  title: Weekly sales
+                  version: 4
+                  updated_at: '2026-10-28T15:45:00.000Z'
+                status: 201
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-28T15:45:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/RunNotFound'
+        '409':
+          $ref: '#/components/responses/RunClosed'
+        '422':
+          description: Invalid parameters, a title of the wrong length (`invalid_page`), html over 256 KB (`too_large`), or a new page on a canvas that already holds 12 (`too_many_pages`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: A canvas holds at most 12 pages; remove one first
+                  details:
+                    type: too_many_pages
+                status: 422
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-28T15:45:00Z'
+    delete:
+      operationId: companyBotRunCanvasPagesDestroy
+      summary: Remove a canvas page in a run
+      description: The bot takes a page off its canvas (`edit_canvas`). The removal is saved as a new version naming the run, so the page's history is kept.
+      tags:
+      - bots
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '204':
+          description: The page is off the canvas.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No bot or run by those ids, or the canvas has no such page (`unknown_page`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The canvas has no page "weekly-sales"
+                  details:
+                    type: unknown_page
+                status: 404
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-10-28T15:45:00Z'
+        '409':
+          $ref: '#/components/responses/RunClosed'
   /api/company/v2026-10/bots/{bot_id}/runs/{run_id}/onboarding:
     parameters:
     - $ref: '#/components/parameters/NestedBotId'
