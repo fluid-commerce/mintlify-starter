@@ -1,16 +1,30 @@
 ---
 title: "Read viewer data in site scripts"
 sidebarTitle: "Site scripts"
-description: "Read the signed-in owner's data in a member site's own JavaScript with window.fluid, handle FluidSdkError codes, and declare the scopes your calls use in config/access.json."
+description: "Reach Fluid's member APIs from a member site's own JavaScript with window.fluid.fetch, handle the Response it returns, and declare the scopes your calls use in config/access.json."
 ---
 
-A member site's templates carry the site's structure and menus. They don't carry the viewer's data. A site gets that data in its own JavaScript, through `window.fluid`. This page covers each method, who gets data back, how to handle a failure and how to declare what your scripts use.
+A member site's templates carry the site's structure and menus. They don't carry the viewer's data. A site gets that data in its own JavaScript, through `window.fluid`. It has two members: `fluid.fetch`, which reaches Fluid's APIs, and `fluid.viewer()`, which says who is viewing. This page covers both, who gets data back, how to handle each answer and how to declare what your scripts use.
 
-## Know how a script reaches the viewer
+## Know how a script reaches Fluid
 
-A site renders in a [sandboxed frame](/member-sites/templates#know-the-frames-rules) with no cookie, so a bare `fetch` to a Fluid API carries no session and fails. The site SDK installs `window.fluid` in the frame instead. A call travels from the frame to Fluid's page around it, and from there to the member API as the viewer. Fluid forwards only routes it allows. Site management routes, such as a site's files and pages, aren't reachable from site code.
+A site renders in a [sandboxed frame](/member-sites/templates#know-the-frames-rules). The frame has an opaque origin and no cookie. So a call from your script with the page's own `fetch` carries no session and can't reach a Fluid API as the viewer.
 
-The SDK loads through `content_for_header`, so print it in your layout's `<head>`. Then a script calls `fluid` directly:
+The site SDK installs `window.fluid` in the frame instead. A call travels from the frame to Fluid's page around it, and from there to the member API as the viewer. Fluid forwards only routes it allows. Site management routes, such as a site's files and pages, aren't reachable from site code.
+
+- **`fluid.fetch(path, init)` behaves like `fetch`.** It takes the same arguments and resolves to a `Response`.
+- **`fluid.viewer()` says who is viewing.** It returns `"member"` or `"guest"`.
+- **The page's own `fetch` stays as it is.** Fluid never replaces `window.fetch`, so you can still use it to call other services. It doesn't reach Fluid.
+
+The SDK loads through `content_for_header`, so print it in your layout's `<head>`. Load your script with `{{ 'site.js' | asset_url | script_tag }}`, or write it inline. See [Use tags and filters](/member-sites/templates#use-tags-and-filters).
+
+<Warning>
+  Never put a member's data into Liquid output or a `<script>` through a template variable. Never call a Fluid API with the page's own `fetch`, `XMLHttpRequest` or a form post from a site. The frame has no session, so those calls fail.
+</Warning>
+
+## Read with fluid.fetch
+
+Pass a path on your company's own host. A Member API path, such as `/api/member/v2026-10/me`, goes as it is. Check `response.ok`, then read the body:
 
 ```js assets/site.js
 const target = document.querySelector("[data-greeting]");
@@ -18,11 +32,13 @@ const target = document.querySelector("[data-greeting]");
 async function showGreeting() {
   if (!target || fluid.viewer() !== "member") return;
   try {
-    const me = await fluid.me.get();
-    target.textContent = `Welcome back, ${me.first_name}`;
+    const response = await fluid.fetch("/api/member/v2026-10/me");
+    if (!response.ok) return;
+    const { data } = await response.json();
+    target.textContent = `Welcome back, ${data.first_name}`;
   } catch (error) {
     // Keep the page usable. The empty element and its fallback stay as they are.
-    console.warn("Could not read the member", error.code);
+    console.warn("Could not reach Fluid", error);
   }
 }
 
@@ -35,87 +51,148 @@ The page prints an empty element for the script to fill:
 <p data-greeting>Welcome to {{ site.name }}</p>
 ```
 
-Render the structure in Liquid and fill the viewer's data in from the script. Show a neutral fallback while a call is pending and when it fails. Load the script with `script_tag`: see [Use tags and filters](/member-sites/templates#use-tags-and-filters).
+Render the structure in Liquid and fill the viewer's data in from the script. Show a neutral fallback while a call is pending and when it fails. See [Show the signed-in member](/api-reference/me/show-the-signed-in-member) for the body.
 
-<Warning>
-  Never put a member's data into Liquid output or a `<script>` through a template variable. Never call a Fluid API with `fetch`, `XMLHttpRequest` or a form post from a site. The frame has no session, so those calls fail.
-</Warning>
+## Write with fluid.fetch
 
-## Call the methods
+Set the method in `init`, as you would with `fetch`. Send a JSON body with a `content-type` header:
 
-Each method needs a scope. You declare the scopes in [`config/access.json`](#declare-the-scopes-you-use).
+```js assets/site.js
+async function setLanguage(language) {
+  const response = await fluid.fetch("/api/member/v2026-10/me", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ language }),
+  });
+  if (!response.ok) throw new Error(`Could not save (${response.status})`);
+  return (await response.json()).data;
+}
+```
 
-| Call | What it does | Scope |
-| --- | --- | --- |
-| `fluid.me.get()` | Reads the signed-in member. See [Show the signed-in member](/api-reference/me/show-the-signed-in-member) | `profile: read` |
-| `fluid.me.update(fields)` | Changes the member's details and returns the member. Send at least one field. See [Update the signed-in member](/api-reference/me/update-the-signed-in-member) | `profile: write` |
-| `fluid.tasks.list()` | Lists the member's tasks. See [List the member's tasks](/api-reference/tasks/list-the-members-tasks) | `tasks: read` |
-| `fluid.tasks.complete(id)` | Completes a task. See [Complete a task](/api-reference/tasks/complete-a-task) | `tasks: write` |
-| `fluid.tasks.reopen(id)` | Reopens a task. See [Reopen a task](/api-reference/tasks/reopen-a-task) | `tasks: write` |
-| `fluid.team.list({ under })` | Reads the member's team tree. Pass `under` with a team member's id to read that member's branch | `widgets: read` |
+Fluid forwards GET, POST, PUT, PATCH and DELETE. It answers any other method itself, with a `403`. A request body must be JSON, and Fluid refuses one that is too large. See [Update the signed-in member](/api-reference/me/update-the-signed-in-member) for the fields.
 
-`fluid.team.list` needs `widgets: read`, not a `team` scope, because the team tree comes from a member storefront native widget route.
+## Choose the path
 
-`fluid.viewer()` returns `"member"` or `"guest"`, never throws and needs no scope. It reports whether a member is signed in. It doesn't say whether the calls return data: see the next section.
-
-`fluid.fetch(path, init)` sends a request that Fluid allows, as `fetch` does. Lint can't see which scope a `fluid.fetch` call needs, so use the methods above when one fits.
+- **A same-host path under `/api/` works.** A full URL on your company's own origin works too.
+- **A Member API path stays.** A path that starts with `/api/member/v2026-10/` goes as you wrote it.
+- **Any other `/api/` path moves.** Fluid sends `/api/<x>` to `/api/member-storefront/<x>`, the company host's bridge routes.
+- **Anything else throws.** A URL on another host, or a path that doesn't start with `/api/`, throws an `Error` before anything is sent.
 
 ## Know who gets data
 
-Only the signed-in owner of a member-owned site gets data from these calls, and only while viewing the site published.
+Only the signed-in owner of a member-owned site gets data from `fluid.fetch`, and only while viewing the site published. A site whose published declaration lists no scope gets none, even for its owner.
 
-| Viewer | What the calls return |
-| --- | --- |
-| The member who owns the site, viewing it published | Data |
-| Another signed-in member, including one the site is shared with | Nothing. The calls fail |
-| A guest | Nothing. `fluid.viewer()` returns `"guest"` and every call fails with the `guest` error |
-| Anyone viewing a company site | Nothing, because a company site has no member owner. A signed-in member there is a visitor |
+| Viewer | Site with no declaration | Site with a declaration |
+| --- | --- | --- |
+| The member who owns the site, viewing it published | Every route a site can reach | The scopes the declaration lists |
+| Another signed-in member, including one the site is shared with | Nothing | Nothing |
+| A company admin who doesn't own the site | Nothing | Nothing |
+| A guest | Nothing | Nothing |
+| Anyone viewing a company site | Nothing, because a company site has no member owner | Nothing, because a company site takes no declaration |
 
-- **Sharing grants nothing.** Sharing a site or making it public doesn't change who gets data. The calls return data for the owner only. See [Share a member site](/member-sites/sharing).
+- **Sharing grants nothing.** Sharing a site or making it public doesn't change who gets data. A share holder, a company admin and a visitor never get a scope from the site's declaration. See [Share a member site](/member-sites/sharing).
+- **`fluid.viewer()` follows that.** It returns `"member"` only when the site's frame can reach Fluid for the viewer. A signed-in viewer the frame can't act for gets `"guest"`, and a call answers with the local `guest` response below.
 - **A company site can't use viewer data.** If you want a script to read the viewer, build a member-owned site. Build a company site from Liquid's structure and menus only.
 - **A script that works for you may fail for a visitor.** Test with a second member, and show a fallback when a call fails.
+- **A site whose owner is no longer an active member grants no scope to anyone.** Its calls are refused.
+- **A change to the site applies at once.** A take-down, an owner who is no longer active and a publish that drops a scope all refuse the next call. Fluid checks the site on every request.
 
-## Handle a failure
+## Handle the Response
 
-A failed call throws a `FluidSdkError`. It has a `code`, the HTTP `status`, the `path` the call requested and the parsed `body` of the response when there was one. Branch on `code`.
+`fluid.fetch` resolves to a `Response` for any HTTP status, so a refusal isn't an exception. Check `response.ok` first. Fluid's own page answers some requests itself, with a JSON body that holds an `error` string:
 
-| `code` | What happened |
-| --- | --- |
-| `guest` | No member is signed in |
-| `refused` | Fluid refused to forward the request |
-| `busy` | Fluid is busy, and the request wasn't sent. Try again |
-| `too_large` | The request body is too large |
-| `unsupported_body` | The request body isn't JSON |
-| `http` | The member API answered with an error status. `status` and `body` carry it |
-| `invalid_response` | The call succeeded but the response didn't hold the expected data |
+| Status | `error` | What happened |
+| --- | --- | --- |
+| `401` | `guest` | No member is signed in, or the frame can't act for the viewer. Nothing was sent |
+| `403` | `bridge_refused` | Fluid refused to forward the request, such as one with a method it doesn't forward |
+| `413` | `bridge_too_large` | The request body is too large |
+| `415` | `bridge_unsupported_body` | The request body isn't JSON |
+| `429` | `bridge_busy` | Fluid is busy, and the request wasn't sent. Try again |
 
-A refusal from the member API, such as a viewer who isn't the owner, arrives as an `http` error with that status. Catch every failure and keep the page usable:
+Any other status comes from the API, with its own body. One refusal is about the site's declaration. The owner of a site that published a declaration gets a `403` for a path whose scope the declaration lacks. The body names the scope:
 
-```js assets/site.js
-try {
-  await fluid.tasks.complete(taskId);
-} catch (error) {
-  if (error.code === "busy") {
-    showMessage("Try again in a moment.");
-  } else {
-    showMessage("We couldn't complete that task.");
+```json
+{
+  "error": {
+    "message": "This site has not declared what this request needs",
+    "details": { "error": "member_site_scope_undeclared", "scope": "profile: write" }
   }
 }
 ```
 
-## Declare the scopes you use
+Every other refusal of a bridged call keeps one body, `member_site_unavailable`, so a response never says whether a site exists. That covers a site that is unknown, unpublished or company-owned, a viewer who isn't its owner and a path that no scope covers.
 
-List the scope of each call your scripts make in `config/access.json`. The file is one JSON object with one key, `uses`:
+Read the status first, then the body:
 
-```json config/access.json
-{
-  "uses": ["profile: read", "tasks: read", "tasks: write"]
+```js assets/site.js
+const response = await fluid.fetch("/api/member/v2026-10/tasks");
+
+if (response.status === 401) {
+  showMessage("Sign in to see your tasks.");
+} else if (response.status === 403) {
+  const body = await response.json();
+  const details = body.error?.details;
+  if (details?.error === "member_site_scope_undeclared") {
+    console.warn(`Declare "${details.scope}" in config/access.json`);
+  }
+  showMessage("We couldn't load your tasks.");
+} else if (response.ok) {
+  renderTasks((await response.json()).data);
+} else {
+  showMessage("We couldn't load your tasks.");
 }
 ```
 
-`fluid member-site lint` warns on a script call whose scope the file lacks, so run it before you push. A site with no `config/access.json` isn't checked this way. The file is published with the site.
+A call rejects only when something outside the API goes wrong:
 
-[Declare what a member site uses](/member-sites/access-declarations) lists every scope you can declare and explains how to write, publish and check the file.
+- **An `Error`** means the path is on another host or outside `/api/`. Nothing is sent.
+- **A `TypeError`** means the transport failed. Fluid's page couldn't be reached, timed out, or answered with a network error.
+- **An `AbortError`** means the request's `signal` aborted.
+
+Wrap a call in `try` and `catch` so a rejection keeps the page usable.
+
+## Use a library
+
+A library that accepts a custom `fetch` works with `fluid.fetch`. Pass it in when you create the client. For example, with `ky`:
+
+```js assets/site.js
+const api = ky.create({ fetch: fluid.fetch });
+```
+
+A library built on `XMLHttpRequest` doesn't go through `fluid.fetch`, so it can't reach Fluid from a site. A library that calls the global `fetch` directly has the same limit.
+
+## Know the scope of a path
+
+Each path has a scope. A scope is `<family>: read` or `<family>: write`. The method picks the mode: `GET` needs `read`, and any other method that Fluid forwards needs `write`. The route picks the family, so a request can't borrow another family's scope by changing its path.
+
+| Path | Method | Scope |
+| --- | --- | --- |
+| `/api/member/v2026-10/me` | `GET` | `profile: read` |
+| `/api/member/v2026-10/me` | `PATCH` | `profile: write` |
+| `/api/member/v2026-10/tasks` | `GET` | `tasks: read` |
+| `/api/member/v2026-10/tasks/:id/complete` | `POST` | `tasks: write` |
+| `/api/member/v2026-10/orders` | `GET` | `orders: read` |
+| `/api/member/v2026-10/subscriptions` | `GET` | `subscriptions: read` |
+| `/api/member/v2026-10/addresses` | `GET` | `addresses: read` |
+| `/api/member-storefront/native-widgets/:key/data` | `GET` | `widgets: read` |
+
+See [Show the signed-in member](/api-reference/me/show-the-signed-in-member), [Update the signed-in member](/api-reference/me/update-the-signed-in-member), [List the member's tasks](/api-reference/tasks/list-the-members-tasks) and [Complete a task](/api-reference/tasks/complete-a-task). The [API reference](/api-reference) lists the rest of the member API. When you aren't sure which scope a path needs, call it from a script and run `fluid member-site lint`, which names the scope the file lacks.
+
+Some routes have no scope. A site can never reach them, and no declaration changes that. Saved payment methods and site management are examples, and so are writes to addresses and subscriptions. A call to one is refused whatever the site declares.
+
+## Declare the scopes you use
+
+List the scope of each path your scripts call in `config/access.json`. The file is one JSON object with one key, `uses`:
+
+```json config/access.json
+{
+  "uses": ["profile: read", "profile: write", "tasks: read", "tasks: write"]
+}
+```
+
+`fluid member-site lint` checks each `fluid.fetch(path, { method })` call in your scripts against the scope of that path. It warns when the file lacks the scope, when the route can never be reached by a site, and when it can't read the call. Run it before you push. A site with no `config/access.json` isn't checked this way. The file is published with the site.
+
+Fluid enforces the published declaration. It refuses a call whose scope the file lacks with the `member_site_scope_undeclared` response above. [Declare what a member site uses](/member-sites/access-declarations) lists every scope you can declare and explains how to write, publish and check the file.
 
 ## Keep scripts working with the published site
 
