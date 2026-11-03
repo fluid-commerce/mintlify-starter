@@ -1,0 +1,340 @@
+---
+title: "Member site CLI"
+sidebarTitle: "CLI"
+description: "Create, pull, edit, preview, lint, push and publish member sites from the terminal with fluid member-site, for a member's own sites or the company's sites."
+---
+
+The `fluid member-site` commands build a [member site](/member-sites/overview) from a folder on your computer. They use the [member API](/api-reference/sites/add-a-site) for a member's own sites and the [company API](/api-reference/member-sites/create-a-company-site) for the company's sites. A site's folder is its files, so you can edit it with any editor or agent, check it with `lint`, and see the draft with `dev` before anyone else can.
+
+`fluid member-site` is not `fluid mysite`, which works on MySite themes, and it is not `fluid theme`, which works on storefront themes.
+
+## Install and sign in
+
+Install the Fluid CLI and the member site plugin from npm:
+
+```bash
+npm install -g @fluid-app/fluid-cli @fluid-app/fluid-cli-member-site
+```
+
+The plugin needs the core CLI. It keeps no credential of its own and uses the core CLI's login, profiles and `.fluidrc`, so `FLUID_TOKEN`, a project's `.fluidrc` profile and the active profile apply as they do for every other command.
+
+### Choose the login
+
+The login follows the owner of the site.
+
+| Site owner | API | Login |
+| --- | --- | --- |
+| A member | `/api/member/v2026-10/sites` | The member's own login |
+| The company | `/api/company/v2026-10/member-sites` | A signed-in admin who may change themes |
+
+- **Admins and reps** sign in with `fluid login`.
+- **A member** signs in to these commands with the member's own token, set in `FLUID_TOKEN`. `fluid login` doesn't sign members in. See [Credentials](/api/member-apis#credentials) for what counts as a member's token.
+- **A member who is also an admin** of the same company is refused by the member API, so that login builds company sites only.
+
+The CLI stores a token and doesn't record whose it is, so it can't tell a member's token from an admin's before it sends a request. Say which it is with `--as member` or `--as admin`. A site of the other owner kind is then refused before any request, and the message names the login it needs. Without `--as`, the server decides, and a refusal names the login the site needs.
+
+### Set the API base
+
+The API base follows the login. The CLI uses `FLUID_API_BASE` when it's set, and otherwise the base the stored profile was made for (a `.fluidrc` profile, then the active one). There is no default base. A token from `FLUID_TOKEN`, or a profile with no recorded base, needs `FLUID_API_BASE`:
+
+```bash
+export FLUID_API_BASE=https://api.fluid.app
+export FLUID_TOKEN=<member token>
+fluid member-site list --as member
+```
+
+With neither a base nor a profile, a command stops with "No API base for this login: run `fluid login` or set FLUID_API_BASE" before it makes any request.
+
+## Build a site
+
+This walks one site from creation to publication. It builds a member's own site, so it uses `--as member`. For a company site, add `--company` to `create` and use `--as admin`.
+
+<Steps>
+  <Step title="Create the site">
+    ```bash
+    fluid member-site create rileys-shop --name "Riley's Shop" --as member
+    ```
+    The site starts as a draft.
+  </Step>
+  <Step title="Pull it into a folder">
+    ```bash
+    fluid member-site pull rileys-shop --as member
+    cd rileys-shop
+    ```
+  </Step>
+  <Step title="Edit and lint">
+    Edit the files, then check the folder. `lint` sends no request.
+    ```bash
+    fluid member-site lint
+    ```
+  </Step>
+  <Step title="Preview the draft">
+    ```bash
+    fluid member-site dev
+    ```
+    Open `http://127.0.0.1:9500`. `dev` saves each change as a draft and serves the draft. It refuses to run against the production API unless you pass `--allow-production`: see [dev](#dev).
+  </Step>
+  <Step title="Push and publish">
+    ```bash
+    fluid member-site push --dry-run
+    fluid member-site push --publish
+    ```
+    The dry run prints what a push would send. The second command pushes, then publishes once.
+  </Step>
+</Steps>
+
+## Commands
+
+Every command except `lint` can take `--as member` or `--as admin`.
+
+### list
+
+```bash
+fluid member-site list
+fluid member-site list --as member
+```
+
+With a member login, `list` shows the member's own sites. With an admin login, it shows every site in the company with its owner and status. Without `--as`, the CLI tries the company API first and the member API when the company API refuses the login.
+
+A member's site shows as read-only to an admin, because its owner builds it.
+
+### create
+
+```bash
+fluid member-site create rileys-shop --name "Riley's Shop"
+fluid member-site create fall-launch --company --as admin
+```
+
+`create <handle>` makes a site as a draft. The handle is lowercase letters, digits and single hyphens, at most 40 characters. The pages of the site open at `/accounts/<handle>`.
+
+| Flag | What it does |
+| --- | --- |
+| `--name <name>` | Sets the site's name. The default is the handle in words |
+| `--company` | Makes a company-owned site. It needs an admin login |
+| `--as <login>` | Says which kind of login the token is |
+
+### pull
+
+```bash
+fluid member-site pull rileys-shop --as member
+fluid member-site pull fall-launch ./site --as admin
+```
+
+`pull <site> [dir]` writes a site into a local folder. `<site>` is the site's handle or id, and `dir` defaults to the handle. Every text file is written at its API path, the pages are written to `config/pages.json`, and a binding file records where the folder came from.
+
+| Flag | What it does |
+| --- | --- |
+| `--force` | Writes into a folder that isn't bound to this site, and overwrites local edits |
+| `--as <login>` | Says which kind of login the token is |
+
+- **A pull is all or nothing.** It reads every file before it writes any, so a failed read leaves the folder as it was. A file already identical on disk is left alone.
+- **It refuses to overwrite your work.** A folder that isn't empty and isn't bound to this site is refused, and so is a pull that would overwrite a file you edited since the last pull. `--force` writes anyway.
+- **It never deletes your files.** A file that isn't on the server is kept. The one exception is `config/access.json`: when the site no longer has one and your copy is unchanged since the last pull or push, the pull deletes it, so the next push doesn't bring back a declaration another writer removed. An edited copy is kept unless you pass `--force`.
+- **It doesn't write through symbolic links.** A file or folder of the site that is, or is inside, a link is refused before any file is written, with or without `--force`.
+- **A member's site can't be pulled with an admin login.** With `--as admin`, or in a folder bound to a member's site, the command stops before any request and names the login the site needs.
+
+### push
+
+```bash
+fluid member-site push --dry-run
+fluid member-site push --as member
+fluid member-site push --publish
+```
+
+`push [dir]` sends the changes in a pulled folder to its site. Run it in the folder, or pass the folder. The folder's binding names the site and its owner kind, so a member's site goes through the member API and a company site through the company API. A login of the other kind is refused before any request.
+
+| Flag | What it does |
+| --- | --- |
+| `--dry-run` | Prints the plan, removals included, and sends nothing |
+| `--publish` | Publishes the site once, after every write succeeded |
+| `--as <login>` | Says which kind of login the token is |
+
+A push compares the folder with the binding and sends only what changed. A pull followed by a push with no edit sends nothing.
+
+**Versions protect other writers.** Every write and delete carries the version the binding recorded for it, and the server refuses it with `409` if the file or page changed since. A push never overwrites or deletes a copy that moved on the server. A new file is created only if its path is still empty on the server, so a file another writer created since your pull isn't replaced.
+
+**What a push sends, in order:**
+
+1. `config/settings.json`.
+2. Each changed or new layout, section, snippet and asset, and `config/access.json`, in path order. On a company site the push leaves `config/access.json` alone and says so, because the server refuses the path.
+3. Each new page with its file's content, then each changed page with its changed row fields and content.
+4. `config/menus.json`, when it changed. It replaces every menu of the site.
+5. Each page's menu assignment.
+6. Each removed page, then each removed layout, section, snippet, asset and `config/access.json`. Removals go last, so a failed write never leaves a menu pointing at a page that is gone.
+
+**It refuses before the first request.** A push checks the whole folder first and lists every refusal at once. It refuses:
+
+- A file that isn't a text asset. An asset must be `css`, `js`, `json`, `txt` or `html`, valid UTF-8 and not empty.
+- A path outside `layouts`, `sections`, `snippets`, `pages`, `assets` and `config`, a path in a subfolder, a symbolic link, and a name outside lowercase letters, digits, hyphens and underscores. A page's name is lowercase letters and digits separated by single hyphens. Names that start with a dot are ignored.
+- A page file with no row in `config/pages.json`, a new row with no file, and a row or file removed without the other. A page goes with its file, so remove both or neither.
+- A `config/access.json` that isn't a valid declaration.
+- A `config/pages.json` that isn't valid, a page slug of `index`, a menu that `config/menus.json` doesn't define, settings that aren't a JSON object, and menus that don't have the shape the API takes.
+- New pages that don't fit in the site's 50-page limit. This check needs the site's current page count, so `--dry-run`, which sends no request, skips it and says so.
+- A menu link whose `url` isn't a well-formed `http` or `https` address with a host. A space or non-ASCII character in the address is refused rather than corrected.
+- A file the binding holds no version for, which happens after a pull from before the API reported versions. Pull the site again first.
+
+**It stops at the first stale version.** The push names the file or page, tells you to pull, lists what it already wrote, and sends nothing after it. A push isn't atomic, because the API has no batch write, so what it wrote stays written.
+
+**Not everything is sent.** A change to the site's default `layout` in `config/pages.json` isn't sent. The push lists it as not sent.
+
+A page is removed by taking its row out of `config/pages.json` and its file out of the folder. A page renamed in `config/pages.json` is a new page and a removal: the CLI creates the new page first and deletes the old one after it. `config/settings.json` and `config/menus.json` can't be removed. If either is missing, the push says so and leaves the server's copy.
+
+### publish
+
+```bash
+fluid member-site publish
+fluid member-site publish ./rileys-shop --as member
+```
+
+`publish [dir]` makes the drafts of the site's layouts, sections, snippets, pages, settings and access declaration the live site. It makes one publish request and sends no file, so a local edit you haven't pushed isn't published. It prints the site's `status` and its new `content_version`.
+
+- **A taken-down site can't be published.** The command prints the API's message, exits with a non-zero code and doesn't retry.
+- **A `409` means the site changed while it was being published.** The site wasn't published. Run the command again.
+- **A publish moves versions.** It changes the version of every page, layout, section and snippet it publishes, and of the settings. After it succeeds, the CLI records the new versions in the binding only when it can prove the publish published what the folder holds. Anything else keeps its old version, and the next push stops on it and asks for a pull. Push a file you edited before you publish it.
+
+### lint
+
+```bash
+fluid member-site lint
+fluid member-site lint ./rileys-shop
+```
+
+`lint [dir]` checks a site folder on disk and makes no request. It needs no login and no binding file, so it works on a folder that was never pulled. A clean folder prints nothing and exits `0`. Any error exits `1`, and each finding names its file. Warnings are printed and don't fail the command.
+
+Lint checks:
+
+- **Liquid** in layouts, sections, snippets and pages, with the same messages as `fluid theme lint`: the `{% schema %}` block and the pairing of block tags such as `{% if %}` and `{% endif %}`. The theme linter's cart, missing-section and routed-template checks are theme rules and don't run.
+- **The file rules a push enforces**, with the same messages.
+- **`config/pages.json`**, which must be valid and list at most 50 pages. A page with no file still counts.
+- **`config/menus.json`**, which must have the shape the API takes. Each link that names a `page` must name a page that `config/pages.json` lists.
+- **`config/access.json`**, which must be a file the API accepts. Each problem is an error.
+- **Viewer data.** Lint warns on a Liquid file that reads `member.<field>`, and on a script call whose scope the declaration lacks. See [Declare what a member site uses](/member-sites/access-declarations#check-a-declaration).
+
+### dev
+
+```bash
+fluid member-site dev
+fluid member-site dev ./rileys-shop --as member --port 9600
+fluid member-site dev --allow-production
+```
+
+`dev [dir]` shows a site's draft while you edit it. It saves each change you make in a pulled folder as a draft and serves the draft on a local port. The server renders the draft with the renderer members get, not a local one.
+
+| Flag | What it does |
+| --- | --- |
+| `--port <port>` | Serves on this local port. The default is `9500`. `--port 0` takes a free one |
+| `--allow-production` | Lets `dev` save to the production API |
+| `--as <login>` | Says which kind of login the token is |
+
+- **It won't write production unless you say so.** A session saves the folder when it starts and again on every change, and some changes are live as soon as they are written. So `dev` stops before it makes any request when the login's API base is production, and names the base and the flag. A local base, a stage base (`*.stage.fluid.app`) and a name under `.test` keep syncing without the flag. Any other base, a custom or unknown host included, is taken for production.
+- **It saves drafts and never publishes.** A save is a `push` without `--publish`, with the same plan, refusals and stop at a stale version. Run `fluid member-site publish` when the draft is ready.
+- **It starts only when the server can show a draft.** If it can't, `dev` stops with "Draft preview is not available on this server yet" before it saves anything. It never shows the published page in its place.
+- **Each change is saved after a short pause.** The command keeps serving when a save is refused, so you can fix the file. Reload the preview to see a save. There is no live reload yet.
+- **The preview is at `http://127.0.0.1:<port>`.** `/` is the home page and `/<slug>` is another page. The server listens on `127.0.0.1` only, and your credential stays in the CLI. It never goes into a URL, a page or a header sent to the browser.
+
+## Know the folder
+
+A pull writes this folder:
+
+```text
+rileys-shop/
+  layouts/site.liquid     sections/hero.liquid     snippets/card.liquid
+  pages/index.liquid      pages/about.liquid
+  assets/site.css         assets/site.js
+  config/settings.json    config/menus.json        config/pages.json
+  config/access.json      (only when the site declares what it uses)
+  .member-site.json
+```
+
+The folder is the API: a path here is the path the site's file API uses. The home page is `pages/index.liquid`. The files are described in [Build pages with Liquid](/member-sites/templates#know-the-folder).
+
+### config/settings.json
+
+A JSON object that templates read as `settings`. Don't put a member's data in it.
+
+### config/menus.json
+
+The site's menus. It replaces every menu of the site when you push it.
+
+```json config/menus.json
+{
+  "menus": [
+    {
+      "slug": "main",
+      "title": "Main menu",
+      "items": [
+        { "title": "Home", "page": "/" },
+        { "title": "About", "page": "about" },
+        { "title": "Contact", "url": "https://shop.example.com/contact" }
+      ]
+    }
+  ]
+}
+```
+
+An item has a `title`. It can nest `items`, and it can carry a `page` (a slug that `config/pages.json` lists) or a `url` (an `http` or `https` address), never both. An item with neither is a heading. Leave out the key you don't use: a `page` or `url` that is present is validated, so a null or empty one is refused.
+
+### config/pages.json
+
+The site's default layout, and what each page holds besides its content. It holds no page content, which is in `pages/<slug>.liquid`.
+
+```json config/pages.json
+{
+  "layout": null,
+  "pages": [
+    { "slug": "/", "title": "Home", "position": 1, "published": true, "layout": null, "menu": null },
+    { "slug": "about", "title": "About", "position": 2, "published": true, "layout": null, "menu": "main" }
+  ]
+}
+```
+
+- `layout` at the top is the site's default layout name, or `null`.
+- Each row has a `slug`, `title`, `position`, `published`, `layout` and `menu` (a menu's slug). The home page's slug is `/`. A page slug is lowercase letters and digits separated by single hyphens, and never `index`.
+- A page with a row and no file is a page whose content is a template the site doesn't own.
+- A site holds at most 50 pages. A new page needs a row and a file.
+
+### config/access.json
+
+The scopes a site's scripts use. It exists only once the site has a draft declaration, and a company site never has one. A pull writes it, a push sends it, and a publish makes it live with the settings. See [Declare what a member site uses](/member-sites/access-declarations).
+
+### .member-site.json
+
+The binding file. It records the site's id, handle and owner kind, the API base the folder came from, and the version of every file and page from the last pull or push. It is local state and a push never sends it. Don't edit or delete it.
+
+A site holds text assets only. See [Build pages with Liquid](/member-sites/templates#use-text-assets-only) for what that means for images and fonts.
+
+## Know what is live at once
+
+A push saves most changes as drafts. Some changes have no draft, so they take effect on a published site the moment a push writes them. Before the first write, `push` lists each one.
+
+| Change | When it takes effect |
+| --- | --- |
+| A new, changed or removed asset | At once |
+| `config/menus.json` | At once |
+| A page row: a new page, a changed field, a menu assignment, a removed page | At once |
+| A removed layout, section or snippet | At once. The CLI deletes its published copy, so the site stops rendering it |
+| Layout, section, snippet and page content, and `config/settings.json` | Saved as a draft until you publish |
+| `config/access.json` | Saved as a draft until you publish |
+
+Because assets are live as soon as they are written, a live asset must still work with the published pages. A push without `--publish` never publishes.
+
+## Fix common errors
+
+The CLI turns an API answer into one message and a non-zero exit code.
+
+| API answer | What the command says |
+| --- | --- |
+| `404` | Member sites aren't enabled for this company, or the site isn't yours |
+| `401` | The login wasn't accepted, and which login the site needs |
+| `403` | The API's message, and which login the site needs |
+| `409` | The site, file or page changed on the server. On a publish, a conflict to run again |
+| `422` | The API's message and each field error |
+| Other | The API's message and the request id |
+
+A `404` answers the same for a company without member sites, a missing site and another owner's site, so the command names the first and the last. The CLI never retries it. It retries a read that fails with `502`, `503` or `504` twice. It never retries a write.
+
+## Next steps
+
+- [Build pages with Liquid](/member-sites/templates) covers the Liquid objects and the frame's rules.
+- [Read viewer data in site scripts](/member-sites/site-scripts) covers `window.fluid`.
+- [Declare what a member site uses](/member-sites/access-declarations) covers `config/access.json`.
