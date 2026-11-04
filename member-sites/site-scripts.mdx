@@ -14,7 +14,7 @@ The site SDK installs `window.fluid` in the frame instead. A call travels from t
 
 - **`fluid.fetch(path, init)` behaves like `fetch`.** It takes the same arguments and resolves to a `Response`.
 - **`fluid.viewer()` says who is viewing.** It returns `"member"` or `"guest"`.
-- **The page's own `fetch` stays as it is.** Fluid never replaces `window.fetch`, so you can still use it to call other services. It doesn't reach Fluid.
+- **The page's own `fetch` can't leave the frame.** Fluid never replaces `window.fetch`, but the frame has no network of its own, so `fetch`, `XMLHttpRequest`, beacons and form posts all fail. `fluid.fetch` is the one way out. See [Know where a site loads files from](#know-where-a-site-loads-files-from).
 
 <Note>
   A script's calls to the member API (`/api/member/v2026-10/...`) go through your company's storefront. Fluid has to turn on the member API there for your company, as well as member sites. Until it does, those calls return `404`, even for the site's owner. To ask for it, [contact support](/help/getting-help).
@@ -23,7 +23,7 @@ The site SDK installs `window.fluid` in the frame instead. A call travels from t
 The SDK loads through `content_for_header`, so print it in your layout's `<head>`. Load your script with `{{ 'site.js' | asset_url | script_tag }}`, or write it inline. See [Use tags and filters](/member-sites/templates#use-tags-and-filters).
 
 <Warning>
-  Never put a member's data into Liquid output or a `<script>` through a template variable. Never call a Fluid API with the page's own `fetch`, `XMLHttpRequest` or a form post from a site. The frame has no session, so those calls fail.
+  Never put a member's data into Liquid output or a `<script>` through a template variable. Never call a Fluid API with the page's own `fetch`, `XMLHttpRequest` or a form post from a site. The frame has no session and no network, so those calls fail.
 </Warning>
 
 ## Read with fluid.fetch
@@ -84,22 +84,43 @@ Fluid forwards GET, POST, PUT, PATCH and DELETE. It answers any other method its
 
 ## Know who gets data
 
-Only the signed-in owner of a member-owned site gets data from `fluid.fetch`, and only while viewing the site published. A site whose published declaration lists no scope gets none, even for its owner.
+Two kinds of viewer get data from `fluid.fetch`, each only while viewing the site published: the signed-in owner of a member-owned site, and a share holder. A share holder is a signed-in member whom one of the site's shares matches now. A share holder gets the person's own data, never the owner's, and the person isn't asked first. A site's script reads and changes what the site's published declaration lists.
 
 | Viewer | Site with no declaration | Site with a declaration |
 | --- | --- | --- |
-| The member who owns the site, viewing it published | Every route a site can reach | The scopes the declaration lists |
-| Another signed-in member, including one the site is shared with | Nothing | Nothing |
-| A company admin who doesn't own the site | Nothing | Nothing |
+| The member who owns the site, viewing it published | Every route a site can reach, except the site's database | The scopes the declaration lists |
+| A share holder | Nothing | Their own data for the scopes the declaration lists, except the ones below |
+| Another signed-in member, whom no share matches | Nothing | Nothing |
+| A company admin whom no share matches | Nothing | Nothing |
 | A guest | Nothing | Nothing |
-| Anyone viewing a company site | Nothing, because a company site has no member owner | Nothing, because a company site takes no declaration |
 
-- **Sharing grants nothing.** Sharing a site or making it public doesn't change who gets data. A share holder, a company admin and a visitor never get a scope from the site's declaration. See [Share a member site](/member-sites/sharing).
-- **`fluid.viewer()` follows that.** It returns `"member"` only when the site's frame can reach Fluid for the viewer. A signed-in viewer the frame can't act for gets `"guest"`, and a call answers with the local `guest` response below.
-- **A company site can't use viewer data.** If you want a script to read the viewer, build a member-owned site. Build a company site from Liquid's structure and menus only.
-- **A script that works for you may fail for a visitor.** Test with a second member, and show a fallback when a call fails.
+- **A share holder gets only what the site declared.** A site with no declaration gives a share holder nothing. So does a declaration of `{ "uses": [] }`, and so does one that lists only the scopes below.
+- **A company site has no owner.** Its share holders get data when an admin published a declaration for it. Every other viewer gets nothing, and so does everyone when the company site has no declaration. Build a company site from Liquid's structure and menus when you want neither a declaration nor a share to decide who reads data.
+- **A share holder never gets some scopes, declared or not.** These are `messages: write`, `shares: write`, `widgets: write`, `contacts: write`, `carts: write`, `mysite: write`, `agreements: write`, `ai: write`, `database: read` and `database: write`. Inside the families `profile: write`, `notifications: write` and `calendar: write`, three routes are refused too: `PATCH /api/member/v2026-10/me`, `PATCH /api/member/v2026-10/notifications/preferences` and `POST /api/member/v2026-10/calendar/events/:id/rsvp`. The owner's code still uses all of them when the site declares them. [Know what a share never grants](/member-sites/sharing#know-what-a-share-never-grants) says why.
+- **`fluid.viewer()` follows that.** It returns `"member"` only when the site's frame can reach Fluid for the viewer. A share holder gets `"member"` when the site grants them at least one scope. A signed-in viewer the frame can't act for gets `"guest"`, and a call answers with the local `guest` response below.
+- **A script that works for you may fail for a visitor.** Test with a second member who holds a share and one who doesn't, and show a fallback when a call fails.
 - **A site whose owner is no longer an active member grants no scope to anyone.** Its calls are refused.
-- **A change to the site applies at once.** A take-down, an owner who is no longer active and a publish that drops a scope all refuse the next call. Fluid checks the site on every request.
+- **A change to the site or its shares applies at once.** A take-down, an owner who is no longer active, a publish that drops a scope and a deleted share all refuse the next call. Fluid checks the site and the share on every request.
+
+See [Share a member site](/member-sites/sharing#know-what-a-share-grants).
+
+## Know where a site loads files from
+
+The frame has no network of its own. Every file a page loads must come from one of a few places, and the browser blocks the rest without a message on the page. Its console reports the block.
+
+| Kind of file | Where it may come from |
+| --- | --- |
+| Scripts and stylesheets | The site's own assets, and Fluid's site SDK |
+| Images, fonts and media | Your company's own host and media library, and Fluid's own image and media hosts |
+| Images and fonts in the page | `data:` URLs too |
+
+- **Nothing else loads.** A hotlinked image or video, Google Fonts, a script or stylesheet from a CDN and an embedded player are blocked. So are frames, web workers, plugins and a form post.
+- **No script can call another server.** `fetch`, `XMLHttpRequest`, beacons, WebSockets and server-sent events are blocked. A script reaches Fluid only with `fluid.fetch`.
+- **Inline scripts and styles work.** A `<script>` or `<style>` element, a `style` attribute and an event attribute such as `onclick` all run.
+- **`eval` doesn't work.** `eval`, `new Function` and a string passed to `setTimeout` are blocked. Pass a function to `setTimeout` instead.
+- **A script can still send the page away.** The frame can navigate itself to an address the script builds, and that address can carry what the page read. Treat a site's script as its author's code.
+
+To use an image or a font, upload it to your company's media library and use the URL it gives you. See [Use text assets only](/member-sites/templates#use-text-assets-only).
 
 ## Handle the Response
 
@@ -107,13 +128,13 @@ Only the signed-in owner of a member-owned site gets data from `fluid.fetch`, an
 
 | Status | `error` | What happened |
 | --- | --- | --- |
-| `401` | `guest` | No member is signed in, or the frame can't act for the viewer. Nothing was sent |
-| `403` | `bridge_refused` | Fluid refused to forward the request, such as one with a method it doesn't forward |
+| `401` | `guest` | No member is signed in, or the frame can't act for the viewer, such as a share holder of a site that grants them no scope. Nothing was sent |
+| `403` | `bridge_refused` | Fluid refused to forward the request, such as one with a method it doesn't forward, or a share holder's call to a native widget route that messages or shares |
 | `413` | `bridge_too_large` | The request body is too large |
 | `415` | `bridge_unsupported_body` | The request body isn't JSON |
 | `429` | `bridge_busy` | Fluid is busy, and the request wasn't sent. Try again |
 
-Any other status comes from the API, with its own body. One refusal is about the site's declaration. The owner of a site that published a declaration gets a `403` for a path whose scope the declaration lacks. The body names the scope:
+Any other status comes from the API, with its own body. One refusal is about the site's declaration. The owner of a site that published a declaration, and a share holder of it, get a `403` for a path whose scope the declaration lacks. The body names the scope:
 
 ```json
 {
@@ -124,7 +145,7 @@ Any other status comes from the API, with its own body. One refusal is about the
 }
 ```
 
-Every other refusal of a bridged call keeps one body, `member_site_unavailable`, so a response never says whether a site exists. That covers a site that is unknown, unpublished or company-owned, a viewer who isn't its owner and a path that no scope covers.
+Every other refusal of a bridged call keeps one body, `member_site_unavailable`, so a response never says whether a site exists. That covers a site that is unknown or unpublished, a viewer whom no share matches, a scope or route a share holder never gets, and a path that no scope covers.
 
 Read the status first, then the body:
 
