@@ -5,7 +5,7 @@ info:
   description: |
     The authenticated member's own sites: list, create, read, change, delete, publish and copy, list a site's versions and restore one, with the files and pages that make up each site, and the branch a member makes to try a change to a published site. The credential alone determines the member and company; a site and a page are identified by their public ids, never by a numeric id. A member can read and change only the sites they own. Any other id, and any id of a site in another company, returns 404.
 
-    These operations take a bearer only, the site menu, the site removals and the share-target search included. On the same-origin cookie mount, a request with a valid member session is refused with `403`, with or without an `X-Fluid-Member-Site` header, because a script on the company's storefront shares that origin and would otherwise act as the visiting member, so no cookie path to them can be kept from it; a request with a missing or unusable session is refused with `401` first, as on every cookie-mount route. A page that draws the account menu holds the member's bearer and sends it itself.
+    These operations take a bearer only, the site menu, the site removals and the share-target search included, except the status, tables and rows operations of a site's database (see the `site-database` tag), which a site's own script reaches on the cookie mount when the site has declared them. On the same-origin cookie mount, a request with a valid member session is refused with `403`, with or without an `X-Fluid-Member-Site` header, because a script on the company's storefront shares that origin and would otherwise act as the visiting member, so no cookie path to them can be kept from it; a request with a missing or unusable session is refused with `401` first, as on every cookie-mount route. A page that draws the account menu holds the member's bearer and sends it itself.
 
     The draft preview operations show the member's own site as its builder sees it before it is published. They answer with a page's HTML or a file's text rather than the JSON envelope, and every response of theirs, a refusal included, carries the frame's sandbox policy and is `private, no-store` and `noindex`. See the `site-preview` tag.
 
@@ -63,6 +63,9 @@ tags:
 - name: site-share-targets
   x-fluid-section: Members
   description: Whom the member may share a site with, inside the reach their company's messaging policy gives them.
+- name: site-database
+  x-fluid-section: Members
+  description: 'The database of one of the member''s sites, read and written through the site''s own backend with six fixed operations. The status, tables and rows operations are served to the owner''s bearer and, on the cookie mount, to a site that sends its own `X-Fluid-Member-Site` label and has published a declaration naming `database: read` or `database: write`; the SQL statement operation is bearer only.'
 components:
   securitySchemes:
     MemberBearer:
@@ -1568,6 +1571,291 @@ components:
       - status
       - data
       - meta
+    SiteDatabaseLimits:
+      type: object
+      description: The bounds of a site's database routes.
+      additionalProperties: false
+      properties:
+        request_body_bytes:
+          type: integer
+          description: The largest request body accepted, 64 KiB. A larger one is refused with 413.
+          example: 65536
+        response_body_bytes:
+          type: integer
+          description: The largest answer read from the site's backend, 256 KiB. A longer one is abandoned and answered with 502.
+          example: 262144
+        calls_per_minute:
+          type: integer
+          description: Calls allowed per minute for one company, member and site. More are refused with 429.
+          example: 60
+        rows_per_page_default:
+          type: integer
+          description: Rows in a page of a table when `page[limit]` is not sent.
+          example: 25
+        rows_per_page_max:
+          type: integer
+          description: The most rows `page[limit]` may ask for.
+          example: 100
+        rows_per_insert_max:
+          type: integer
+          description: The most rows one insert may carry.
+          example: 100
+        rows_returned_by_sql_max:
+          type: integer
+          description: The most rows a SQL statement returns, with `truncated` true beyond.
+          example: 100
+        statement_timeout_seconds:
+          type: integer
+          description: How long any operation may run in the database before it is stopped.
+          example: 3
+      required:
+      - request_body_bytes
+      - response_body_bytes
+      - calls_per_minute
+      - rows_per_page_default
+      - rows_per_page_max
+      - rows_per_insert_max
+      - rows_returned_by_sql_max
+      - statement_timeout_seconds
+    SiteDatabaseStatus:
+      type: object
+      description: The state and limits of a site's database. It holds no storage figure, no address, no secret and no vendor id.
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          enum:
+          - provisioning
+          - live
+          - failed
+          - pending_destroy
+          - archived
+          - discarded
+          description: The state of the database's hosting. Only `live` answers calls. While it is `provisioning`, check this state again until it is `live`. In `failed`, `pending_destroy`, `archived` or `discarded`, the owner asks for the database again with `POST` on this path, which replaces it.
+          example: live
+        available:
+          type: boolean
+          description: Whether the database answers calls now, which is true only for a live hosting that has an address. It is not true for a draft site, whose database routes answer 404 until the site is published.
+          example: true
+        limits:
+          "$ref": "#/components/schemas/SiteDatabaseLimits"
+      required:
+      - state
+      - available
+      - limits
+    SiteDatabaseStatusEnvelope:
+      type: object
+      description: The state and limits of a site's database.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteDatabaseStatus"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDatabaseColumn:
+      type: object
+      description: One column of a table.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: The column's name.
+        type:
+          type: string
+          description: The column's Postgres type.
+        nullable:
+          type: boolean
+          description: Whether the column accepts null.
+        default:
+          type:
+          - string
+          - 'null'
+          description: The column's default expression, or null when it has none.
+        primary_key:
+          type: boolean
+          description: Whether the column is part of the table's primary key.
+      required:
+      - name
+      - type
+      - nullable
+      - primary_key
+    SiteDatabaseTable:
+      type: object
+      description: One table of the database's `public` schema.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: The table's name.
+        columns:
+          type: array
+          description: The table's columns, in the order the table defines them.
+          items:
+            "$ref": "#/components/schemas/SiteDatabaseColumn"
+      required:
+      - name
+      - columns
+    SiteDatabaseTablesEnvelope:
+      type: object
+      description: The tables of a site's database.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The base tables of the `public` schema, ordered by name.
+          items:
+            "$ref": "#/components/schemas/SiteDatabaseTable"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDatabaseSqlStatement:
+      type: object
+      description: One schema statement to run.
+      additionalProperties: false
+      properties:
+        statement:
+          type: string
+          minLength: 1
+          maxLength: 60000
+          description: Exactly one statement of a schema form, such as `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE` with one action, `DROP TABLE`, `DROP INDEX` or `COMMENT ON`. Rails does not read it. The site's backend refuses, with 422, any statement that could read or copy rows (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE ... AS`, `COPY`, `WITH`, `USING` and the rest), a second command, a comment, dollar quoting, and a view, function, trigger, extension, role, schema or sequence. It checks for these words anywhere in the text, so a default or comment that holds one is refused too.
+      required:
+      - statement
+    SiteDatabaseSqlResult:
+      type: object
+      description: What a statement did.
+      additionalProperties: false
+      properties:
+        command:
+          type: string
+          description: The command tag, such as `CREATE TABLE`.
+        row_count:
+          type: integer
+          description: The number of rows the statement touched.
+        rows:
+          type: array
+          description: At most 100 rows the statement returned.
+          items:
+            type: object
+            additionalProperties: true
+        truncated:
+          type: boolean
+          description: Whether more rows were returned than `rows` holds.
+      required:
+      - command
+      - row_count
+      - rows
+      - truncated
+    SiteDatabaseSqlResultEnvelope:
+      type: object
+      description: What a statement did.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteDatabaseSqlResult"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDatabaseRow:
+      type: object
+      description: One row, an object of column name to value. A value is a string, number, boolean, null, object or array, as the column's type reads.
+      additionalProperties: true
+    SiteDatabaseRowsEnvelope:
+      type: object
+      description: One page of a table's rows.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The rows of the page. A page ends at `page[limit]` rows, or before 192 KiB of rows, whichever comes first.
+          items:
+            "$ref": "#/components/schemas/SiteDatabaseRow"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDatabaseRowsInsert:
+      type: object
+      description: The rows to insert.
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: One to 100 rows, each an object whose keys are column names. All rows carry the same columns. An object or array value is stored as JSON text, which suits `json` and `jsonb` columns.
+          items:
+            "$ref": "#/components/schemas/SiteDatabaseRow"
+      required:
+      - rows
+    SiteDatabaseRowsCreatedEnvelope:
+      type: object
+      description: The rows that were inserted.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The inserted rows, with the columns the database filled in.
+          items:
+            "$ref": "#/components/schemas/SiteDatabaseRow"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDatabaseRowUpdate:
+      type: object
+      description: The values to write to one row.
+      additionalProperties: false
+      properties:
+        values:
+          "$ref": "#/components/schemas/SiteDatabaseRow"
+      required:
+      - values
+    SiteDatabaseRowEnvelope:
+      type: object
+      description: One row.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteDatabaseRow"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
   responses:
     Unauthorized:
       description: Missing or unusable member credential.
@@ -1618,6 +1906,120 @@ components:
           "$ref": "#/components/headers/PreviewReferrerPolicy"
     Conflict:
       description: The site, its settings, the page or the file changed since it was read, or a file to be created already exists. Read it again and retry.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseRefused:
+      description: 'The credential is a member session JWT, the kind order and subscription email links carry, which no database operation accepts; the credential is a portal JWT minted read-only and the request writes; the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount and is refused. A cookie-mount request is refused when it carries no `X-Fluid-Member-Site` label, a malformed one or one that names another site than the path''s; when the labelled site is not published, is not the session member''s own or has not declared the scope the request needs, which `details.scope` names (`database: read` for a read and `database: write` for a write); and always for the SQL statement operation.'
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseNotFound:
+      description: No site of the member's has this id, the site has no database, a draft or taken-down site is named by an operation that reaches the backend, or member sites are not enabled for the member's company.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseUnavailable:
+      description: The site's database is not live, so nothing was sent to it (`details.error` is `database_unavailable`, with the hosting's `details.state` and a `details.next_step`. While the state is `provisioning`, or `live` with no address yet, wait and check `GET` on the database's path until it is `live` and `available`, because asking again would answer 409; a database that never finishes is abandoned by turning it off with `DELETE` on that path. In any other state ask for the database again with `POST` on that path, which replaces it, or turn it off with `DELETE`), or the backend refused an insert, update or statement because of a unique or foreign-key violation (`details.error` is `conflict`).
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseBadRequest:
+      description: The request body is not valid JSON (`details.error` is `invalid_json`), or the cursor is not one the database issued for this query (`details.error` is `invalid_cursor`).
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnableRefused:
+      description: 'The credential is a member session JWT, the kind order and subscription email links carry, or a portal JWT minted read-only, neither of which may turn a database on; the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never serves this operation, with or without the `X-Fluid-Member-Site` header, whatever the site declares.'
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnableConflict:
+      description: The site already has a database whose hosting is `provisioning` or `live`, or a request to turn it on is already running (`details.error` is `exists`, with `details.reason`). Nothing was created and no vendor was called.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnableRefusedInput:
+      description: 'The site cannot have a database (`details.error` is `not_eligible` and `details.reason` is `branch` or `taken_down`; a company''s own site is 404 because only a member''s own site is found); the company already has the most databases it may hold (`details.error` is `backend_limit_reached`, with the `details.limit`); or the request carries a body field or query key, which this operation does not take, with `details` keyed by field. Nothing was created and no vendor was called.'
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseDisableRefused:
+      description: 'The credential is a member session JWT, the kind order and subscription email links carry, or a portal JWT minted read-only, neither of which may turn a database off; the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never serves this operation, with or without the `X-Fluid-Member-Site` header, whatever the site declares.'
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseDisableConflict:
+      description: The turn-off waited for a lock that a step of creating the database, or another change to the site, held, and gave up (`details.error` is `database_busy`). The site and its database are unchanged, so the request may be sent again.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseDisableInvalidInput:
+      description: The request carries a body field or query key, which this operation does not take, with `details` keyed by field. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnablePaymentRequired:
+      description: The company cannot pay for a database now, and a member who owns the site learns no more than that. `details.error` is `credits_exhausted` (no hosting credits left) or `billing_unresolved` (the company's billing needs attention), with `details.category` `hosting` and a fixed `message`. The company's billing tier, standing, episode and condition ids, eligibility date and billing path are never returned; an admin who may view billing reads them in the billing standing. No vendor was called.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnableBadGateway:
+      description: A step of creating the database failed (`details.error` is `provisioning_failed`, with the `details.step` and whether it was `rolled_back`). Nothing a vendor said is returned. The site holds no database, so the owner may ask again.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseEnableUnavailable:
+      description: No approved database template can be used now (`details.error` is `template_unavailable`), or billing could not record the decision (`details.error` is `admission_unavailable`). Nothing was created and no vendor was called.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseTooLarge:
+      description: The request body is over 64 KiB. It was not read and nothing was sent.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseInvalid:
+      description: A parameter is refused before anything is sent, with `details` keyed by field (a key the operation does not take, including `operation`, `member`, `company`, `site` and `url`; a table or column that is not an identifier; a filter operator outside the list; `page[limit]` outside 1 to 100; more than 100 rows; an empty statement or `values`); or the backend refused the operation with its own reason in `message` (`constraint_violation`, `invalid_params`, `invalid_statement`, `statement_timeout`, `row_too_large`), with the backend's answer in `details.backend_response`.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseRateLimited:
+      description: More than 60 calls in a minute for this company, member and site. Wait `Retry-After` seconds.
+      headers:
+        Retry-After:
+          description: Always 60, the seconds to wait.
+          schema:
+            type: string
+            example: '60'
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseBadGateway:
+      description: The site's backend could not be reached, did not answer within the time allowed, answered with more than 256 KiB or with something other than a JSON object, refused Fluid's signature (`details.error` is `backend_refused` with `details.upstream_status`), or answered with an error this API does not map (`details.backend_response` holds its answer, bounded to 4 KiB).
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorEnvelope"
+    DatabaseServiceUnavailable:
+      description: The per-minute counter could not be read, so the call was refused (`details.error` is `unavailable`).
       content:
         application/json:
           schema:
@@ -1738,6 +2140,48 @@ components:
         type: integer
         minimum: 0
         maximum: 2147483647
+    DatabaseTable:
+      name: table
+      in: path
+      required: true
+      description: The name of a table of the site's database, letters, digits and underscores, starting with a letter or underscore, at most 63 characters. A table that is not in the database's `public` schema is 404.
+      schema:
+        type: string
+        pattern: '^[A-Za-z_][A-Za-z0-9_]{0,62}$'
+    DatabaseRowId:
+      name: id
+      in: path
+      required: true
+      description: The value of the table's single-column primary key. A table with no single-column primary key answers 422.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    DatabaseRowsSort:
+      name: sort
+      in: query
+      required: false
+      description: The columns to order by, comma separated, at most 10, each with an optional leading `-` for descending, such as `-created_at,name`. The order always ends with the table's primary key, so equal values page stably.
+      schema:
+        type: string
+        maxLength: 700
+    DatabaseRowsPageLimit:
+      name: page[limit]
+      in: query
+      required: false
+      description: How many rows to list, 25 when omitted, at most 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    DatabaseRowsPageCursor:
+      name: page[cursor]
+      in: query
+      required: false
+      description: The `meta.pagination.next_cursor` of the previous page. It is tied to the table, filters and sort it was issued for.
+      schema:
+        type: string
+        maxLength: 2048
 paths:
   "/api/member/v2026-10/sites":
     get:
@@ -2447,7 +2891,7 @@ paths:
         '409':
           "$ref": "#/components/responses/Conflict"
         '422':
-          description: A missing or invalid body, `version` sent with `must_not_exist` or `lock_version`, a path that is none of the supported ones, an asset that is not a text file or is empty, settings that are not a JSON object, menus that are not a valid document, or a template that is invalid.
+          description: A missing or invalid body, `version` sent with `must_not_exist` or `lock_version`, a path that is none of the supported ones, an asset that is not a text file or is empty, settings that are not a JSON object, menus that are not a valid document, a template that is invalid, or a layout, section, snippet or page whose Liquid uses a tag or filter a member site cannot use; the message names each one with its line.
           content:
             application/json:
               schema:
@@ -3067,7 +3511,7 @@ paths:
         '409':
           "$ref": "#/components/responses/Conflict"
         '422':
-          description: A missing field, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, an unknown field, or the site already holds 50 pages.
+          description: A missing field, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, an unknown field, the site already holds 50 pages, or `content` whose Liquid uses a tag or filter a member site cannot use; the message names each one with its line.
           content:
             application/json:
               schema:
@@ -3128,7 +3572,7 @@ paths:
         '409':
           "$ref": "#/components/responses/Conflict"
         '422':
-          description: An empty body, a blank title, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, or an unknown field.
+          description: An empty body, a blank title, a malformed, reserved or taken slug, a menu that is not one of the site's, a field a member cannot set, an unknown field, or `content` whose Liquid uses a tag or filter a member site cannot use; the message names each one with its line.
           content:
             application/json:
               schema:
@@ -3858,3 +4302,492 @@ paths:
                 error: Rate limit exceeded
                 message: Too many requests. Please wait before trying again.
                 retry_after: 42
+  "/api/member/v2026-10/sites/{site_id}/database":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: Show a site's database status
+      description: |
+        The state of the site's database and the limits of its routes. It reads Fluid's own record and sends nothing to the backend, so it answers while the backend is still being created and for a draft site, and a site with no database is 404. It never returns a storage figure, the backend's address, its secret or a vendor id. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: read`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
+      operationId: member_site_database_status
+      tags:
+      - site-database
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The database's state and limits.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseStatusEnvelope"
+              example:
+                status: 200
+                data:
+                  state: live
+                  available: true
+                  limits:
+                    request_body_bytes: 65536
+                    response_body_bytes: 262144
+                    calls_per_minute: 60
+                    rows_per_page_default: 25
+                    rows_per_page_max: 100
+                    rows_per_insert_max: 100
+                    rows_returned_by_sql_max: 100
+                    statement_timeout_seconds: 3
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+    post:
+      summary: Turn on a site's database
+      description: |
+        Creates the database of one of the member's own sites, on the company's hosting account and credits, and answers 202 with the state `GET` of this path renders: `provisioning` until the first deploy finishes, then `live`. The operation routes answer 409 `database_unavailable` until it is `live`. A site whose database cannot serve (its hosting failed, was removed or deleted) gets a new one, and the answer is the same 202. A site whose database is `provisioning` or `live` is 409. A company holds at most 20 databases, a company's own site, another member's site and a missing site are 404, and a branch and a taken-down site are 422. The request takes no body and no query key. A bearer that can write only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot spend the company's credits. The response never holds the signing secret, the database's address or a vendor id. Every response is `private, no-store`.
+      operationId: member_site_database_create
+      tags:
+      - site-database
+      x-fluid-audience: member
+      responses:
+        '202':
+          description: The database is being created, or its link was replaced. The body is the state of the hosting.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseStatusEnvelope"
+              example:
+                status: 202
+                data:
+                  state: provisioning
+                  available: false
+                  limits:
+                    request_body_bytes: 65536
+                    response_body_bytes: 262144
+                    calls_per_minute: 60
+                    rows_per_page_default: 25
+                    rows_per_page_max: 100
+                    rows_per_insert_max: 100
+                    rows_returned_by_sql_max: 100
+                    statement_timeout_seconds: 3
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '402':
+          "$ref": "#/components/responses/DatabaseEnablePaymentRequired"
+        '403':
+          "$ref": "#/components/responses/DatabaseEnableRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseEnableConflict"
+        '422':
+          "$ref": "#/components/responses/DatabaseEnableRefusedInput"
+        '502':
+          "$ref": "#/components/responses/DatabaseEnableBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseEnableUnavailable"
+    delete:
+      summary: Turn off a site's database
+      description: |
+        Turns off the database of one of the member's own sites, whatever state its hosting is in: running, still being created with nothing left to finish it, failed, already being removed, or discarded. The hosting is handed to Fluid's teardown, which removes its hosting resources later, and its billing stops from now. The site's link to it is removed in the same step, so `GET` of this path answers 404 afterwards and the owner may turn the database on again, which creates a new one with a new signing secret. It answers 202 with the state the hosting has once it is released: `pending_destroy` for a hosting that was running, or `archived` or `discarded` for one that was already gone. A site with no database, including one this operation just turned off, a company's own site, another member's site and a missing site are 404. If a step of creating the database holds the hosting, the request waits for it, and answers 409 `database_busy` with nothing changed when the wait is too long. The request takes no body and no query key. A bearer that can write only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot remove its own database. Every response is `private, no-store`.
+      operationId: member_site_database_destroy
+      tags:
+      - site-database
+      x-fluid-audience: member
+      responses:
+        '202':
+          description: The database was turned off. The body is the state of its hosting after the release.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseStatusEnvelope"
+              example:
+                status: 202
+                data:
+                  state: pending_destroy
+                  available: false
+                  limits:
+                    request_body_bytes: 65536
+                    response_body_bytes: 262144
+                    calls_per_minute: 60
+                    rows_per_page_default: 25
+                    rows_per_page_max: 100
+                    rows_per_insert_max: 100
+                    rows_returned_by_sql_max: 100
+                    statement_timeout_seconds: 3
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseDisableRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseDisableConflict"
+        '422':
+          "$ref": "#/components/responses/DatabaseDisableInvalidInput"
+  "/api/member/v2026-10/sites/{site_id}/database/tables":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List the tables of a site's database
+      description: |
+        The tables of the database's `public` schema with their columns, from the backend's `tables.list` operation. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: read`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`. No query key or body is taken.
+      operationId: member_site_database_tables_index
+      tags:
+      - site-database
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The tables.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseTablesEnvelope"
+              example:
+                status: 200
+                data:
+                - name: notes
+                  columns:
+                  - name: id
+                    type: integer
+                    nullable: false
+                    primary_key: true
+                  - name: title
+                    type: text
+                    nullable: false
+                    primary_key: false
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
+  "/api/member/v2026-10/sites/{site_id}/database/sql":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    post:
+      summary: Run a schema statement on a site's database
+      description: |
+        Runs one schema statement through the backend's `sql.run` operation. Rails does not read the statement: the backend accepts only the forms that cannot read or rewrite rows and refuses the rest with 422 `invalid_statement` before it contacts the database. A bearer only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot drop a table. Every response is `private, no-store`.
+      operationId: member_site_database_sql_create
+      tags:
+      - site-database
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteDatabaseSqlStatement"
+            example:
+              statement: CREATE TABLE notes (id serial PRIMARY KEY, title text NOT NULL)
+      responses:
+        '200':
+          description: What the statement did.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseSqlResultEnvelope"
+              example:
+                status: 200
+                data:
+                  command: CREATE TABLE
+                  row_count: 0
+                  rows: []
+                  truncated: false
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '400':
+          "$ref": "#/components/responses/DatabaseBadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '413':
+          "$ref": "#/components/responses/DatabaseTooLarge"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
+  "/api/member/v2026-10/sites/{site_id}/database/tables/{table}/rows":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/DatabaseTable"
+    get:
+      summary: List the rows of a table
+      description: |
+        A page of the table's rows, from the backend's `rows.list` operation, with the cursor of the next page in `meta.pagination.next_cursor` (null on the last page).
+
+        Filters are query keys of the form `filter[<column>][<operator>]=<value>`, ANDed, at most 50. They are described here and not declared, because OpenAPI has no query parameter for two levels of brackets. The operators are `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` and `is_null`. `in` takes its values as repeated `filter[<column>][in][]=<value>` entries or as one comma-separated list, one to 100 values, and a value that holds a comma goes in the repeated form. `is_null` takes `true` or `false`. Every other operator takes one string, which the database reads as the column's type. A filter on a column that is not in the table is 422. The shell passes at most 2,048 characters of query string, so a longer filter is sent with a bearer.
+
+        On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: read`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`. A table that is not in the database is 404.
+      operationId: member_site_database_rows_index
+      tags:
+      - site-database
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/DatabaseRowsSort"
+      - "$ref": "#/components/parameters/DatabaseRowsPageLimit"
+      - "$ref": "#/components/parameters/DatabaseRowsPageCursor"
+      responses:
+        '200':
+          description: A page of rows.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseRowsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 1
+                  title: alpha
+                - id: 2
+                  title: bravo
+                meta:
+                  pagination:
+                    next_cursor: eyJvIjoyfQ.signature
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '400':
+          "$ref": "#/components/responses/DatabaseBadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
+    post:
+      summary: Insert rows into a table
+      description: |
+        Inserts one to 100 rows in one statement, all or none, through the backend's `rows.insert` operation, and returns the inserted rows. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`. A unique or foreign-key violation is 409 `conflict`, and any other integrity violation is 422.
+      operationId: member_site_database_rows_create
+      tags:
+      - site-database
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteDatabaseRowsInsert"
+            example:
+              rows:
+              - title: alpha
+              - title: bravo
+      responses:
+        '201':
+          description: The inserted rows.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseRowsCreatedEnvelope"
+              example:
+                status: 201
+                data:
+                - id: 1
+                  title: alpha
+                - id: 2
+                  title: bravo
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '400':
+          "$ref": "#/components/responses/DatabaseBadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '413':
+          "$ref": "#/components/responses/DatabaseTooLarge"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
+  "/api/member/v2026-10/sites/{site_id}/database/tables/{table}/rows/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/DatabaseTable"
+    - "$ref": "#/components/parameters/DatabaseRowId"
+    patch:
+      summary: Change a row
+      description: |
+        Writes the values to the one row the table's single-column primary key addresses, through the backend's `rows.update` operation, and returns the row. The values may not name the primary key. A row with that key that does not exist is 404, and a table with no single-column primary key is 422. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
+      operationId: member_site_database_rows_update
+      tags:
+      - site-database
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteDatabaseRowUpdate"
+            example:
+              values:
+                title: renamed
+      responses:
+        '200':
+          description: The changed row.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`. No ETag is sent.
+              schema:
+                type: string
+                example: "private, no-store"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDatabaseRowEnvelope"
+              example:
+                status: 200
+                data:
+                  id: 2
+                  title: renamed
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-09-30T15:08:21Z'
+        '400':
+          "$ref": "#/components/responses/DatabaseBadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '413':
+          "$ref": "#/components/responses/DatabaseTooLarge"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
+    delete:
+      summary: Remove a row
+      description: |
+        Removes the one row the table's single-column primary key addresses, through the backend's `rows.delete` operation. A row with that key that does not exist is 404. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
+      operationId: member_site_database_rows_destroy
+      tags:
+      - site-database
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The row was removed. The body is empty.
+          headers:
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema:
+                type: string
+                example: "private, no-store"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/DatabaseRefused"
+        '404':
+          "$ref": "#/components/responses/DatabaseNotFound"
+        '409':
+          "$ref": "#/components/responses/DatabaseUnavailable"
+        '422':
+          "$ref": "#/components/responses/DatabaseInvalid"
+        '429':
+          "$ref": "#/components/responses/DatabaseRateLimited"
+        '502':
+          "$ref": "#/components/responses/DatabaseBadGateway"
+        '503':
+          "$ref": "#/components/responses/DatabaseServiceUnavailable"
