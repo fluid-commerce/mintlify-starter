@@ -3248,6 +3248,120 @@ components:
                     different currency is refused before the totals are
                     compared.
                   example: USD
+    PointsHeldChangedErrorResponse:
+      description: |
+        The points held for the order are no longer the figure the shopper
+        was shown, so nothing was charged. Either the client sent a stale
+        `points_held` or `points_held_decimal`, or checkout had to hold the
+        points again and could not hold the same figure, so this is reachable
+        even when the client sent neither. A redirect payment's callback, whose
+        provider may already have taken the money, never answers this; it
+        keeps the `points` refusal. `meta.points` is the figure the order
+        would spend now, so the client can show the shopper what changed
+        before asking again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - points_held
+          properties:
+            points_held:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - cart
+          - points
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: points_held_changed
+            error_details:
+              type: array
+              minItems: 1
+              description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
+              items:
+                "$ref": "#/components/schemas/CheckoutErrorDetail"
+            coded_recovery:
+              type: boolean
+              description: Present and true when the company routes checkout refusals by `error_details` (CHECKOUT_CODED_REFUSALS). Temporary; removed with that flag.
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total, as in `CartTotalChangedErrorResponse`.
+                  example: "128.85"
+                currency_code:
+                  type: string
+                  example: USD
+            points:
+              type: object
+              additionalProperties: false
+              description: The points the order would spend now, as the cart's
+                fields of the same names carry them. With no live hold, the
+                points the cart applies, held and requested alike, with a null
+                expiry. Every value is null when the order would spend no
+                points. Resend `points_held` (or
+                `points_held_decimal`) once the shopper has seen it.
+              required:
+              - points_requested
+              - points_requested_decimal
+              - points_held
+              - points_held_decimal
+              - points_hold_expires_at
+              properties:
+                points_requested:
+                  type:
+                  - integer
+                  - 'null'
+                points_requested_decimal:
+                  type:
+                  - string
+                  - 'null'
+                  pattern: '^\d+\.\d{4}$'
+                points_held:
+                  type:
+                  - integer
+                  - 'null'
+                points_held_decimal:
+                  type:
+                  - string
+                  - 'null'
+                  pattern: '^\d+\.\d{4}$'
+                points_hold_expires_at:
+                  type:
+                  - string
+                  - 'null'
+                  format: date-time
     LockedCartErrorResponse:
       type: object
       additionalProperties: false
@@ -14721,6 +14835,11 @@ components:
         type:
           type: string
           description: Processor class (CreditCard, Paypal, Affirm, Klarna, Droplet, ...).
+        source:
+          type: [string, 'null']
+          description: Where the payment method came from (card, google_pay,
+            apple_pay, braintree_paypal, paypal, ...). A Google Pay method has
+            type CreditCard, so only the source tells it from a card.
         # CreditCard-specific
         payment_method_type:
           type: [string, 'null']
@@ -21168,7 +21287,7 @@ paths:
                   timestamp: '2026-09-14T15:24:41Z'
         '409':
           description: |
-            One of three conflicts, told apart by `errors` and `meta.code`.
+            One of four conflicts, told apart by `errors` and `meta.code`.
 
             `errors.checkout`: a checkout is already in flight for this cart.
             Retries are rejected until the in-flight attempt finishes, so a
@@ -21181,12 +21300,18 @@ paths:
             cart no longer says the total the client sent as `expected_total`.
             Nothing was charged. `meta.cart` carries the current total; refetch
             the cart, show the shopper the new total, and submit again with it.
+
+            `errors.points_held` (`meta.code` = `points_held_changed`): the
+            points held for the order are no longer the figure the shopper was
+            shown. Nothing was charged. `meta.points` carries the figure the
+            cart holds now; show it to the shopper and submit again with it.
           content:
             application/json:
               schema:
                 anyOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
+                - "$ref": "#/components/schemas/PointsHeldChangedErrorResponse"
                 - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '422':
           description: |
@@ -21336,6 +21461,26 @@ paths:
                     shown, from `currency_code` of the same cart. Requires
                     `expected_total`.
                   example: USD
+                points_held:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    The points the client showed the shopper as held for this
+                    order, taken from `points_held` of the cart the client last
+                    rendered. When the cart's points hold no longer holds that
+                    figure the response is `409` with `meta.code` =
+                    `points_held_changed` and nothing is charged. Omit it to
+                    skip that check. When sent with `points_held_decimal`, the
+                    two must agree.
+                  example: 100
+                points_held_decimal:
+                  type: string
+                  pattern: '^\d+(\.\d{1,4})?$'
+                  description: |
+                    The same figure as a decimal string, from
+                    `points_held_decimal` of the cart. Whole points only for
+                    now: a fraction is refused with `422`.
+                  example: '100.0000'
             example:
               kount_session_id: 4f2a9c7e1b8d4035a6e2c9f1d7b3e580
               accepted_agreement_ids:
