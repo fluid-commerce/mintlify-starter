@@ -1,0 +1,330 @@
+---
+title: "Give a site a database"
+sidebarTitle: "Database"
+description: "Turn on a Postgres database for a member's own site, create its tables, declare database access in config/access.json, and read and write rows from the site's script with fluid.fetch."
+---
+
+A member's own site can have a database. It is a Postgres database that only the site's owner, and the owner's own site script, can use. Use it for data a site keeps for itself, such as a list of notes or a reading list. This page covers how to turn it on, create tables, declare access, use it from the site's script, and what it costs and limits.
+
+<Note>
+  Member sites must be turned on for your company by Fluid. To ask for them, [contact support](/help/getting-help).
+</Note>
+
+## Know what a site database is
+
+- **It is a Postgres database.** The site owns its tables. You create them with schema statements, and the site's script reads and writes rows.
+- **Only the owner uses it.** The site's owner, and the owner's own site script, are the only ones who reach it. See [Know who can use it](#know-who-can-use-it).
+- **It is billed to the company.** The database runs on the company's hosting account and its hosting credits pay for it.
+- **A site has at most one, and a company at most 20.** The cap counts every site database in the company.
+- **Only a member's own site can have one.** A company site, a branch and a taken-down site can't.
+
+The CLI turns the database on and off, creates tables and reads rows. It doesn't insert, change or delete rows. The site's script does that with `fluid.fetch`, and the [member API](/api/member-apis) does it for anything else.
+
+The `database` commands always act as the member, as `--as member` does for the other [commands](/member-sites/cli#choose-the-login), so they take no `--as`. A person who isn't a rep at the company is refused before any request. Each command takes the site as its last, optional argument, by handle or id. It also takes `--dir <dir>` for a pulled folder. With neither, the site is the pulled folder in the current folder. Each takes `--json` to print only the API's answer as JSON.
+
+## Turn it on
+
+<Warning>
+  Turning on a database costs the company. Ask the company before you turn one on.
+</Warning>
+
+Turn it on and wait for it:
+
+```bash
+fluid member-site database on --wait
+```
+
+The database is created in the background. Its state is `provisioning` until the first deploy finishes, then `live`. Only a `live` database whose `available` is `true` answers calls.
+
+- **`--wait` checks for you.** It checks the status every three seconds until the database answers, ends in a state that can't serve, or `--timeout <seconds>` runs out. The timeout is 300 seconds by default and at most 3600. A database still being created when time is up keeps being created.
+- **`status` checks without waiting.** `fluid member-site database status` prints the database's state, whether it answers calls now, its limits and what to do next. It sends nothing to the database itself, so it answers while the database is being created. A site with no database answers `404`.
+- **Turning it on twice is refused.** A site whose database is `provisioning` or `live` answers `409`. A site whose database `failed`, was removed or was deleted gets a new, empty one.
+- **A draft site can have one.** Turning it on works for a draft. Its tables and rows still wait for the publish below.
+
+Without the CLI, use [Turn on a site's database](/api-reference/site-database/turn-on-a-sites-database) and [Show a site's database status](/api-reference/site-database/show-a-sites-database-status). The request takes no body.
+
+## Read a 404 and the status
+
+A `404` from a database call has more than one cause. Tell them apart by the call.
+
+| You see | It means |
+| --- | --- |
+| `404` on `database status`, `tables` or `rows` before you turn the database on | The site has no database yet. This is normal. Turn it on |
+| `404` on `database on` | Member sites isn't turned on for the company, or the site isn't a member's own: a company site, another member's site or a site that doesn't exist. A draft site is fine. A branch or a taken-down site answers `422` instead |
+| `404` on `tables`, `sql` or `rows` while `status` shows `live` | The site is a draft or taken down, or the table doesn't exist. See [Publish the site first](#publish-the-site-first) |
+| `409` with `database_unavailable` | The site has a database, but it can't serve now. Its details give the `state` and a `next_step` |
+| `state` of `provisioning` | The database is still being created. Check `status` until it is `live` and `available` is `true` |
+| `state` of `failed`, `pending_destroy`, `archived` or `discarded` | The database can't recover. Run `database on` again for a new one, or `database off` |
+
+To tell a missing database from member sites being off, run `fluid member-site list --as member`. When member sites is off for the company, every member site request answers `404`, the list included. When the list works, the site has no database yet.
+
+## Publish the site first
+
+A draft or taken-down site's tables, schema statements and rows answer `404`, even while its database is `live`. `status` and turning the database off still answer, and so does turning it on for a draft.
+
+Publish the site before you create tables:
+
+```bash
+fluid member-site publish
+```
+
+Publishing is the site owner's decision. See [Publish, restore, copy and take down a member site](/member-sites/publishing).
+
+## Create tables
+
+Run one schema statement at a time with `database sql`. Give the statement as the argument, or put it in a file and pass `--file`. With `--file`, the only other argument is the site.
+
+```bash
+fluid member-site database sql "CREATE TABLE notes (id serial PRIMARY KEY, title text NOT NULL, status text NOT NULL DEFAULT 'open')"
+fluid member-site database sql --file schema.sql rileys-shop
+```
+
+Then check what you made:
+
+```bash
+fluid member-site database tables
+```
+
+`tables` lists the tables of the database's `public` schema and their columns. Each column shows its type, whether it can be null, its default and whether it is part of the primary key.
+
+**Fluid accepts one statement of a schema form.** For example `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE` with one action, `DROP TABLE`, `DROP INDEX` and `COMMENT ON`.
+
+**Fluid refuses these with a `422`:**
+
+- Any statement that could read or copy rows: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE ... AS`, `COPY`, `WITH` and the like.
+- A second command in the same statement.
+- A comment, and dollar quoting.
+- A view, function, trigger, extension, role, schema or sequence.
+
+The database looks for these words anywhere in the text. A default value or a comment that holds one is refused too.
+
+A statement is at most 60,000 characters. A statement that runs longer than 3 seconds is stopped.
+
+With the API, use [Run a schema statement on a site's database](/api-reference/site-database/run-a-schema-statement-on-a-sites-database) and [List the tables of a site's database](/api-reference/site-database/list-the-tables-of-a-sites-database).
+
+To check what a script wrote, list a table's rows from the terminal:
+
+```bash
+fluid member-site database rows notes --sort=-id --limit 10
+```
+
+`rows <table>` prints one page of rows and the cursor of the next page. It takes `--limit <n>` (1 to 100, 25 by default), `--sort <columns>`, `--cursor <cursor>` and `--filter <column>.<operator>=<value>`. With `--json`, it prints `{ "rows": [...], "next_cursor": "..." | null }`.
+
+## Declare access
+
+A site script reaches its database only for a scope the site declares in `config/access.json`. Without a declaration, an owner's script holds no `database` scope.
+
+```json config/access.json
+{
+  "uses": ["database: read", "database: write"]
+}
+```
+
+- **`database: read`** covers the database's status, its tables and a table's rows.
+- **`database: write`** covers inserting, changing and removing rows.
+- **`write` doesn't include `read`.** Declare both when the script does both.
+- **Turning the database on or off and running a schema statement have no scope.** A site's script can never do them, whatever it declares. See [Know who can use it](#know-who-can-use-it).
+
+Run `fluid member-site lint` before you push. It checks each `fluid.fetch(path, { method })` call against the declaration and warns on a call whose scope the file lacks. It reads a path written as a string, or as a template literal that fills in only whole path segments, such as `` `/api/member/v2026-10/sites/${SITE_ID}/database/tables/notes/rows` ``. It warns about any other call, such as a path held in a variable or joined with `+`, because it can't read it. Then push, and publish.
+
+A declaration is a draft until you publish. It takes effect when the site is published, and a publish that drops a scope refuses the next call. See [Declare what a member site uses](/member-sites/access-declarations) for how to write, publish and check the file.
+
+## Use it from the site's script
+
+A script reaches the database with [`fluid.fetch`](/member-sites/site-scripts), on a path that holds the site's id. Find the id with `fluid member-site list`. It isn't a secret.
+
+The path of a database call is `/api/member/v2026-10/sites/<site-id>/database/...`. Fluid sends it as written. Write each path in the call itself, as the examples do, so lint can read it.
+
+### List rows
+
+```js assets/site.js
+const SITE_ID = "0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67";
+
+async function listNotes(cursor) {
+  const query = new URLSearchParams({
+    sort: "-id",
+    "page[limit]": "10",
+    "filter[status][eq]": "open",
+  });
+  if (cursor) query.set("page[cursor]", cursor);
+
+  const response = await fluid.fetch(
+    `/api/member/v2026-10/sites/${SITE_ID}/database/tables/notes/rows?${query}`,
+  );
+  if (!response.ok) throw await databaseError(response);
+
+  const { data, meta } = await response.json();
+  // data: [{ id: 2, title: "Hello", status: "open" }, ...]
+  // meta.pagination.next_cursor is null on the last page.
+  return { notes: data, next: meta.pagination.next_cursor };
+}
+```
+
+- **`sort`** is a comma-separated list of columns, at most 10, with a leading `-` for descending, such as `-id,title`. The order always ends with the table's primary key, so equal values keep a stable order.
+- **`page[limit]`** is 1 to 100 rows, 25 when you leave it out.
+- **`page[cursor]`** is the `meta.pagination.next_cursor` of the previous list. It is tied to the table, filters and sort it was issued for, so a different one is a `400`.
+- **`filter[<column>][<operator>]`** takes `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` and `is_null`. Filters are ANDed, at most 50. `in` takes one to 100 comma-separated values, such as `filter[id][in]=1,2,3`. `is_null` takes `true` or `false`. A filter on a column the table doesn't have is a `422`.
+- **A call from a site script carries a query string of at most 2,048 characters.** Send a longer filter with the owner's token, outside the site.
+
+See [List the rows of a table](/api-reference/site-database/list-the-rows-of-a-table).
+
+### Insert rows
+
+```js assets/site.js
+async function addNote(title) {
+  const response = await fluid.fetch(
+    `/api/member/v2026-10/sites/${SITE_ID}/database/tables/notes/rows`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rows: [{ title }] }),
+    },
+  );
+  if (!response.ok) throw await databaseError(response);
+  return (await response.json()).data[0]; // { id: 3, title: "Hello", status: "open" }
+}
+```
+
+An insert takes one to 100 rows, all or none, and answers with the inserted rows, including the columns the database filled in. A unique or foreign-key conflict is a `409` with the error `conflict`. See [Insert rows into a table](/api-reference/site-database/insert-rows-into-a-table).
+
+### Change a row
+
+```js assets/site.js
+async function renameNote(id, title) {
+  const response = await fluid.fetch(
+    `/api/member/v2026-10/sites/${SITE_ID}/database/tables/notes/rows/${id}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ values: { title } }),
+    },
+  );
+  if (!response.ok) throw await databaseError(response);
+  return (await response.json()).data;
+}
+```
+
+A row is addressed by the table's single-column primary key. The values can't name the primary key. A table with no single-column primary key answers `422`, and a key that doesn't exist answers `404`. See [Change a row](/api-reference/site-database/change-a-row).
+
+### Remove a row
+
+```js assets/site.js
+async function removeNote(id) {
+  const response = await fluid.fetch(
+    `/api/member/v2026-10/sites/${SITE_ID}/database/tables/notes/rows/${id}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw await databaseError(response);
+  // A removal answers 204 with an empty body. Don't call response.json().
+}
+```
+
+See [Remove a row](/api-reference/site-database/remove-a-row).
+
+### Handle the Response
+
+`fluid.fetch` resolves to a `Response` for any HTTP status, so check `response.ok` first, as on [Read viewer data in site scripts](/member-sites/site-scripts#handle-the-response). The body of a refusal holds `error.details.error`. One answer needs its own handling: a `409` with the error `database_unavailable` means the database can't serve now. Its details carry the database's `state` and a `next_step`.
+
+```js assets/site.js
+async function databaseError(response) {
+  const body = await response.json().catch(() => ({}));
+  const details = body.error?.details ?? {};
+
+  if (response.status === 409 && details.error === "database_unavailable") {
+    // The database is still being created, or can't serve.
+    showMessage("Notes are not ready yet. Try again in a minute.");
+    console.warn(`Database is ${details.state}: ${details.next_step}`);
+  } else if (response.status === 403 && details.error === "member_site_scope_undeclared") {
+    console.warn(`Declare "${details.scope}" in config/access.json`);
+  } else {
+    showMessage("We couldn't reach your notes.");
+  }
+  return new Error(`Database call failed (${response.status})`);
+}
+```
+
+Wrap a call in `try` and `catch` so a failure keeps the page usable. A site script can't turn the database on, so it shows a message for `database_unavailable` and leaves the fix to the owner: wait while the state is `provisioning`, and in any other state turn the database on again with the CLI.
+
+## Know who can use it
+
+Only the owner can use a site's database. Everyone else is refused, whatever the site declares.
+
+- **The owner's credential runs every command and call.** That is the member's own bearer token, which the CLI sends.
+- **Only the owner's own site script uses it from a page.** That is the signed-in owner of a member-owned site, viewing it published, with the scope in the published `config/access.json`. An owner with no declaration holds no `database` scope.
+- **Share holders and visitors are always refused.** `database: read` and `database: write` are scopes a share holder never gets, even when the site declares them. A guest, a member no share matches and an admin no share matches get nothing. The refusal is a `403` with the body `member_site_unavailable`. See [Know who gets data](/member-sites/site-scripts#know-who-gets-data) and [Know what a share never grants](/member-sites/sharing#know-what-a-share-never-grants).
+- **Turning it on or off and running SQL never work from site code.** They answer `403` whether or not the site declares anything, so a page's script can't spend the company's credits, remove its own database or drop a table. They belong to the CLI and the owner's bearer.
+- **An email-link session token is refused.** The member session token that order and subscription email links carry is refused by every database operation. A read-only portal token is refused the ones that write.
+
+## Know the limits
+
+| Limit | Value |
+| --- | --- |
+| Databases per company | 20 |
+| Request body | 64 KiB |
+| Answer read from the database | 256 KiB. A longer one is abandoned and answers `502` |
+| Calls | 60 a minute for each company, member and site. More answers `429` |
+| Rows in a page | 25 by default, at most 100 |
+| Rows in one insert | At most 100, all or none |
+| Rows a SQL statement returns | At most 100 |
+| Time for one operation | 3 seconds |
+| SQL statement | One statement, at most 60,000 characters |
+
+`fluid member-site database status` prints the limits the API reports.
+
+## Turn it off, delete the site or take it down
+
+<Warning>
+  Turning off a database deletes its tables and rows. It can't be undone.
+</Warning>
+
+- **Turning it off deletes the data.** `fluid member-site database off` asks first on a terminal. Where there is no terminal to ask on, it refuses unless you pass `--yes`. Its billing stops now, and the site can turn on a new, empty database afterwards. See [Turn off a site's database](/api-reference/site-database/turn-off-a-sites-database).
+- **Deleting the site deletes the database and its data.** The database is handed to the same teardown as a turn-off.
+- **A take-down doesn't turn the database off.** The database keeps running and keeps its data, and its billing doesn't stop. While the site is taken down, its tables, schema statements and rows answer `404`, as for a draft, until the site is published again. A taken-down site can't be published again, and its database can't be turned on.
+
+## Fix common errors
+
+The CLI turns each API answer into one message and a non-zero exit code. A script sees the status and the `error.details.error` code.
+
+| You see | Why | What to do |
+| --- | --- | --- |
+| `404` | The site has no database, or its tables and rows are asked for while the site isn't published, or the table doesn't exist | Turn on the database, publish the site, or list the tables |
+| `401` | The login wasn't accepted | Use the member's own login. See [Choose the login](/member-sites/cli#choose-the-login) |
+| `402` with `credits_exhausted` or `billing_unresolved` | The company has no hosting credits left, or its billing needs attention | Ask the company to resolve it before you turn the database on |
+| `403` | The caller isn't the owner, the credential is an email-link session token or a read-only token on a write, or a site script called turn on, turn off or SQL | Use the owner's credential from the CLI. A script can't do these |
+| `403` with `member_site_scope_undeclared` | The site's published declaration lacks the scope, which `details.scope` names | Declare it, push and publish |
+| `409` with `exists` | The site already has a database, or one is being created | Check it with `database status` |
+| `409` with `database_busy` | A step of creating the database held it. Nothing changed | Run the command again |
+| `409` with `database_unavailable` | The database isn't `live`, so nothing was sent to it. `details.state` and `details.next_step` say what to do | While it is `provisioning`, wait and check `database status`. In any other state, run `database on` again, or turn it off |
+| `409` with `conflict` | A unique or foreign-key conflict in the statement or the insert | Change the values |
+| `422` with `not_eligible` | A branch or a taken-down site can't have a database | Use a member's own site that isn't taken down |
+| `422` with `backend_limit_reached` | The company holds the most databases it may | Turn one off to make room |
+| `422` with `invalid_statement` | The statement isn't a schema statement the database accepts | Send one schema statement. See [Create tables](#create-tables) |
+| `400` with `invalid_cursor` | The cursor isn't one the database issued for this table, filters and sort | Start again without a cursor |
+| `413` or `429` | The request is over 64 KiB, or there were more than 60 calls a minute | Send less, or wait a minute |
+| `502` with `provisioning_failed` | A step of creating the database failed. Nothing was kept | Ask again with `database on` |
+| `503` with `template_unavailable` or `admission_unavailable` | Nothing was created | Try again later |
+
+A `404` answers the same for a company without member sites, a missing site and another owner's site. The CLI never retries it. It retries a read that fails with `502`, `503` or `504` twice, and never retries a write.
+
+## Use the API directly
+
+Each operation has a generated page in the API Reference. They all take the owner's bearer token, and the site's id is in the path.
+
+| Task | CLI | Operation |
+| --- | --- | --- |
+| Turn it on | `database on` | [Turn on a site's database](/api-reference/site-database/turn-on-a-sites-database) |
+| Check it | `database status` | [Show a site's database status](/api-reference/site-database/show-a-sites-database-status) |
+| Turn it off | `database off` | [Turn off a site's database](/api-reference/site-database/turn-off-a-sites-database) |
+| List the tables | `database tables` | [List the tables of a site's database](/api-reference/site-database/list-the-tables-of-a-sites-database) |
+| Run a schema statement | `database sql` | [Run a schema statement on a site's database](/api-reference/site-database/run-a-schema-statement-on-a-sites-database) |
+| List rows | `database rows` | [List the rows of a table](/api-reference/site-database/list-the-rows-of-a-table) |
+| Insert rows | Not available | [Insert rows into a table](/api-reference/site-database/insert-rows-into-a-table) |
+| Change a row | Not available | [Change a row](/api-reference/site-database/change-a-row) |
+| Remove a row | Not available | [Remove a row](/api-reference/site-database/remove-a-row) |
+
+## Next steps
+
+- [Read viewer data in site scripts](/member-sites/site-scripts) covers `window.fluid.fetch`.
+- [Declare what a member site uses](/member-sites/access-declarations) covers `config/access.json`.
+- [Member site CLI](/member-sites/cli) covers the other `fluid member-site` commands.
+- [Publish, restore, copy and take down a member site](/member-sites/publishing) covers publishing and take-down.
