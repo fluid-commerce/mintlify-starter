@@ -99,6 +99,9 @@ tags:
 - name: member-site-branches
   description: The branch of a site, a private copy made to try a change.
   x-fluid-section: Members
+- name: member-site-bundles
+  description: Publishing a company site as a built static bundle, uploaded straight to Cloud Storage with signed URLs.
+  x-fluid-section: Members
 - name: member-site-features
   description: The sites the company features, so the members they are shared with see them first.
   x-fluid-section: Members
@@ -1115,6 +1118,199 @@ components:
           type: string
           format: date-time
           description: When the branch was made.
+    MemberSiteBundleFile:
+      type: object
+      description: One file of a bundle. The blob is stored once, by its SHA-256.
+      additionalProperties: false
+      required:
+      - sha256
+      - size
+      - contentType
+      properties:
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: The SHA-256 of the file's bytes, as 64 lower-case hex characters.
+        size:
+          type: integer
+          minimum: 0
+          maximum: 26214400
+          description: The file's size in bytes, at most 25 MiB.
+        contentType:
+          type: string
+          minLength: 1
+          description: The type the file's extension maps to in the allowlist (HTML, CSS, JavaScript, JSON, source maps, SVG, PNG, JPEG, GIF, WebP, AVIF, ICO, WOFF, WOFF2, TXT, XML, PDF, MP4, WebM and MP3). A file outside the allowlist, or with another type than its extension's, is refused.
+        immutable:
+          type: boolean
+          description: True when the file name carries a content hash, so a public site's visitors keep it for a year.
+    MemberSiteBundleRoute:
+      description: One route of the site's `config/routes.json`. Its `file` is a file of the request.
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - path
+        - file
+        properties:
+          path:
+            type: string
+            pattern: "^/"
+            description: The one path the route answers.
+          file:
+            type: string
+            pattern: "^/"
+            description: The file it serves.
+      - type: object
+        additionalProperties: false
+        required:
+        - prefix
+        - file
+        properties:
+          prefix:
+            type: string
+            pattern: "^/"
+            description: Every path under this prefix is answered by the route.
+          file:
+            type: string
+            pattern: "^/"
+            description: The file it serves.
+    MemberSiteBundleScope:
+      type: string
+      description: '`"<family>: read"` or `"<family>: write"`, for a family a site may declare. `session` is not one of them: it is granted with any other scope and never named.'
+      pattern: "^(addresses|agreements|ai|calendar|carts|contacts|database|media|messages|mysite|notifications|orders|plan|points|profile|search|shares|stats|subscriptions|tasks|widgets): (read|write)$"
+    MemberSiteBundleAccessEntry:
+      description: A member field as `member.<field>`, or a scope.
+      oneOf:
+      - type: string
+        enum:
+          - member.first_name
+          - member.last_name
+          - member.full_name
+          - member.email
+          - member.status
+          - member.avatar_url
+          - member.bio
+          - member.language_iso
+          - member.member_type
+          - member.rank
+      - $ref: '#/components/schemas/MemberSiteBundleScope'
+    MemberSiteBundleAccessDeclaration:
+      type: object
+      description: The site's `config/access.json`, the Fluid data the site uses, in the format `MemberSites::AccessDeclaration` validates. It is checked when the bundle starts.
+      additionalProperties: false
+      required:
+      - uses
+      properties:
+        uses:
+          type: array
+          description: 'Each entry is a member field, `member.<field>`, or a scope, `<family>: read` or `<family>: write`, for a family a site may declare. The `session` family is never declared, and no entry is listed twice.'
+          maxItems: 64
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/MemberSiteBundleAccessEntry'
+    MemberSiteBundleStartBody:
+      type: object
+      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access` and `meta` and never in `files`.
+      additionalProperties: false
+      required:
+      - files
+      properties:
+        files:
+          type: object
+          description: Every servable file, by absolute bundle path with `/` separators, no `.` or `..` segment and none under `/_fluid/`. At most 2,000 files, 25 MiB each and 250 MiB in all.
+          additionalProperties:
+            $ref: '#/components/schemas/MemberSiteBundleFile'
+        routes:
+          type: array
+          description: From `config/routes.json`. Omitted, every path is answered by `/index.html`, as a single-page app is, so a bundle with no `/index.html` must send `routes` of its own (`[]` for none). Each route's `file` must be a file of the request.
+          items:
+            $ref: '#/components/schemas/MemberSiteBundleRoute'
+        schema:
+          type: object
+          description: "The site's `db/schema.json`, checked when the bundle starts against the contract's JSON Schema: a table and column limit, names, types, defaults and rules. Rules that need more than a schema, such as a real calendar day or a column an index names, are checked when the bundle is published."
+          required:
+          - version
+          - tables
+          properties:
+            version:
+              const: 1
+            tables:
+              type: object
+            migrations:
+              type: array
+              items:
+                type: object
+        access:
+          $ref: '#/components/schemas/MemberSiteBundleAccessDeclaration'
+        meta:
+          type: object
+          description: "The site's `config/meta.json`, the title and preview of each page. Checked when the bundle starts: a title of at most 200 characters, a description of at most 500, an `https` image, and no page under `/_fluid/`."
+          required:
+          - default
+          properties:
+            default:
+              type: object
+            pages:
+              type: object
+        functions:
+          type: object
+          description: After V1. Each server function's built module and its `config/functions.json` entry. Functions are not available yet, so a request that lists any is refused with `functions_not_available`, and `{}` is none.
+    MemberSiteBundleUpload:
+      type: object
+      description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers; `x-goog-hash` pins the CRC32C, so Cloud Storage refuses different bytes.
+      additionalProperties: false
+      required:
+      - sha256
+      - crc32c
+      - url
+      - headers
+      properties:
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: The SHA-256 of the blob to upload.
+        crc32c:
+          type: string
+          pattern: "^[A-Za-z0-9+/]{6}==$"
+          description: Base64 of the blob's 4-byte CRC32C, as Cloud Storage's `x-goog-hash` carries it.
+        url:
+          type: string
+          pattern: '^https://\S+$'
+          description: The signed URL to PUT the blob to.
+        headers:
+          type: object
+          description: The headers the PUT must send exactly.
+          additionalProperties:
+            type: string
+    MemberSiteBundleStarted:
+      type: object
+      description: The bundle that was started, and the uploads it still needs.
+      additionalProperties: false
+      required:
+      - bundle
+      - uploads
+      - expiresAt
+      - status
+      - meta
+      properties:
+        bundle:
+          type: string
+          format: uuid
+          description: The bundle's id, assigned when the upload starts.
+        uploads:
+          type: array
+          description: A signed PUT for each blob the site does not store yet. Blobs are content-addressed, so an unchanged file is never uploaded twice. Empty when every blob is stored already.
+          items:
+            $ref: '#/components/schemas/MemberSiteBundleUpload'
+        expiresAt:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$'
+          description: An unfinished upload expires 60 minutes after it starts, as an ISO 8601 instant in UTC.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteBranchResponse:
       type: object
       description: One branch.
@@ -3052,6 +3248,114 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: The site is a draft, was taken down, or is a branch; the site holds a file that cannot be copied (such as a binary asset) or more pages than a site may; the slug is malformed; or the body holds an unknown field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/bundles:
+    post:
+      operationId: companyMemberSiteBundlesCreate
+      x-fluid-audience: company
+      summary: Start a bundle upload for a company site
+      description: |
+        Starts publishing a company site as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A site may have 5 uploads in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with 409 until one finishes or expires. Published bundles are kept and do not count.
+
+        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner publishes it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. A gateway that cannot prepare the uploads is a 502; the bundle is then failed, and starting again makes a new one. A 409 also answers a site already at its 5 uploads in progress.
+      tags:
+      - member-site-bundles
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBundleStartBody'
+            example:
+              files:
+                "/index.html":
+                  sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  size: 1832
+                  contentType: text/html; charset=utf-8
+                "/assets/app-3f2a9c.js":
+                  sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  size: 48211
+                  contentType: text/javascript; charset=utf-8
+                  immutable: true
+      responses:
+        '201':
+          description: The bundle, and the uploads it still needs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBundleStarted'
+              example:
+                bundle: 0199537f-0000-7000-8000-000000000004
+                uploads:
+                - sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  crc32c: n03x6A==
+                  url: https://storage.googleapis.com/fluid-production-member-sites/sites/0199537f-0000-7000-8000-000000000001/blobs/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Expires=3600&X-Goog-Signature=5f1e
+                  headers:
+                    content-type: application/octet-stream
+                    x-goog-hash: crc32c=n03x6A==
+                expiresAt: '2026-11-05T11:00:00.000Z'
+                status: 201
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, whose bundles its owner publishes, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site already has 5 uploads in progress (`details.error` is `uploads_in_progress`), so nothing was saved and the gateway was not asked; finish one or wait for one to expire, 60 minutes after it started. Or the bundle was gone when the gateway answered, because its site was deleted (`superseded`), and no upload URLs are returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                uploads-in-progress:
+                  summary: The site's fifth upload is still in progress
+                  value:
+                    error:
+                      message: This site already has 5 uploads in progress; finish or wait for one to expire
+                      details:
+                        error: uploads_in_progress
+                    status: 409
+                    meta:
+                      request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                      timestamp: '2026-11-05T10:00:00Z'
+                superseded:
+                  summary: The bundle was gone when the gateway answered
+                  value:
+                    error:
+                      message: This upload is gone, so it cannot be published
+                      details:
+                        error: superseded
+                    status: 409
+                    meta:
+                      request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                      timestamp: '2026-11-05T10:00:00Z'
+        '422':
+          description: The request fails its contract, and nothing was started. `details.error` names the problem and `details.path` the value that has it. `reserved_path` is a path under `/_fluid/`, `invalid_path` a path that is not absolute and normalised, `content_type_not_allowed` and `content_type_mismatch` a file outside the allowlist or with the wrong type, `unknown_file` a route, or the default `/index.html` route of a request with no `routes`, to a file the request lacks, `functions_not_available` a request that lists server functions, `unknown_field`, `unknown_family`, `session_not_declarable` and `repeated_entry` an entry of the `access` declaration that is not a member field or scope the site may declare, names the `session` family, or is listed twice, `out_of_range` a limit exceeded (2,000 files, 25 MiB a file, 250 MiB a bundle), and `invalid_shape` or `invalid_format` a field of the wrong kind or form, including a `schema` or `meta` that breaks its contract (`details.path` starts at `schema` or `meta`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The sites gateway could not prepare the uploads, because it was unreachable, timed out or answered with something unexpected. `details.error` names which. The bundle is failed; start again.
           content:
             application/json:
               schema:
