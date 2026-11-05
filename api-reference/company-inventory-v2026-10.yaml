@@ -1,0 +1,1635 @@
+---
+openapi: 3.1.0
+info:
+  title: Fluid Company API v2026-10 — Inventory & Logistics
+  version: 2026-10
+  description: |-
+    Your stock on v2026-10: where you hold it (locations), how much of each variant is at each location (inventory levels), and the calls a warehouse or ERP system makes to keep it right (counts, adjustments and the history of every change).
+
+    ## Authentication
+
+    Send a company admin credential as `Authorization: Bearer <token>`: an admin session token or an API token for your company. Locations need `warehouses.view` to read and `warehouses.update` to write; inventory needs `inventory.view` to read and `inventory.update` to write. A droplet installation token works too when it holds the scope those permissions map to: `settings` for locations, `products` for inventory.
+
+    ## Names
+
+    The API uses the names common to commerce and warehouse systems. Each maps to a name the older APIs use, and the data is the same:
+
+    | This API | Older APIs |
+    | --- | --- |
+    | location | warehouse |
+    | `variant.tracked` | `track_quantity` |
+    | `variant.inventory_policy`: `continue` / `deny` | `keep_selling`: `true` / `false` |
+    | inventory count | set an inventory level |
+    | inventory adjustment | adjust an inventory level |
+
+    Records have a `uuid`, which these endpoints take in paths and filters, and the integer `id` the older APIs and the inventory webhooks use.
+
+    ## Quantities
+
+    Each inventory level holds four quantities. `on_hand` is every unit physically at the location and always equals `available + committed + unavailable`. `available` can be sold now. `committed` is held for orders that have not shipped: Fluid moves units into it when an order is placed and out of it when the order ships, is cancelled or is refunded. `unavailable` is set aside, for example damaged or in quality control.
+
+    You never write `committed`. A count sets `available` or `on_hand`; an adjustment changes `available` or `unavailable`. Either way `committed` stays as Fluid holds it, so a sync from your warehouse system cannot undo an order placed a moment earlier.
+
+    ## Keeping a warehouse system in step
+
+    * **Counts** set absolute quantities, the way a cycle count or a full sync reports them. Send `compare_quantity`, the value you last read, to apply a count only if nothing changed since; otherwise it answers 409 with the current value.
+    * **Adjustments** change a quantity by an amount: stock received, damaged, found or written off. They need an `Idempotency-Key`, so a resend after a lost response is not applied twice.
+    * **Reading back**: page through `GET /inventory-levels?filter[updated_since]=…`. Levels come least recently changed first, so a level that changes while you page moves to the end and is read again, never skipped. Keep the newest `updated_at` you saw for the next run.
+    * **Being told**: subscribe a company webhook to resource `inventory_level`, events `updated`, `out_of_stock` or `back_in_stock`. Each delivery carries the quantities before and after the change.
+    * **History**: `GET /inventory-adjustments` lists every stock change, whatever made it (orders, shipments, counts, adjustments, imports, admin edits), with its reason.
+
+    Counts and adjustments take up to 100 lines and apply all of them or none. A line names a variant by `variant_id` or `sku` and a location by `location_id` or `location_external_id`.
+
+    ## Responses
+
+    Every response wraps the resource under its own key with `status` and `meta`. Lists are cursor-paginated with `page[cursor]` and `page[limit]`, and return `meta.pagination.next_cursor`. Errors use the same envelope with `error.message` and `error.details`; a failed line's details are keyed by its index in the request. A 401 is a bare `{ "message": … }`. Until the API is released for your company, every endpoint answers 404.
+  contact:
+    email: support@fluid.app
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+- url: https://api.fluid.app
+  description: Production API server
+tags:
+- name: locations
+  description: The places you hold stock, with their address and the id your own warehouse system uses for them.
+  x-fluid-section: Inventory & Logistics
+- name: inventory-levels
+  description: The stock of each variant at each location, for reading back and syncing.
+  x-fluid-section: Inventory & Logistics
+- name: inventory-counts
+  description: Absolute quantities from a cycle count or a warehouse system sync.
+  x-fluid-section: Inventory & Logistics
+- name: inventory-adjustments
+  description: Changes by an amount, and the history of every stock change.
+  x-fluid-section: Inventory & Logistics
+paths:
+  /api/company/v2026-10/locations:
+    get:
+      operationId: listLocationsV202610
+      summary: List locations
+      description: Your locations, oldest first, a page at a time. Needs `warehouses.view`.
+      tags:
+      - locations
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: filter[active]
+        in: query
+        required: false
+        description: Only active (`true`) or inactive (`false`) locations.
+        schema:
+          type: boolean
+      - name: filter[external_id]
+        in: query
+        required: false
+        description: Only the location with this `external_id`.
+        schema:
+          type: string
+      - $ref: '#/components/parameters/PageCursor'
+      - name: page[limit]
+        in: query
+        required: false
+        description: Locations per page, 1 to 100. Defaults to 25.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: The locations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationListResponse'
+              example:
+                locations:
+                - uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                  id: 212
+                  name: Scranton Distribution Center
+                  external_id: SCR-01
+                  active: true
+                  address:
+                    address1: 1725 Slough Avenue
+                    address2: Loading Dock B
+                    city: Scranton
+                    state: Pennsylvania
+                    subdivision_code: PA
+                    postal_code: '18505'
+                    phone: '+15705550142'
+                    country_code: US
+                  created_at: '2025-01-08T16:20:00Z'
+                  updated_at: '2026-10-30T11:45:02Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJpZCI6NDgyMTR9
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+    post:
+      operationId: createLocationV202610
+      summary: Create a location
+      description: Adds a place you hold stock. `address.country_code` sets the location's country, which cannot change later. `external_id` is the location's id in your own warehouse or ERP system; it must be unique among your locations, so counts and adjustments can name the location by it. Needs `warehouses.update`.
+      tags:
+      - locations
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationCreateRequest'
+            example:
+              location:
+                name: Scranton Distribution Center
+                external_id: SCR-01
+                address:
+                  address1: 1725 Slough Avenue
+                  address2: Loading Dock B
+                  city: Scranton
+                  state: Pennsylvania
+                  subdivision_code: PA
+                  postal_code: '18505'
+                  phone: '+15705550142'
+                  country_code: US
+      responses:
+        '201':
+          description: The new location.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationResponse'
+              example:
+                location:
+                  uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                  id: 212
+                  name: Scranton Distribution Center
+                  external_id: SCR-01
+                  active: true
+                  address:
+                    address1: 1725 Slough Avenue
+                    address2: Loading Dock B
+                    city: Scranton
+                    state: Pennsylvania
+                    subdivision_code: PA
+                    postal_code: '18505'
+                    phone: '+15705550142'
+                    country_code: US
+                  created_at: '2025-01-08T16:20:00Z'
+                  updated_at: '2026-10-30T11:45:02Z'
+                status: 201
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: '`external_id` is already used by another of your locations.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: external_id is already used by another location
+                  details:
+                    external_id:
+                    - is already used by another location
+                status: 409
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/company/v2026-10/locations/{location_id}:
+    parameters:
+    - $ref: '#/components/parameters/LocationId'
+    get:
+      operationId: getLocationV202610
+      summary: Get a location
+      description: One location by its `uuid`. Needs `warehouses.view`.
+      tags:
+      - locations
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The location.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationResponse'
+              example:
+                location:
+                  uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                  id: 212
+                  name: Scranton Distribution Center
+                  external_id: SCR-01
+                  active: true
+                  address:
+                    address1: 1725 Slough Avenue
+                    address2: Loading Dock B
+                    city: Scranton
+                    state: Pennsylvania
+                    subdivision_code: PA
+                    postal_code: '18505'
+                    phone: '+15705550142'
+                    country_code: US
+                  created_at: '2025-01-08T16:20:00Z'
+                  updated_at: '2026-10-30T11:45:02Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateLocationV202610
+      summary: Update a location
+      description: 'Changes the keys you send: `name`, `external_id`, `active`, or address fields. A location''s country cannot change; sending a different `address.country_code` answers 422. Needs `warehouses.update`.'
+      tags:
+      - locations
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationUpdateRequest'
+            example:
+              location:
+                external_id: SCR-EAST
+                active: true
+      responses:
+        '200':
+          description: The updated location.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationResponse'
+              example:
+                location:
+                  uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                  id: 212
+                  name: Scranton Distribution Center
+                  external_id: SCR-EAST
+                  active: true
+                  address:
+                    address1: 1725 Slough Avenue
+                    address2: Loading Dock B
+                    city: Scranton
+                    state: Pennsylvania
+                    subdivision_code: PA
+                    postal_code: '18505'
+                    phone: '+15705550142'
+                    country_code: US
+                  created_at: '2025-01-08T16:20:00Z'
+                  updated_at: '2026-10-30T11:45:02Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: '`external_id` is already used by another of your locations.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: external_id is already used by another location
+                  details:
+                    external_id:
+                    - is already used by another location
+                status: 409
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/company/v2026-10/inventory-levels:
+    get:
+      operationId: listInventoryLevelsV202610
+      summary: List inventory levels
+      description: The stock of each variant at each location, least recently changed first (`updated_at`, then `id`), a page at a time. Every level is listed when no filter is sent. A level that changes while you page moves to the end and is read again, never skipped. Send the same filters with every page of a cursor. Needs `inventory.view`.
+      tags:
+      - inventory-levels
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: filter[location_id]
+        in: query
+        required: false
+        description: Only levels at the location with this `uuid`.
+        schema:
+          type: string
+          format: uuid
+      - name: filter[location_external_id]
+        in: query
+        required: false
+        description: Only levels at the location with this `external_id`.
+        schema:
+          type: string
+      - name: filter[variant_id]
+        in: query
+        required: false
+        description: Only levels of this variant.
+        schema:
+          type: integer
+      - name: filter[sku]
+        in: query
+        required: false
+        description: Only levels of variants with this SKU.
+        schema:
+          type: string
+      - name: filter[tracked]
+        in: query
+        required: false
+        description: Only levels of variants whose stock Fluid counts (`true`) or does not (`false`).
+        schema:
+          type: boolean
+      - name: filter[updated_since]
+        in: query
+        required: false
+        description: Only levels that changed at or after this time. Send the newest `updated_at` your last sync read.
+        schema:
+          type: string
+          format: date-time
+      - $ref: '#/components/parameters/PageCursor'
+      - name: page[limit]
+        in: query
+        required: false
+        description: Levels per page, 1 to 100. Defaults to 25.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: The inventory levels.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryLevelListResponse'
+              example:
+                inventory_levels:
+                - uuid: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+                  id: 48213
+                  location:
+                    uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                    id: 212
+                    name: Scranton Distribution Center
+                    external_id: SCR-01
+                  variant:
+                    id: 70421
+                    sku: PAPER-A4-500
+                    product_id: 9184
+                    title: A4 / 500 sheets
+                    tracked: true
+                    inventory_policy: deny
+                  quantities:
+                    available: 228
+                    committed: 12
+                    on_hand: 244
+                    unavailable: 4
+                  created_at: '2026-03-14T09:12:44Z'
+                  updated_at: '2026-11-02T15:04:05Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJpZCI6NDgyMTR9
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+  /api/company/v2026-10/inventory-levels/{inventory_level_id}:
+    parameters:
+    - $ref: '#/components/parameters/InventoryLevelId'
+    get:
+      operationId: getInventoryLevelV202610
+      summary: Get an inventory level
+      description: One inventory level by its `uuid`. Needs `inventory.view`.
+      tags:
+      - inventory-levels
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      responses:
+        '200':
+          description: The inventory level.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryLevelResponse'
+              example:
+                inventory_level:
+                  uuid: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+                  id: 48213
+                  location:
+                    uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                    id: 212
+                    name: Scranton Distribution Center
+                    external_id: SCR-01
+                  variant:
+                    id: 70421
+                    sku: PAPER-A4-500
+                    product_id: 9184
+                    title: A4 / 500 sheets
+                    tracked: true
+                    inventory_policy: deny
+                  quantities:
+                    available: 228
+                    committed: 12
+                    on_hand: 244
+                    unavailable: 4
+                  created_at: '2026-03-14T09:12:44Z'
+                  updated_at: '2026-11-02T15:04:05Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/company/v2026-10/inventory-counts:
+    post:
+      operationId: createInventoryCountsV202610
+      summary: Record inventory counts
+      description: |-
+        Sets absolute quantities, the way a cycle count or a warehouse system sync reports them. Each count names `available` or `on_hand` and its `quantity`; for `on_hand`, `available` becomes `quantity` minus `committed` minus `unavailable`. `committed` is never written. A variant with no level at the location gets one.
+
+        Send `compare_quantity`, the value you last read, to apply a count only if the level still holds it; otherwise nothing is applied and the response is 409 with the current value in `error.details`. The batch applies every count or none. Needs `inventory.update`.
+      tags:
+      - inventory-counts
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        description: 'A key you make (a UUID works) that makes a resend safe: resending the same request with the same key within 24 hours replays the first response with `X-Idempotent-Replayed: true` and applies nothing. The key is 1 to 255 printable ASCII characters. A different request under the same key answers 422, and a resend while the first is still running answers 409.'
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryCountRequest'
+            example:
+              counts:
+              - sku: PAPER-A4-500
+                location_external_id: SCR-01
+                name: on_hand
+                quantity: 244
+                compare_quantity: 240
+                reason: November cycle count
+      responses:
+        '200':
+          description: The levels after the counts, in the order the counts came.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryLevelBatchResponse'
+              example:
+                inventory_levels:
+                - uuid: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+                  id: 48213
+                  location:
+                    uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                    id: 212
+                    name: Scranton Distribution Center
+                    external_id: SCR-01
+                  variant:
+                    id: 70421
+                    sku: PAPER-A4-500
+                    product_id: 9184
+                    title: A4 / 500 sheets
+                    tracked: true
+                    inventory_policy: deny
+                  quantities:
+                    available: 228
+                    committed: 12
+                    on_hand: 244
+                    unavailable: 4
+                  created_at: '2026-03-14T09:12:44Z'
+                  updated_at: '2026-11-02T15:04:05Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A count's `compare_quantity` did not match (the error envelope, keyed by the count's index), or a request with the same `Idempotency-Key` is still running (`{ status, message }`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/IdempotencyRefusal'
+              example:
+                error:
+                  message: available is 226, not 228
+                  details:
+                    '0':
+                      compare_quantity:
+                      - 'does not match: available is now 226'
+                      current_quantity: 226
+                status: 409
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '422':
+          $ref: '#/components/responses/InvalidLines'
+  /api/company/v2026-10/inventory-adjustments:
+    get:
+      operationId: listInventoryAdjustmentsV202610
+      summary: List inventory history
+      description: 'Every change to your stock, newest first, a page at a time: orders placed, cancelled, refunded and shipped, cart holds, counts, adjustments, CSV imports and edits in the admin. Each entry says how each quantity moved and the reason recorded with it. Needs `inventory.view`.'
+      tags:
+      - inventory-adjustments
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: filter[since]
+        in: query
+        required: false
+        description: The earliest change to return. Defaults to the start of the hour 30 days ago. Send the same value with every page of a cursor.
+        schema:
+          type: string
+          format: date-time
+      - name: filter[inventory_level_id]
+        in: query
+        required: false
+        description: Only changes to the inventory level with this `uuid`.
+        schema:
+          type: string
+          format: uuid
+      - name: filter[location_id]
+        in: query
+        required: false
+        description: Only changes at the location with this `uuid`.
+        schema:
+          type: string
+          format: uuid
+      - name: filter[location_external_id]
+        in: query
+        required: false
+        description: Only changes at the location with this `external_id`.
+        schema:
+          type: string
+      - name: filter[variant_id]
+        in: query
+        required: false
+        description: Only changes to this variant's stock.
+        schema:
+          type: integer
+      - name: filter[sku]
+        in: query
+        required: false
+        description: Only changes to the stock of variants with this SKU.
+        schema:
+          type: string
+      - $ref: '#/components/parameters/PageCursor'
+      - name: page[limit]
+        in: query
+        required: false
+        description: Changes per page, 1 to 100. Defaults to 25.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: The changes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryAdjustmentListResponse'
+              example:
+                inventory_adjustments:
+                - uuid: 0199c4a0-1b2c-7d3e-8f40-5a6b7c8d9e0f
+                  inventory_level:
+                    uuid: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+                    id: 48213
+                  location:
+                    uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                    id: 212
+                    name: Scranton Distribution Center
+                    external_id: SCR-01
+                  variant:
+                    id: 70421
+                    sku: PAPER-A4-500
+                    product_id: 9184
+                    title: A4 / 500 sheets
+                    tracked: true
+                    inventory_policy: deny
+                  changes:
+                    available:
+                      from: 230
+                      to: 228
+                      change: -2
+                    committed:
+                      from: 10
+                      to: 12
+                      change: 2
+                  reason: 'Inventory adjusted: Order [#100412] placed.'
+                  created_at: '2026-11-02T15:04:05Z'
+                status: 200
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: eyJpZCI6NDgyMTR9
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidParameters'
+    post:
+      operationId: createInventoryAdjustmentsV202610
+      summary: Adjust inventory
+      description: |-
+        Changes quantities by an amount: stock received, damaged, found or written off. `available` changes sellable stock and `unavailable` changes set-aside stock; `on_hand` moves with either. `committed` is never changed. Each change applies to the level as it is when the request arrives, so concurrent orders are kept. `available` may go below zero (stock oversold against open orders); `unavailable` and `on_hand` may not.
+
+        The variant needs a level at the location; record an inventory count to create one. The batch applies every adjustment or none. An `Idempotency-Key` is required. Needs `inventory.update`.
+      tags:
+      - inventory-adjustments
+      x-fluid-audience: company
+      security:
+      - bearer_auth: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'Required. A key you make (a UUID works) that makes a resend safe: resending the same request with the same key within 24 hours replays the first response with `X-Idempotent-Replayed: true` and applies nothing. The key is 1 to 255 printable ASCII characters. A different request under the same key answers 422, and a resend while the first is still running answers 409.'
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryAdjustmentRequest'
+            example:
+              adjustments:
+              - sku: PAPER-A4-500
+                location_external_id: SCR-01
+                name: available
+                change: 48
+                reason: PO 7731 received
+              - variant_id: 70421
+                location_id: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                name: unavailable
+                change: 2
+                reason: Water-damaged cases
+      responses:
+        '201':
+          description: The levels after the adjustments, in the order the adjustments came.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryLevelBatchResponse'
+              example:
+                inventory_levels:
+                - uuid: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+                  id: 48213
+                  location:
+                    uuid: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+                    id: 212
+                    name: Scranton Distribution Center
+                    external_id: SCR-01
+                  variant:
+                    id: 70421
+                    sku: PAPER-A4-500
+                    product_id: 9184
+                    title: A4 / 500 sheets
+                    tracked: true
+                    inventory_policy: deny
+                  quantities:
+                    available: 228
+                    committed: 12
+                    on_hand: 244
+                    unavailable: 4
+                  created_at: '2026-03-14T09:12:44Z'
+                  updated_at: '2026-11-02T15:04:05Z'
+                status: 201
+                meta:
+                  request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+                  timestamp: '2026-11-02T15:04:05Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/InvalidLines'
+components:
+  securitySchemes:
+    bearer_auth:
+      type: http
+      scheme: bearer
+      description: A company admin credential for your company, or a droplet installation token with the `products` scope (inventory) or the `settings` scope (locations).
+  parameters:
+    LocationId:
+      name: location_id
+      in: path
+      required: true
+      description: The location's `uuid`.
+      schema:
+        type: string
+        format: uuid
+      example: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+    InventoryLevelId:
+      name: inventory_level_id
+      in: path
+      required: true
+      description: The inventory level's `uuid`.
+      schema:
+        type: string
+        format: uuid
+      example: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+    PageCursor:
+      name: page[cursor]
+      in: query
+      required: false
+      description: A cursor from `meta.pagination`.
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token. The body is a bare `{ message }`, not the error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+          example:
+            message: Invalid credentials.
+    Forbidden:
+      description: Not a company admin with the endpoint's permission, or a droplet installation token without the scope it maps to.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ForbiddenError'
+          example:
+            error: Not authorized.
+    NotFound:
+      description: The record is not one of yours, or the Inventory & Logistics API is not released for your company yet.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Not found
+              details: {}
+            status: 404
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-11-02T15:04:05Z'
+    InvalidParameters:
+      description: A parameter or body field failed validation; `error.details` names it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: Invalid parameters
+              details:
+                page:
+                  limit:
+                  - must be less than or equal to 100
+            status: 422
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-11-02T15:04:05Z'
+    InvalidLines:
+      description: A line failed (the error envelope, its details keyed by the line's index; nothing was applied), the body failed validation, or the `Idempotency-Key` is missing, malformed or was used for a different request (`{ status, message }` for the last two).
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/ErrorResponse'
+            - $ref: '#/components/schemas/IdempotencyRefusal'
+          example:
+            error:
+              message: sku matches no record
+              details:
+                '0':
+                  sku:
+                  - matches no record
+            status: 422
+            meta:
+              request_uuid: 7e2c9b41-3f8a-4d15-b6e0-9a4c21d7f583
+              timestamp: '2026-11-02T15:04:05Z'
+  schemas:
+    Meta:
+      type: object
+      description: Response metadata included on every response body.
+      required:
+      - timestamp
+      properties:
+        request_uuid:
+          type:
+          - string
+          - 'null'
+        request_id:
+          type:
+          - string
+          - 'null'
+        timestamp:
+          type: string
+          format: date-time
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    Pagination:
+      type: object
+      description: Cursor pagination. Send `next_cursor` as `page[cursor]` for the next page; it is `null` on the last page.
+      required:
+      - cursor
+      - limit
+      - prev_cursor
+      - next_cursor
+      properties:
+        cursor:
+          type:
+          - string
+          - 'null'
+        limit:
+          type: integer
+        prev_cursor:
+          type:
+          - string
+          - 'null'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      - status
+      - meta
+      properties:
+        error:
+          type: object
+          required:
+          - message
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    UnauthorizedError:
+      type: object
+      description: Bare 401 body, a single `message` string, not the error envelope.
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          example: Invalid credentials.
+    ForbiddenError:
+      description: Bare 403 body, `{ error }` when a permission or droplet scope is missing or `{ message }` when the credential is not company-admin tier.
+      oneOf:
+      - type: object
+        required:
+        - error
+        properties:
+          error:
+            type: string
+            example: Not authorized.
+      - type: object
+        required:
+        - message
+        properties:
+          message:
+            type: string
+            example: Not authorized.
+    IdempotencyRefusal:
+      type: object
+      description: Body of an `Idempotency-Key` refusal.
+      required:
+      - status
+      - message
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+          example: A request with this Idempotency-Key is already being processed
+    LocationAddress:
+      type: object
+      description: A location's address, in the checkout address field names.
+      properties:
+        address1:
+          type: string
+          description: Street address.
+          example: 1725 Slough Avenue
+        address2:
+          type:
+          - string
+          - 'null'
+          description: Suite, unit or dock.
+          example: Loading Dock B
+        city:
+          type: string
+          description: City.
+          example: Scranton
+        state:
+          type:
+          - string
+          - 'null'
+          description: State, province or region name.
+          example: Pennsylvania
+        subdivision_code:
+          type:
+          - string
+          - 'null'
+          maxLength: 6
+          description: ISO 3166-2 subdivision code, without the country prefix.
+          example: PA
+        postal_code:
+          type:
+          - string
+          - 'null'
+          description: Postal or ZIP code.
+          example: '18505'
+        phone:
+          type:
+          - string
+          - 'null'
+          description: The location's phone number.
+          example: '+15705550142'
+        country_code:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: ISO 3166-1 alpha-2 country code.
+          example: US
+    Location:
+      type: object
+      additionalProperties: false
+      required:
+      - uuid
+      - id
+      - name
+      - external_id
+      - active
+      - address
+      - created_at
+      - updated_at
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: The location's id in this API.
+          example: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+        id:
+          type: integer
+          description: The location's integer id, as the older warehouse and inventory APIs and the inventory webhooks use it.
+          example: 212
+        name:
+          type: string
+          maxLength: 255
+          description: The location's name, unique among your locations.
+          example: Scranton Distribution Center
+        external_id:
+          type:
+          - string
+          - 'null'
+          maxLength: 255
+          description: The location's id in your own warehouse or ERP system, unique among your locations. `null` clears it.
+          example: SCR-01
+        active:
+          type: boolean
+          description: Whether the location is in use.
+          example: true
+        address:
+          oneOf:
+          - $ref: '#/components/schemas/LocationAddress'
+          - type: 'null'
+          description: Where the location is.
+        created_at:
+          type: string
+          format: date-time
+          description: When the location was added.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the location last changed.
+    LocationRef:
+      type: object
+      additionalProperties: false
+      required:
+      - uuid
+      - id
+      - name
+      - external_id
+      description: The location that holds the stock.
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          example: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+        id:
+          type: integer
+          example: 212
+        name:
+          type: string
+          example: Scranton Distribution Center
+        external_id:
+          type:
+          - string
+          - 'null'
+          example: SCR-01
+    VariantSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - sku
+      - product_id
+      - title
+      - tracked
+      - inventory_policy
+      description: The variant whose stock this is.
+      properties:
+        id:
+          type: integer
+          example: 70421
+        sku:
+          type:
+          - string
+          - 'null'
+          example: PAPER-A4-500
+        product_id:
+          type: integer
+          example: 9184
+        title:
+          type:
+          - string
+          - 'null'
+          example: A4 / 500 sheets
+        tracked:
+          type: boolean
+          description: Whether Fluid counts the variant's stock (`track_quantity` in older APIs).
+          example: true
+        inventory_policy:
+          type: string
+          enum:
+          - deny
+          - continue
+          description: 'What happens at zero available: `deny` stops sales, `continue` keeps selling (`keep_selling` in older APIs).'
+          example: deny
+    InventoryQuantities:
+      type: object
+      additionalProperties: false
+      required:
+      - available
+      - committed
+      - on_hand
+      - unavailable
+      description: The four quantities of an inventory level.
+      properties:
+        available:
+          type: integer
+          description: Units that can be sold now.
+          example: 228
+        committed:
+          type: integer
+          description: Units held for orders that have not shipped.
+          example: 12
+        on_hand:
+          type: integer
+          description: 'Units physically at the location: available + committed + unavailable.'
+          example: 244
+        unavailable:
+          type: integer
+          description: Units set aside and not for sale.
+          example: 4
+    InventoryLevel:
+      type: object
+      additionalProperties: false
+      required:
+      - uuid
+      - id
+      - location
+      - variant
+      - quantities
+      - created_at
+      - updated_at
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: The level's id in this API.
+          example: 0199c3e1-7a2b-7c4d-8e5f-6a7b8c9d0e1f
+        id:
+          type: integer
+          description: The level's integer id, as the older inventory APIs and the inventory webhooks use it.
+          example: 48213
+        location:
+          $ref: '#/components/schemas/LocationRef'
+        variant:
+          oneOf:
+          - $ref: '#/components/schemas/VariantSummary'
+          - type: 'null'
+        quantities:
+          $ref: '#/components/schemas/InventoryQuantities'
+        created_at:
+          type: string
+          format: date-time
+          description: When the level was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: When a quantity last changed. Sort key of the list.
+    QuantityChange:
+      type: object
+      additionalProperties: false
+      required:
+      - from
+      - to
+      - change
+      properties:
+        from:
+          type: integer
+          description: The quantity before the change; 0 when the change created the level.
+        to:
+          type: integer
+          description: The quantity after the change.
+        change:
+          type: integer
+          description: '`to` minus `from`.'
+    InventoryAdjustment:
+      type: object
+      additionalProperties: false
+      required:
+      - uuid
+      - inventory_level
+      - location
+      - variant
+      - changes
+      - reason
+      - created_at
+      description: One change to a level's stock.
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: The change's id.
+          example: 0199c4a0-1b2c-7d3e-8f40-5a6b7c8d9e0f
+        inventory_level:
+          oneOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - uuid
+            - id
+            properties:
+              uuid:
+                type: string
+                format: uuid
+              id:
+                type: integer
+          - type: 'null'
+          description: The level that changed; `null` once it is deleted.
+        location:
+          oneOf:
+          - $ref: '#/components/schemas/LocationRef'
+          - type: 'null'
+        variant:
+          oneOf:
+          - $ref: '#/components/schemas/VariantSummary'
+          - type: 'null'
+        changes:
+          type: object
+          description: How each quantity that moved changed, keyed by quantity name.
+          additionalProperties:
+            $ref: '#/components/schemas/QuantityChange'
+        reason:
+          type:
+          - string
+          - 'null'
+          description: The reason recorded with the change.
+          example: 'Inventory adjusted: PO 7731 received'
+        created_at:
+          type: string
+          format: date-time
+          description: When the change was made.
+    LocationCreateRequest:
+      type: object
+      required:
+      - location
+      properties:
+        location:
+          type: object
+          required:
+          - name
+          - address
+          properties:
+            name:
+              type: string
+              maxLength: 255
+              description: The location's name, unique among your locations.
+              example: Scranton Distribution Center
+            external_id:
+              type:
+              - string
+              - 'null'
+              maxLength: 255
+              description: The location's id in your own warehouse or ERP system, unique among your locations. `null` clears it.
+              example: SCR-01
+            active:
+              type: boolean
+              description: Whether the location is in use. Defaults to `true`.
+              example: true
+            address:
+              type: object
+              required:
+              - address1
+              - city
+              - country_code
+              properties:
+                address1:
+                  type: string
+                  description: Street address.
+                  example: 1725 Slough Avenue
+                address2:
+                  type:
+                  - string
+                  - 'null'
+                  description: Suite, unit or dock.
+                  example: Loading Dock B
+                city:
+                  type: string
+                  description: City.
+                  example: Scranton
+                state:
+                  type:
+                  - string
+                  - 'null'
+                  description: State, province or region name.
+                  example: Pennsylvania
+                subdivision_code:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 6
+                  description: ISO 3166-2 subdivision code, without the country prefix.
+                  example: PA
+                postal_code:
+                  type:
+                  - string
+                  - 'null'
+                  description: Postal or ZIP code.
+                  example: '18505'
+                phone:
+                  type:
+                  - string
+                  - 'null'
+                  description: The location's phone number.
+                  example: '+15705550142'
+                country_code:
+                  type: string
+                  minLength: 2
+                  maxLength: 2
+                  description: ISO 3166-1 alpha-2 country code.
+                  example: US
+    LocationUpdateRequest:
+      type: object
+      required:
+      - location
+      properties:
+        location:
+          type: object
+          properties:
+            name:
+              type: string
+              maxLength: 255
+              description: The location's name, unique among your locations.
+              example: Scranton Distribution Center
+            external_id:
+              type:
+              - string
+              - 'null'
+              maxLength: 255
+              description: The location's id in your own warehouse or ERP system, unique among your locations. `null` clears it.
+              example: SCR-01
+            active:
+              type: boolean
+              description: Whether the location is in use. Defaults to `true`.
+              example: true
+            address:
+              type: object
+              properties:
+                address1:
+                  type: string
+                  description: Street address.
+                  example: 1725 Slough Avenue
+                address2:
+                  type:
+                  - string
+                  - 'null'
+                  description: Suite, unit or dock.
+                  example: Loading Dock B
+                city:
+                  type: string
+                  description: City.
+                  example: Scranton
+                state:
+                  type:
+                  - string
+                  - 'null'
+                  description: State, province or region name.
+                  example: Pennsylvania
+                subdivision_code:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 6
+                  description: ISO 3166-2 subdivision code, without the country prefix.
+                  example: PA
+                postal_code:
+                  type:
+                  - string
+                  - 'null'
+                  description: Postal or ZIP code.
+                  example: '18505'
+                phone:
+                  type:
+                  - string
+                  - 'null'
+                  description: The location's phone number.
+                  example: '+15705550142'
+                country_code:
+                  type: string
+                  minLength: 2
+                  maxLength: 2
+                  description: ISO 3166-1 alpha-2 country code.
+                  example: US
+    InventoryCountRequest:
+      type: object
+      required:
+      - counts
+      properties:
+        counts:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required:
+            - name
+            - quantity
+            properties:
+              variant_id:
+                type: integer
+                description: The variant's Fluid id. Send this or `sku`.
+                example: 70421
+              sku:
+                type: string
+                description: The variant's SKU. Send this or `variant_id`. A SKU that more than one of your variants shares is refused; send `variant_id` for those.
+                example: PAPER-A4-500
+              location_id:
+                type: string
+                format: uuid
+                description: The location's `uuid`. Send this or `location_external_id`.
+                example: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+              location_external_id:
+                type: string
+                description: The location's `external_id`. Send this or `location_id`.
+                example: SCR-01
+              name:
+                type: string
+                enum:
+                - available
+                - on_hand
+                description: The quantity counted.
+                example: on_hand
+              quantity:
+                type: integer
+                minimum: 0
+                description: The counted quantity.
+                example: 244
+              compare_quantity:
+                type: integer
+                description: The value of `name` you last read. The count applies only if the level still holds it.
+                example: 240
+              reason:
+                type:
+                - string
+                - 'null'
+                maxLength: 255
+                description: Why the stock changed, kept in the history. Defaults to `Inventory count`.
+                example: November cycle count
+    InventoryAdjustmentRequest:
+      type: object
+      required:
+      - adjustments
+      properties:
+        adjustments:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required:
+            - name
+            - change
+            - reason
+            properties:
+              variant_id:
+                type: integer
+                description: The variant's Fluid id. Send this or `sku`.
+                example: 70421
+              sku:
+                type: string
+                description: The variant's SKU. Send this or `variant_id`. A SKU that more than one of your variants shares is refused; send `variant_id` for those.
+                example: PAPER-A4-500
+              location_id:
+                type: string
+                format: uuid
+                description: The location's `uuid`. Send this or `location_external_id`.
+                example: 0199c3e1-6b1a-7f2e-9d3c-4b5a6c7d8e9f
+              location_external_id:
+                type: string
+                description: The location's `external_id`. Send this or `location_id`.
+                example: SCR-01
+              name:
+                type: string
+                enum:
+                - available
+                - unavailable
+                description: The quantity to change.
+                example: available
+              change:
+                type: integer
+                not:
+                  const: 0
+                description: The amount to add (positive) or remove (negative); not zero.
+                example: 48
+              reason:
+                type: string
+                minLength: 1
+                maxLength: 255
+                description: Why the stock changed, kept in the history.
+                example: PO 7731 received
+    LocationResponse:
+      type: object
+      required:
+      - location
+      - status
+      - meta
+      properties:
+        location:
+          $ref: '#/components/schemas/Location'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    LocationListResponse:
+      type: object
+      required:
+      - locations
+      - status
+      - meta
+      properties:
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Location'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    InventoryLevelResponse:
+      type: object
+      required:
+      - inventory_level
+      - status
+      - meta
+      properties:
+        inventory_level:
+          $ref: '#/components/schemas/InventoryLevel'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    InventoryLevelListResponse:
+      type: object
+      required:
+      - inventory_levels
+      - status
+      - meta
+      properties:
+        inventory_levels:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryLevel'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    InventoryLevelBatchResponse:
+      type: object
+      required:
+      - inventory_levels
+      - status
+      - meta
+      properties:
+        inventory_levels:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryLevel'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    InventoryAdjustmentListResponse:
+      type: object
+      required:
+      - inventory_adjustments
+      - status
+      - meta
+      properties:
+        inventory_adjustments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryAdjustment'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
