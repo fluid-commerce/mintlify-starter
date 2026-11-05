@@ -2934,15 +2934,15 @@ Durable decisions:
 
 ## Agent signup and launch pages — adoption record (2026-11-03, ENG-1673)
 
-`api/agent-signup.mdx` (prefix `agent-signup`, 110 claims) maps to
-`company-v0`. `api/agent-launch.mdx` (prefix `agent-launch`, 212 claims) maps
-to `company-v0` and `themes-v0`. These are the pages `ard.json`, the RFC 9727
-API catalog and `llms.txt` point agents at.
+`api/agent-signup.mdx` (prefix `agent-signup`) maps to `company-v0`.
+`api/agent-launch.mdx` (prefix `agent-launch`) maps to `company-v0` and
+`themes-v0`. These are the pages `ard.json`, the RFC 9727 API catalog and
+`llms.txt` point agents at.
 
-The two pages rest on very different amounts of spec. 30 claims are mechanical:
-`POST /api/company` (its auth, request fields, example body, response fields and
-the 200/403/422/429 codes), plus two themes operations. The other 292 are
-semantic. Most of the launch page describes `fluid …` CLI commands, and no
+The two pages rest on very different amounts of spec. Only a few claims are
+mechanical: `POST /api/company` (its auth, request fields, example body,
+response fields and the 200/403/422/429 codes), plus two themes operations.
+The rest are semantic. Most of the launch page describes `fluid …` CLI commands, and no
 OpenAPI spec covers those. The semantic pass checked every claim against the
 fluid monorepo at `0ac5bb240bf`: the Rails API in `apps/rails` and the CLI in
 `packages/cli/*`, which is where the published `@fluid-app/fluid-cli*` packages
@@ -2957,11 +2957,11 @@ adoption PR:
   fluid #28599 (ENG-1566), nothing is committed before the only block that can
   answer `422`. A company can now be followed only by a `5xx` or a dropped
   connection, and the page's retry advice moved to those. `company-v0`'s own
-  operation description still carries the old sentence, so it needs an upstream
-  fix in fluid.
+  operation description still carries the old sentence until fluid #30949
+  lands; merge it first or right after this record.
 - **`is taken` after an unnormalized first request.** The retry fails under
-  `errors.company.base` again, because the taken check compares the value as
-  sent (`Api::Companies::CreateAction#company_exists?`).
+  `errors.company.base`, because the taken check compares the value as sent
+  (`Api::Companies::CreateAction#company_exists?`).
 - **Opening the confirmation link confirms the signup.** The link waits for a
   **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
 - **Where the discovery documents are served.** `ard.json` and `api-catalog`
@@ -2971,18 +2971,10 @@ adoption PR:
   never changes `status`. The storefront serves the `active` theme. The page now
   says to use Update an application theme with `active` (registered
   mechanically, `application_theme.active`), as the admin's Publish button does.
-- **Smaller fixes:**
-  - `fluid theme init` takes the directory name.
-  - The TikTok warehouse is set with an id, and an unlinked one is linked in the
-    admin.
-  - `fluid theme crawl` uses Fluid's Firecrawl key.
-  - The connect walk hides only secret fields.
-  - The Avalara company code is needed for an account holding more than one
-    company.
-  - Confirmation gates serving and deferred provisioning; nothing stops an agent
-    from continuing.
-  - The guided-setup step list now matches the table.
-  - The headline is "about 20 minutes", to match the page's own timing table.
+- **Avalara needs a company code.** Fluid refuses to turn on commits until the
+  slot or the country has one (`CompanyCountry::TaxCommitRefusal#company_code_refusal`),
+  and files every document under it (`Avalara::InvoiceAssembler`), so it isn't
+  only for an account holding several companies.
 - **Removed:** a service that sets up social channel accounts from the payments
   onboarding form. Nothing in the CLI, the Rails params or the admin
   onboarding implements it.
@@ -2997,7 +2989,7 @@ What the gate catches on these pages:
 
 - an edit to a registered sentence (quote presence);
 - a new backticked snake_case token or a covered status code (coverage lint);
-- a spec change that breaks one of the 30 mechanical claims.
+- a spec change that breaks one of the mechanical claims.
 
 What it does not catch:
 
@@ -3032,7 +3024,7 @@ files is the trigger to re-run the semantic pass on these pages:
 
 A check that fails a fluid PR when it touches a file in this table is possible.
 fluid's CI already clones this repository for `bin/openapi-mintlify-validate`.
-It is left for a separate ticket.
+It is left for ENG-4380.
 
 ### Accepted omissions (deliberate — do not re-litigate without cause)
 
