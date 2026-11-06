@@ -459,6 +459,10 @@ components:
           type: string
           pattern: "^[0-9a-f]{64}$"
           description: The SHA-256 of the file's bytes, as 64 lower-case hex characters.
+        crc32c:
+          type: string
+          pattern: "^[A-Za-z0-9+/]{5}[AQgw]==$"
+          description: The base64 of the file's 4-byte big-endian CRC32C (Castagnoli), such as `4waSgw==` for `123456789`. Optional. When sent, the gateway pins it in the signed upload, so Cloud Storage refuses other bytes, and checks the stored blob against it. Without it the upload still pins the length and the gateway checks the SHA-256.
         size:
           type: integer
           minimum: 0
@@ -585,11 +589,10 @@ components:
           description: After V1. Each server function's built module and its `config/functions.json` entry. Functions are not available yet, so a request that lists any is refused with `functions_not_available`, and `{}` is none.
     SiteBundleUpload:
       type: object
-      description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers; `x-goog-hash` pins the CRC32C, so Cloud Storage refuses different bytes.
+      description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers. They pin the length and refuse a replacement, and `x-goog-hash` pins the CRC32C when the file declared one, so Cloud Storage refuses different bytes.
       additionalProperties: false
       required:
       - sha256
-      - crc32c
       - url
       - headers
       properties:
@@ -599,15 +602,15 @@ components:
           description: The SHA-256 of the blob to upload.
         crc32c:
           type: string
-          pattern: "^[A-Za-z0-9+/]{6}==$"
-          description: Base64 of the blob's 4-byte CRC32C, as Cloud Storage's `x-goog-hash` carries it.
+          pattern: "^[A-Za-z0-9+/]{5}[AQgw]==$"
+          description: Base64 of the blob's 4-byte CRC32C, as Cloud Storage's `x-goog-hash` carries it. Present only when the file declared one.
         url:
           type: string
-          pattern: '^https://\S+$'
+          pattern: '^(?:https://\S+|http://(?:127\.0\.0\.1|localhost):\d{1,5}/\S+)$'
           description: The signed URL to PUT the blob to.
         headers:
           type: object
-          description: The headers the PUT must send exactly.
+          description: Headers the PUT must send exactly. Always `x-goog-content-length-range` (`<size>,<size>`) and `x-goog-if-generation-match` (`0`); `x-goog-hash` only when `crc32c` is.
           additionalProperties:
             type: string
     SiteBundleStarted:
@@ -3751,10 +3754,12 @@ paths:
               files:
                 "/index.html":
                   sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  crc32c: N67uMw==
                   size: 1832
                   contentType: text/html; charset=utf-8
                 "/assets/app-3f2a9c.js":
                   sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  crc32c: n03x6A==
                   size: 48211
                   contentType: text/javascript; charset=utf-8
                   immutable: true
@@ -3774,7 +3779,8 @@ paths:
                     crc32c: n03x6A==
                     url: https://storage.googleapis.com/fluid-production-member-sites/sites/0199537f-0000-7000-8000-000000000001/blobs/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Expires=3600&X-Goog-Signature=5f1e
                     headers:
-                      content-type: application/octet-stream
+                      x-goog-content-length-range: 48211,48211
+                      x-goog-if-generation-match: '0'
                       x-goog-hash: crc32c=n03x6A==
                   expiresAt: '2026-11-05T11:00:00.000Z'
                 meta:
@@ -3789,7 +3795,7 @@ paths:
         '409':
           "$ref": "#/components/responses/BundleConflict"
         '422':
-          description: The request fails its contract, and nothing was started. `details.error` names the problem and `details.path` the value that has it. `reserved_path` is a path under `/_fluid/`, `invalid_path` a path that is not absolute and normalised, `content_type_not_allowed` and `content_type_mismatch` a file outside the allowlist or with the wrong type, `unknown_file` a route, or the default `/index.html` route of a request with no `routes`, to a file the request lacks, `functions_not_available` a request that lists server functions, `unknown_field`, `unknown_family`, `session_not_declarable` and `repeated_entry` an entry of the `access` declaration that is not a member field or scope the site may declare, names the `session` family, or is listed twice, `out_of_range` a limit exceeded (2,000 files, 25 MiB a file, 250 MiB a bundle), and `invalid_shape` or `invalid_format` a field of the wrong kind or form, including a `schema` or `meta` that breaks its contract (`details.path` starts at `schema` or `meta`).
+          description: The request fails its contract, and nothing was started. `details.error` names the problem and `details.path` the value that has it. `reserved_path` is a path under `/_fluid/`, `invalid_path` a path that is not absolute and normalised, `content_type_not_allowed` and `content_type_mismatch` a file outside the allowlist or with the wrong type, `unknown_file` a route, or the default `/index.html` route of a request with no `routes`, to a file the request lacks, `functions_not_available` a request that lists server functions, `unknown_field`, `unknown_family`, `session_not_declarable` and `repeated_entry` an entry of the `access` declaration that is not a member field or scope the site may declare, names the `session` family, or is listed twice, `inconsistent` two paths of one `sha256` that declare different `crc32c` values, `out_of_range` a limit exceeded (2,000 files, 25 MiB a file, 250 MiB a bundle), and `invalid_shape` or `invalid_format` a field of the wrong kind or form, including a `schema` or `meta` that breaks its contract (`details.path` starts at `schema` or `meta`).
           content:
             application/json:
               schema:
