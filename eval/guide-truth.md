@@ -2957,8 +2957,8 @@ adoption PR:
   fluid #28599 (ENG-1566), nothing is committed before the only block that can
   answer `422`. A company can now be followed only by a `5xx` or a dropped
   connection, and the page's retry advice moved to those. `company-v0`'s own
-  operation description still carries the old sentence until fluid #30949
-  lands; merge it first or right after this record.
+  operation description still carries the old sentence until the next
+  `company-v0` sync (fluid #30949 is merged).
 - **`is taken` after an unnormalized first request.** The retry fails under
   `errors.company.base`, because the taken check compares the value as sent
   (`Api::Companies::CreateAction#company_exists?`).
