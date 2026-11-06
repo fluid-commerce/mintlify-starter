@@ -1323,6 +1323,66 @@ components:
             type: string
             minLength: 1
             maxLength: 100
+    MemberSiteBundleSummary:
+      type: object
+      description: One bundle of a site, without its manifest.
+      additionalProperties: false
+      required:
+      - id
+      - state
+      - current
+      - createdAt
+      - publishedAt
+      - manifestSha256
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The bundle's id.
+        state:
+          type: string
+          enum:
+          - uploading
+          - published
+          - failed
+          description: "`uploading` is an upload in progress or one that expired and is not deleted yet, `published` a bundle that was made current at least once, and `failed` one that a check or a gateway step refused."
+        current:
+          type: boolean
+          description: Whether this is the version the site serves. At most one bundle is.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the upload started.
+        publishedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the bundle was published; null until then.
+        manifestSha256:
+          type:
+          - string
+          - 'null'
+          pattern: "^[0-9a-f]{64}$"
+          description: The SHA-256 of the manifest the gateway wrote; null until the bundle is published.
+    MemberSiteBundlesResponse:
+      type: object
+      description: A page of a site's bundles, newest first.
+      required:
+      - member_site_bundles
+      - status
+      - meta
+      properties:
+        member_site_bundles:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberSiteBundleSummary'
+          description: The bundles on this page.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/ListMeta'
     MemberSiteBundleCurrent:
       type: object
       description: The site's current version after a publish.
@@ -3294,6 +3354,85 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-sites/{id}/bundles:
+    get:
+      operationId: companyMemberSiteBundlesList
+      x-fluid-audience: company
+      summary: List a company site's bundles
+      description: |
+        The bundles of one company site, newest first, in every state: an upload in progress, a failed one, and each published one, with the one the site serves marked `current`. A bundle is its id, state, times and the SHA-256 of its manifest, never the manifest. Roll back to an earlier published bundle with its `current` route.
+
+        Needs `application_themes.view` and a signed-in admin, because the list is read as the admin. A member's site is refused with 404, as a site an admin may not edit: its owner lists its bundles. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-bundles
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`. Do not construct or decode it.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Bundles per page. Default 25, maximum 100.
+      responses:
+        '200':
+          description: A page of bundles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBundlesResponse'
+              example:
+                member_site_bundles:
+                - id: 0199537f-0000-7000-8000-000000000005
+                  state: published
+                  current: true
+                  createdAt: '2026-11-05T10:00:00.000Z'
+                  publishedAt: '2026-11-05T10:02:00.000Z'
+                  manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                - id: 0199537f-0000-7000-8000-000000000004
+                  state: published
+                  current: false
+                  createdAt: '2026-11-04T10:00:00.000Z'
+                  publishedAt: '2026-11-04T10:02:00.000Z'
+                  manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, whose bundles its owner lists, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A `page[limit]` outside 1 to 100, or a `page[cursor]` that is not one this list gave.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: companyMemberSiteBundlesCreate
       x-fluid-audience: company
@@ -3502,6 +3641,74 @@ paths:
                   details:
                     error: publish_timeout
                 status: 504
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+  /api/company/v2026-10/member-sites/{id}/bundles/{bundle_id}/current:
+    post:
+      operationId: companyMemberSiteBundlesMakeCurrent
+      x-fluid-audience: company
+      summary: Make an earlier bundle of a company site current (roll back)
+      description: |
+        Points the company site back at a bundle that was published before, so its files are served again. Nothing is uploaded and the sites gateway is not asked: the bundle's blobs and manifest are stored already. A bundle that was published after the current one can be made current the same way, which rolls forward again. The site's `status`, `visibility` and frame label do not change.
+
+        Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site that was taken down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
+
+        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner rolls it back. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-bundles
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: bundle_id
+        in: path
+        required: true
+        description: The bundle's id, as the start of its upload answered it.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The bundle is the site's current version. Making the current bundle current again answers the same.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBundleCurrent'
+              example:
+                bundle:
+                  id: 0199537f-0000-7000-8000-000000000004
+                  manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, the bundle is not the site's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Nothing changed. `details.error` is `not_published` (the bundle is uploading or failed), `no_database` (the manifest has a `schema`, which cannot be restored yet) or `taken_down` (the site was taken down).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Only a published bundle can be made current
+                  details:
+                    error: not_published
+                status: 422
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
                   timestamp: '2026-11-05T10:00:00Z'
