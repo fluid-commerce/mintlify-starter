@@ -1311,6 +1311,47 @@ components:
           description: The HTTP status.
         meta:
           $ref: '#/components/schemas/Meta'
+    MemberSiteBundlePublishBody:
+      type: object
+      description: What a publish may carry. The body is optional.
+      additionalProperties: false
+      properties:
+        confirmMigrations:
+          type: array
+          description: The ids of the destructive migration steps the admin confirmed. Nothing applies a schema yet, so they are only checked.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+    MemberSiteBundleCurrent:
+      type: object
+      description: The site's current version after a publish.
+      additionalProperties: false
+      required:
+      - bundle
+      - status
+      - meta
+      properties:
+        bundle:
+          type: object
+          additionalProperties: false
+          required:
+          - id
+          - manifestSha256
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: The bundle's id.
+            manifestSha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+              description: The SHA-256 of the manifest the gateway wrote, which an access decision names.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteBranchResponse:
       type: object
       description: One branch.
@@ -3360,6 +3401,110 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/bundles/{bundle_id}/publish:
+    post:
+      operationId: companyMemberSiteBundlesPublish
+      x-fluid-audience: company
+      summary: Publish a company site's bundle
+      description: |
+        Makes an uploaded bundle the company site's current version. It runs inside this one request: Rails asks the sites gateway to verify every blob, checks the manifest, asks the gateway to write the manifest, and then, in one transaction, gives the site its frame label if it has none, marks the bundle published and points the site at it. A site's `visibility` never changes. A site with a database `schema` cannot be published yet and fails with `no_database`.
+
+        A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
+
+        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner publishes it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-bundles
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: bundle_id
+        in: path
+        required: true
+        description: The bundle's id, as the start of its upload answered it.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBundlePublishBody'
+            example:
+              confirmMigrations:
+              - 2026-11-05-drop-notes
+      responses:
+        '200':
+          description: The bundle is the site's current version. A publish repeated after it finished answers the same.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBundleCurrent'
+              example:
+                bundle:
+                  id: 0199537f-0000-7000-8000-000000000004
+                  manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, the bundle is not the site's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: A newer start replaced this upload
+                  details:
+                    error: superseded
+                status: 409
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+        '422':
+          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema`, which cannot be applied yet), `expired` (the upload expired), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down` and the body errors also mark the bundle failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The sites gateway could not complete a step, because it was unreachable or refused, or answered with something unexpected. `details.error` names which. The bundle is failed; start again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: "`publish_timeout`. The publish ran out of time. The bundle is still uploading and the current version keeps serving. Send the same publish again."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The publish ran out of time; send it again
+                  details:
+                    error: publish_timeout
+                status: 504
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
   /api/company/v2026-10/member-sites/{id}/branches/{slug}:
     get:
       operationId: companyMemberSiteBranchesShow

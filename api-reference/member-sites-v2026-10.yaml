@@ -647,6 +647,55 @@ components:
       - status
       - data
       - meta
+    SiteBundlePublish:
+      type: object
+      description: What a publish may carry. The body is optional.
+      additionalProperties: false
+      properties:
+        confirmMigrations:
+          type: array
+          description: The ids of the destructive migration steps the owner confirmed. Nothing applies a schema yet, so they are only checked.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+    SiteBundleCurrent:
+      type: object
+      description: The site's current version after a publish.
+      additionalProperties: false
+      required:
+      - bundle
+      properties:
+        bundle:
+          type: object
+          additionalProperties: false
+          required:
+          - id
+          - manifestSha256
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: The bundle's id.
+            manifestSha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+              description: The SHA-256 of the manifest the gateway wrote, which an access decision names.
+    SiteBundleCurrentEnvelope:
+      type: object
+      description: The site's current version after a publish.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteBundleCurrent"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
     SiteBranch:
       type: object
       description: |
@@ -2316,6 +2365,14 @@ components:
       schema:
         type: string
         format: uuid
+    BundleIdPath:
+      name: bundle_id
+      in: path
+      required: true
+      description: The bundle's id, as the start of its upload answered it.
+      schema:
+        type: string
+        format: uuid
     PreviewSlug:
       name: slug
       in: path
@@ -3586,6 +3643,95 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/bundles/{bundle_id}/publish":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/BundleIdPath"
+    post:
+      summary: Publish a bundle
+      description: |
+        Makes an uploaded bundle the site's current version. It runs inside this one request: Rails asks the sites gateway to verify every blob, checks the manifest, asks the gateway to write the manifest, and then, in one transaction, gives the site its frame label if it has none, marks the bundle published and points the site at it. A site's `visibility` never changes, so a new site stays private until its owner makes it public. A site with a database `schema` cannot be published yet and fails with `no_database`.
+
+        A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, and for a bundle that is not the site's.
+      operationId: member_sites_bundles_publish
+      tags:
+      - site-bundles
+      x-fluid-audience: member
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteBundlePublish"
+            example:
+              confirmMigrations:
+              - 2026-11-05-drop-notes
+      responses:
+        '200':
+          description: The bundle is the site's current version. A publish repeated after it finished answers the same.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteBundleCurrentEnvelope"
+              example:
+                status: 200
+                data:
+                  bundle:
+                    id: 0199537f-0000-7000-8000-000000000004
+                    manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/BundleRefused"
+        '404':
+          "$ref": "#/components/responses/BundleNotFound"
+        '409':
+          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: A newer start replaced this upload
+                  details:
+                    error: superseded
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:00:00Z'
+        '422':
+          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema`, which cannot be applied yet), `expired` (the upload expired), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down` and the body errors also mark the bundle failed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: The sites gateway could not complete a step, because it was unreachable or refused, or answered with something unexpected. `details.error` names which. The bundle is failed; start again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '504':
+          description: "`publish_timeout`. The publish ran out of time. The bundle is still uploading and the current version keeps serving. Send the same publish again."
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 504
+                error:
+                  message: The publish ran out of time; send it again
+                  details:
+                    error: publish_timeout
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:00:00Z'
   "/api/member/v2026-10/sites/{site_id}/branches":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"

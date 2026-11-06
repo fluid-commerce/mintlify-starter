@@ -565,7 +565,7 @@ components:
           schema:
             $ref: '#/components/schemas/UnauthorizedResponse'
     UpdateCompanyOrderForbidden:
-      description: 'The token is not a company admin''s (`{"message": …}`); or its role lacks orders.update, a droplet token lacks the orders scope, or a public token is used (`{"error": …}`).'
+      description: 'The token is not a company admin''s (`{"message": …}`); or its role lacks orders.update, or lacks orders.delete when the update sets `status` to `cancelled`, a droplet token lacks the orders scope, or a public token is used (`{"error": …}`).'
       content:
         application/json:
           schema:
@@ -955,7 +955,8 @@ components:
             $ref: '#/components/schemas/UnauthorizedResponse'
     UpdateOrderForbidden:
       description: |
-        The admin's role lacks `orders.update`, or the update sets
+        The admin's role lacks `orders.update`, or the update sets `status` or
+        `order_status` to `cancelled` without `orders.delete`, or the update sets
         `fulfillment_status` without `fulfillments.edit_status`, or the update sets
         `financial_status` to `marked_paid`, `paid` or `partially_paid`
         without `orders.mark_paid`, or to `marked_free` without
@@ -12646,7 +12647,7 @@ components:
           type:
             - boolean
             - 'null'
-          description: Whether this refund also ends the sale. When true and the refund leaves the order fully refunded and still unshipped, the order is cancelled. Omit the field to take the company default; send false to refund without cancelling.
+          description: Whether this refund also ends the sale. When true and the refund leaves the order fully refunded and still unshipped, the order is cancelled. Omit the field to take the company default; send false to refund without cancelling. Sending true needs `orders.delete`.
         refund_points:
           type:
             - boolean
@@ -48674,7 +48675,7 @@ paths:
     put:
       operationId: commerce_v0_orders_review_order_put
       summary: Review an order
-      description: Records a manual fraud review decision on an order held for review. `approve` releases the order for processing; `cancel` cancels it. The decision, reason and time are saved to the order's fraud check details. Requires a Bearer token with the `orders` update permission. Returns 404 when the order does not belong to the caller's company, and 422 when `review_action` is missing or invalid or the decision cannot be applied.
+      description: Records a manual fraud review decision on an order held for review. `approve` releases the order for processing; `cancel` cancels it. The decision, reason and time are saved to the order's fraud check details. Requires a Bearer token with the `orders` update permission, and `cancel` also needs `orders.delete`. Returns 404 when the order does not belong to the caller's company, and 422 when `review_action` is missing or invalid or the decision cannot be applied.
       tags:
         - orders
       parameters:
@@ -48736,7 +48737,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The admin's role lacks `orders.update`. The order is unchanged.
+          description: The admin's role lacks `orders.update`, or the decision is `cancel` and the role lacks `orders.delete`. The order is unchanged.
           content:
             application/json:
               schema:
@@ -50285,7 +50286,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
         '403':
-          description: The caller is authenticated but lacks the `refunds` update permission. A We-Bots run login whose grant does not hold `refunds.update` is refused here too.
+          description: The caller is authenticated but lacks the `refunds` update permission, or sends `cancel_order` true without `orders.delete`. A We-Bots run login whose grant does not hold `refunds.update` is refused here too.
           content:
             application/json:
               schema:
@@ -50381,7 +50382,7 @@ paths:
                   description: When true and the order was paid with a split card+points payment, refund redeemed points back to the customer. No-op if the order has no points portion or points have already been refunded. Most companies get back every redeemed point not yet returned. For a company whose refunds return points in proportion to the money refunded, `type` `all` still returns every point left, and any other refund, `product_price` included, returns the share of the base's card money it gives back, so tax and shipping return none when points apply to the subtotal. Shares are counted with the earlier refunds that asked for points back and rounded down to whole points. There, a refund that refunds no money, reverses no CV or QV and would return no points is refused with 422.
                 cancel_order:
                   type: boolean
-                  description: Whether this refund also ends the sale. When true and the refund leaves the order fully refunded and still unshipped, the order is cancelled. Omit the field to take the company default; send false to refund without cancelling, as for a goodwill refund on an order that should still ship.
+                  description: Whether this refund also ends the sale. When true and the refund leaves the order fully refunded and still unshipped, the order is cancelled. Omit the field to take the company default; send false to refund without cancelling, as for a goodwill refund on an order that should still ship. Sending true needs `orders.delete`.
             example:
               order_id: 48213
               type: partial
@@ -50394,7 +50395,7 @@ paths:
   /api/refunds/items:
     post:
       summary: Create refund for items
-      description: Refunds specific order items by quantity through the payment provider that took the payment. The refund amount is computed from the items; pass `cv` and `qv` per item to deduct volume, and `restock` to return the units to inventory. Requires a Bearer token for a company admin with the `refunds` view permission. Returns 404 when the order does not belong to the caller's company, and 202 when the provider accepted the refund but has not settled it.
+      description: Refunds specific order items by quantity through the payment provider that took the payment. The refund amount is computed from the items; pass `cv` and `qv` per item to deduct volume, and `restock` to return the units to inventory. Requires a Bearer token for a company admin with the `refunds` update permission, and `cancel_order` true also needs `orders.delete`. Returns 404 when the order does not belong to the caller's company, and 202 when the provider accepted the refund but has not settled it.
       tags:
         - refunds
       operationId: commerce_v0_create_refund_for_items
@@ -50489,6 +50490,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: The caller is authenticated but lacks the `refunds` update permission, or sends `cancel_order` true without `orders.delete`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardForbiddenResponse'
         '422':
           description: |
             The request was invalid, or the refund was refused or failed. An invalid field is reported under that field's key in `errors` with `error_message` "Invalid parameters"; any other refusal without `errors.payment` uses the generic "There was an error in processing refund.". When the refund itself fails, `errors.payment` holds the reason to show the merchant: the gateway's decline, what the order is missing to be refunded (such as a payment with no capture), or, for an unexpected error, a generic reason that asks for the request ID in `meta.request_id`. In that case `error_message` repeats it after "Payment processing failed:". An `Idempotency-Key` that is blank, longer than 255 characters or already used with a different request is refused here too, with the reason under `errors.idempotency_key`.
