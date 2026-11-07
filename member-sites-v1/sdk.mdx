@@ -1,0 +1,218 @@
+---
+title: "The member sites SDK"
+sidebarTitle: "SDK"
+description: "Use @fluid-app/sites in a member site: read who is signed in, call the Fluid API as the visitor, use the site's database, add to the storefront's cart, follow Back and Forward, and link to the storefront."
+---
+
+`@fluid-app/sites` is the browser SDK of a member site. It speaks only to your site's own host, which brokers each call to Fluid. Your code never holds a Fluid token or a database credential.
+
+## Import it once
+
+Add the package and import it at the top of your app, before anything renders:
+
+```bash
+npm install @fluid-app/sites
+```
+
+```ts src/main.tsx
+// Importing the SDK starts its handshake with the storefront.
+import "@fluid-app/sites";
+```
+
+Then import `fluid` where you need it. The SDK also puts the same object on `window.fluid`.
+
+```ts
+import { fluid } from "@fluid-app/sites";
+```
+
+When the site loads in the storefront, the SDK connects to the storefront and receives the visitor's sign-in. A call made while it connects waits for it, for up to three seconds, then goes as a guest.
+
+| Part | What it does |
+| --- | --- |
+| `fluid.auth` | Who is here, and sign-in and sign-out through the storefront |
+| `fluid.api` | The Fluid Member API, as the visitor, within the site's scopes |
+| `fluid.db` | The site's own database |
+| `fluid.cart` | The storefront's cart and checkout |
+| `fluid.history` | Back and Forward, for your router |
+| `fluid.storefront` | Storefront addresses that keep the visit's credit |
+| `fluid.fn` | Server functions. Not available yet: every call answers `404` |
+
+## Read who is here
+
+`fluid.auth.me()` returns the visitor and the site:
+
+```ts
+const me = await fluid.auth.me();
+
+if (me.viewer === null) {
+  // A guest, on a public site.
+} else {
+  console.log(`Hello, ${me.viewer.name}`);
+}
+```
+
+| Field | What it holds |
+| --- | --- |
+| `viewer` | The signed-in visitor, or `null` for a guest. It has `userId`, `name`, `avatarUrl`, `memberId`, `relation` (`owner`, `admin` or `member`) and `fields`, the member fields the site may read |
+| `site` | The site's `id`, `handle`, `name`, `visibility` and `companyName` |
+| `scopes` | The Fluid API scopes this visitor's calls may use on this site |
+| `credit` | The visit's credit: the sharer's username, else the owner's, else `home` |
+| `storefrontUrl` | The storefront's address, such as `https://yoli.com` |
+
+`me()` throws a `FluidRequestError` when the site's host answers with an error. The fields in `viewer.fields` come from the member fields the site declares in `config/access.json`. See [Fluid data the site uses](/member-sites-v1/declarations#fluid-data-the-site-uses).
+
+### Sign in and sign out
+
+```tsx
+<button type="button" onClick={() => fluid.auth.signIn()}>
+  Sign in to RSVP
+</button>
+```
+
+- `fluid.auth.signIn({ returnTo })` asks the storefront to send the visitor to its sign-in, then back to `returnTo`, a path of your site. With no `returnTo`, the visitor comes back to the page they're on.
+- `fluid.auth.signOut()` opens the storefront's account menu, where the visitor signs out and confirms it.
+
+The storefront acts on both only when the visitor clicked. Call them from a click handler, never on load. Outside a storefront, both do nothing and log a warning.
+
+## Call the Fluid API
+
+`fluid.api` calls the Fluid [Member API](/api/member-apis) as the visitor. Pass a Member API path without its version prefix: `"/search"` calls `/api/member/v2026-10/search`.
+
+```ts
+const results = await fluid.api.get("/search", { q: "protein" });
+
+const response = await fluid.api.fetch("/search?q=protein", {
+  headers: { Accept: "application/json" },
+});
+if (response.status === 403) showMessage("This site can't search the store.");
+```
+
+- `fluid.api.get(path, query)` sends a `GET` and returns the parsed JSON. It throws a `FluidRequestError` for any status that isn't 2xx.
+- `fluid.api.fetch(path, init)` takes `fetch`'s options and returns the response, whatever its status.
+- Both throw a `TypeError` for a path that isn't a Member API path, such as a full URL.
+
+Every call acts as the visitor: their own orders, their own team, never anyone else's. A call is served only when its scope is one the visitor has on this site. Otherwise it answers `403` with `scope_not_granted` and the scope it needed. [Fluid data the site uses](/member-sites-v1/declarations#fluid-data-the-site-uses) says how a site gets a scope.
+
+For each operation, see the generated [Member API reference](/api/member-apis).
+
+### Handle errors
+
+`FluidRequestError` carries the answer:
+
+| Property | What it holds |
+| --- | --- |
+| `status` | The HTTP status, such as `403` |
+| `code` | The body's `error` code, such as `scope_not_granted`, or `null` |
+| `body` | The parsed JSON body, or `null` |
+
+```ts
+import { fluid, FluidRequestError } from "@fluid-app/sites";
+
+try {
+  const orders = await fluid.api.get("/orders");
+} catch (error) {
+  if (error instanceof FluidRequestError && error.code === "scope_not_granted") {
+    showMessage("This site can't show your orders.");
+  } else {
+    throw error;
+  }
+}
+```
+
+| Code | Status | What it means |
+| --- | --- | --- |
+| `sign_in_required` | 401 | The visitor isn't signed in |
+| `forbidden` | 403 | The site doesn't admit this visitor |
+| `scope_not_granted` | 403 | The visitor has no grant for the call's scope on this site |
+| `not_found` | 404 | Nothing answers at this path |
+| `rate_limited` | 429 | Too many calls. Each visitor may make 600 API calls a minute on one site |
+| `unavailable` | 503 | Fluid couldn't answer. Try again |
+
+## Use the site's database
+
+`fluid.db` reads and writes your site's own tables, declared in `db/schema.json`. It follows Supabase's query builder, and every call resolves `{ data, error }`:
+
+```ts
+const { data, error } = await fluid.db
+  .from("rsvps")
+  .select("name,guests")
+  .eq("event_id", "fall-launch")
+  .order("created_at", { ascending: false })
+  .limit(50);
+```
+
+[The member site database](/member-sites-v1/database) covers the schema, the table rules, every query method and every error code.
+
+## Use the storefront's cart
+
+The storefront's cart runs in the storefront, not in your frame, so member pricing and the visit's credit stay the storefront's. `fluid.cart` passes each call to it, with the FairShare cart's own arguments.
+
+```ts
+await fluid.cart.add([{ variant_id: 48213, quantity: 1 }]);
+fluid.cart.open();
+```
+
+| Method | What it does |
+| --- | --- |
+| `add(...args)` | Adds to the cart, with the arguments of FairShare's `addCartItems` |
+| `update(...args)` | Changes quantities, with the arguments of `updateCartItems` |
+| `remove(...args)` | Removes a line, with the arguments of `removeCartItemById` |
+| `get()` | Returns the current cart |
+| `open()`, `close()` | Opens or closes the cart drawer |
+| `checkout()` | Opens checkout in the storefront's window |
+| `onChange(listener)` | Calls `listener` with the cart on each change. Returns a function that stops it |
+
+`add`, `update`, `remove` and `get` return a promise of what the cart answered. Each rejects with an `Error` when the storefront reports a failure, when the site isn't in a storefront, or when no answer comes within 30 seconds. `open`, `close` and `checkout` log a failure and never throw.
+
+[The cart API](/sdk/cart-api#modifying-the-cart) describes FairShare's arguments.
+
+The cart's HTML controls work in your site too. A click on an element with `data-fluid-add-to-cart` adds its variants, and `data-fluid-cart="open"` or `"close"` opens or closes the drawer:
+
+```html
+<button data-fluid-add-to-cart="48213" data-fluid-quantity="2">Add to cart</button>
+<button data-fluid-cart="open">View cart</button>
+```
+
+Enrollment pack controls and `data-fluid-cart="toggle"` do nothing in a member site. See [Declarative HTML controls](/sdk/cart-api#declarative-html-controls) for the attributes.
+
+## Follow Back and Forward
+
+The storefront keeps your site's history: one entry per page. Your site's `history.pushState` calls and same-site link clicks still work, and the SDK reports each move to the storefront.
+
+A single-page app's router listens with `fluid.history.onGo`. On Back, Forward or a re-sync, the SDK calls your listener with the path and the fragment, instead of reloading the frame:
+
+```ts src/router.ts
+import { fluid } from "@fluid-app/sites";
+
+const stop = fluid.history.onGo((path, hash) => {
+  router.navigate(path + (hash ?? ""));
+});
+```
+
+`path` is your site's own path and query, such as `/events/42?tab=agenda`, and `hash` is the fragment, such as `#schedule`, or `null`. Move your router there with `pushState` or `replaceState`. The SDK doesn't report a move it started through `onGo` to the storefront, so Back and Forward never add an entry twice. The call returns a function that removes the listener. With no listener, the SDK moves the frame to the path itself.
+
+A multi-page site needs no listener: plain links between its pages work.
+
+## Link to the storefront
+
+The frame's sandbox refuses top-level navigation, so a script can't move the storefront's window and `target="_top"` doesn't work. Link to storefront pages with a plain `<a href>`. When the visitor clicks it, the SDK asks the storefront to open it in its own window.
+
+`fluid.storefront.url(path)` returns a storefront address that carries the visit's credit, so the person who shared the site gets credit for what the visitor buys:
+
+```tsx
+const [shopUrl, setShopUrl] = useState<string | null>(null);
+
+useEffect(() => {
+  fluid.storefront.url("/shop").then(setShopUrl);
+}, []);
+
+return shopUrl && <a href={shopUrl}>Shop the whole store</a>;
+```
+
+`fluid.storefront.url("/shop")` returns an address such as `https://yoli.com/janedoe/shop`. With no credit, or the default `home`, the address has no credit prefix. It throws a `TypeError` for a path that leaves the storefront.
+
+The SDK also adds the visit's credit to the storefront links already on your page, and to new ones as the page changes, so a link opened in a new tab keeps it. To keep a link as you wrote it, add `data-fluid-credit="off"`:
+
+```html
+<a href="https://yoli.com/pages/returns" data-fluid-credit="off">Returns policy</a>
+```
