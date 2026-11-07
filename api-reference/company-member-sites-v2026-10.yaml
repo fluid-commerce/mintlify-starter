@@ -102,6 +102,9 @@ tags:
 - name: member-site-bundles
   description: Publishing a company site as a built static bundle, uploaded straight to Cloud Storage with signed URLs.
   x-fluid-section: Members
+- name: member-site-database
+  description: Downloading a site's database as a DumpV1 file.
+  x-fluid-section: Members
 - name: member-site-data
   description: An admin's read and delete of the rows of a site's database. Rows are never inserted or changed here.
   x-fluid-section: Members
@@ -4550,6 +4553,70 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: 'The body names neither `visitorScopes` nor `databaseLimits`; `visitorScopes` is not a list of strings, holds a scope outside the vocabulary or the same scope twice; a database cap is not a positive integer; or the body holds an unknown field.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/database-export:
+    get:
+      operationId: companyMemberSiteDatabaseExportShow
+      x-fluid-audience: company
+      summary: Download a site's database
+      description: |
+        Downloads every table and row of one site's database as a file, from the sites gateway, which reads the database as the request is served. It serves any site of the company, a member's included. The answer is NDJSON, the contract's `DumpV1`: a first line with the format, its version and the schema (`{"format":"fluid-site-db","version":1,"schema":{...}}`), then one line for each row (`{"table":"notes","row":{...}}`). The same bytes import into any driver. It is sent as it is read, so it begins at once and no copy is held, however large the database is; the `Content-Disposition` header names the file `site-database-<site id>.ndjson`. It is not cached.
+
+        A failure before the first byte is a normal error answer (502, or 504 when the gateway did not begin in time). A failure after it cannot change the status, which is already 200, so the dump ends with one more line, `{"error":"export_interrupted"}`, which is neither a header nor a row and has no newline after it. A dump is whole only when the response ends cleanly and every line, the last included, is a header or a row and ends with a newline. A connection that is cut gives an HTTP error (a missing final chunk) or a last line without its newline. Download again.
+
+        Needs `member_site_data.view`, the permission to read what members wrote, because a dump holds every row of the site, whoever wrote it, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.view` is refused with 403; a company grants it to the roles that moderate. A droplet installation token and an OAuth client token are refused with 403. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a site with no active database.
+      tags:
+      - member-site-database
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      responses:
+        '200':
+          description: The database as a `DumpV1` file, streamed.
+          headers:
+            Content-Disposition:
+              description: '`attachment` with the file name `site-database-<site id>.ndjson`.'
+              schema:
+                type: string
+            Cache-Control:
+              description: Always `private, no-store`.
+              schema:
+                type: string
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: 'NDJSON. The first line is the header, `format`, `version` and `schema`; each other line is a row, `table` and `row`. A last line `{"error":"export_interrupted"}` with no newline after it means the dump failed after it began and is not whole.'
+              example: |
+                {"format":"fluid-site-db","version":1,"schema":{"tables":{}}}
+                {"table":"notes","row":{"id":"1","body":"first"}}
+                {"table":"notes","row":{"id":"2","body":"second"}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The sites gateway could not begin the export, because it was unreachable, refused the call or answered with something unexpected, or Rails has no secret for it. `details.error` names which, and nothing the gateway said is passed on. Nothing was sent; ask again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The sites gateway did not begin to answer within 25 seconds. Nothing was sent; ask again.
           content:
             application/json:
               schema:
