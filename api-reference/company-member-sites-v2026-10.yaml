@@ -102,6 +102,9 @@ tags:
 - name: member-site-bundles
   description: Publishing a company site as a built static bundle, uploaded straight to Cloud Storage with signed URLs.
   x-fluid-section: Members
+- name: member-site-data
+  description: An admin's read and delete of the rows of a site's database. Rows are never inserted or changed here.
+  x-fluid-section: Members
 - name: member-site-features
   description: The sites the company features, so the members they are shared with see them first.
   x-fluid-section: Members
@@ -1505,6 +1508,134 @@ components:
               type: string
               pattern: "^[0-9a-f]{64}$"
               description: The SHA-256 of the manifest the gateway wrote, which an access decision names.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteDataTable:
+      type: object
+      description: One table of a site's database, as the site's current bundle declares it.
+      additionalProperties: false
+      required:
+      - name
+      - columns
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,62}$"
+          description: The table's name.
+        columns:
+          type: array
+          description: The columns the schema declares, then the four system columns (`id`, `created_by`, `created_at`, `updated_at`).
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - name
+            - type
+            properties:
+              name:
+                type: string
+                description: The column's name.
+              type:
+                type: string
+                enum:
+                - text
+                - integer
+                - number
+                - boolean
+                - date
+                - timestamp
+                - uuid
+                - json
+                description: The column's type.
+    MemberSiteDataTablesResponse:
+      type: object
+      description: The tables of a site's database.
+      additionalProperties: false
+      required:
+      - tables
+      - status
+      - meta
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberSiteDataTable'
+          description: The tables the schema declares.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteDataRowsResponse:
+      type: object
+      description: A page of one table's rows, newest first.
+      additionalProperties: false
+      required:
+      - rows
+      - status
+      - meta
+      properties:
+        rows:
+          type: array
+          description: The rows on this page. Each is an object of the table's columns and its four system columns, with the values the sites gateway answers (`integer` above 2^53 as a string, `json` as JSON).
+          items:
+            type: object
+            additionalProperties: true
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_uuid
+          - timestamp
+          - pagination
+          properties:
+            request_uuid:
+              type:
+              - string
+              - 'null'
+              description: Request correlation identifier.
+            timestamp:
+              type: string
+              format: date-time
+              description: When the response was built.
+            pagination:
+              type: object
+              additionalProperties: false
+              required:
+              - limit
+              - offset
+              - count
+              properties:
+                limit:
+                  type: integer
+                  description: The rows asked for per page.
+                offset:
+                  type: integer
+                  description: The rows skipped.
+                count:
+                  type: integer
+                  minimum: 0
+                  description: The rows the table holds.
+    MemberSiteDataDeleted:
+      type: object
+      description: The rows a delete removed.
+      additionalProperties: false
+      required:
+      - deleted
+      - status
+      - meta
+      properties:
+        deleted:
+          type: array
+          items:
+            type: string
+          description: The ids of the rows the table had and the call deleted. An id with no row is not listed.
         status:
           type: integer
           description: The HTTP status.
@@ -3647,7 +3778,7 @@ paths:
       x-fluid-audience: company
       summary: Publish a company site's bundle
       description: |
-        Makes an uploaded bundle the company site's current version. It runs inside this one request: Rails asks the sites gateway to verify every blob, checks the manifest, asks the gateway to write the manifest, and then, in one transaction, gives the site its frame label if it has none, marks the bundle published and points the site at it. A site's `visibility` never changes. A site with a database `schema` cannot be published yet and fails with `no_database`.
+        Makes an uploaded bundle the company site's current version. It runs inside this one request: Rails asks the sites gateway to verify every blob, checks the manifest, has the gateway plan the manifest's database `schema`, asks the gateway to write the manifest, has the gateway apply the schema, and then, in one transaction, gives the site its frame label if it has none, marks the bundle published and points the site at it. A site's `visibility` never changes. A site with no `schema` skips the schema step. The gateway plans the change from the schema the site's database holds, which its placement records, to the new one (C-L34): a change that drops, renames or retypes a table or column, or makes a column required, applies only when a migration of the schema names it and `confirmMigrations` holds that migration's id. Without the ids the publish is refused with `422` (`destructive_change_unconfirmed`, `details.unconfirmed` lists the ids) and applies nothing; the bundle stays uploading, so the same publish sent again with the ids needs no new upload. The manifest is written before the schema is applied, so a manifest the gateway cannot write changes nothing, and the manifest of a bundle that is not the current one is never served. The schema is applied before the pointer switches, and a failed apply leaves the old bundle current. Once the schema is applied the placement records it, and a later failure of the publish (the site was taken down, say) leaves the bundle uploading: sending the same publish again is planned from that schema, applies nothing more, and goes on, and a publish of a different schema is planned from it too. A schema is at most 1 MiB as UTF-8 JSON, migrations included, and no JSON value in it nests deeper than 1,000 levels (each array or object counts, an empty innermost one included).
 
         A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
 
@@ -3704,7 +3835,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
+          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it, or another publish of the site changed its database after this one planned its schema change or before it switched; the bundle stays uploading, so send the same publish again and it is planned anew), `schema_change_pending` (another upload's change to the site's database may have run and is not recorded yet; `details.pendingBundle` is that upload's id, and the message says to send it again to finish it, after which this publish can be sent again; nothing was applied and the bundle stays uploading), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
           content:
             application/json:
               schema:
@@ -3719,7 +3850,7 @@ paths:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
                   timestamp: '2026-11-05T10:00:00Z'
         '422':
-          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema`, which cannot be applied yet), `expired` (the upload expired), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down` and the body errors also mark the bundle failed.
+          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema` and the site's database was destroyed; a site with none gets one on its first schema publish), `destructive_change_unconfirmed` (C-L34; a migration that drops, renames or retypes a table or column, or makes a column required, is not in `confirmMigrations`; `details.unconfirmed` lists the ids, and the bundle stays uploading so the publish can be sent again with them confirmed), `validation` (C-L34; the schema is over 1 MiB as compact UTF-8 JSON, with `details.bytes` and `details.limit`, or nests deeper than 1,000 levels, with `details.limit` 1000, and `details.cause` says which; or the gateway cannot plan the change, such as a drop no migration names, and `details.cause` holds its reasons, with the `table` and `column`) or `unique_violation` (rows break a unique set the schema adds), `expired` (the upload expired, unless a publish of this bundle already applied its schema to the site's database, in which case it is published when the publish is sent again), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down`, `destructive_change_unconfirmed` and the body errors also mark the bundle failed.
           content:
             application/json:
               schema:
@@ -3813,6 +3944,236 @@ paths:
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
                   timestamp: '2026-11-05T10:00:00Z'
+  /api/company/v2026-10/member-sites/{id}/data:
+    get:
+      operationId: companyMemberSiteDataTables
+      x-fluid-audience: company
+      summary: List the tables of a site's database
+      description: |
+        The tables the site's current bundle declares, each with its columns and the four system columns every table has. Nothing is read from the database.
+
+        Needs `member_site_data.view`, the permission to read what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.view` is refused with 403; a company grants it to the roles that moderate. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database or no published schema, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-data
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      responses:
+        '200':
+          description: The site's tables.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDataTablesResponse'
+              example:
+                tables:
+                - name: notes
+                  columns:
+                  - name: title
+                    type: text
+                  - name: id
+                    type: uuid
+                  - name: created_by
+                    type: text
+                  - name: created_at
+                    type: timestamp
+                  - name: updated_at
+                    type: timestamp
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database or no schema, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/data/{table}:
+    get:
+      operationId: companyMemberSiteDataRows
+      x-fluid-audience: company
+      summary: Read the rows of a table of a site's database
+      description: |
+        A page of one table's rows, newest first, with the table's row count. The sites gateway reads them as the admin, with no table rule applied. Every call is logged with the admin, the site and the table, before the gateway is asked.
+
+        Needs `member_site_data.view`, the permission to read what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.view` is refused with 403; a company grants it to the roles that moderate. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database, when its schema has no such table, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-data
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: table
+        in: path
+        required: true
+        description: The table's name, as the tables route lists it.
+        schema:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,62}$"
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Rows per page. Default 25, maximum 100.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+        example: 0
+        description: Rows to skip. Default 0.
+      responses:
+        '200':
+          description: A page of rows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDataRowsResponse'
+              example:
+                rows:
+                - id: 0199537f-0000-7000-8000-0000000000a1
+                  title: Hello
+                  created_by: '42'
+                  created_at: '2026-11-05T10:00:00.000Z'
+                  updated_at: '2026-11-05T10:00:00.000Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+                  pagination:
+                    limit: 25
+                    offset: 0
+                    count: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database, the schema has no such table, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A `limit` outside 1 to 100, an `offset` outside 0 to 1,000,000, another query key, or a request the sites gateway refused as `validation`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The sites gateway could not complete the call, because it was unreachable or refused, or answered with something unexpected. `details.error` names which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The sites gateway did not answer in time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: companyMemberSiteDataDelete
+      x-fluid-audience: company
+      summary: Delete rows of a table of a site's database
+      description: |
+        Deletes the rows the `ids[]` query parameters name, as the admin, with no table rule applied. The answer lists the ids of the rows the table had and the call removed; an id with no row is left out, so sending the same delete again is safe. Rows are never inserted or changed through this API. Every call is logged with the admin, the site, the table and the ids, before the gateway is asked.
+
+        Needs `member_site_data.delete`, the permission to delete what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.delete` is refused with 403, and reading rows does not allow deleting them. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database, when its schema has no such table, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-data
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: table
+        in: path
+        required: true
+        description: The table's name, as the tables route lists it.
+        schema:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,62}$"
+      - name: ids[]
+        in: query
+        required: true
+        description: The ids of the rows to delete, 1 to 90, sent as repeated `ids[]` query parameters.
+        style: form
+        explode: true
+        schema:
+          type: array
+          minItems: 1
+          maxItems: 90
+          items:
+            type: string
+            pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        example:
+        - 0199537f-0000-7000-8000-0000000000a1
+      responses:
+        '200':
+          description: The rows that were deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDataDeleted'
+              example:
+                deleted:
+                - 0199537f-0000-7000-8000-0000000000a1
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database, the schema has no such table, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: An `ids[]` that is missing, holds no id or more than 90, holds a value that is not a UUID, or another query key, or a request the sites gateway refused as `validation`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The sites gateway could not complete the call, because it was unreachable or refused, or answered with something unexpected. `details.error` names which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The sites gateway did not answer in time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-sites/{id}/branches/{slug}:
     get:
       operationId: companyMemberSiteBranchesShow
