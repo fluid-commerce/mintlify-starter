@@ -112,6 +112,15 @@ components:
         application/json:
           schema:
             "$ref": "#/components/schemas/ErrorResponse"
+    SiteManaged:
+      description: >-
+        The Mist is managed by its member site, so the company Mist API does not change it. It is
+        either named by a member site's backend or of kind site_backend. error.details.state is the
+        Mist's state. The site's owner can turn the backend off, or delete the site.
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/ErrorResponse"
     ServiceUnavailable:
       description: >-
         Billing admission could not be recorded, so nothing was allocated. This is not a refusal;
@@ -207,9 +216,9 @@ components:
           type: integer
         meta:
           "$ref": "#/components/schemas/Meta"
-    Mist:
+    MistFields:
       type: object
-      description: One Mist hosting — the deployed extension with its repo, database, and Vercel project.
+      description: The fields of one Mist hosting, whatever its kind.
       properties:
         id:
           type: string
@@ -223,7 +232,7 @@ components:
           enum: [provisioning, live, failed, pending_destroy, archived]
         kind:
           type: string
-          enum: [next_app]
+          description: What the hosting is for; each operation lists the kinds it can return.
         name:
           type:
           - string
@@ -272,6 +281,25 @@ components:
         updated_at:
           type: string
           format: date-time
+    Mist:
+      description: One Mist hosting — the deployed extension with its repo, database, and Vercel project.
+      allOf:
+      - "$ref": "#/components/schemas/MistFields"
+      - type: object
+        properties:
+          kind:
+            enum: [next_app]
+    ShownMist:
+      description: |
+        One Mist hosting as `GET /api/v202604/mists/{id}` and a name-only
+        `PATCH /api/v202604/mists/{id}` return it. A hosting a member site depends
+        on has kind `site_backend`; the other operations never return one.
+      allOf:
+      - "$ref": "#/components/schemas/MistFields"
+      - type: object
+        properties:
+          kind:
+            enum: [next_app, site_backend]
     EnvVar:
       type: object
       properties:
@@ -763,7 +791,7 @@ paths:
                 type: object
                 properties:
                   mist:
-                    "$ref": "#/components/schemas/Mist"
+                    "$ref": "#/components/schemas/ShownMist"
               example:
                 mist:
                   id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
@@ -797,7 +825,10 @@ paths:
         here.
 
         Returns `409` if the Mist is `pending_destroy`; restore it first
-        with `POST /api/v202604/mists/{mist_id}/restore`.
+        with `POST /api/v202604/mists/{mist_id}/restore`. Returns `409`
+        for a request that carries `kind` when the Mist is managed by its
+        member site (a site's backend); a request that carries only `name`
+        renames it.
 
         Requires a company admin token with the `mist.create` permission.
       x-fluid-audience: company
@@ -835,7 +866,7 @@ paths:
                 type: object
                 properties:
                   mist:
-                    "$ref": "#/components/schemas/Mist"
+                    "$ref": "#/components/schemas/ShownMist"
               example:
                 mist:
                   id: 0192f4c1-7a3e-7d52-9b61-3bed85a41c07
@@ -861,7 +892,11 @@ paths:
         '404':
           $ref: "#/components/responses/NotFound"
         '409':
-          description: Mist is pending_destroy
+          description: Mist is pending_destroy, or a `kind` change was refused because the Mist is managed by its member site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
         '422':
           $ref: "#/components/responses/Unprocessable"
     delete:
@@ -879,7 +914,8 @@ paths:
         endpoints return `409`. When the grace period ends, the
         app's resources are permanently torn down.
 
-        Returns `409` if the Mist is already `pending_destroy`.
+        Returns `409` if the Mist is already `pending_destroy`, or is
+        managed by its member site (a site's backend).
 
         Requires a company admin token with the `mist.destroy` permission.
       x-fluid-audience: company
@@ -924,7 +960,7 @@ paths:
         '404':
           $ref: "#/components/responses/NotFound"
         '409':
-          description: Mist is already pending_destroy.
+          description: Mist is already pending_destroy, or is managed by its member site.
           content:
             application/json:
               schema:
@@ -939,7 +975,9 @@ paths:
 
         Returns `410 Gone` if the grace period has already ended and the
         teardown is in progress, and `422` if the Mist is not in the
-        `pending_destroy` state.
+        `pending_destroy` state. Returns `409` for a Mist that is managed
+        by its member site (a site's backend), including one whose site
+        was deleted.
 
         Requires a company admin token with the `mist.destroy` permission,
         the same permission that deletes a Mist.
@@ -981,6 +1019,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         '404':
           $ref: "#/components/responses/NotFound"
+        '409':
+          $ref: "#/components/responses/SiteManaged"
         '410':
           description: Grace period has expired; teardown is in flight.
           content:
@@ -1056,7 +1096,8 @@ paths:
         Returns `422` with `error.details.type` of `managed_var` if `key`
         is a Mist-managed variable, such as `DATABASE_URL` or one of the
         `FLUID_*` connection variables. Returns `409` while the Mist is
-        `pending_destroy`.
+        `pending_destroy`, and for a Mist that is managed by its member
+        site (a site's backend).
 
         Requires a company admin token with the `mist.env_vars` permission.
       x-fluid-audience: company
@@ -1117,6 +1158,8 @@ paths:
                   timestamp: '2026-04-20T09:15:02Z'
         '400':
           $ref: "#/components/responses/BadRequest"
+        '409':
+          $ref: "#/components/responses/SiteManaged"
         '422':
           $ref: "#/components/responses/Unprocessable"
   "/api/v202604/mists/{mist_id}/env_vars/{key}":
@@ -1131,7 +1174,8 @@ paths:
 
         Returns `404` if no variable with that key exists, `422` with
         `error.details.type` of `managed_var` for a Mist-managed variable,
-        and `409` while the Mist is `pending_destroy`.
+        and `409` while the Mist is `pending_destroy` or is managed by its
+        member site (a site's backend).
 
         Requires a company admin token with the `mist.env_vars` permission.
       x-fluid-audience: company
@@ -1187,6 +1231,8 @@ paths:
                   timestamp: '2026-04-20T09:15:02Z'
         '404':
           $ref: "#/components/responses/NotFound"
+        '409':
+          $ref: "#/components/responses/SiteManaged"
         '422':
           $ref: "#/components/responses/Unprocessable"
     delete:
@@ -1199,7 +1245,8 @@ paths:
 
         Returns `404` if no variable with that key exists, `422` with
         `error.details.type` of `managed_var` for a Mist-managed variable,
-        and `409` while the Mist is `pending_destroy`.
+        and `409` while the Mist is `pending_destroy` or is managed by its
+        member site (a site's backend).
 
         Requires a company admin token with the `mist.env_vars` permission.
       x-fluid-audience: company
@@ -1233,6 +1280,8 @@ paths:
                   timestamp: '2026-04-20T09:15:02Z'
         '404':
           $ref: "#/components/responses/NotFound"
+        '409':
+          $ref: "#/components/responses/SiteManaged"
         '422':
           $ref: "#/components/responses/Unprocessable"
   "/api/v202604/mists/{mist_id}/deployments":
@@ -1611,7 +1660,8 @@ paths:
           - `502` `vendor_error` for any other Vercel failure.
 
         Returns `409` without `error.code` while the Mist is
-        `pending_destroy`.
+        `pending_destroy` and for a Mist that is managed by its member
+        site (a site's backend).
 
         Requires a company admin token with the `mist.create` permission.
       x-fluid-audience: company
@@ -1685,14 +1735,15 @@ paths:
                 "$ref": "#/components/schemas/ErrorResponse"
         '409':
           description: |
-            `not_provisioned`, or the Mist is `pending_destroy` (no
-            `error.code`).
+            `not_provisioned`, or the Mist is `pending_destroy` or managed
+            by its member site (no `error.code`).
           content:
             application/json:
               schema:
                 anyOf:
                 - "$ref": "#/components/schemas/MistTrafficEnablementError"
                 - "$ref": "#/components/schemas/MistPendingDestroyError"
+                - "$ref": "#/components/schemas/ErrorResponse"
               example:
                 error:
                   code: not_provisioned

@@ -72,7 +72,7 @@ components:
           "$ref": "#/components/schemas/SubscriptionSchedule"
         code:
           type: string
-          description: Machine code for the refusal. This surface serves shoppers, who are never refused for a blackout day. A picked bill date on one is saved on the next open day, and the success response carries the saved date. `next_bill_date_blackout` is kept for clients that already read it.
+          description: Machine code for the refusal. This surface serves shoppers, who are never refused for a blackout day. A picked bill date on one is saved on the next open day, and the success response carries the saved date. `early_order_confirmation_required` marks a shopper's earlier date that needs confirming. `next_bill_date_blackout` is kept for clients that already read it.
           example: next_bill_date_blackout
         blocked_date:
           type: string
@@ -90,6 +90,23 @@ components:
           format: date
           description: Present with `next_bill_date_blackout`. The nearest date the merchant's blackout rules allow, the date to offer instead.
           example: '2026-11-28'
+        scheduled_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The next bill date the subscription was scheduled to use, as an ISO 8601 calendar date.
+          example: '2026-12-10'
+        last_bill_date:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: Present with `early_order_confirmation_required`. The last local billed date, or null when the subscription has never billed.
+          example: '2026-11-10'
+        requested_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
+          example: '2026-11-30'
       required:
       - request_uuid
       - timestamp
@@ -936,6 +953,18 @@ components:
         auto_apply_points:
           type: boolean
           description: Whether renewal may automatically spend this member's reward points.
+        backup_cards_available:
+          type: boolean
+          description: Whether the company offers backup cards. When a renewal is declined, Fluid
+            then charges the member's default card, then their other saved cards. True when the
+            Subscription Pro feature renewal_card_cascade works for the company. The show and edit
+            responses carry it; the transition and waiver responses do not.
+        backup_cards_enabled:
+          type: boolean
+          description: Whether the member turned on backup cards at this company. One choice covers
+            every subscription the member has at the company. Backup cards are charged only while
+            this and backup_cards_available are both true. The show and edit responses carry it;
+            the transition and waiver responses do not.
         cancellation_reason_code:
           type:
           - string
@@ -1209,6 +1238,13 @@ components:
           type: string
           format: date
           description: A date strictly after today in the subscription's timezone. Preserves billing time of day and aligned shipping. Maximum two years for yearly plans, twelve months otherwise.
+        confirm_early_order:
+          type: boolean
+          description: >
+            The shopper's acknowledgement that an earlier next_bill_date places
+            and charges a new order. Required for a shopper write that moves
+            the date earlier than the scheduled one; without it the write is
+            refused with meta.code early_order_confirmation_required.
         auto_apply_points:
           type: boolean
           description: Opt in or out of automatically applying points on renewal. Requires an actual JSON boolean.
@@ -1217,12 +1253,22 @@ components:
           enum: [subscription, bundle]
           default: subscription
           description: Apply the points flag to this subscription or atomically to its renewal bundle. Payment and quantity edits always affect only the target. Bundle scope forbids address and date edits.
+        backup_cards_enabled:
+          type: boolean
+          description: Turn backup cards on or off for the member at this company. When a renewal
+            is declined, Fluid then charges the member's default card, then their other saved cards.
+            The choice is stored on the member, not on the subscription, so it covers every
+            subscription they have at the company and changed_ids is empty. Requires an actual JSON
+            boolean and must be sent on its own. Turning it on is refused with 422 while
+            backup_cards_available is false; turning it off always succeeds, so a member can
+            withdraw even while the company does not offer backup cards.
       anyOf:
       - required: [payment_method_id]
       - required: [address_id]
       - required: [quantity]
       - required: [next_bill_date]
       - required: [auto_apply_points]
+      - required: [backup_cards_enabled]
       allOf:
       - if:
           properties:
@@ -1235,6 +1281,10 @@ components:
             anyOf:
             - required: [address_id]
             - required: [next_bill_date]
+      - if:
+          required: [backup_cards_enabled]
+        then:
+          maxProperties: 1
     SubscriptionUpdateEnvelope:
       description: Refreshed detail plus public IDs covered and changed by the edit. No-op edits have an empty changed_ids array.
       allOf:
@@ -1731,7 +1781,7 @@ components:
           description: >-
             The cart's checkout token: the capability the checkout surface uses to edit and pay for this cart, and the
             identifier of this cart on these routes. Only ever shown for the member's own carts, and only to a
-            credential that can make changes; null for read-only member and portal JWTs.
+            credential that can make changes; null for a read-only member JWT, or a portal JWT minted read-only.
           example: ct_6d1f0c2a9b8e4f37
         state:
           type:
@@ -1858,7 +1908,7 @@ components:
           description: >-
             The cart's checkout token: the capability the checkout surface uses to edit and pay for this cart, and the
             identifier of this cart on these routes. Only ever shown for the member's own carts, and only to a
-            credential that can make changes; null for read-only member and portal JWTs.
+            credential that can make changes; null for a read-only member JWT, or a portal JWT minted read-only.
           example: ct_6d1f0c2a9b8e4f37
         state:
           type:
@@ -2101,6 +2151,7 @@ paths:
         owned or credited. Filters apply before pagination. Only page[cursor] and page[limit] pagination is supported;
         undeclared query parameters are refused. Keyword search requires filter[relationship]=placed, because it
         matches buyer names and emails, which are not searchable on credited orders. Whole-history bucket counts are not returned.
+        A site's script acting for a share holder reads own purchases only, and an order credited to them is left out.
         Responses are private and must be revalidated.
       parameters:
       - name: filter[relationship]
@@ -2269,6 +2320,7 @@ paths:
         Returns an own purchase or volume-credited order within the credential’s company. A credited order shows its buyer
         (customer, email, phone, shipping and billing addresses) only when the company's Team contact-visibility
         policy lets the caller see contact details, and never to an email-link credential; an own purchase always does.
+        A site's script acting for a share holder reads own purchases only, and an order credited to them is 404.
         The policy is applied on every read, on the primary, so a conditional request returns 200 when a
         visibility change alters the response body. Authentication runs before conditional cache handling.
         Responses are private. A credited order that shows its buyer has a zero-second freshness lifetime
@@ -2786,7 +2838,7 @@ paths:
       - subscriptions
       summary: Align selected product subscriptions atomically
       description: >-
-        Requires a writable member credential; legacy URL-carried JWTs are read-only. All responses use
+        Requires a writable member credential; a legacy member session JWT is read-only. All responses use
         Cache-Control: private, no-store. Align two to one hundred distinct subscriptions owned by the authenticated member onto one bill date
         and, for physical subscriptions, one owned address. The company must enable subscription bundling.
         Existing currency, country, digital/physical, date-cap and billing-cycle rules apply. All selected
@@ -3010,6 +3062,8 @@ paths:
                   payment_method:
                   discounts: []
                   auto_apply_points: false
+                  backup_cards_available: true
+                  backup_cards_enabled: false
                   next_order_preview:
                 meta:
                   request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
@@ -3073,7 +3127,12 @@ paths:
         quantity and payment changes apply only to the target. This operation does not
         quote, charge or dispatch a renewal. Return refreshed detail and public resolved/changed
         subscription IDs, including an empty changed_ids array for no-op edits. Responses
-        are no-store and never return 304.
+        are no-store and never return 304. backup_cards_enabled, sent on its own, turns backup
+        cards on or off for the member at this company instead of editing the subscription.
+        A shopper's earlier next_bill_date needs `confirm_early_order` set to true; without
+        it the 422 carries the `early_order_confirmation_required` code with
+        `scheduled_date`, `requested_date` and `last_bill_date`, which is null
+        when the subscription has never billed.
       parameters:
       - name: id
         in: path
@@ -3090,9 +3149,16 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/SubscriptionUpdate"
-            example:
-              quantity: 2
-              auto_apply_points: false
+            examples:
+              edit:
+                summary: Edit subscription fields
+                value:
+                  quantity: 2
+                  auto_apply_points: false
+              backup_cards:
+                summary: Turn on backup cards for the member
+                value:
+                  backup_cards_enabled: true
       responses:
         '400':
           description: The request body is not valid JSON.
@@ -3141,6 +3207,8 @@ paths:
                   discounts: []
                   next_order_preview:
                   auto_apply_points: false
+                  backup_cards_available: true
+                  backup_cards_enabled: false
                 meta:
                   request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0de'
                   timestamp: '2026-10-01T12:00:00Z'
@@ -3179,7 +3247,9 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: Unsupported fields, unavailable saved references, country change,
-            or another domain validation failure. No edit was applied.
+            a backup_cards_enabled that is not a JSON boolean, is sent with other fields, or is
+            true while the company does not offer backup cards, or another domain validation
+            failure. No edit was applied.
           content:
             application/json:
               schema:

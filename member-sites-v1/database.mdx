@@ -1,0 +1,257 @@
+---
+title: "The member site database"
+sidebarTitle: "Database"
+description: "Declare a member site's tables in db/schema.json, choose who may read and write each one with table rules, query them with fluid.db, and change them safely on publish."
+---
+
+A member site can keep its own data: RSVPs, guestbook entries, a team's goals. You declare its tables in `db/schema.json`, and your code reads and writes them through `fluid.db`. The browser never sends SQL and never holds a database credential. Each request goes to your site's host, which checks it against your schema and your table rules before it touches a row.
+
+<Note>
+Site databases are rolling out. Until they reach your company, a publish whose folder has a `db/schema.json` is refused with `no_database`, and nothing is published. A site without a `db/` folder publishes as usual.
+</Note>
+
+## Declare the tables
+
+`db/schema.json` lists the site's tables. This one keeps RSVPs for the site's events:
+
+```json db/schema.json
+{
+  "version": 1,
+  "tables": {
+    "rsvps": {
+      "columns": {
+        "event_id": { "type": "text", "required": true },
+        "name": { "type": "text", "required": true },
+        "guests": { "type": "integer", "default": 0 },
+        "note": { "type": "text" }
+      },
+      "rules": {
+        "read": "signed_in",
+        "insert": "signed_in",
+        "update": "creator",
+        "delete": "creator"
+      },
+      "indexes": [["event_id"]],
+      "unique": [["event_id", "created_by"]]
+    }
+  }
+}
+```
+
+| Key | What it holds |
+| --- | --- |
+| `version` | Always `1` |
+| `tables` | The tables, by name. At most 32 |
+| `columns` | A table's columns, by name. At most 64. Each has a `type`, and optionally `required` (default `false`) and a `default`, a literal value of the column's type |
+| `rules` | Who may `read`, `insert`, `update` and `delete`. See [Choose who reads and writes](#choose-who-reads-and-writes) |
+| `indexes` | At most 8 indexes, each of 1 to 3 columns |
+| `unique` | At most 4 unique sets, each of 1 to 3 columns |
+| `migrations` | The destructive changes you confirm on publish. See [Change the schema](#change-the-schema) |
+
+A table or column name starts with a lowercase letter and holds lowercase letters, digits and underscores, at most 63 characters. It can't start with `_` or `pg_`, and a column can't take a system column's name. The whole file is at most 1 MiB.
+
+### Column types
+
+| Type | Holds | In JSON |
+| --- | --- | --- |
+| `text` | UTF-8 text, at most 64 KiB | A string |
+| `integer` | A signed 64-bit integer | A number, or a string above 2^53 |
+| `number` | A double-precision number | A number |
+| `boolean` | `true` or `false` | A boolean |
+| `date` | A calendar date | `"2026-11-20"` |
+| `timestamp` | An instant, to the millisecond, in UTC | `"2026-11-20T18:30:00.000Z"` |
+| `uuid` | A UUID | A lowercase string |
+| `json` | Any JSON value, at most 64 KiB | JSON |
+
+One request's body is at most 1 MiB (see [Limits](#limits)), so a row you write through `fluid.db` is smaller than that. A `json` column compares as a whole value: filter it with `eq`, `neq`, `in` or `is` only, and don't order by it.
+
+### System columns
+
+Every table has four columns you don't declare. Your code can read them but never write them.
+
+| Column | Type | Set to |
+| --- | --- | --- |
+| `id` | `uuid` | A new id, on insert |
+| `created_by` | `text` | The writer's user id, or `null` for a guest |
+| `created_at` | `timestamp` | The time of the insert |
+| `updated_at` | `timestamp` | The time of the insert, then of each update |
+
+## Choose who reads and writes
+
+A rule applies to one table and one operation: `read`, `insert`, `update` or `delete`.
+
+| Rule | Admits |
+| --- | --- |
+| `public` | Anyone the site admits, a guest included on a public site |
+| `signed_in` | Any signed-in visitor the site admits |
+| `creator` | Only rows the visitor wrote: rows whose `created_by` is the visitor. A guest is refused. Not valid for `insert` |
+| `owner` | The site's owner, or a company site's admins. Every row |
+| `nobody` | No request from the browser. Company admins can still read and delete rows |
+
+An operation with no rule gets its default:
+
+| Operation | Default rule |
+| --- | --- |
+| `read` | `owner` |
+| `insert` | `signed_in` |
+| `update` | `creator` |
+| `delete` | `creator` |
+
+So with no `rules`, signed-in visitors can add rows and change their own, and only the owner reads them. Set `read` to `signed_in` or `public` when visitors should see each other's rows.
+
+<Warning>
+  Your site's code runs with each visitor's own access. Whatever it writes to a table, whoever its `read` rule admits can read, `created_by` included. Don't copy a visitor's private data, such as their orders, into a table other people can read.
+</Warning>
+
+## Query a table
+
+`fluid.db.from(table)` starts a query. Await it to send one request. It resolves `{ data, error }` whatever happens, and never throws for an answer.
+
+### Read rows
+
+```ts
+const { data, error } = await fluid.db
+  .from("rsvps")
+  .select("name,guests,created_at")
+  .eq("event_id", "fall-launch")
+  .order("created_at", { ascending: false })
+  .limit(50);
+```
+
+- `select()` or `select("*")` reads every declared column, then the system columns.
+- `select("name,guests", { count: "exact" })` also returns `count`, the number of rows that match.
+- `limit(n)` takes at most 1,000 rows. With no limit, a select returns 100.
+- `range(0, 49)` reads the first 50 rows, and `range(50, 99)` the next 50.
+- `single()` resolves the one row, and `validation` unless exactly one matches. `maybeSingle()` resolves `null` when none matches.
+
+### Write rows
+
+```ts
+const { error } = await fluid.db
+  .from("rsvps")
+  .insert({ event_id: "fall-launch", name: "Ana Rivera", guests: 2 });
+
+const { data: updated } = await fluid.db
+  .from("rsvps")
+  .update({ guests: 3 })
+  .eq("id", rsvpId)
+  .select();
+
+await fluid.db.from("rsvps").delete().eq("id", rsvpId);
+```
+
+- `insert` takes one row or an array of up to 500.
+- `update` and `delete` need a filter, so they never touch every row.
+- Add `.select()` after a write to get the written rows back.
+- A `creator` rule adds "rows this visitor wrote" to the filter for you, so an update on another person's row changes nothing.
+
+### Filter
+
+| Method | Matches |
+| --- | --- |
+| `eq`, `neq` | Equal, not equal |
+| `gt`, `gte`, `lt`, `lte` | Greater, greater or equal, less, less or equal |
+| `in(column, values)` | Any of the values |
+| `is(column, null)` | `null`. `eq(column, null)` matches nothing |
+| `like`, `ilike` | A pattern with `%` and `_`. `ilike` ignores the case of ASCII letters |
+| `not(column, op, value)` | The opposite of one condition |
+| `or("status.eq.open,guests.gt.2")` | Any of the conditions, in Supabase's filter-string form |
+| `match({ event_id: "fall-launch", guests: 2 })` | Every pair |
+
+Methods that `fluid.db` leaves out, such as `upsert`, `rpc`, `textSearch` and joins in `select`, throw a `NotSupportedError` that names the method.
+
+### Handle errors
+
+`error` is `null` on success. Otherwise it has a `code`, a `message`, and sometimes `details`:
+
+```ts
+const { error } = await fluid.db.from("guestbook").insert({ name, message });
+
+if (error?.code === "rule_denied") fluid.auth.signIn();
+```
+
+| Code | Status | What it means |
+| --- | --- | --- |
+| `validation` | 400 | The request doesn't fit the schema or a limit: an unknown table or column, a value of the wrong type, a write to a system column. `details` names the problem |
+| `rule_denied` | 403 | The table's rule doesn't admit this visitor, such as a guest on a `signed_in` table |
+| `no_database` | 404 | The site has no database |
+| `unique_violation` | 409 | The write breaks a `unique` set |
+| `quota_exceeded` | 429 | Too many requests, or the site's database is full. `details.limit` is `viewer` or `site` for a request limit |
+| `unavailable` | 503 | The database couldn't answer. Try again |
+| `timeout` | 504 | The request took longer than 5 seconds |
+
+### Limits
+
+| Limit | Default |
+| --- | --- |
+| Requests from one visitor to one site | 1,200 a minute |
+| Requests to one site | 6,000 a minute |
+| Rows in one site | 1,000,000 |
+| Storage of one site | 1 GiB |
+| Request body | 1 MiB |
+| Values in one filter | 90 |
+| Filter depth | 8 |
+| `like` or `ilike` pattern | 50 bytes |
+
+The row, storage and request limits of one site can be raised for your company.
+
+## Change the schema
+
+Each publish compares your new `db/schema.json` with the schema the site's database holds.
+
+| Change | On publish |
+| --- | --- |
+| Add a table; add a column that's optional or has a default; add or drop an index; drop a unique set; stop requiring a column; change a rule or a default | Applied |
+| Add a unique set | Applied, unless existing rows break it: then the publish fails with `unique_violation` |
+| Drop or rename a table or column; change a column's type; make a column required | Applied only when a migration names it and you confirm the migration |
+
+A destructive change needs a migration in `migrations`, with an id unique in the site. Keep every other key of the table as it was: a rule you leave out goes back to its default, and changing a rule is applied with no confirmation. This example renames `guests` and drops `note`, and changes nothing else:
+
+```json db/schema.json
+{
+  "version": 1,
+  "tables": {
+    "rsvps": {
+      "columns": {
+        "event_id": { "type": "text", "required": true },
+        "name": { "type": "text", "required": true },
+        "party_size": { "type": "integer", "default": 0 }
+      },
+      "rules": {
+        "read": "signed_in",
+        "insert": "signed_in",
+        "update": "creator",
+        "delete": "creator"
+      },
+      "indexes": [["event_id"]],
+      "unique": [["event_id", "created_by"]]
+    }
+  },
+  "migrations": [
+    {
+      "id": "2026-11-20-rsvp-party-size",
+      "steps": [
+        { "op": "rename_column", "table": "rsvps", "from": "guests", "to": "party_size" },
+        { "op": "drop_column", "table": "rsvps", "column": "note" }
+      ]
+    }
+  ]
+}
+```
+
+| Step | Fields |
+| --- | --- |
+| `drop_table` | `table` |
+| `rename_table` | `from`, `to` |
+| `drop_column` | `table`, `column` |
+| `rename_column` | `table`, `from`, `to` |
+| `change_type` | `table`, `column`, `to`. Allowed: `integer` to `number` or `text`, `number` to `text`, `boolean` to `text`, `date` to `timestamp`, `uuid` to `text` |
+| `require` | `table`, `column`, `fill`, the value that replaces each `null` first |
+
+Confirm each migration by its id when you publish:
+
+```bash
+fluid sites publish --confirm 2026-11-20-rsvp-party-size
+```
+
+Without the confirmation, the publish fails with `destructive_change_unconfirmed`, lists each unconfirmed migration, and changes nothing. A migration runs once: a later publish with the same migration doesn't run it again. A schema change that fails leaves the database and the current version of the site as they were.

@@ -3200,6 +3200,23 @@ components:
               minLength: 1
         address:
           $ref: '#/components/schemas/WarehouseSettingsAddressRequest'
+        country_assignments:
+          type: array
+          description: 'Countries to route to the new warehouse, honored only when the warehouse-country-assignment flag is on for the company. All or nothing: any invalid entry creates no warehouse.'
+          items:
+            type: object
+            required:
+              - country_id
+            properties:
+              country_id:
+                type: integer
+                description: The id of one of the company's countries.
+              customs:
+                type: string
+                enum:
+                  - DDP
+                  - DAP
+                description: Required when the country differs from the warehouse country; ignored otherwise.
     UpdateWarehouseSettingsRequestBodyApplicationJsonSchema:
       type: object
       properties:
@@ -3313,6 +3330,7 @@ components:
         - retention_offer_cooldown_days
         - blackout_rules
         - features
+        - reminder_channel_on
       properties:
         active:
           type: boolean
@@ -3325,6 +3343,9 @@ components:
           type: integer
           minimum: 1
           maximum: 14
+        reminder_channel_on:
+          type: boolean
+          description: 'Whether the company reminds shoppers before a renewal bills: the subscription reminder email is on, or sms_reminders is enabled. A milestone rule takes a catalog-priced item only while it is true, and renewals hold such items while it is false.'
         annual_notice_days:
           type: integer
           minimum: 15
@@ -3340,6 +3361,9 @@ components:
           items:
             $ref: '#/components/schemas/BlackoutRule'
           description: The blackout calendar, empty when the company has set no rule. The rules apply only while the blackout_dates feature works for the company.
+        customer_milestone_rules:
+          type: boolean
+          description: Whether this company may publish milestone rules limited once per customer. False while the subscription-pro-customer-milestones release flag is off for the company.
         features:
           type: object
           additionalProperties: false
@@ -3352,6 +3376,7 @@ components:
             - milestone_items
             - annual_renewal_notice
             - blackout_dates
+            - renewal_card_cascade
           properties:
             autoship_profiles:
               $ref: '#/components/schemas/SubscriptionProFeature'
@@ -3373,6 +3398,10 @@ components:
               allOf:
                 - $ref: '#/components/schemas/SubscriptionProFeature'
               description: 'Blackout dates: a computed bill date of a month or year plan moves off the days blackout_rules block. A date a merchant caller picks on one is refused with next_bill_date_blackout; a date a shopper picks on one is saved on the next open day. Day and week plans are untouched.'
+            renewal_card_cascade:
+              allOf:
+                - $ref: '#/components/schemas/SubscriptionProFeature'
+              description: 'Retry declined renewals on other saved cards: when a renewal is declined, charge the shopper''s default card, then their other saved cards, but only for shoppers who turned this on. A shopper turns it on per company with backup_cards_enabled on the checkout and member subscription APIs.'
     SubscriptionProSettingsResponse:
       type: object
       additionalProperties: false
@@ -3419,6 +3448,8 @@ components:
             annual_renewal_notice:
               type: boolean
             blackout_dates:
+              type: boolean
+            renewal_card_cascade:
               type: boolean
         reminder_lead_days:
           type: integer
@@ -4052,8 +4083,9 @@ components:
           type: string
           enum:
             - gift
+            - catalog
           default: gift
-          description: gift gives the item free. This API takes only gift for now. Rule items will take catalog (charged at the variant's catalog price on renewal orders) once every renewal worker reads it, so no worker can give a catalog item free; the response already reports each item's pricing.
+          description: gift gives the item free. catalog charges it on the renewal order at the variant's one-time catalog price for the subscription's market, currency and tier, read when the order is planned and never stored on the rule. A catalog item is a paid add-on. It is allowed only on renewal triggers (not first_order) and only on an announced rule, so the customer sees it with its price in the reminder and on the manage page and can decline it before the charge. It earns its catalog CV and QV whatever volume_policy says. With no price for the buyer it counts as unavailable, so out_of_stock_policy applies to it. It joins an order only when the rule version was written, and the rule last published, at least the reminder lead (at least 3 days) plus one day before that order's bill date. An occurrence due on an earlier order waits for the first order that can announce it; it is never skipped.
     SubscriptionProMilestoneRuleVersion:
       type: object
       additionalProperties: false
@@ -4106,7 +4138,8 @@ components:
           enum:
             - subscription
             - order
-          description: subscription gives each matching subscription its own items. order gives the items once per order. first_order takes order.
+            - customer
+          description: subscription gives each matching subscription its own items. order gives the items once per order. customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -4515,6 +4548,8 @@ components:
           enum:
             - subscription
             - order
+            - customer
+          description: customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -4601,6 +4636,8 @@ components:
           enum:
             - subscription
             - order
+            - customer
+          description: customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -4702,7 +4739,12 @@ components:
               items:
                 type: integer
                 minimum: 1
-              description: 'swap: the variants a customer may swap to; a subscription sees those of its own product'
+              description: 'swap: the variants a customer may swap to, 1 to 50; a subscription sees those of its own product. free_gift: the gift pool, 2 to 10 variants of the company, in the order the customer sees them'
+            choose_count:
+              type: integer
+              minimum: 1
+              maximum: 10
+              description: 'free_gift: how many gifts the customer picks, 1 to the pool size; each ships free, one of each, on the next order'
             months:
               type: integer
               minimum: 1
@@ -6939,6 +6981,10 @@ components:
                     maximum: 1
                     description: accepted / shown
                     rounded to 4 places.: null
+                  gifts_not_delivered:
+                    type: integer
+                    minimum: 0
+                    description: free_gift only. Gifts picked in the range's saved sessions that a renewal skipped because the gift and every unpicked pool variant stayed out of stock past their one hold.
             experiments:
               type: array
               description: Each experiment with sessions in the range, newest first, with both arms.
@@ -7258,6 +7304,7 @@ paths:
                   active: true
                   lock_version: 3
                   reminder_lead_days: 5
+                  reminder_channel_on: true
                   annual_notice_days: 30
                   retention_offer_cooldown_days: 90
                   blackout_rules: []
@@ -7298,6 +7345,11 @@ paths:
                       enabled: false
                       precondition_failure: null
                     blackout_dates:
+                      setting: false
+                      available: true
+                      enabled: false
+                      precondition_failure: null
+                    renewal_card_cascade:
                       setting: false
                       available: true
                       enabled: false
@@ -7361,6 +7413,7 @@ paths:
                   active: true
                   lock_version: 3
                   reminder_lead_days: 5
+                  reminder_channel_on: true
                   annual_notice_days: 30
                   retention_offer_cooldown_days: 90
                   blackout_rules:
@@ -7411,6 +7464,11 @@ paths:
                       enabled: false
                       precondition_failure: null
                     blackout_dates:
+                      setting: false
+                      available: true
+                      enabled: false
+                      precondition_failure: null
+                    renewal_card_cascade:
                       setting: false
                       available: true
                       enabled: false
@@ -7753,7 +7811,7 @@ paths:
       x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/settings on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change.
       x-fluid-audience: company
       summary: Add a draft milestone rule
-      description: Adds a draft rule with its first version. A draft gives nothing until it is published. Every variant, plan and product must belong to the company. A first_order rule gives one unit of each item once per order (grant_per order, quantity 1, no fallbacks). Needs the milestone_items feature to work for the company.
+      description: Adds a draft rule with its first version. A draft gives nothing until it is published. Every variant, plan and product must belong to the company. A first_order rule gives one unit of each item once per order or customer (grant_per order or customer, quantity 1, no fallbacks). Needs the milestone_items feature to work for the company.
       tags:
         - subscription-pro
       operationId: settings_v0_create_subscription_pro_milestone_rule
@@ -7791,7 +7849,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Invalid values (invalid_rule, with the fields in error.details), a changed trigger type (trigger_type_changed) or an archived rule (rule_archived). error.details.error names the refusal.
+          description: Invalid values (invalid_rule, with the fields in error.details), a changed trigger type (trigger_type_changed), an archived rule (rule_archived), customer-level rules while the subscription-pro-customer-milestones release flag is off (customer_milestones_unavailable), or a catalog-priced item while the company has no reminder channel on (reminder_required; see reminder_channel_on on the Subscription Pro settings). error.details.error names the refusal.
           content:
             application/json:
               schema:
@@ -7853,7 +7911,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Invalid values (invalid_rule, with the fields in error.details), a changed trigger type (trigger_type_changed) or an archived rule (rule_archived). error.details.error names the refusal.
+          description: Invalid values (invalid_rule, with the fields in error.details), a changed trigger type (trigger_type_changed), an archived rule (rule_archived), customer-level rules while the subscription-pro-customer-milestones release flag is off (customer_milestones_unavailable), or a catalog-priced item while the company has no reminder channel on (reminder_required; see reminder_channel_on on the Subscription Pro settings). error.details.error names the refusal.
           content:
             application/json:
               schema:
@@ -7962,7 +8020,7 @@ paths:
                   - type: free_gift
                     monetary: true
                     saves: true
-                    available: false
+                    available: true
                 status: 200
                 meta:
                   request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
@@ -7989,7 +8047,7 @@ paths:
       x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
       x-fluid-audience: company
       summary: Publish the next version of the company's cancel flow
-      description: 'Publishes the whole flow as the next version. Published versions never change, so each cancellation session can name the version it ran. The request names the version it read (0 for the default flow); a publish on top of a newer version is refused with 409 (stale_retention_flow). reasons must list each customer reason code exactly once and show at least one. A reason may leave the deprecated labels field out or send an empty object; a label is refused (details["reasons.N.labels"]) because customers see Fluid''s own wording for each reason in their language. Each reason shows at most two offers of distinct types, and each offer''s terms must suit its type: delay {days 7-60}, change_frequency {subscription_plan_id}, swap {variant_ids, 1-50}, pause {months 1-3}, discount {percentage 1-100, duration once, or repeating with duration_cycles 2-12}, contact_support {url, https}, skip_next {}. free_gift is refused with offer_type_unavailable until milestone items exist. An offer naming a plan or variant the company does not have is refused with unknown_offer_reference. The optional win_back names the days from a cancellation to the win-back email (1-90), the days its offer stays open (1-30) and a discount offer; a publish without win_back keeps the published flow''s win_back, and win_back null sends no win-back email. Answers 404 while the company cannot use the cancel flow, as GET does.'
+      description: 'Publishes the whole flow as the next version. Published versions never change, so each cancellation session can name the version it ran. The request names the version it read (0 for the default flow); a publish on top of a newer version is refused with 409 (stale_retention_flow). reasons must list each customer reason code exactly once and show at least one. A reason may leave the deprecated labels field out or send an empty object; a label is refused (details["reasons.N.labels"]) because customers see Fluid''s own wording for each reason in their language. Each reason shows at most two offers of distinct types, and each offer''s terms must suit its type: delay {days 7-60}, change_frequency {subscription_plan_id}, swap {variant_ids, 1-50}, pause {months 1-3}, discount {percentage 1-100, duration once, or repeating with duration_cycles 2-12}, contact_support {url, https}, skip_next {}, free_gift {variant_ids 2-10, choose_count 1 to the pool size}. A free_gift pool names active variants of the company. A free_gift is refused with legacy_renewal_lane while the company''s renewals bill on the legacy lane, which adds no gift line. An offer naming a plan or variant the company does not have is refused with unknown_offer_reference. The optional win_back names the days from a cancellation to the win-back email (1-90), the days its offer stays open (1-30) and a discount offer; a publish without win_back keeps the published flow''s win_back, and win_back null sends no win-back email. Answers 404 while the company cannot use the cancel flow, as GET does.'
       tags:
         - subscription-pro
       operationId: settings_v0_publish_subscription_pro_retention_flow
@@ -8074,7 +8132,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: The flow is invalid (invalid_retention_flow, with errors keyed by path), uses an offer type that is not available yet (offer_type_unavailable), or names a plan or variant the company does not have (unknown_offer_reference).
+          description: The flow is invalid (invalid_retention_flow, with errors keyed by path), uses an offer type that is not available yet (offer_type_unavailable), names a plan or variant the company does not have, or a free_gift variant that is not active (unknown_offer_reference), or offers a free_gift while the company's renewals bill on the legacy lane (legacy_renewal_lane).
           content:
             application/json:
               schema:
@@ -13209,6 +13267,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
+        '422':
+          description: The warehouse or a country assignment is invalid; no warehouse is created. Errors under country_assignments are keyed by the assignment's index.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
       requestBody:
         content:
           application/json:
@@ -13227,6 +13291,10 @@ paths:
                 city: Scranton
                 state: PA
                 postal_code: '18505'
+              country_assignments:
+                - country_id: 233
+                - country_id: 40
+                  customs: DAP
   /api/settings/warehouses/{id}:
     get:
       summary: Show a warehouse
@@ -13734,6 +13802,11 @@ paths:
                       shown: 6
                       accepted: 3
                       acceptance_rate: 0.5
+                    - offer_type: free_gift
+                      shown: 4
+                      accepted: 2
+                      acceptance_rate: 0.5
+                      gifts_not_delivered: 0
                   experiments:
                     - id: 12
                       control_version: 2

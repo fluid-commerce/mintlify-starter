@@ -440,6 +440,13 @@ components:
         exempt. The ship-to country is the country of the `address_id` the
         request sends, or of the subscription's own address when it sends
         none. Nothing is written and the subscription stays cancelled.
+
+        `meta.code` is `early_order_confirmation_required` when a shopper's
+        `next_bill_date` is earlier than the scheduled one and the request
+        does not send `confirm_early_order: true`. `meta` then carries
+        `scheduled_date`, `requested_date` and, when the subscription has
+        billed before, `last_bill_date` as ISO 8601 dates; `last_bill_date`
+        is null for a subscription that has never billed. Nothing is written.
       content:
         application/json:
           schema:
@@ -588,6 +595,11 @@ components:
               customer_total_points_decimal: "1250.0000"
               points_applied: 0
               points_applied_decimal: "0.0000"
+              points_requested:
+              points_requested_decimal:
+              points_held:
+              points_held_decimal:
+              points_hold_expires_at:
               remaining_customer_points: 1250
               remaining_customer_points_decimal: "1250.0000"
               max_applicable_points: 1250
@@ -1025,6 +1037,11 @@ components:
           customer_total_points_decimal: "1250.0000"
           points_applied: 0
           points_applied_decimal: "0.0000"
+          points_requested:
+          points_requested_decimal:
+          points_held:
+          points_held_decimal:
+          points_hold_expires_at:
           remaining_customer_points: 1250
           remaining_customer_points_decimal: "1250.0000"
           max_applicable_points: 1250
@@ -1374,6 +1391,11 @@ components:
           customer_total_points_decimal: "1250.0000"
           points_applied: 0
           points_applied_decimal: "0.0000"
+          points_requested:
+          points_requested_decimal:
+          points_held:
+          points_held_decimal:
+          points_hold_expires_at:
           remaining_customer_points: 1250
           remaining_customer_points_decimal: "1250.0000"
           max_applicable_points: 1250
@@ -1695,6 +1717,14 @@ components:
                     type: string
                   next_bill_date:
                     type: string
+                  confirm_early_order:
+                    type: boolean
+                    description: >
+                      The shopper's acknowledgement that an earlier next_bill_date
+                      places and charges a new order. Required for a shopper write
+                      that moves the date earlier than the scheduled one; without
+                      it the write is refused with meta.code
+                      early_order_confirmation_required.
                   volume_rep_id:
                     type: [integer, 'null']
                   metadata:
@@ -1724,10 +1754,38 @@ components:
                     enum:
                     - subscription
                     - bundle
-          example:
-            subscription:
-              quantity: 2
-              notes: Two cases this month - Q4 reports.
+                  backup_cards_enabled:
+                    description: |
+                      Turn backup cards on or off for this subscription's shopper
+                      at this company: when a renewal is declined, Fluid then
+                      charges the shopper's default card, then their other saved
+                      cards. The choice is stored on the shopper, not on the
+                      subscription, so it covers every subscription they have at
+                      the company.
+
+                      Only the two real booleans are accepted: `"false"`, `0` and
+                      `null` get a `422`. Send it on its own; any other property
+                      beside it gets a `422`. Only the shopper the subscription
+                      belongs to may change it. Turning it on needs
+                      `backup_cards_available` to be true; otherwise the response
+                      is a `422` naming `backup_cards_enabled`. Turning it off
+                      always succeeds, so a shopper can withdraw even while the
+                      company does not offer backup cards. The `200` changes no
+                      subscription row, so `changed_subscription_tokens` is empty,
+                      and it carries both backup-card fields.
+                    type: boolean
+          examples:
+            subscription_attributes:
+              summary: Change subscription attributes
+              value:
+                subscription:
+                  quantity: 2
+                  notes: Two cases this month - Q4 reports.
+            backup_cards:
+              summary: Turn on backup cards for the shopper
+              value:
+                subscription:
+                  backup_cards_enabled: true
     UpdateCart:
       content:
         application/json:
@@ -2101,7 +2159,7 @@ components:
           format: date-time
         code:
           type: string
-          description: Machine code for the refusal, for example `payment_unconfirmed`, `subscription_plan_inactive` (a subscribed line or requested plan is no longer active), or `next_bill_date_blackout` when a merchant caller (an admin credential) picks a bill date on a blackout day. A shopper is never refused for a blackout day. Their date is saved on the next open day and the success response carries the saved date.
+          description: Machine code for the refusal, for example `payment_unconfirmed`, `subscription_plan_inactive` (a subscribed line or requested plan is no longer active), `next_bill_date_blackout` when a merchant caller (an admin credential) picks a bill date on a blackout day, or `early_order_confirmation_required` when a shopper's earlier date is not confirmed. A shopper is never refused for a blackout day. Their date is saved on the next open day and the success response carries the saved date.
         blocked_date:
           type: string
           format: date
@@ -2118,6 +2176,23 @@ components:
           format: date
           description: Present with `next_bill_date_blackout`. The nearest date the merchant's blackout rules allow, the date to offer instead.
           example: '2026-11-28'
+        scheduled_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The next bill date the subscription was scheduled to use, as an ISO 8601 calendar date.
+          example: '2026-12-10'
+        last_bill_date:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: Present with `early_order_confirmation_required`. The last local billed date, or null when the subscription has never billed.
+          example: '2026-11-10'
+        requested_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
+          example: '2026-11-30'
         payment_uuid:
           type: string
           description: Present with `payment_unconfirmed`. The payment to look up before charging again.
@@ -2195,15 +2270,16 @@ components:
           description: The choice the cart holds, `null` when the cart holds none. Show the box checked only for an opt-in whose `disclosure_version` is the current `disclosure.version`.
           required:
           - opted_in
-          - phone
+          - phone_last4
           - disclosure_version
           properties:
             opted_in:
               type: boolean
               description: Whether the customer agreed to receive recurring subscription texts.
-            phone:
+            phone_last4:
               type: string
-              description: The phone number in E.164 form.
+              pattern: "^[0-9]{4}$"
+              description: The last 4 digits of the phone. The full number is never returned.
             disclosure_version:
               type: string
               description: The version of the disclosure the choice was recorded against.
@@ -2217,7 +2293,6 @@ components:
       type: object
       required:
       - opted_in
-      - phone
       - disclosure_version
       properties:
         opted_in:
@@ -2225,7 +2300,11 @@ components:
           description: Whether the customer agrees to receive recurring subscription texts.
         phone:
           type: string
-          description: The phone number to text, in any format a customer types. Only US and Canadian numbers are accepted.
+          description: The phone number to text, in any format a customer types. Only US and Canadian numbers are accepted. Leave it out to act on the phone the consent already names (see the operation).
+        phone_last4:
+          type: string
+          pattern: "^[0-9]{4}$"
+          description: Required without `phone`. The `phone_last4` the page showed. The write applies only while the phone on record still ends in these digits, and is otherwise refused with `phone_changed`.
         disclosure_version:
           type: string
           description: The version of the disclosure the customer saw, from the GET on the same path.
@@ -2258,14 +2337,15 @@ components:
           additionalProperties: false
           required:
           - opted_in
-          - phone
+          - phone_last4
           properties:
             opted_in:
               type: boolean
               description: Whether the customer agrees to receive recurring subscription texts.
-            phone:
+            phone_last4:
               type: string
-              description: The phone number in E.164 form.
+              pattern: "^[0-9]{4}$"
+              description: The last 4 digits of the phone. The full number is never returned.
         applied:
           type: boolean
           description: False when the write was out of the page's order and changed nothing. `sms_consent` is then the choice that stands.
@@ -2288,14 +2368,15 @@ components:
           type: object
           additionalProperties: false
           required:
-          - phone
+          - phone_last4
           - status
           properties:
-            phone:
+            phone_last4:
               type:
               - string
               - 'null'
-              description: The phone in E.164 form that the subscription's renewal reminders go to, or null when it is not a US or Canadian phone.
+              pattern: "^[0-9]{4}$"
+              description: The last 4 digits of the phone that the subscription's renewal reminders go to, or null when it is not a US or Canadian phone. The full number is never returned.
             status:
               type:
               - string
@@ -2331,6 +2412,8 @@ components:
           - invalid_params
           - stale_disclosure
           - unsupported_phone_country
+          - phone_required
+          - phone_changed
           - invalid
           description: Why the choice was refused.
         errors:
@@ -3040,6 +3123,10 @@ components:
                 - type: 'null'
               cancel_flow:
                 "$ref": "#/components/schemas/SubscriptionCancelFlow"
+              backup_cards_available:
+                type: boolean
+              backup_cards_enabled:
+                type: boolean
     SubscriptionUpdateResponse:
       description: |
         The updated subscription, plus which subscriptions the write covered and
@@ -3201,6 +3288,120 @@ components:
                     different currency is refused before the totals are
                     compared.
                   example: USD
+    PointsHeldChangedErrorResponse:
+      description: |
+        The points held for the order are no longer the figure the shopper
+        was shown, so nothing was charged. Either the client sent a stale
+        `points_held` or `points_held_decimal`, or checkout had to hold the
+        points again and could not hold the same figure, so this is reachable
+        even when the client sent neither. A redirect payment's callback, whose
+        provider may already have taken the money, never answers this; it
+        keeps the `points` refusal. `meta.points` is the figure the order
+        would spend now, so the client can show the shopper what changed
+        before asking again.
+      type: object
+      additionalProperties: false
+      required:
+      - error_message
+      - errors
+      - meta
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - points_held
+          properties:
+            points_held:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+          - request_id
+          - timestamp
+          - code
+          - cart
+          - points
+          properties:
+            request_id:
+              type:
+              - string
+              - 'null'
+            timestamp:
+              type: string
+              format: date-time
+            code:
+              type: string
+              const: points_held_changed
+            error_details:
+              type: array
+              minItems: 1
+              description: Every reason this checkout was refused, each with a stable `code`, the cart `field` to fix, and the `payment` outcome.
+              items:
+                "$ref": "#/components/schemas/CheckoutErrorDetail"
+            coded_recovery:
+              type: boolean
+              description: Present and true when the company routes checkout refusals by `error_details` (CHECKOUT_CODED_REFUSALS). Temporary; removed with that flag.
+            cart:
+              type: object
+              additionalProperties: false
+              required:
+              - amount_total
+              - currency_code
+              properties:
+                amount_total:
+                  type:
+                  - string
+                  - 'null'
+                  description: The cart's current total, as in `CartTotalChangedErrorResponse`.
+                  example: "128.85"
+                currency_code:
+                  type: string
+                  example: USD
+            points:
+              type: object
+              additionalProperties: false
+              description: The points the order would spend now, as the cart's
+                fields of the same names carry them. With no live hold, the
+                points the cart applies, held and requested alike, with a null
+                expiry. Every value is null when the order would spend no
+                points. Resend `points_held` (or
+                `points_held_decimal`) once the shopper has seen it.
+              required:
+              - points_requested
+              - points_requested_decimal
+              - points_held
+              - points_held_decimal
+              - points_hold_expires_at
+              properties:
+                points_requested:
+                  type:
+                  - integer
+                  - 'null'
+                points_requested_decimal:
+                  type:
+                  - string
+                  - 'null'
+                  pattern: '^\d+\.\d{4}$'
+                points_held:
+                  type:
+                  - integer
+                  - 'null'
+                points_held_decimal:
+                  type:
+                  - string
+                  - 'null'
+                  pattern: '^\d+\.\d{4}$'
+                points_hold_expires_at:
+                  type:
+                  - string
+                  - 'null'
+                  format: date-time
     LockedCartErrorResponse:
       type: object
       additionalProperties: false
@@ -3402,6 +3603,11 @@ components:
           - customer_total_points_decimal
           - points_applied
           - points_applied_decimal
+          - points_requested
+          - points_requested_decimal
+          - points_held
+          - points_held_decimal
+          - points_hold_expires_at
           - remaining_customer_points
           - remaining_customer_points_decimal
           - max_applicable_points
@@ -3736,6 +3942,28 @@ components:
               pattern: '^-?\d+\.\d{4}$'
               description: Applied points as an exact four-place decimal string.
               example: "120.0000"
+            points_requested:
+              type: [integer, 'null']
+              description: The whole points the shopper asked for, floored. Null when the cart holds no points.
+              example: 150
+            points_requested_decimal:
+              type: [string, 'null']
+              pattern: '^\d+\.\d{4}$'
+              description: The points the shopper asked for as an exact four-place decimal string. Null when the cart holds no points.
+              example: "150.0000"
+            points_held:
+              type: [integer, 'null']
+              description: The whole points the cart's hold takes, floored. Below points_requested when fewer points were available. Null when the cart holds no points.
+              example: 100
+            points_held_decimal:
+              type: [string, 'null']
+              pattern: '^\d+\.\d{4}$'
+              description: The points the cart's hold takes as an exact four-place decimal string. Send it with complete as the figure the shopper saw. Null when the cart holds no points.
+              example: "100.0000"
+            points_hold_expires_at:
+              type: [string, 'null']
+              format: date-time
+              description: When the cart's points hold lapses unless checkout extends it. Null when the cart holds no points.
             remaining_customer_points:
               type: integer
             remaining_customer_points_decimal:
@@ -4296,6 +4524,37 @@ components:
           type: array
           description: The plain cancel's reason picker, in order. Empty unless enabled is true; while the Subscription Pro session is open the session serves its own reasons, so these are for the plain fallback when a session cannot open.
           items: { "$ref": "#/components/schemas/CancelReasonOption" }
+    SubscriptionSignInResponse:
+      type: object
+      additionalProperties: false
+      required: [company]
+      properties:
+        company:
+          type: object
+          additionalProperties: false
+          required: [uuid, identity_sign_in_enabled, checkout_identity_enabled, name, subdomain]
+          properties:
+            uuid:
+              type: string
+              format: uuid
+              description: The company's uuid_v7, which the identity service names it by (its `org`).
+            identity_sign_in_enabled:
+              type: boolean
+            checkout_identity_enabled:
+              type: boolean
+            name:
+              type: string
+            subdomain:
+              type: [string, 'null']
+    SubscriptionSignInNotFound:
+      type: object
+      additionalProperties: false
+      required: [error_message, errors]
+      properties:
+        error_message:
+          type: string
+        errors:
+          type: object
     WinBackOfferResponse:
       type: object
       additionalProperties: false
@@ -4343,7 +4602,7 @@ components:
           required: [status, product_title, variant_title, quantity, price, currency, next_bill_date]
           properties:
             status: { type: string, description: cancelled until the offer is taken, then active. }
-            product_title: { type: [string, "null"] }
+            product_title: { type: [string, "null"], description: "In the request's language_iso when the catalog translates the product, else the product's default title." }
             variant_title: { type: [string, "null"] }
             quantity: { type: integer }
             price: { type: [string, "null"], description: The unit price before the offer, as a decimal string. }
@@ -4400,10 +4659,10 @@ components:
       required: [offer_id, type, terms, saves, preview]
       properties:
         offer_id: { type: string, description: Server-issued; accept the offer with it. }
-        type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, contact_support] }
+        type: { type: string, enum: [skip_next, delay, change_frequency, swap, pause, discount, free_gift, contact_support] }
         terms:
           type: object
-          description: The merchant's terms for the offer type, for example percentage and duration for discount, days for delay, months for pause, url for contact_support.
+          description: The merchant's terms for the offer type, for example percentage and duration for discount, days for delay, months for pause, url for contact_support, variant_ids and choose_count for free_gift.
         saves: { type: boolean, description: Whether accepting keeps the subscription. contact_support only links to support and cannot be accepted. }
         preview:
           type: [object, 'null']
@@ -4424,6 +4683,20 @@ components:
             properties:
               variant_id: { type: integer }
               title: { type: [string, 'null'] }
+        gift_options:
+          type: array
+          description: |
+            For free_gift, the gifts the customer picks from, in the merchant's order. The customer
+            picks exactly `terms.choose_count` of them. Each ships free, one of each, on the next order.
+          items:
+            type: object
+            additionalProperties: false
+            required: [variant_id, product_title, variant_title, image_url]
+            properties:
+              variant_id: { type: integer }
+              product_title: { type: [string, 'null'] }
+              variant_title: { type: [string, 'null'] }
+              image_url: { type: [string, 'null'] }
     CancellationReasonRequest:
       type: object
       additionalProperties: false
@@ -4447,6 +4720,10 @@ components:
       properties:
         offer_id: { type: string }
         variant_id: { type: [integer, 'null'], description: For swap, one of the offer's variant_options. }
+        variant_ids:
+          type: [array, 'null']
+          description: For free_gift, exactly `terms.choose_count` distinct variant ids from the offer's gift_options.
+          items: { type: integer }
     SubscriptionCancelRequest:
       type: object
       additionalProperties: false
@@ -4958,6 +5235,29 @@ components:
                 session cannot open. Send the chosen code as `reason_code` on
                 cancel.
               "$ref": "#/components/schemas/SubscriptionCancelFlow"
+            backup_cards_available:
+              description: |
+                Whether the company offers backup cards: when a renewal is
+                declined, Fluid charges the shopper's default card, then their
+                other saved cards. True when the Subscription Pro feature
+                `renewal_card_cascade` works for the company (Pro active and the
+                merchant's setting on). Present only when the caller is the
+                shopper the subscription belongs to, on the show response and on
+                a `backup_cards_enabled` write. A merchant, rep or machine
+                credential never gets it, and the other subscription payloads do
+                not carry it.
+              type: boolean
+            backup_cards_enabled:
+              description: |
+                Whether this subscription's shopper turned on backup cards at
+                this company. One choice covers every subscription the shopper
+                has at the company. Backup cards are charged only while this and
+                `backup_cards_available` are both true. Present only when the
+                caller is the shopper the subscription belongs to, on the show
+                response and on a `backup_cards_enabled` write. A merchant, rep
+                or machine credential never gets it, and the other subscription
+                payloads do not carry it.
+              type: boolean
             blackout_days:
               description: |
                 Days of the month (1 to 31) a date picker must grey for this
@@ -7406,7 +7706,8 @@ components:
           # enrollment_pack, enrollment_member_type, pricing_snapshot and
           # resulting_member_type, which both views declare (enrollment_member_type
           # and resulting_member_type added in AC-5.2: requested intent and
-          # purchase-time recorded outcome). No field is `if:`-gated.
+          # purchase-time recorded outcome), and the two points decimal twins of
+          # :with_decimal_points (ENG-4383). No field is `if:`-gated.
           # Everything else appears in only one of the two views and stays optional.
           required:
           - id
@@ -7425,10 +7726,12 @@ components:
           - financial_status
           - warehouse_id
           - points_applied
+          - points_applied_decimal
           - points_applied_amount
           - points_applied_amount_in_currency
           - order_total_after_points_redemption
           - total_points_credited
+          - total_points_credited_decimal
           - free_shipping
           - discount_codes
           - created_subscriptions
@@ -7507,6 +7810,16 @@ components:
               - 'null'
             points_applied:
               type: integer
+            points_applied_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              example: "120.0000"
+              description: The same figure as points_applied, as a decimal string with four places; points_applied is this figure rounded down to a whole number.
+            total_points_credited_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              example: "120.0000"
+              description: The same figure as total_points_credited, as a decimal string with four places; total_points_credited is this figure rounded down to a whole number.
             points_applied_amount:
               type: number
             points_applied_amount_in_currency:
@@ -9611,6 +9924,25 @@ components:
       - type: object
         additionalProperties:
           "$ref": "#/components/schemas/JsonValue"
+    WalletOwnedElsewhereResponse:
+      description: |
+        403 body when the wallet found by the caller's email belongs to another
+        account. Returned only while FLUID_PAY_EMAIL_FALLBACK_OWNERSHIP is on.
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      properties:
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - fluid_pay_account
+          properties:
+            fluid_pay_account:
+              type: array
+              items:
+                type: string
     ErrorBag:
       description: Validation errors keyed by field, a list of errors, a single error
         message, or null when no structured error details are available.
@@ -10574,6 +10906,28 @@ components:
               pattern: '^-?\d+\.\d{4}$'
               description: Applied points as an exact four-place decimal string.
               example: "120.0000"
+            points_requested:
+              type: [integer, 'null']
+              description: The whole points the shopper asked for, floored. Null when the cart holds no points.
+              example: 150
+            points_requested_decimal:
+              type: [string, 'null']
+              pattern: '^\d+\.\d{4}$'
+              description: The points the shopper asked for as an exact four-place decimal string. Null when the cart holds no points.
+              example: "150.0000"
+            points_held:
+              type: [integer, 'null']
+              description: The whole points the cart's hold takes, floored. Below points_requested when fewer points were available. Null when the cart holds no points.
+              example: 100
+            points_held_decimal:
+              type: [string, 'null']
+              pattern: '^\d+\.\d{4}$'
+              description: The points the cart's hold takes as an exact four-place decimal string. Send it with complete as the figure the shopper saw. Null when the cart holds no points.
+              example: "100.0000"
+            points_hold_expires_at:
+              type: [string, 'null']
+              format: date-time
+              description: When the cart's points hold lapses unless checkout extends it. Null when the cart holds no points.
             points_applied_amount_in_currency:
               type: string
             points_enabled:
@@ -10895,6 +11249,11 @@ components:
           - sms_marketing_preselected
           - points_applied
           - points_applied_decimal
+          - points_requested
+          - points_requested_decimal
+          - points_held
+          - points_held_decimal
+          - points_hold_expires_at
           - points_applied_amount_in_currency
           - points_enabled
           - price_inclusive_of_tax
@@ -14548,6 +14907,11 @@ components:
         type:
           type: string
           description: Processor class (CreditCard, Paypal, Affirm, Klarna, Droplet, ...).
+        source:
+          type: [string, 'null']
+          description: Where the payment method came from (card, google_pay,
+            apple_pay, braintree_paypal, paypal, ...). A Google Pay method has
+            type CreditCard, so only the source tells it from a card.
         # CreditCard-specific
         payment_method_type:
           type: [string, 'null']
@@ -14830,6 +15194,11 @@ paths:
                   customer_total_points_decimal: "0.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 0
                   remaining_customer_points_decimal: "0.0000"
                   max_applicable_points: 0
@@ -15283,6 +15652,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -15800,6 +16174,11 @@ paths:
                   phone: null
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   points_applied_amount_in_currency: $0.00
                   points_enabled: true
                   price_inclusive_of_tax: false
@@ -16324,6 +16703,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -16738,6 +17122,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -17145,6 +17534,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -17803,6 +18197,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -18414,6 +18813,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -18922,6 +19326,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 500
                   points_applied_decimal: "500.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 750
                   remaining_customer_points_decimal: "750.0000"
                   max_applicable_points: 1250
@@ -19359,6 +19768,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -19666,8 +20080,9 @@ paths:
         `disclosure_version` is the current `version` shows it checked, and a
         decline shows it unchecked. An opt-in recorded against an older
         `disclosure_version` is for text the shopper no longer sees. Replace it
-        with a decline through `PUT`, or the checkout copies it. The phone is
-        in E.164 form. The response never carries an IP address or a user agent.
+        with a decline through `PUT`, or the checkout copies it. The response
+        gives only the last 4 digits of the phone, in `phone_last4`, and never
+        carries an IP address or a user agent.
 
         Returns `404` when Subscription Pro text reminders are not available to
         the cart's company. The `404` is the same as for an unknown cart token.
@@ -19688,10 +20103,10 @@ paths:
               example:
                 sms_consent:
                   opted_in: true
-                  phone: '+14155552671'
-                  disclosure_version: 2026-10-draft-1
+                  phone_last4: '2671'
+                  disclosure_version: 2026-11-v1
                 disclosure:
-                  version: 2026-10-draft-1
+                  version: 2026-11-v1
                   text: I agree to get recurring automated texts about your subscription from Dunder Mifflin Alerts, up to 3/day.
                     Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.
                     Terms https://dundermifflin.example/terms-conditions Privacy https://dundermifflin.example/privacy-policy
@@ -19735,8 +20150,13 @@ paths:
         Send `opted_in`, the `phone` the shopper typed, the
         `disclosure_version` from `GET` on this path, and the write's
         `sequence`. Only US and Canadian phone
-        numbers are accepted. The response repeats the choice with the phone in
-        E.164 form and never carries the IP address or user agent.
+        numbers are accepted. A decline may leave out `phone`: it is then for
+        the phone the cart's choice holds, so a page can withdraw a saved
+        opt-in without the full number. It then sends the `phone_last4` it
+        showed, and is refused with `phone_changed` when the cart's phone no
+        longer ends in it. An opt-in must send `phone`. The
+        response repeats the choice with only the last 4 digits of the phone,
+        in `phone_last4`, and never carries the IP address or user agent.
 
         Returns `404` when Subscription Pro text reminders are not available to
         the cart's company, the same as for an unknown cart token. Returns
@@ -19745,7 +20165,10 @@ paths:
         not current (the response names the current one in `current_version`;
         a decline is recorded whatever version it names), and
         `unsupported_phone_country` for a phone that is not a valid US or
-        Canadian number. A cart that is charged but not yet processed still
+        Canadian number, `phone_required` for an opt-in without `phone` or a
+        decline without `phone` on a cart that holds no choice, and
+        `phone_changed` (see above). A cart that
+        is charged but not yet processed still
         accepts the choice and returns `200`. Returns `410` for a cart that is
         processed or in an authorized enrollment, and `409` while a redirect
         payment is open.
@@ -19765,7 +20188,7 @@ paths:
             example:
               opted_in: true
               phone: "(415) 555-2671"
-              disclosure_version: 2026-10-draft-1
+              disclosure_version: 2026-11-v1
               sequence: 3
       responses:
         '200':
@@ -19777,7 +20200,7 @@ paths:
               example:
                 sms_consent:
                   opted_in: true
-                  phone: '+14155552671'
+                  phone_last4: '2671'
                 applied: true
                 sequence: 3
                 meta:
@@ -19803,7 +20226,7 @@ paths:
                 error_message: The disclosure is out of date
                 error_code: stale_disclosure
                 errors: {}
-                current_version: 2026-10-draft-1
+                current_version: 2026-11-v1
                 meta:
                   request_id: 6f1c2a9e-3b7d-4e58-9a21-c4d8e0b7f312
                   timestamp: '2026-10-12T15:22:08Z'
@@ -19931,6 +20354,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -20429,6 +20857,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -20935,7 +21368,7 @@ paths:
                   timestamp: '2026-09-14T15:24:41Z'
         '409':
           description: |
-            One of three conflicts, told apart by `errors` and `meta.code`.
+            One of four conflicts, told apart by `errors` and `meta.code`.
 
             `errors.checkout`: a checkout is already in flight for this cart.
             Retries are rejected until the in-flight attempt finishes, so a
@@ -20948,12 +21381,18 @@ paths:
             cart no longer says the total the client sent as `expected_total`.
             Nothing was charged. `meta.cart` carries the current total; refetch
             the cart, show the shopper the new total, and submit again with it.
+
+            `errors.points_held` (`meta.code` = `points_held_changed`): the
+            points held for the order are no longer the figure the shopper was
+            shown. Nothing was charged. `meta.points` carries the figure the
+            cart holds now; show it to the shopper and submit again with it.
           content:
             application/json:
               schema:
                 anyOf:
                 - "$ref": "#/components/schemas/ErrorResponse"
                 - "$ref": "#/components/schemas/CartTotalChangedErrorResponse"
+                - "$ref": "#/components/schemas/PointsHeldChangedErrorResponse"
                 - "$ref": "#/components/schemas/PaymentInProgressErrorResponse"
         '422':
           description: |
@@ -21103,6 +21542,29 @@ paths:
                     shown, from `currency_code` of the same cart. Requires
                     `expected_total`.
                   example: USD
+                points_held:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    The points the client showed the shopper as held for this
+                    order, taken from `points_held` of the cart the client last
+                    rendered. When the cart's points hold no longer holds that
+                    figure the response is `409` with `meta.code` =
+                    `points_held_changed` and nothing is charged. Omit it to
+                    skip that check. When sent with `points_held_decimal`, the
+                    two must agree. Sent alone, it confirms only a whole hold:
+                    a hold that takes a fraction of a point needs
+                    `points_held_decimal`, else the response is `409`.
+                  example: 100
+                points_held_decimal:
+                  type: string
+                  pattern: '^\d+(\.\d{1,4})?$'
+                  description: |
+                    The same figure as a decimal string, from
+                    `points_held_decimal` of the cart. It may hold a fraction,
+                    and the hold must take exactly that figure, or the
+                    response is `409` with `meta.code` = `points_held_changed`.
+                  example: '100.0000'
             example:
               kount_session_id: 4f2a9c7e1b8d4035a6e2c9f1d7b3e580
               accepted_agreement_ids:
@@ -21222,6 +21684,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -21675,6 +22142,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -22092,6 +22564,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -22523,6 +23000,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -22909,6 +23391,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -23331,6 +23818,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -23734,6 +24226,11 @@ paths:
                   customer_total_points_decimal: "1250.0000"
                   points_applied: 0
                   points_applied_decimal: "0.0000"
+                  points_requested:
+                  points_requested_decimal:
+                  points_held:
+                  points_held_decimal:
+                  points_hold_expires_at:
                   remaining_customer_points: 1250
                   remaining_customer_points_decimal: "1250.0000"
                   max_applicable_points: 1250
@@ -24059,6 +24556,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24185,6 +24692,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24290,6 +24807,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24359,6 +24886,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24497,6 +25034,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -24527,6 +25074,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -24557,6 +25114,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25036,6 +25603,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25122,6 +25699,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25421,6 +26008,16 @@ paths:
       - bearer_auth: []
       description: Vaults payment credentials via VGS. Requires a valid customer JWT.
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25478,6 +26075,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -25508,6 +26115,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -25538,6 +26155,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -26857,6 +27484,14 @@ paths:
         the offer itself ends at expires_at.
       security:
       - bearer_auth: []
+      parameters:
+      - name: language_iso
+        in: query
+        required: false
+        description: The language to name the product in, such as de or zh-TW. A product with no
+          translation in it, or a language the API does not know, keeps the product's default title.
+        schema:
+          type: string
       responses:
         '200':
           description: The offer.
@@ -26905,6 +27540,14 @@ paths:
         discount is refused, with the refusal in errors.code. Requires the win-back token as the bearer.
       security:
       - bearer_auth: []
+      parameters:
+      - name: language_iso
+        in: query
+        required: false
+        description: The language to name the product in, such as de or zh-TW. A product with no
+          translation in it, or a language the API does not know, keeps the product's default title.
+        schema:
+          type: string
       responses:
         '200':
           description: The offer, taken.
@@ -27413,6 +28056,12 @@ paths:
                       type:
                       - integer
                       - 'null'
+                    confirm_early_order:
+                      type: boolean
+                      description: >
+                        The shopper's acknowledgement that a next_bill_date earlier
+                        than a member's scheduled date places and charges a new
+                        order for that member.
                   required:
                   - subscription_tokens
                   - next_bill_date
@@ -27466,6 +28115,12 @@ paths:
                   type: string
                   format: date
                   description: The date every member bills next, in the members' shared timezone.
+                confirm_early_order:
+                  type: boolean
+                  description: >
+                    The shopper's acknowledgement that a next_bill_date earlier
+                    than the scheduled date places and charges a new order for
+                    every member.
       responses:
         '200':
           description: The profile after the change.
@@ -28815,6 +29470,90 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/SubscriptionProfileErrorResponse"
+  "/api/checkout/v2026-04/subscriptions/{token}/sign-in":
+    get:
+      summary: Get the sign-in facts for a subscription link
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_get_subscription_sign_in
+      x-fluid-audience: public
+      description: >-
+        Public. Names the company a subscription token belongs to and how its shoppers sign in, so a
+        landing page that holds only the link can start the sign-in. The lookup is by the token string
+        only; a numeric id never resolves. A disabled subscription still resolves. Every miss, whether
+        an unknown token, a company that is not active or has not confirmed its signup, or a sandbox twin, is the same
+        `404`. Throttled per IP, answering `429`.
+      security: []
+      parameters:
+      - name: token
+        in: path
+        required: true
+        description: Subscription token (sb_xxx)
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The company's sign-in facts.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionSignInResponse"
+              example:
+                company:
+                  uuid: 0192f0c4-7d3e-7a10-9b52-3f6a1c8e5d20
+                  identity_sign_in_enabled: true
+                  checkout_identity_enabled: false
+                  name: Primex
+                  subdomain: primex
+        '404':
+          description: The token does not resolve to a company that can be signed in to.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionSignInNotFound"
+        '429':
+          description: Too many requests from this address.
+  "/api/checkout/v2026-04/sign-in-company":
+    get:
+      summary: Get the sign-in facts for a shop
+      tags:
+      - subscriptions
+      operationId: checkout_v2026_04_get_sign_in_company
+      x-fluid-audience: public
+      description: >-
+        Public. The same facts as the subscription sign-in endpoint, for the management page, which
+        has a shop and no token. A shop that is unknown, is not active or has not confirmed its signup, or is a sandbox twin
+        is the same `404`. Throttled per IP, sharing the subscription sign-in budget, answering `429`.
+      security: []
+      parameters:
+      - name: fluid_shop
+        in: query
+        required: true
+        description: The shop host, such as primex.fluid.app
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The company's sign-in facts.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionSignInResponse"
+              example:
+                company:
+                  uuid: 0192f0c4-7d3e-7a10-9b52-3f6a1c8e5d20
+                  identity_sign_in_enabled: true
+                  checkout_identity_enabled: false
+                  name: Primex
+                  subdomain: primex
+        '404':
+          description: The shop does not resolve to a company that can be signed in to.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SubscriptionSignInNotFound"
+        '429':
+          description: Too many requests from this address.
   "/api/checkout/v2026-04/subscriptions":
     get:
       summary: List subscriptions
@@ -30152,6 +30891,8 @@ paths:
                       labels: {}
                     - code: other
                       labels: {}
+                  backup_cards_available: true
+                  backup_cards_enabled: false
                   blackout_days:
                   - 29
                   - 30
@@ -30183,6 +30924,11 @@ paths:
         `capture_source`, `recurring_rule`); a create or update request
         that sends one gets a `422` naming it, for every company including those on legacy pricing. `timezone` changes are not supported through
         `metadata`.
+
+        `backup_cards_enabled` turns backup cards on or off for the shopper at
+        the subscription's company. It writes the shopper, not the subscription,
+        so it is sent on its own, and only the shopper may send it. See that
+        property.
 
         `auto_apply_points_scope` decides how far an `auto_apply_points` write
         reaches. Under `bundle` the accepted payload is deliberately narrower than
@@ -31104,12 +31850,16 @@ paths:
       x-fluid-audience: company
       description: |
         Carries out one offer the session showed and keeps the subscription (`outcome:
-        saved`). A swap offer needs the `variant_id` of one of its `variant_options`. Accepting
-        the same offer again returns the first result. Returns `404` (`offer_not_found`) for an
-        offer the session did not show; `409` when the session ended or expired; `422` with
-        `offer_unavailable` when the cancel flow is off or the customer accepted a monetary
-        offer within the cooldown, `offer_not_acceptable` for a contact_support offer, or the
-        refusal of the action the offer runs. A refused offer leaves the session open.
+        saved`). A swap offer needs the `variant_id` of one of its `variant_options`. A free_gift
+        offer needs `variant_ids`, exactly `terms.choose_count` distinct ids of its `gift_options`;
+        the gifts ship free on the next order. Accepting the same offer again returns the first
+        result. Returns `404` (`offer_not_found`) for an offer the session did not show; `409`
+        when the session ended or expired; `422` with `offer_unavailable` when the cancel flow is
+        off or the customer accepted a monetary offer within the cooldown, `offer_not_acceptable`
+        for a contact_support offer, `invalid_offer_choice` for a swap or gift choice the offer did
+        not list, `billing_in_progress` for a gift while the next order is being built,
+        `gift_not_deliverable` for a gift the next order can no longer carry, or the refusal of the
+        action the offer runs. A refused offer leaves the session open.
       security:
       - bearer_auth: []
       parameters:
@@ -33707,9 +34457,9 @@ paths:
       description: |
         Returns the texts choice for the phone that the subscription's renewal
         reminders go to, and the current disclosure to show next to the toggle.
-        `sms_consent.phone` is that phone in E.164 form: the customer's phone,
-        or the member's phone when the subscription has no customer. It is null
-        when there is no US or Canadian phone. `sms_consent.status` is `opted_in`, `opted_out`, or
+        `sms_consent.phone_last4` is the last 4 digits of that phone: the
+        customer's phone, or the member's phone when the subscription has no
+        customer. It is null when there is no US or Canadian phone. `sms_consent.status` is `opted_in`, `opted_out`, or
         `pending_confirmation` (a checkout opt-in the phone has not confirmed by
         replying YES), or null when the phone has no choice on record. Number
         the next change above `sequence`.
@@ -33737,10 +34487,10 @@ paths:
                 "$ref": "#/components/schemas/SubscriptionSmsConsentResponse"
               example:
                 sms_consent:
-                  phone: '+14155552671'
+                  phone_last4: '2671'
                   status: opted_in
                 disclosure:
-                  version: 2026-10-draft-1
+                  version: 2026-11-v1
                   text: I agree to get recurring automated texts about your subscription from Dunder Mifflin Alerts, up to 3/day.
                     Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.
                     Terms https://dundermifflin.example/terms-conditions Privacy https://dundermifflin.example/privacy-policy
@@ -33773,8 +34523,12 @@ paths:
         The first opt-in for a phone also queues one confirmation text. An
         opt-out needs no current disclosure, and it also opts out the phone that
         the subscription's renewal reminders go to when that is another phone.
-        Only US and Canadian phone numbers are accepted, and the response gives
-        the phone in E.164 form.
+        Only US and Canadian phone numbers are accepted. Without `phone` the
+        change is for the phone the GET describes, the one renewal reminders go
+        to. It then sends the `phone_last4` it showed, and is refused with
+        `phone_changed` when the reminder phone no longer ends in it, so a page
+        that went stale never changes a phone it did not show. The response gives only the last 4 digits of the phone, in
+        `phone_last4`.
 
         Changes apply in the order the page numbered them in `sequence`, not
         the order they arrive. A change out of order answers `200` with
@@ -33794,7 +34548,8 @@ paths:
         `422` with an `error_code` of `invalid_params`, `stale_disclosure` for
         an opt-in that names an old version (the response names the current
         version in `current_version`),
-        `unsupported_phone_country` or `invalid`.
+        `unsupported_phone_country`, `phone_required` (no `phone` and no
+        reminder phone), `phone_changed` (see above) or `invalid`.
       security:
       - bearer_auth: []
       parameters:
@@ -33813,7 +34568,7 @@ paths:
             example:
               opted_in: true
               phone: "(415) 555-2671"
-              disclosure_version: 2026-10-draft-1
+              disclosure_version: 2026-11-v1
               sequence: 3
       responses:
         '200':
@@ -33825,7 +34580,7 @@ paths:
               example:
                 sms_consent:
                   opted_in: true
-                  phone: '+14155552671'
+                  phone_last4: '2671'
                 applied: true
                 sequence: 3
                 meta:
