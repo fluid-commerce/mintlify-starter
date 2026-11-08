@@ -3,9 +3,16 @@ openapi: 3.1.0
 info:
   title: Fluid Commerce v2026-04 API
   version: v2026-04
-  description: Post-checkout order editing — atomically insert items and adjustments
-    into existing orders. Powers integrations like droplet-driven free-gift
-    flows.
+  description: |
+    Post-checkout order editing — atomically insert items and adjustments into existing orders. Powers integrations like droplet-driven free-gift flows.
+
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation in this API that resolves the company from the request's
+    credential refuses a credential for it with `403` and the body
+    `{"error": "<message>"}`, before the operation runs. The refusal is
+    documented here once rather than on each operation.
   contact:
     email: support@fluid.app
   license:
@@ -18,11 +25,14 @@ tags:
   description: Post-checkout order editing — atomically insert items and add
     adjustments or discounts to existing orders, with an optional dry-run
     preview of the recalculated totals.
+  x-fluid-section: Commerce
 - name: orders
-  description: Company order listing — a cursor-paginated, Elasticsearch-backed
-    index of the authenticated company's orders, with free-text search and
+  description: Company order listing — a cursor-paginated index of the
+    authenticated company's orders, answered from the database or the search
+    index per request, with free-text search and
     filtering on status, type, country, customer, rep, subscription and
     effective sale date.
+  x-fluid-section: Commerce
 components:
   securitySchemes:
     bearer_auth:
@@ -104,8 +114,10 @@ components:
           the order's current value; `details.current_updated_at` carries
           the value to re-fetch and echo back on retry
         - a bare `{ status, message }` object when a request with the same
-          `Idempotency-Key` is still in flight; `status` is the literal
-          string "error", not an HTTP status code
+          `Idempotency-Key` is still in flight, or when the key is held
+          because an earlier request's outcome is unknown or was confirmed
+          by support; `status` is the literal string "error", not an HTTP
+          status code
       oneOf:
       - "$ref": "#/components/schemas/ErrorResponse"
       - type: object
@@ -117,12 +129,16 @@ components:
             type: string
             enum:
             - error
-            description: Literal string `"error"` — a status label, not an HTTP
-              status code. Marks the in-flight-`Idempotency-Key` conflict body.
+            description: Literal string `"error"`, a status label, not an HTTP
+              status code. Marks the in-flight or held `Idempotency-Key`
+              conflict body.
           message:
             type: string
             description: Explains that a request with the same `Idempotency-Key`
-              is still being processed; retry once it completes.
+              is still being processed and to retry once it completes; or that
+              the key is held because an earlier request's outcome is unknown,
+              or was confirmed by support, and must not be retried under a new
+              key.
             example: A request with this Idempotency-Key is already being processed
     OrderEditUnprocessableError:
       description: |
@@ -271,6 +287,10 @@ components:
           minimum: 1
           description: New per-item quantity. Setting quantity to zero is rejected;
             callers wanting to drop the item entirely should use remove_item.
+            Raising an item that an earlier edit lowered or removed takes
+            back the stock that edit released; if that stock has sold since,
+            the edit is refused (HTTP 422) unless the variant keeps selling
+            or doesn't track stock.
         overridden:
           type: boolean
           default: false
@@ -342,50 +362,6 @@ components:
           - string
           - 'null'
           description: Optional integration identifier (e.g. droplet handle).
-    ApplyDiscountOperation:
-      type: object
-      additionalProperties: false
-      description: |
-        Applying a manually created discount is treated as a manual
-        override and requires the `orders.override` permission in
-        addition to `orders.update`; promo- and droplet-source discounts
-        need only `orders.update`.
-      required:
-      - type
-      - discount_id
-      properties:
-        type:
-          type: string
-          enum:
-          - apply_discount
-          description: Operation discriminator; must be `apply_discount` for this
-            operation.
-        discount_id:
-          type: string
-          description: Identifier of the discount to apply. Must belong
-            to the authenticated company.
-    RemoveDiscountOperation:
-      type: object
-      additionalProperties: false
-      description: |
-        Removing a manually created discount is treated as a manual
-        override and requires the `orders.override` permission in
-        addition to `orders.update`; promo- and droplet-source discounts
-        need only `orders.update`.
-      required:
-      - type
-      - discount_id
-      properties:
-        type:
-          type: string
-          enum:
-          - remove_discount
-          description: Operation discriminator; must be `remove_discount` for
-            this operation.
-        discount_id:
-          type: string
-          description: Identifier of the discount to remove. Must be
-            currently attached to the order; otherwise the call returns 422.
     OrderEditRequest:
       type: object
       additionalProperties: false
@@ -406,16 +382,19 @@ components:
         operations:
           type: array
           minItems: 1
-          description: One or more edit operations to apply atomically. The whole
-            transaction commits or rolls back together.
+          description: |
+            One or more edit operations to apply atomically. The whole
+            transaction commits or rolls back together. Discounts cannot be
+            applied or removed through an edit yet: a request with an
+            `apply_discount` or `remove_discount` operation returns HTTP 422
+            with `details.code` `unsupported_operation`, and none of its
+            operations run.
           items:
             oneOf:
             - "$ref": "#/components/schemas/InsertItemOperation"
             - "$ref": "#/components/schemas/RemoveItemOperation"
             - "$ref": "#/components/schemas/ModifyItemQuantityOperation"
             - "$ref": "#/components/schemas/AddAdjustmentOperation"
-            - "$ref": "#/components/schemas/ApplyDiscountOperation"
-            - "$ref": "#/components/schemas/RemoveDiscountOperation"
             discriminator:
               propertyName: type
               mapping:
@@ -423,8 +402,6 @@ components:
                 remove_item: "#/components/schemas/RemoveItemOperation"
                 modify_item_quantity: "#/components/schemas/ModifyItemQuantityOperation"
                 add_adjustment: "#/components/schemas/AddAdjustmentOperation"
-                apply_discount: "#/components/schemas/ApplyDiscountOperation"
-                remove_discount: "#/components/schemas/RemoveDiscountOperation"
     Adjustment:
       type: object
       description: A general-purpose order adjustment persisted by an
@@ -493,19 +470,13 @@ components:
           description: ISO 4217 currency code the order's money amounts are
             expressed in (e.g. `USD`).
         amount:
-          type:
-          - string
-          - integer
-          description: Original checkout total (immutable), as a decimal string;
-            the integer 0 when the stored total is null. For the recalculated equivalent
-            see `current_amount`.
+          type: string
+          description: Original checkout total (immutable), as a decimal string.
+            For the recalculated equivalent see `current_amount`.
         tax:
-          type:
-          - string
-          - integer
-          description: Original checkout tax, as a decimal string; the integer 0
-            when the stored tax is null. Preserved on the order and surfaced as
-            `current_tax` for symmetry.
+          type: string
+          description: Original checkout tax, as a decimal string. Preserved on
+            the order and surfaced as `current_tax` for symmetry.
         shipping:
           type: string
           description: Original checkout shipping cost.
@@ -515,30 +486,28 @@ components:
             Shipping amount actually charged. Zero when the order has free
             shipping.
         amount_in_base:
-          type:
-          - string
-          - integer
-          description: Total in base currency (USD), as a decimal string; the
-            integer 0 when this base value is not stored.
+          type: string
+          description: Total in base currency (USD), as a decimal string.
         base_to_currency_rate:
           type: string
           description: Exchange rate used to convert to the base currency.
         current_subtotal:
           type: string
-          description: Recalculated subtotal after post-checkout edits.
+          description: |
+            Checkout subtotal plus the gross price change from audited edits.
+            Added lines and units contribute their full price.
         current_discount:
           type: string
           description: |
-            Recalculated discount total after post-checkout edits: the
-            absolute sum of the order's pricing-adjustment amounts, gated by
-            its discounts. Subtracted in `current_amount`.
+            Checkout discount minus line discount allocations dropped by
+            removed units, prorated half-up. Added lines and units receive no
+            checkout discount. Pricing adjustments are added, and the result
+            is clamped between zero and `current_subtotal`, which is itself
+            floored at zero.
         current_adjustment_total:
-          type:
-          - string
-          - integer
+          type: string
           description: Sum of post-checkout `OrderAdjustment.amount` values, as a
-            decimal string (`"0.0"` when the stored total is zero); the integer
-            0 when the stored total is null.
+            decimal string (`"0.0"` when the stored total is zero).
         current_tax:
           type: string
           description: Preserved from checkout (not recalculated).
@@ -548,8 +517,11 @@ components:
         current_amount:
           type: string
           description: |
-            current_subtotal − current_discount + current_adjustment_total
-            + current_tax + current_shipping.
+            Checkout amount plus the gross price change from audited edits,
+            minus the change from checkout discount, plus the current general
+            adjustment total. This delta preserves checkout totals whose line
+            prices already include their discount. The result is floored at
+            zero.
         current_cv:
           type:
           - string
@@ -580,6 +552,220 @@ components:
             order (each a persisted `add_adjustment`); empty array when none.
           items:
             "$ref": "#/components/schemas/Adjustment"
+        items:
+          type: array
+          description: The order's lines after the edit, each with its variant
+            and product. A line removed by `remove_item` stays with quantity 0.
+          items:
+            "$ref": "#/components/schemas/OrderItem"
+    OrderItem:
+      type: object
+      description: One order line (subset shown). Money and volume amounts are
+        decimal strings, except the numeric `paid_amount`.
+      required:
+      - id
+      - quantity
+      - price
+      - price_in_currency
+      - total
+      - variant
+      - source_subscription
+      properties:
+        id:
+          type: integer
+          description: The line's id, the `item_id` the edit operations take.
+        title:
+          type:
+          - string
+          - 'null'
+          description: The line's title; falls back to the product's current
+            title.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: The variant's current SKU, else the SKU stored on the
+            line.
+        quantity:
+          type: integer
+          description: Units on the line; 0 for a line removed by `remove_item`.
+        price:
+          type:
+          - string
+          - 'null'
+          description: Unit price, a decimal string; null for a line stored
+            with no price.
+        price_in_currency:
+          type:
+          - string
+          - 'null'
+          description: Unit price formatted in the order's currency, such as
+            `$10.00`.
+        tax:
+          type:
+          - string
+          - 'null'
+          description: Tax on the line, a decimal string.
+        total:
+          type: string
+          description: Line total before discounts, a decimal string.
+        total_after_discounts:
+          type:
+          - string
+          - 'null'
+          description: Line total after its discounts, a decimal string.
+        discount_amount:
+          type:
+          - string
+          - 'null'
+          description: Discount applied to the line, a decimal string.
+        discount_amount_in_currency:
+          type:
+          - string
+          - 'null'
+          description: The line's discount formatted in the order's currency.
+        paid_amount:
+          type:
+          - number
+          - 'null'
+          description: Amount paid for the line, rounded for the order's
+            currency.
+        refundable_quantity:
+          type: integer
+          description: Units that can still be refunded.
+        cv:
+          type:
+          - string
+          - 'null'
+          description: Commissionable volume per unit, a decimal string, or null.
+        qv:
+          type:
+          - string
+          - 'null'
+          description: Qualifying volume per unit, a decimal string, or null.
+        cv_total:
+          type:
+          - string
+          - 'null'
+          description: Commissionable volume for the line, a decimal string, or null.
+        qv_total:
+          type:
+          - string
+          - 'null'
+          description: Qualifying volume for the line, a decimal string, or null.
+        display_to_customer:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the line is shown to the buyer.
+        source_subscription:
+          description: The subscription a renewal line was ordered from; null
+            for every other line.
+          oneOf:
+          - "$ref": "#/components/schemas/OrderItemSourceSubscription"
+          - type: 'null'
+        variant:
+          description: The variant the line ordered; null when the line has
+            none, such as a custom line or a deleted variant.
+          oneOf:
+          - "$ref": "#/components/schemas/OrderItemVariant"
+          - type: 'null'
+    OrderItemSourceSubscription:
+      type: object
+      description: The subscription a renewal line came from (subset shown).
+      properties:
+        subscription_token:
+          type: string
+          description: The subscription's token.
+        status:
+          type: string
+          description: The subscription's status.
+    OrderItemVariant:
+      type: object
+      description: The variant a line ordered, priced in the order's store
+        (subset shown).
+      required:
+      - id
+      - price_in_currency
+      - product
+      properties:
+        id:
+          type: integer
+          description: The variant's id.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: The variant's SKU.
+        title:
+          type:
+          - string
+          - 'null'
+          description: The variant's title.
+        price:
+          type:
+          - string
+          - 'null'
+          description: The variant's price, a decimal string; null when it has
+            no price of its own and none in its default country, such as a
+            bundle's master.
+        price_in_currency:
+          type:
+          - string
+          - 'null'
+          description: The variant's price formatted in its currency.
+        currency_code:
+          type:
+          - string
+          - 'null'
+          description: ISO 4217 code of the currency the variant is priced in.
+        options:
+          type: array
+          description: The variant's option values, such as size or color.
+          items:
+            type: object
+        product:
+          description: The variant's product; null when the product is
+            discarded.
+          oneOf:
+          - "$ref": "#/components/schemas/OrderItemProduct"
+          - type: 'null'
+    OrderItemProduct:
+      type: object
+      description: The product of a line's variant (subset shown).
+      required:
+      - id
+      properties:
+        id:
+          type: integer
+          description: The product's id.
+        title:
+          type:
+          - string
+          - 'null'
+          description: The product's title.
+        sku:
+          type:
+          - string
+          - 'null'
+          description: The product's SKU.
+        price:
+          type:
+          - string
+          - 'null'
+          description: The product's price, a decimal string.
+        price_in_currency:
+          type:
+          - string
+          - 'null'
+          description: The product's price formatted in the currency of its
+            company's default market.
+        product_bundle_groups:
+          type: array
+          description: For a bundle, its groups and their component variants;
+            absent for any other product.
+          items:
+            type: object
     OrderListItem:
       type: object
       description: |
@@ -663,22 +849,30 @@ components:
           - 'null'
           description: Display symbol for the order's currency.
         amount:
-          type:
-          - string
-          - integer
-          description: Checkout total, as a decimal string; the integer 0 when
-            none is stored.
+          type: string
+          description: Checkout total, as a decimal string.
         amount_in_base:
-          type:
-          - string
-          - integer
+          type: string
           description: Checkout total converted to the company's base currency,
-            as a decimal string; the integer 0 when this base value is not
-            stored.
+            as a decimal string.
         total_display_amount:
           type: string
           description: Pre-formatted total for display, after any points
             redemption.
+        points_applied:
+          type: integer
+        points_applied_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          example: "120.0000"
+          description: Points applied to this order as a four-decimal string
+        total_points_credited:
+          type: integer
+        total_points_credited_decimal:
+          type: string
+          pattern: '^-?\d+\.\d{4}$'
+          example: "120.0000"
+          description: Points credited from this order as a four-decimal string
         total_cv:
           type:
           - string
@@ -752,8 +946,8 @@ components:
     CursorPagination:
       type: object
       description: |
-        Cursor pagination metadata. Cursors are opaque Elasticsearch
-        `search_after` tokens — echo them back verbatim. Unlike the
+        Cursor pagination metadata. Cursors are opaque — echo them back
+        verbatim. Unlike the
         v2025-06 index this carries no `total_pages` / `current_page`:
         cursor pagination has no page number to report.
       properties:
@@ -780,7 +974,9 @@ components:
         total_count:
           type: integer
           description: Exact number of orders matching the query across all
-            pages.
+            pages. Present only when the search index answered; absent when
+            the database answered, in which case
+            `GET /api/v202604/orders/count` returns it.
     OrderListResponse:
       type: object
       description: |
@@ -817,10 +1013,53 @@ components:
             pagination:
               description: Cursor pagination for walking the result set.
               "$ref": "#/components/schemas/CursorPagination"
+    OrderCountResponse:
+      type: object
+      description: |
+        The number of orders matching the request's filters.
+      required:
+        - total_count
+        - calculated_at
+        - status
+        - meta
+      properties:
+        total_count:
+          type:
+            - integer
+            - "null"
+          minimum: 0
+          description: Exact number of matching orders, or null when the
+            count did not finish within the server's time limit.
+        calculated_at:
+          type: string
+          format: date-time
+          description: When this count was computed. A cached count keeps
+            its original time.
+        status:
+          type: integer
+          description: HTTP status code, repeated in the body (`200` on
+            success).
+        meta:
+          type: object
+          description: Response metadata — request correlation fields.
+          required:
+            - request_uuid
+            - timestamp
+          properties:
+            request_uuid:
+              type:
+                - string
+                - "null"
+              description: Server-assigned identifier for this request.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server time the response was generated.
     OrderResponse:
       description: |
         Order response wrapper. The `order` object includes the eight
-        recalculated `current_*` totals plus the `adjustments` array.
+        recalculated `current_*` totals, the `adjustments` array and the
+        `items` lines.
         Edit history is not exposed through this API.
       type: object
       required:
@@ -839,6 +1078,91 @@ components:
         meta:
           description: Response metadata (`request_id` and `timestamp`).
           "$ref": "#/components/schemas/Meta"
+    OrderEditHistoryResponse:
+      description: Response of GET /api/v202604/orders/{order_id}/edits.
+      type: object
+      required:
+      - edits
+      - status
+      - meta
+      properties:
+        edits:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OrderEditHistoryEntry"
+        status:
+          type: integer
+          description: HTTP status code, repeated in the body.
+        meta:
+          "$ref": "#/components/schemas/Meta"
+    OrderEditHistoryEntry:
+      description: One edit transaction. The operations it applied share one
+        revision and one pair of snapshots. An edit with no revision (a droplet
+        edit) is an entry of its own.
+      type: object
+      required:
+      - id
+      - editor_type
+      - operations
+      - created_at
+      properties:
+        id:
+          type: integer
+          description: The id of the transaction's first edit row.
+        editor_type:
+          type: string
+        editor_id:
+          type:
+          - string
+          - "null"
+        operations:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - edit_type
+            properties:
+              id:
+                type: integer
+              edit_type:
+                type: string
+              description:
+                type:
+                - string
+                - "null"
+              edit_changes:
+                type: object
+        created_at:
+          type: string
+          format: date-time
+        revision:
+          type:
+          - integer
+          - "null"
+          description: Rises by one per snapshotted admin edit of the order.
+        total_before:
+          type:
+          - string
+          - "null"
+          description: The order's total before the edit as a decimal in the
+            order's currency, or null when no snapshot was stored.
+        total_after:
+          type:
+          - string
+          - "null"
+          description: The order's total after the edit as a decimal in the
+            order's currency, or null when no snapshot was stored.
+        before_snapshot:
+          type:
+          - object
+          - "null"
+          description: The order's state before the edit, when stored.
+        after_snapshot:
+          type:
+          - object
+          - "null"
+          description: The order's state after the edit, when stored.
     PreviewOrderResponse:
       description: |
         Dry-run response for POST /api/v202604/orders/{order_id}/edits/preview.
@@ -894,6 +1218,130 @@ components:
         404.
       schema:
         type: integer
+    OrderFilterStatus:
+      name: filter[status]
+      in: query
+      required: false
+      description: |
+        Restrict to one order status. The sentinel `all` imposes no
+        constraint and is equivalent to omitting the filter.
+      schema:
+        type: string
+        enum:
+        - all
+        - draft
+        - pending
+        - pending_review
+        - processing
+        - completed
+        - cancelled
+        - archived
+      example: completed
+    OrderFilterType:
+      name: filter[type]
+      in: query
+      required: false
+      description: Restrict to one order class.
+      schema:
+        type: string
+        enum:
+        - sample_order
+        - customer_order
+        - member_order
+        - enrollment_order
+        - autoship_order
+      example: customer_order
+    OrderFilterOrderNumber:
+      name: filter[order_number]
+      in: query
+      required: false
+      description: Exact match on the human-facing order number.
+      schema:
+        type: string
+    OrderFilterCartSource:
+      name: filter[cart_source]
+      in: query
+      required: false
+      description: Restrict to orders whose originating cart carried this
+        source value.
+      schema:
+        type: string
+    OrderFilterCartToken:
+      name: filter[cart_token]
+      in: query
+      required: false
+      description: Restrict to orders placed from the cart with this exact
+        token. A token that matches no cart of the company returns no
+        orders.
+      schema:
+        type: string
+      example: ct_a1b2c3d4
+    OrderFilterCustomerId:
+      name: filter[customer_id]
+      in: query
+      required: false
+      description: Restrict to one customer's orders, matched on either the
+        owning member or a legacy customer id carried on order metadata.
+      schema:
+        type: integer
+    OrderFilterUserCompanyId:
+      name: filter[user_company_id]
+      in: query
+      required: false
+      description: Restrict to orders a given rep holds volume credit on,
+        addressed by legacy UserCompany id.
+      schema:
+        type: integer
+    OrderFilterSubscriptionId:
+      name: filter[subscription_id]
+      in: query
+      required: false
+      description: Restrict to orders belonging to one subscription.
+      schema:
+        type: integer
+    OrderFilterCountryIsos:
+      name: filter[country_isos]
+      in: query
+      required: false
+      description: Comma-separated ISO-2 country codes; matches the order's
+        own country, not the shipping address.
+      schema:
+        type: string
+      example: US,CA
+    OrderFilterStartDate:
+      name: filter[start_date]
+      in: query
+      required: false
+      description: |
+        Inclusive lower bound on the effective sale date, as a calendar
+        date resolved through `filter[timezone]`.
+      schema:
+        type: string
+        format: date
+      example: '2026-08-01'
+    OrderFilterEndDate:
+      name: filter[end_date]
+      in: query
+      required: false
+      description: |
+        Inclusive upper bound on the effective sale date, as a calendar
+        date resolved through `filter[timezone]`.
+      schema:
+        type: string
+        format: date
+      example: '2026-08-31'
+    OrderFilterTimezone:
+      name: filter[timezone]
+      in: query
+      required: false
+      description: |
+        IANA timezone used to resolve `filter[start_date]` and
+        `filter[end_date]` to day boundaries, so a day means the caller's
+        day. Defaults to UTC; `Etc/Unknown` is treated as absent. An
+        unrecognised zone returns 422.
+      schema:
+        type: string
+      example: America/New_York
   responses:
     BadRequest:
       description: Malformed payload. `details` carries Dry-Validation field errors
@@ -923,6 +1371,9 @@ components:
           (an adjustment op, a line-item op flagged `overridden: true`,
           or a manual-source discount op) without the `orders.override`
           permission — wrapped `ErrorResponse`.
+        - An admin credential on a company with order editing released
+          (LaunchDarkly `admin-order-editing`) whose order editing setting is
+          off — wrapped `ErrorResponse`, message `order_editing_disabled`.
       content:
         application/json:
           schema:
@@ -935,14 +1386,20 @@ components:
             "$ref": "#/components/schemas/ErrorResponse"
     Conflict:
       description: |
-        Two distinct concurrent-edit cases collapse to this status, each
-        with its own body shape:
+        Three cases collapse to this status, in two body shapes:
           - `expected_updated_at` mismatched the order's current value —
             wrapped `ErrorResponse`; `details.current_updated_at` carries
             the value the client should re-fetch and echo back on retry.
           - An `Idempotency-Key` is already in flight on another request —
             bare `{ status, message }`. The client should retry once the
             in-flight request completes; the cached response will replay.
+          - An `Idempotency-Key` is held because an earlier request under it
+            has an unknown outcome, bare `{ status, message }`. Every retry
+            under the key answers 409 until support resolves the outcome; do
+            not retry under a new key, and read the order to confirm the
+            outcome instead. Once support confirms the outcome, the key stays
+            held for 24 hours if the earlier request took effect, or can be
+            used again if it did not.
       content:
         application/json:
           schema:
@@ -955,8 +1412,15 @@ components:
           schema:
             "$ref": "#/components/schemas/ErrorResponse"
     OrderEditUnprocessableEntity:
-      description: Business error (e.g. variant not found, editor failure, cross-company
-        discount), or an `Idempotency-Key` already used with a different request.
+      description: Business error (e.g. variant not found, editor failure, an
+        `apply_discount` or `remove_discount` operation, which is not supported
+        yet, or an edit that leaves the total of an order paid by a bank account
+        whose provider refunds only in full below the amount that payment took), an
+        admin edit of an order the company's order editing policy locks (message
+        `order_not_editable:<reason>`, `details.reason` one of `imported_order`,
+        `order_status`, `fulfillment_status`, `time_limit`, `tax_provider_unsupported`,
+        `tax_committed`), or
+        an `Idempotency-Key` already used with a different request.
       content:
         application/json:
           schema:
@@ -964,7 +1428,7 @@ components:
     SearchUnavailable:
       description: |
         The search index could not answer the request. Returned by the
-        orders index, which resolves entirely from Elasticsearch and has
+        orders index for the requests the search index serves, which have
         no SQL fallback — a slow fallback would hide the outage and
         reintroduce the database load the endpoint exists to avoid. The
         request is safe to retry.
@@ -975,8 +1439,13 @@ components:
     ServiceUnavailable:
       description: |
         The idempotency claim store could not say whether this
-        `Idempotency-Key` already has an outcome. Nothing ran and nothing
-        was sent; retry the same request unchanged under the same key.
+        `Idempotency-Key` already has an outcome, or the payment provider
+        did not answer before any request that can move money was sent
+        (an OAuth token fetch that timed out). Nothing that can move money
+        was sent; retry the same request unchanged under the same key. When
+        the server could not confirm that the key was released, the message
+        says so: the key may still be held, and if that retry is refused as
+        held, contact support.
       content:
         application/json:
           schema:
@@ -1003,9 +1472,15 @@ paths:
       operationId: commerce_v2026_04_list_orders
       summary: List the company's orders
       description: |
-        Cursor-paginated index of the authenticated company's orders,
-        resolved entirely from Elasticsearch — filtering, sorting and
-        pagination all happen in the search index rather than in Postgres.
+        Cursor-paginated index of the authenticated company's orders.
+
+        An unsearched request with no `sort`, or on the `created_at`,
+        `sale_date` or `id` sorts, is answered from the database for
+        companies that have opted in, so a new or changed order is listed
+        on the next request; it carries no `meta.pagination.total_count` — fetch the
+        total from `GET /api/v202604/orders/count`. A request with
+        `search`, or on the `customer`, `amount` or `status` sorts, is
+        answered from the search index and does carry `total_count`.
 
         Two deliberate differences from `GET /api/v202506/orders`:
 
@@ -1015,15 +1490,18 @@ paths:
           `GET /api/v202506/orders/stats`, which is cached and built for
           them. Computing a whole-set aggregation on every page of a list
           endpoint is what made the v2025-06 index expensive.
-        - **No SQL fallback.** If the search index cannot answer, this
-          endpoint returns `503` rather than quietly running the slow
-          query it exists to replace. Callers that need availability over
-          index freshness should stay on v2025-06.
+        - **No fallback for search.** If the search index cannot answer a
+          request it serves, this endpoint returns `503`. Requests the
+          database serves do not depend on the index.
 
-        Cursors are Elasticsearch `search_after` tokens. They are opaque:
+        Cursors are opaque and tied to the source and sort that produced them:
         echo `meta.pagination.next_cursor` back as `page[cursor]` to walk
         forward and `prev_cursor` to walk back. They are **not**
-        interchangeable with the v2025-06 Rotulus cursors.
+        interchangeable with the v2025-06 Rotulus cursors. Start again from
+        the first page whenever `search` or `sort` changes. A cursor the
+        server can tell belongs to another query — one from the other
+        source, or a database cursor sent with a different `sort` —
+        returns `422`.
 
         Visibility follows the authenticated credential, never a
         parameter: a company admin sees the company's orders, and a rep
@@ -1059,6 +1537,10 @@ paths:
           one of those fields. Full names are indexed joined for exactly
           this reason, so `jane smith` finds an order whose first and last
           name columns hold one word each.
+
+          A cart token instead finds the orders placed from that cart, an
+          exact match. A token that matches no order of the company is
+          searched as free text.
         schema:
           type: string
         example: jane
@@ -1093,9 +1575,12 @@ paths:
         in: query
         required: false
         description: |
-          Opaque `search_after` cursor from a previous response's
+          Opaque cursor from a previous response's
           `meta.pagination.next_cursor` or `prev_cursor`. Omit for the
-          first page. A malformed cursor returns 422.
+          first page. A malformed cursor returns 422. Start again from the
+          first page whenever `search` or `sort` changes; a cursor from the
+          other source, or a database cursor sent with a different `sort`,
+          returns 422.
         schema:
           type: string
       - name: page[limit]
@@ -1107,109 +1592,18 @@ paths:
           minimum: 1
           maximum: 100
         example: 25
-      - name: filter[status]
-        in: query
-        required: false
-        description: |
-          Restrict to one order status. The sentinel `all` imposes no
-          constraint and is equivalent to omitting the filter.
-        schema:
-          type: string
-          enum:
-          - all
-          - draft
-          - pending
-          - pending_review
-          - processing
-          - completed
-          - cancelled
-          - archived
-        example: completed
-      - name: filter[type]
-        in: query
-        required: false
-        description: Restrict to one order class.
-        schema:
-          type: string
-          enum:
-          - sample_order
-          - customer_order
-          - member_order
-          - enrollment_order
-          - autoship_order
-        example: customer_order
-      - name: filter[order_number]
-        in: query
-        required: false
-        description: Exact match on the human-facing order number.
-        schema:
-          type: string
-      - name: filter[cart_source]
-        in: query
-        required: false
-        description: Restrict to orders whose originating cart carried this
-          source value.
-        schema:
-          type: string
-      - name: filter[customer_id]
-        in: query
-        required: false
-        description: Restrict to one customer's orders, matched on either the
-          owning member or a legacy customer id carried on order metadata.
-        schema:
-          type: integer
-      - name: filter[user_company_id]
-        in: query
-        required: false
-        description: Restrict to orders a given rep holds volume credit on,
-          addressed by legacy UserCompany id.
-        schema:
-          type: integer
-      - name: filter[subscription_id]
-        in: query
-        required: false
-        description: Restrict to orders belonging to one subscription.
-        schema:
-          type: integer
-      - name: filter[country_isos]
-        in: query
-        required: false
-        description: Comma-separated ISO-2 or ISO-3 country codes; matches
-          orders shipped to any of them.
-        schema:
-          type: string
-        example: US,CA
-      - name: filter[start_date]
-        in: query
-        required: false
-        description: |
-          Inclusive lower bound on the effective sale date, as a calendar
-          date resolved through `filter[timezone]`.
-        schema:
-          type: string
-          format: date
-        example: '2026-08-01'
-      - name: filter[end_date]
-        in: query
-        required: false
-        description: |
-          Inclusive upper bound on the effective sale date, as a calendar
-          date resolved through `filter[timezone]`.
-        schema:
-          type: string
-          format: date
-        example: '2026-08-31'
-      - name: filter[timezone]
-        in: query
-        required: false
-        description: |
-          IANA timezone used to resolve `filter[start_date]` and
-          `filter[end_date]` to day boundaries, so a day means the caller's
-          day. Defaults to UTC; `Etc/Unknown` is treated as absent. An
-          unrecognised zone returns 422.
-        schema:
-          type: string
-        example: America/New_York
+      - "$ref": "#/components/parameters/OrderFilterStatus"
+      - "$ref": "#/components/parameters/OrderFilterType"
+      - "$ref": "#/components/parameters/OrderFilterOrderNumber"
+      - "$ref": "#/components/parameters/OrderFilterCartSource"
+      - "$ref": "#/components/parameters/OrderFilterCartToken"
+      - "$ref": "#/components/parameters/OrderFilterCustomerId"
+      - "$ref": "#/components/parameters/OrderFilterUserCompanyId"
+      - "$ref": "#/components/parameters/OrderFilterSubscriptionId"
+      - "$ref": "#/components/parameters/OrderFilterCountryIsos"
+      - "$ref": "#/components/parameters/OrderFilterStartDate"
+      - "$ref": "#/components/parameters/OrderFilterEndDate"
+      - "$ref": "#/components/parameters/OrderFilterTimezone"
       responses:
         '200':
           description: A page of orders, newest first unless `sort` says
@@ -1304,7 +1698,141 @@ paths:
           "$ref": "#/components/responses/UnprocessableEntity"
         '503':
           "$ref": "#/components/responses/SearchUnavailable"
+  "/api/v202604/orders/count":
+    get:
+      operationId: commerce_v2026_04_count_orders
+      summary: Count the company's orders
+      x-fluid-audience: company
+      description: |
+        Exact number of the authenticated company's orders matching the
+        same `filter[...]` parameters as `GET /api/v202604/orders`, under
+        the same credential-derived visibility.
+
+        Use it when a list response carries no
+        `meta.pagination.total_count`. The list omits the total when the
+        database answered, so its first page never waits on a count.
+
+        The count is cached for 60 seconds per company, caller visibility and
+        filter set;
+        `calculated_at` says when it was computed. A count that does not
+        finish within the server's time limit returns `200` with
+        `total_count: null`, and that answer is cached for the same 60
+        seconds.
+
+        `search`, `sort` and `page` are not accepted and return `422`.
+      tags:
+        - orders
+      security:
+        - bearer_auth: []
+      parameters:
+        - "$ref": "#/components/parameters/OrderFilterStatus"
+        - "$ref": "#/components/parameters/OrderFilterType"
+        - "$ref": "#/components/parameters/OrderFilterOrderNumber"
+        - "$ref": "#/components/parameters/OrderFilterCartSource"
+        - "$ref": "#/components/parameters/OrderFilterCartToken"
+        - "$ref": "#/components/parameters/OrderFilterCustomerId"
+        - "$ref": "#/components/parameters/OrderFilterUserCompanyId"
+        - "$ref": "#/components/parameters/OrderFilterSubscriptionId"
+        - "$ref": "#/components/parameters/OrderFilterCountryIsos"
+        - "$ref": "#/components/parameters/OrderFilterStartDate"
+        - "$ref": "#/components/parameters/OrderFilterEndDate"
+        - "$ref": "#/components/parameters/OrderFilterTimezone"
+      responses:
+        "200":
+          description: The count, or null when it did not finish in time.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderCountResponse"
+              example:
+                total_count: 137
+                calculated_at: "2026-10-05T10:15:00Z"
+                status: 200
+                meta:
+                  request_uuid: 3f9c2a7e-5b1d-4e8a-9c6f-2d7b8e4a1c05
+                  timestamp: "2026-10-05T10:15:02Z"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "422":
+          "$ref": "#/components/responses/UnprocessableEntity"
   "/api/v202604/orders/{order_id}/edits":
+    get:
+      operationId: commerce_v2026_04_list_order_edits
+      summary: List an order's edits with their before and after snapshots
+      description: |
+        Returns the order's edit history, oldest first. Each edit carries
+        who made it (`editor_type`, `editor_id`), its `revision`, and the
+        order's state before and after it (`before_snapshot`,
+        `after_snapshot`) when the edit stored them. Available to admin
+        credentials only, and only while admin order editing is on for the
+        order's company. An admin credential without the flag on for the
+        order's company, a droplet or system credential, or another company's
+        order answers 404.
+      tags:
+      - order_edits
+      security:
+      - bearer_auth: []
+      x-fluid-audience: company
+      parameters:
+      - "$ref": "#/components/parameters/OrderId"
+      responses:
+        '200':
+          description: The order's edits, oldest first.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderEditHistoryResponse"
+              examples:
+                history:
+                  summary: One admin edit that changed a line quantity
+                  value:
+                    edits:
+                    - id: 4821
+                      revision: 1
+                      editor_type: admin
+                      editor_id: '3107'
+                      operations:
+                      - id: 4821
+                        edit_type: item_modified
+                        description: Changed quantity
+                        edit_changes: {}
+                      created_at: '2026-04-01T12:00:00Z'
+                      total_before: '110.00'
+                      total_after: '120.00'
+                      before_snapshot:
+                        currency_code: USD
+                        totals:
+                          amount_cents: 11000
+                          current_amount_cents: 11000
+                        lines:
+                        - id: 90211
+                          sku: TEE-BLK-M
+                          title: Black Tee
+                          quantity: 1
+                          unit_price_cents: 11000
+                      after_snapshot:
+                        currency_code: USD
+                        totals:
+                          amount_cents: 11000
+                          current_amount_cents: 12000
+                        lines:
+                        - id: 90211
+                          sku: TEE-BLK-M
+                          title: Black Tee
+                          quantity: 2
+                          unit_price_cents: 6000
+                    status: 200
+                    meta:
+                      request_id: 018f2c1a-8b3a-7e6d-9f10-2a3b4c5d6e7f
+                      timestamp: '2026-04-01T12:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
     post:
       operationId: commerce_v2026_04_create_order_edit
       summary: Atomically apply one or more edits to an existing order
@@ -1316,6 +1844,19 @@ paths:
 
         On success, the `order_edited` lifecycle event fires so subscribed
         webhooks receive the post-edit payload.
+
+        An edit made by an admin user with admin order editing on also stores
+        the order's state before and after it. The `order_edited` webhook
+        payload then carries `order_edit`, beside `order`:
+        `{ id, revision, before, after }`. `revision` rises by one per such
+        edit of the order, so a receiver can drop a delivery older than the
+        latest it has seen. `before` and `after` are
+        `{ currency_code, totals, lines }`: `totals` holds `amount_cents`,
+        `subtotal_cents`, `tax_cents`, `shipping_cents` and their
+        `current_*` counterparts, and each line holds `id`, `variant_id`,
+        `product_id`, `sku`, `title`, `quantity`, `unit_price_cents` and
+        `tax_cents`. They describe that edit alone, not the order when the
+        webhook is sent. Other edits send the payload without `order_edit`.
 
         `editor_type` and `editor_id` are derived from the authenticated
         credential — droplet installations land as `("droplet", handle)`,
@@ -1338,7 +1879,11 @@ paths:
         required: false
         description: |
           Optional client-generated key (UUID recommended) that the server
-          uses to deduplicate retries, for up to 24 hours. The key is bound
+          uses to deduplicate retries: a stored response replays for up to 24
+          hours. An edit whose outcome is unknown holds its key until support
+          resolves it, and every retry under it answers 409 until then; once
+          support resolves it, the key stays held for 24 hours if the edit
+          took effect, or can be used again if it did not. The key is bound
           to the exact request that first used it: the method, path and
           query string, `Content-Type` and body bytes, and the editor the
           edit is attributed to. A retry must resend that request unchanged,

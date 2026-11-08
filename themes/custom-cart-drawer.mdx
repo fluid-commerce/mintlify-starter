@@ -1,0 +1,205 @@
+---
+title: "Build a custom cart drawer"
+sidebarTitle: "Custom cart drawer"
+description: "Keep your own cart sidebar or your own add button in a Fluid theme: open it at the click, draw pending lines, and handle a fill that fails."
+---
+
+Every Fluid storefront creates carts in the background. The first add on a new cart creates the cart, and the server fills it in. For a moment the cart is empty and its `population_status` is `pending`. The fill usually takes a few hundred milliseconds to about 2 seconds. For the cart methods and their return values, see [Carts that fill in the background](/sdk/cart-api#carts-that-fill-in-the-background).
+
+The SDK cart drawer hides this wait. It opens at the click and draws the line, title, image and price at once, then reconciles with the server's cart when the fill finishes. The SDK draws that line from the add and from a map of line previews that Fluid puts on every storefront page.
+
+Pick the path that matches your theme:
+
+| Your theme | What to do |
+| --- | --- |
+| Declarative buttons only: `data-fluid-add-to-cart`, `data-fluid-add-enrollment-pack`, or `{% form 'product' %}` | Nothing. The SDK opens the drawer for you. |
+| Custom add button, quick view or bundle builder that calls `addCartItems()`, with the SDK drawer | [Open the SDK drawer at the click](#keep-the-sdk-drawer-with-a-custom-add-button). |
+| Your own cart sidebar | [Build your own drawer](#build-your-own-drawer). |
+
+## Build your own drawer
+
+A theme with its own cart sidebar draws the lines itself. While a new cart fills, the server's cart has no items. The SDK keeps the lines of adds the server has not answered yet, so your sidebar can draw them in the meantime.
+
+1. **Open your drawer at the click.** Do not wait for the server. Open it from your own click handler, or from the `CART_ITEMS_ADDING` window event, which fires synchronously before any request. On an SDK button, set `data-fluid-open-cart-after-add="false"` so the Fluid cart does not open as well.
+2. **Render the cart's lines, then the pending lines.** Read the stored cart with `getLocalCart()` and the pending lines with `getPendingCartItems()`.
+3. **Render again on every `onCartChange` callback.** The handler is not called when you subscribe, so render once yourself first.
+4. **Show the subtotal as calculating while items are pending.** Fields such as `cart.sub_total` do not count pending lines yet.
+5. **Check out with `FairShareSDK.checkout()`.** It waits for the fill before it redirects. A page that redirects on its own calls `await FairShareSDK.waitForCheckoutReady()` first, or it checks out a cart that is still filling.
+6. **Handle `CART_POPULATION_FAILED`.** If the server cannot fill the cart, show the reason and let the shopper try again.
+
+### Read the pending lines
+
+`getPendingCartItems()` returns the unsaved lines, newest last. Each item is the line as the add announced it: `variant_id`, `quantity`, `subscription`, `subscription_plan_id`, and, when the page gave them, a `preview` with `product_title`, `variant_title`, `image_url` and the prices. Bundle lines also carry `bundled_items`. The SDK adds these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `operationId` | The add the line belongs to. |
+| `cartToken` | The cart the add targets. It is `null` while the add that creates the cart runs. |
+| `quantity` | The quantity this add puts on the line, not the line's total. A second add of a line the cart already lists has a `quantity` of 1. |
+| `listedQuantity` | What the stored cart listed for this line when the add was announced. It is 0 when the cart lists none. |
+
+The line holds `listedQuantity + quantity` once the add lands. So:
+
+- A pending line for a variant already in the cart shows the listed quantity plus the pending quantity, on the same row.
+- A pending line for a variant that is not in the cart is its own row, with the pending `quantity`.
+
+Match a pending item to a cart line on its variant and its subscription state, never on the variant alone. A subscription line and a one-time line of the same variant are two cart lines. Treat a cart line whose `subscription` is `null` as one-time. A server cart lists the variant as `item.variant.id`, not as a top-level `variant_id`.
+
+For a bundle, the child selection is part of the match. Two bundle adds of one parent variant with different child selections are two lines. Match them with `bundleConfigMatches(item, pendingItem.bundled_items)`, which `window.FairShareSDK` exports. Two adds of one line in flight are two items: add their `quantity` values together.
+
+An enrollment add's lines carry `enrollment: true`. Draw them without a price, because enrollment moves the cart to member pricing. Don't estimate a total while one is pending.
+
+A subscription line can carry `subscription_plan`, such as `{ billing_interval: 4, billing_interval_unit: "week" }`. Use it to write "Every 4 weeks" on the pending row. It is absent on a one-time line, on an enrollment line, and when the page's map has no entry for the plan. Draw the row without an interval then.
+
+The SDK stops returning a pending item when:
+
+- A cart body lists its line at `listedQuantity + quantity` or more.
+- Its add fails.
+- On a new cart, its add has settled and a cart body for that cart is no longer `pending`.
+- The cart's background fill fails (`CART_POPULATION_FAILED`), or the SDK discards the cart.
+- 35 seconds have passed. After that, the server's cart is all there is.
+
+The returned items are copies. Changing them changes nothing.
+
+### Subscribe with `onCartChange`
+
+`onCartChange(handler)` calls `handler({ cart, pendingItems })` after every change to the pending items or to the stored cart. That covers an add starting or settling, a cart arriving from the server, a failed fill, a discarded cart, and an item expiring. It returns a function that unsubscribes.
+
+- `cart` is the latest cart the SDK stored from the server. It is `null` after the cart is cleared. The SDK never merges it with the pending items. You combine them.
+- `pendingItems` is what `getPendingCartItems()` returns at that moment.
+- A handler that throws is logged. It does not stop other handlers or the SDK.
+
+### Complete example
+
+This example adds a button, a drawer with a list, a total and a checkout button. It opens the drawer at the click, draws the cart's lines and the pending lines, shows the total as calculating while items are pending, and reports a failed fill. Put it in a section's Liquid file.
+
+```liquid
+<button
+  data-fluid-add-to-cart="{{ product.selected_or_first_available_variant.id }}"
+  data-fluid-open-cart-after-add="false"
+>
+  Add to cart
+</button>
+
+<aside id="juniper-cart" hidden>
+  <button id="juniper-cart-close" type="button">Close</button>
+  <ul id="juniper-cart-lines"></ul>
+  <p id="juniper-cart-notice" role="alert"></p>
+  <p id="juniper-cart-total"></p>
+  <button id="juniper-cart-checkout" type="button">Checkout</button>
+</aside>
+
+<script>
+  // The SDK loads as a module script, so wait for the page to finish parsing.
+  window.addEventListener("DOMContentLoaded", () => {
+    const sdk = window.FairShareSDK;
+    const drawer = document.getElementById("juniper-cart");
+    const list = document.getElementById("juniper-cart-lines");
+    const notice = document.getElementById("juniper-cart-notice");
+    const total = document.getElementById("juniper-cart-total");
+
+    function render({ cart, pendingItems }) {
+      const rows = (cart?.items ?? []).map((item) => ({
+        item,
+        base: item.quantity,
+        added: 0,
+        title: item.product_title,
+      }));
+
+      for (const pending of pendingItems) {
+        // The same line: variant, subscription state and, for a bundle,
+        // its child selection.
+        let row = rows.find(
+          ({ item }) =>
+            item.variant?.id === pending.variant_id &&
+            !!item.subscription === !!pending.subscription &&
+            sdk.bundleConfigMatches(item, pending.bundled_items),
+        );
+        if (!row) {
+          row = {
+            item: {
+              variant: { id: pending.variant_id },
+              subscription: pending.subscription,
+              bundled_items: pending.bundled_items,
+            },
+            base: 0,
+            added: 0,
+            title: pending.preview?.product_title ?? "Adding...",
+            pending: true,
+          };
+          rows.push(row);
+        } else if (!row.added) {
+          row.base = pending.listedQuantity;
+        }
+        // Two adds of one line are one row.
+        row.added += pending.quantity;
+      }
+
+      list.replaceChildren(
+        ...rows.map((row) =>
+          Object.assign(document.createElement("li"), {
+            textContent: `${row.base + row.added} x ${row.title}${row.pending ? " (adding)" : ""}`,
+          }),
+        ),
+      );
+      total.textContent = pendingItems.length
+        ? "Calculating total..."
+        : (cart?.sub_total_in_currency ?? "");
+    }
+
+    // Open at the click: this event fires before any request.
+    window.addEventListener("CART_ITEMS_ADDING", () => {
+      notice.textContent = "";
+      drawer.hidden = false;
+    });
+
+    // The server could not fill the cart. The SDK has already dropped the
+    // pending lines and calls onCartChange, so the list renders again.
+    window.addEventListener("CART_POPULATION_FAILED", (event) => {
+      notice.textContent =
+        event.detail.apiMessage ?? "We couldn't add those items. Try again.";
+    });
+
+    sdk.onCartChange(render);
+    render({ cart: sdk.getLocalCart(), pendingItems: sdk.getPendingCartItems() });
+
+    document.getElementById("juniper-cart-close").onclick = () => {
+      drawer.hidden = true;
+    };
+    document.getElementById("juniper-cart-checkout").onclick = async () => {
+      try {
+        await sdk.checkout(); // Waits for the fill, then redirects.
+      } catch (error) {
+        notice.textContent = "We couldn't start checkout. Try again.";
+      }
+    };
+  });
+</script>
+```
+
+A bundled theme can import `getPendingCartItems`, `onCartChange` and `bundleConfigMatches` from `@fluid-app/fluid` instead of reading them from `window.FairShareSDK`.
+
+### Handle a failed fill
+
+When the server cannot fill a new cart, for example because none of the items are sold in the shopper's country, the call that created the cart resolves `undefined` and no `CART_OPERATION_SUCCESS` fires. The SDK emits `CART_POPULATION_FAILED` with `cartToken`, `errorMessage`, `errors`, and `apiMessage` when the server gave a reason a shopper can read. Show `apiMessage` and never `errorMessage`, which is often a bare status phrase. See [Cart population failures](/sdk/cart-api#cart-population-failures).
+
+## Keep the SDK drawer with a custom add button
+
+Declarative buttons need no theme code. If your theme calls `addCartItems()` itself, for a custom button, a quick view or a bundle builder, and you want the SDK drawer, open the drawer at the click. Call `FairShareSDK.cart.control.open()` before you await the add. The drawer then shows the pending line, with its title, image and price, the moment the shopper clicks.
+
+```javascript
+buyButton.addEventListener("click", (event) => {
+  // Open at the click, before the add starts.
+  window.FairShareSDK.cart.control.open();
+
+  window.FairShareSDK.withButtonLoading(event.currentTarget, () =>
+    window.FairShareSDK.addCartItems(48291, { quantity: 1 }),
+  );
+});
+```
+
+`addCartItems()` does not open the drawer by itself. Don't call `open()` after the add resolves: on a new cart the add waits for the fill, a few hundred milliseconds to about 2 seconds, so the shopper would see nothing change after the click.
+
+`withButtonLoading()` keeps the button's spinner on until the cart is filled. See [Configure cart feedback](/themes/cart-feedback).
+
+`addCartItems()` resolves with the filled cart, so use that value when you need the items. Don't read them with `getLocalCart()` straight after an add you did not await. `CART_ITEMS_SETTLED` can carry a cart that is still filling, so code that needs the final items should use the value the add resolved with, [`whenCartSettled()`](/sdk/cart-api#carts-that-fill-in-the-background), or `onCartChange()`.

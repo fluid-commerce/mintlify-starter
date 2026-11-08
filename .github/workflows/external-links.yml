@@ -1,0 +1,104 @@
+name: Weekly external link report
+
+# validate.yml reports broken external links on every PR but never fails on them,
+# because the mint CLI also counts a timeout or a network error as broken. This
+# weekly run is the alert. It checks twice, 15 minutes apart, and raises only the
+# links that were broken both times, so a one-off timeout never opens an issue.
+# See eval/guide-truth.md → CI wiring.
+on:
+  schedule:
+    - cron: "23 15 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: external-links
+  cancel-in-progress: false
+
+env:
+  LINKS_LABEL: broken-external-link
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Each pass keeps only external targets (`FAIL  <file>: http...`); internal
+      # links are gated by validate.yml and checked after every spec sync. The run
+      # fails, without touching the issue, if the checker didn't finish.
+      - name: Check external links twice
+        id: check
+        run: |
+          check_links() {
+            node eval/check-broken-links.mjs --external > "/tmp/external-$1.txt" 2>&1 || true
+            if ! grep -qE '^(PASS|FAIL)  internal and external links:' "/tmp/external-$1.txt"; then
+              cat "/tmp/external-$1.txt"
+              echo "::error::The link checker did not finish (pass $1)."
+              exit 1
+            fi
+            { grep -E '^FAIL  [^ ]+: https?://' "/tmp/external-$1.txt" || true; } | sort -u > "/tmp/broken-$1.txt"
+          }
+
+          check_links 1
+          if [ -s /tmp/broken-1.txt ]; then
+            echo "$(wc -l < /tmp/broken-1.txt) external link(s) broken on the first pass; checking again in 15 minutes."
+            sleep 900
+            check_links 2
+            comm -12 /tmp/broken-1.txt /tmp/broken-2.txt > /tmp/broken.txt
+          else
+            : > /tmp/broken.txt
+          fi
+
+          echo "count=$(wc -l < /tmp/broken.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          cat /tmp/broken.txt
+
+      # One labeled issue at a time: open it, or comment on the open one, while
+      # links stay broken; close it on the first clean week.
+      - name: Open, update or close the broken external link issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COUNT: ${{ steps.check.outputs.count }}
+        run: |
+          existing="$(gh issue list --label "$LINKS_LABEL" --state open --json number --jq '.[0].number // empty')"
+
+          if [ "$COUNT" = "0" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "No external links were broken on both passes of this week's check. Run: ${RUN_URL}"
+            fi
+            exit 0
+          fi
+
+          gh label create "$LINKS_LABEL" \
+            --description "An external docs link failed two checks in a row" --color D93F0B || true
+
+          body="/tmp/external-links-issue-body.md"
+          {
+            echo "The weekly external link check found ${COUNT} link(s) broken on two passes, 15 minutes apart."
+            echo
+            echo "Run: ${RUN_URL}"
+            echo
+            echo "Fix or remove each link in a PR. This issue closes itself after a clean week."
+            echo
+            echo '```'
+            head -300 /tmp/broken.txt
+            echo '```'
+          } > "$body"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+            echo "Commented on existing issue #${existing}."
+          else
+            gh issue create --title "Broken external links in the docs" \
+              --label "$LINKS_LABEL" --body-file "$body"
+          fi

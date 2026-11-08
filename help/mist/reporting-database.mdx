@@ -1,0 +1,135 @@
+---
+title: "Fluid reporting database tables"
+sidebarTitle: "Reporting database tables"
+description: "The main tables and columns in your Fluid reporting database, the values their status columns take, how the tables join, and how money and currency are stored."
+---
+
+Your Fluid reporting database is a read-only copy of your company's Fluid data that you query in Mist. This page describes its main commerce tables: what's in them, how they join, and what their values mean. To turn the database on, see [Databases](/help/admin/settings/databases). To query it, see [Databases in Mist](/help/mist/databases).
+
+The database has many more tables than the ones here. In Mist, open the database and use **Browse** to see them all.
+
+## What's in the database
+
+- **Only your company's data.** Every table with a `company_id` column holds only your company's rows. Tables without one, such as currency and exchange-rate lists, are shared reference data.
+- **A copy, as of the last sync.** The data is as fresh as **Last synced** on the [Databases](/help/admin/settings/databases) screen. A sync replaces the whole copy in one step, so a query never sees a half-finished sync.
+- **Deleted records are left out** of `customers`, `members`, `products` and `variants`. `orders` keeps every order, including draft and cancelled orders and orders with a zero total.
+- **No foreign keys.** Tables have primary keys on `id`, but no foreign keys. Join on the columns in [How the tables join](#how-the-tables-join).
+
+## Money and currency
+
+- Amounts are decimals in the currency's main unit, such as `49.95` for $49.95, not cents.
+- An order's amounts are in the order's currency, `orders.currency_code`. Line items and refunds are in their order's currency. Never add up amounts in different currencies.
+- Columns ending in `_base`, such as `total_price_base`, hold the same amount in US dollars. Use them to total orders across currencies. `orders.base_source` says where the dollar amount came from:
+  - `stored`: the dollar amount Fluid recorded with the order.
+  - `presentment_usd`: the order was in US dollars, so the order's own amount is used.
+  - `official_monthly_rate`: converted with the official exchange rate for the order's month.
+  - `unavailable`: no rate was found, and the `_base` columns are empty.
+- Subscription prices are in the subscription's own `currency_code`.
+
+## Main tables
+
+### orders
+
+One row per order.
+
+| Column | What it holds |
+| --- | --- |
+| `id`, `order_number` | The order's ID and its order number. |
+| `status` | The order's status. See [Status values](#status-values). |
+| `financial_status`, `fulfillment_status` | Payment and fulfillment status. |
+| `type` | `sample`, `customer`, `member`, `enrollment` or `autoship`. |
+| `source_name` | Where the order came from, such as `web` or `subscription`. |
+| `currency_code`, `total_price`, `subtotal_price`, `total_tax`, `total_discounts`, `total_shipping_price` | Amounts in the order's currency, each with a `_base` twin in US dollars. |
+| `current_total_price` and other `current_` columns | The amounts after later changes to the order. |
+| `total_refunded` | The amount refunded so far. |
+| `cv`, `qv` | Commission and qualifying volume. |
+| `member_id` | The buyer. Joins to `members.id` and `customers.member_id`. |
+| `email`, `first_name`, `last_name`, `country_code` | Buyer details and the order's country. |
+| `processed_at` | The sale date. It can be empty; use `created_at` then. |
+| `cancelled_at`, `shipped_at`, `delivered_at`, `created_at` | Dates in the order's life. |
+
+### line_items
+
+One row per product line on an order. Joins to `orders` on `order_id`, and to `products` and `variants` on `product_id` and `variant_id`.
+
+`price` is the price of one unit, so a line's amount is `price * quantity`. Other columns include `title`, `quantity`, `total_tax`, `total_discount`, `total_refunded`, `cv` and `qv`.
+
+### customers
+
+One row per customer. Joins to orders through `member_id`, not a customer ID. Columns include `email`, `first_name`, `last_name`, `phone`, `orders_count`, `total_spent_in_base`, `last_order_id` and `external_id`.
+
+`orders_count` counts all of the customer's orders. `total_spent_in_base` adds up, in US dollars, only orders whose `financial_status` is `paid`.
+
+### members
+
+One row per member. `id` joins to `orders.member_id`. Columns include `enroller_member_id` and `sponsor_member_id`, which point to other members, and `rank_id` and `member_type_id`.
+
+### products and variants
+
+`products` has one row per product, with `sku`, `status` (`published`, `draft`, `scheduled` or `archived`) and `active`. `variants` has one row per variant, with `product_id`, `sku`, `title` and `active`.
+
+### commerce_subscriptions
+
+One row per subscription. Columns include `status`, `member_id` (the subscriber), `rep_member_id`, `variant_id`, `quantity`, `current_price`, `currency_code`, `next_billing_date`, `last_bill_date` and `cancelled_at`.
+
+### orders_subscriptions
+
+Links subscriptions to the orders they created: `order_id` and `subscription_id`. `orders` has no subscription column, so join through this table.
+
+### payments and refunds
+
+`payments` has one row per payment, with `order_id`, `subscription_id`, `status`, `amount`, `amount_in_base`, `refunded_amount` and `currency_code`. `refunds` has one row per refund, with `order_id`, `amount`, `reason` and `refund_type`. `order_item_refunds` links a refund to the line items it covers: `refund_id`, `item_id` (the line item's `id`) and `quantity`.
+
+### order_reps
+
+The reps on each order: `order_id`, `member_id` and `role`. `role` is `attribution`, `buyer`, `buyer_rep`, `sponsor` or `volume`.
+
+## How the tables join
+
+| From | To | Join on |
+| --- | --- | --- |
+| `customers` | `orders` | `customers.member_id = orders.member_id` |
+| `members` | `orders` | `members.id = orders.member_id` |
+| `orders` | `line_items` | `line_items.order_id = orders.id` |
+| `line_items` | `products` | `line_items.product_id = products.id` |
+| `line_items` | `variants` | `line_items.variant_id = variants.id` |
+| `variants` | `products` | `variants.product_id = products.id` |
+| `commerce_subscriptions` | `orders` | through `orders_subscriptions`: `subscription_id = commerce_subscriptions.id` and `order_id = orders.id` |
+| `payments`, `refunds` | `orders` | `order_id = orders.id` |
+| `order_item_refunds` | `line_items` | `order_item_refunds.item_id = line_items.id` |
+
+For example, this query lists last month's best-selling products by units:
+
+```sql
+SELECT p.title, SUM(li.quantity) AS units
+FROM orders o
+JOIN line_items li ON li.order_id = o.id
+JOIN products p ON p.id = li.product_id
+WHERE o.financial_status IN ('paid', 'refund_pending', 'partially_refunded', 'marked_paid')
+  AND COALESCE(o.processed_at, o.created_at) >= date_trunc('month', now()) - interval '1 month'
+  AND COALESCE(o.processed_at, o.created_at) < date_trunc('month', now())
+GROUP BY p.title
+ORDER BY units DESC
+LIMIT 10;
+```
+
+## Status values
+
+| Column | Values |
+| --- | --- |
+| `orders.status` | `draft`, `pending`, `pending_review`, `processing`, `completed`, `cancelled`, `archived` |
+| `orders.financial_status` | `pending`, `authorized`, `partially_paid`, `paid`, `refund_pending`, `partially_refunded`, `refunded`, `voided`, `marked_free`, `marked_paid` |
+| `orders.fulfillment_status` | `unfulfilled`, `in_progress`, `on_hold`, `partially_fulfilled`, `scheduled`, `fulfilled` |
+| `orders.source_name` | `web`, `mobile`, `admin`, `backoffice`, `subscription`, `enrollment`, `tiktok`, `amazon` |
+| `commerce_subscriptions.status` | `pending`, `active`, `paused`, `past_due`, `cancelled` |
+| `payments.status` | `unsent`, `sent`, `received`, `success`, `declined`, `pending`, `error`, `expired`, `reconciling` |
+
+There's no flag for test orders. Sample orders have `type = 'sample'`.
+
+To count revenue the way the admin's **Home** dashboard does, see [Commerce metrics](/concepts/metrics).
+
+## Related pages
+
+- [Databases in Mist](/help/mist/databases)
+- [Databases in the admin](/help/admin/settings/databases)
+- [Commerce metrics](/concepts/metrics)

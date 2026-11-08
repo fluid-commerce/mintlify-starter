@@ -11,8 +11,9 @@ Fluid publishes two REST surfaces for carts:
 
 They are two versioned front doors to the same cart engine. A cart token created
 through either surface identifies the same cart on the other. The surfaces are
-not aliases, however. Their operation names and request shapes differ, and one
-bundle-subscription behavior differs materially.
+not aliases, however. Their operation names and request shapes differ, and
+unsubscribing a bundle line through the wrong Checkout API operation leaves its
+pricing behind.
 
 Use one surface for each cart lifecycle. Follow the generated reference links
 below for the current request and response contracts.
@@ -26,6 +27,56 @@ below for the current request and response contracts.
 | Building storefront widgets, tracking, media, or forms | **Public SDK API** | These browser-facing capabilities do not exist on the Checkout API. |
 | Building enrollment-pack carts | **Public SDK API** | Enrollment-pack lookup and cart enrollment are unique to this surface. |
 | Handling payment-gateway callbacks | **Public SDK API** or **Cart payment API** | The Checkout API does not own gateway callbacks. |
+
+## Know which cart operations need a token
+
+A shopper on your storefront has no account and no secret, and code that runs
+in their browser can't keep one. So the cart doesn't ask for a Bearer token.
+The `cart_token` that creating a cart returns is the credential instead: only
+the browser or app that created the cart holds it, and it opens only that cart.
+
+Anyone holding a cart token can shop with that cart. The operations that change
+what the buyer pays, who gets credit for the sale, or whose saved data is on
+the cart need a Bearer token as well.
+
+### What the cart token alone allows
+
+On both surfaces, a request with only the cart token can:
+
+- Create a cart and add, change, subscribe, or remove line items.
+- Set the buyer's email and phone, the address, and the shipping method.
+- Apply or remove a promo code, and change the cart's country or language.
+- Send and confirm a sign-in link, and sign the buyer out.
+- Complete the cart.
+
+On the Checkout API, the cart token also covers the email and SMS marketing
+opt-ins and the automatic points setting.
+
+### Fields the cart token can't change
+
+Some fields are accepted in a request body but ignored when the request has no
+token that allows them. The request still succeeds, so check the response
+rather than assuming the value was applied.
+
+| Field | Without the right token |
+| --- | --- |
+| A line item's `price` | Ignored, and the catalog price applies. The Checkout API never accepts a price override. On the Public SDK API, overrides belong to admin tooling. |
+| `member_id` or `customer_id` when creating a cart | Ignored. Fluid sets the buyer from the browser session or from a sign-in link instead. |
+| `source: "admin"` when creating a cart | Saved as `web`. |
+| `member_type_id` on an enrollment cart (Checkout API) | Returns `401` with no token, and `403` for a token without the `members.manage` permission. Customer and member tokens can't set it. |
+| `checkout_from_admin` and `legacy_customer_id` in cart metadata | Dropped. Only Fluid sets these, because they control the 3D Secure challenge and which customer the cart belongs to. Your other metadata keys are saved. |
+
+### Operations that need a Bearer token
+
+| Operation | Why it needs a token |
+| --- | --- |
+| [Apply a manual discount](/api-reference/cart-discount/apply-manual-discount-admin-only) | It changes the price, so it needs a signed-in user with permission to override orders. |
+| [Set the volume rep](/api-reference/carts/set-volume-rep) | The rep assignment is recorded against the signed-in identity. |
+| [Sync customer data](/api-reference/carts/sync-customer-data-to-cart) | It copies the signed-in customer's saved addresses and payment methods onto the cart. |
+| Override line-item prices or volumes (Public SDK API) | Admin tooling uses these to adjust an order. |
+
+A token for a different company never unlocks a cart. Keep company API tokens
+on your server. Never send one from storefront code.
 
 ## Distinguish the two `v2025-06` APIs
 
@@ -54,11 +105,11 @@ that the Checkout API combines are separate operations on the Public SDK API.
 | Update buyer contact details | [Update cart attributes](/api-reference/carts/update-cart-attributes) | [Updates a cart](/api-reference/carts/updates-a-cart) |
 | Add or change item quantities | [Add items to cart](/api-reference/cart-items/add-items-to-cart) | [Adds items to cart](/api-reference/carts/adds-items-to-cart) |
 | Change a line's variant | [`PATCH items/{id}`](/api-reference/cart-items/update-a-cart-item) | [`PATCH items/{item_id}/variant`](/api-reference/carts/updates-a-cart-items-variant) |
-| Subscribe or unsubscribe a line | [`PATCH items/{id}`](/api-reference/cart-items/update-a-cart-item) | [`POST` subscribe](/api-reference/carts/subscribes-a-cart-item) or [`DELETE` subscribe](/api-reference/carts/updates-subscribe:false-to-cart-item) |
+| Subscribe or unsubscribe a line | [Subscribe a cart item](/api-reference/cart-items/subscribe-a-cart-item) or [Unsubscribe a cart item](/api-reference/cart-items/unsubscribe-a-cart-item) | [`POST` subscribe](/api-reference/carts/subscribes-a-cart-item) or [`DELETE` subscribe](/api-reference/carts/updates-subscribe:false-to-cart-item) |
 | Remove a line | [Remove a cart item](/api-reference/cart-items/remove-a-cart-item) | [Removes item from cart](/api-reference/carts/removes-item-from-cart) |
 | Set an address | [Set cart address](/api-reference/carts/set-cart-address) | [Updates cart address](/api-reference/carts/updates-cart-address) |
 | Select shipping | [`PUT shipping`](/api-reference/carts/select-shipping-method) | [`POST shipping_method`](/api-reference/carts/sets-cart-shipping-method) |
-| Apply a discount code | [Apply discount code](/api-reference/cart-discount/apply-discount-code) | [Applies a discount to the cart](/api-reference/carts/applies-a-discount-to-the-cart) |
+| Apply a promo code (discount code) | [Apply a promo code to a cart](/api-reference/cart-discount/apply-a-promo-code-to-a-cart) | [Apply a promo code to the cart](/api-reference/carts/apply-a-promo-code-to-the-cart) |
 | Change country | [`country`](/api-reference/carts/change-cart-country) | [`update_country`](/api-reference/carts/updates-the-country-of-a-cart-also-updates-the-currency-code) |
 | Change language | [`language`](/api-reference/carts/update-cart-language) | [`change_language`](/api-reference/carts/updates-the-language-of-a-cart) |
 | Complete the cart | [`complete`](/api-reference/carts/complete-checkout) | [`checkout`](/api-reference/carts/completes-cart-checkout) |
@@ -76,13 +127,16 @@ that the Checkout API combines are separate operations on the Public SDK API.
 <Warning>
   Pick one surface for each cart lifecycle.
 
-  Unsubscribing a bundle line produces different results. The Public SDK API
-  reprices the bundle's child items and releases the subscription-derived price
-  lock. The Checkout API clears the subscription plan fields but does not
-  reprice the bundle children or release that price lock.
+  On the Checkout API, subscribe and unsubscribe a line with the dedicated
+  `subscription` operations, not by changing subscription fields with
+  `PATCH items/{id}`. Unsubscribing a bundle line through the dedicated
+  operation reprices the bundle's child items at one-time prices, as the Public
+  SDK API does. Clearing the fields with `PATCH` does not reprice the children
+  or release the subscription-derived price lock.
 
-  Moving a bundle cart between surfaces can therefore leave child pricing in a
-  state that neither surface would have produced on its own.
+  Moving a bundle cart between surfaces, or between those two Checkout API
+  operations, can leave child pricing in a state that neither path would have
+  produced on its own.
 </Warning>
 
 ## Understand the `stable` alias
@@ -115,3 +169,5 @@ when you deliberately want to follow the current Public SDK API version.
     Use the SDK methods backed by the Public SDK API.
   </Card>
 </CardGroup>
+
+For how checkout and rep credit work behind either surface, see [Checkout](/concepts/checkout) and [FairShare attribution](/concepts/fair-share).

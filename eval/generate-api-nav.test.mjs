@@ -68,6 +68,35 @@ test("pageSlug follows Mintlify's tag/summary URL, under the spec directory", ()
   assert.equal(pageSlug({ spec: "x", tag: "members", summary: "Change a member's type" }, config), "members/change-a-members-type");
 });
 
+// Summaries and tags from the synced specs; every expected slug was a 200 on
+// docs.fluid.app when this was written.
+test("pageSlug keeps the characters Mintlify keeps and removes the ones it removes", () => {
+  const slug = (tag, summary) => pageSlug({ spec: "x", method: "get", path: "/p", tag, summary }, config);
+  assert.equal(slug("carts", "Removes rep_buyer and customer for the cart"), "carts/removes-rep_buyer-and-customer-for-the-cart");
+  assert.equal(slug("carts", "Updates subscribe:false to cart item"), "carts/updates-subscribe:false-to-cart-item");
+  assert.equal(slug("order_edits", "Dry-run an edit and return the would-be order shape"), "order_edits/dry-run-an-edit-and-return-the-would-be-order-shape");
+  assert.equal(slug("Gateways", "Verify a payment method ($0 auth)"), "gateways/verify-a-payment-method-$0-auth");
+  assert.equal(slug("Transactions", "Credit/refund a transaction"), "transactions/creditrefund-a-transaction");
+  assert.equal(
+    slug("analytics_dashboard_home_live", 'Home > Live "Today so far" chart (cumulative today + same-DOW typical baseline)'),
+    'analytics_dashboard_home_live/home->-live-"today-so-far"-chart-cumulative-today-+-same-dow-typical-baseline',
+  );
+  assert.equal(
+    slug("analytics_subscription_billing", "Subscription Billing one day's renewals, each with its risk band"),
+    "analytics_subscription_billing/subscription-billing-one-days-renewals-each-with-its-risk-band",
+  );
+  assert.equal(slug("orders", "List the signed-in member’s orders"), "orders/list-the-signed-in-member’s-orders");
+  assert.equal(slug("messaging---bots", "List bots"), "messaging--bots/list-bots");
+});
+
+test("pageSlug follows Mintlify's edge cases", () => {
+  const slug = (fields) => pageSlug({ spec: "x", method: "post", path: "/api/carts/{token}/items", tag: "carts", summary: "Add an item", ...fields }, config);
+  // Only one edge hyphen is trimmed, so a trailing path parameter leaves one behind.
+  assert.equal(slug({ summary: "Get a cart by {token}" }), "carts/get-a-cart-by-");
+  assert.equal(slug({ summary: "" }), "carts/post-apicarts-items");
+  assert.equal(slug({ tag: "" }), "add-an-item");
+});
+
 test("buildNav places, nests legacy, excludes, reports unsorted and collisions", () => {
   const { sections, unsorted, excluded, collisions } = buildNav(config, specs);
   assert.deepEqual(sections.map((s) => s.group), ["Storefront", "DAM", UNSORTED_SECTION]);
@@ -100,6 +129,19 @@ test("buildNav falls back to the section a tag declares", () => {
   const { sections, unsorted } = buildNav({ ...config, rules: [] }, [{ name: "people", source: "api-reference/people.yaml", doc }]);
   assert.deepEqual(sections[0].pages.at(-1), { group: "Member types", pages: ["api-reference/people.yaml GET /api/v2026-10/member-types"] });
   assert.deepEqual(unsorted.map((o) => o.path), ["/api/x"]);
+});
+
+test("buildNav reports a collision only when Mintlify's URLs match", () => {
+  const doc = {
+    paths: {
+      "/api/carts/{token}/rep": { delete: { tags: ["carts"], summary: "Removes rep_buyer", responses: {} } },
+      "/api/carts/{token}/buyer": { delete: { tags: ["carts"], summary: "Removes rep buyer", responses: {} } },
+      "/api/transactions/{id}/credit": { post: { tags: ["Transactions"], summary: "Credit/refund a transaction", responses: {} } },
+      "/api/transactions/{id}/refund": { post: { tags: ["Transactions"], summary: "Creditrefund a transaction", responses: {} } },
+    },
+  };
+  const { collisions } = buildNav({ ...config, rules: [] }, [{ name: "payments", source: "api-reference/payments.yaml", doc }]);
+  assert.deepEqual(collisions.map((c) => c.slug), ["transactions/creditrefund-a-transaction"]);
 });
 
 test("buildNav leaves out an operation whose summary is too long for a page file", () => {

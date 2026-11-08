@@ -1,0 +1,106 @@
+---
+title: "Read Droplet data in a Portal widget"
+sidebarTitle: "Droplet data"
+description: "Use the built-in typed Portal function for signed, member-specific Droplet reads."
+---
+
+## Use the built-in Portal function
+
+A Portal widget runs in a worker. Import `queryDropletData` from `@fluid-app/portal-sdk/widgets/worker` and declare the same function in the widget's `uses` array. Once the matching SDK and Portal backend are deployed, the standard `FluidProvider` wires the transport automatically; you do not need a custom host function or access to the host project for this query.
+
+<Warning>
+Use an SDK release that actually exports `queryDropletData` and a Portal deployment that supports the bound Droplet query context. Confirm the installed SDK actually exports the function and the deployed host/backend support it; do not infer availability from a source merge or guess a minimum version. An older host/backend without the context proof is unavailable; do not fall back to direct worker fetch or an unbound request.
+</Warning>
+
+The function declares capability `dropletData` version `1`, method `query`. Adding `uses` does not grant access by itself. Build and publish the package, then add its current widget in the Portal screen builder. The existing permission dialog shows the publisher, package version and requested permissions; choose **Allow capabilities** to approve insertion, or **Cancel** to stop. Save and publish the intended screen when ready; that changes the screen configuration. An existing placement with a stale package-version grant is not automatically approved: select the widget, click **Review capabilities**, approve its capabilities, then save/publish. Do not hand-edit security grant JSON or invent another approval flow. If Mist cannot access the builder, report this authoring prerequisite. See [build and publication](/portal-widgets/widget-packages/build-and-publish).
+
+## Configure the Droplet once
+
+Register the Droplet with its required `name` and `embed_url`, configure its canonical `data_url`, and install it in the member's company. Copy the public `uuid` returned by the management API, such as `drp_acme_rewards`; do not use a database UUID or guess an identifier. Read the authorized management response back and confirm `data_url` equals the intended receiver URL before proceeding: an older deployment may ignore an unknown field. `widget_data_url` remains a deprecated compatible alias, not another destination. See [registration and receiver setup](/themes/member-storefront/droplet-data#register-the-destination-and-save-the-secret).
+
+The Droplet must be available, operational, and actively installed. UUID queries do not require a theme extension or a member storefront site. The Portal requires its own signed-in session and an active native member in the trusted company. Do not assume that a draft label or presentation `active: false` alone prevents the owner company's authorized testing; verify installation and actual query availability. Keep the Droplet secret on the receiver server.
+
+## Call from the worker
+
+The public signature is `queryDropletData({ dropletUuid, operation, params? })`, returning a promise of JSON. `params` is a JSON object; validate your application's response shape before rendering. The operation name is application-defined: `member.echo` below works only after you implement that receiver operation. Replace the example Droplet identifier with the actual management response's public `uuid`.
+
+```js title="member-echo-widget.js"
+import { createElement, useEffect, useState } from "react";
+import { defineWidget, queryDropletData } from "@fluid-app/portal-sdk/widgets/worker";
+
+export function MemberEchoCard() {
+  const [text, setText] = useState("Loading member…");
+  useEffect(() => {
+    let current = true;
+    setText("Loading member…");
+    queryDropletData({ dropletUuid: "drp_acme_rewards", operation: "member.echo", params: {} })
+      .then(result => {
+        const member = result && typeof result === "object" && !Array.isArray(result) ? result.member : null;
+        if (!member || typeof member.id !== "string" || typeof member.public_id !== "string" ||
+            !(member.external_id === null || typeof member.external_id === "string")) {
+          throw new Error("Unexpected Droplet result");
+        }
+        if (current) setText(JSON.stringify({ id: member.id, public_id: member.public_id, external_id: member.external_id }, null, 2));
+      })
+      .catch(() => { if (current) setText("Member data is unavailable"); });
+    return () => { current = false; };
+  }, []);
+  return createElement("pre", { role: "status" }, text);
+}
+
+export const memberEchoWidget = defineWidget({
+  name: "MemberEcho",
+  component: MemberEchoCard,
+  uses: [queryDropletData],
+});
+```
+
+Add `memberEchoWidget` to your package's existing widgets array and use its normal generated worker entry. The example projects the three approved member fields and renders their JSON as text, handles malformed/rejected results, and ignores a pending component continuation after unmount. Do not persist private results in local storage or a cross-session cache.
+
+The standard host owns the signed Portal cookie, fresh CSRF token and opaque session proof. It binds the dated same-origin Portal query to the current context and discards stale replies; a changed context hides and disposes affected consuming workers. Preview or missing proof is controlled unavailability. This is not an instantaneous server-push revocation guarantee. The worker never handles credentials, proof headers, the Droplet secret or host DOM, and does not call the Portal endpoint with `fetch`.
+
+Errors are `PortalFunctionError` values, including invalid arguments, undeclared use, missing approval and unavailable transport. Show a recoverable unavailable state and correct the actual declaration, approval or deployment; never retry with a different identity or bypass the host. Keep upstream diagnostics server-side. See [portal function errors](/portal-widgets/widget-packages/portal-functions#handle-errors-and-partial-data).
+
+## Implement a read-only receiver
+
+At `data_url`, verify the exact raw bytes using the Droplet secret and `verifySignature` from `@fluid-app/droplet-sdk`, including timestamp freshness, before parsing JSON. Verify the signed company/shop binding and authorize the read. Follow the [raw-body verification example](/themes/member-storefront/droplet-data#verify-the-raw-body); do not reserialize JSON before verification.
+
+For `member.echo`, require empty `params` and return `{ member: query.member }` from the **verified signed payload**, unchanged. Do not fabricate member fields, trust a member identifier from `params`, or fetch another member to construct the echo. Reject other operations and malformed identity objects. Keep this operation read-only and return only the member fields the signed payload already authorizes; do not log the payload or secret.
+
+A Node receiver can implement the echo after checking the raw signature as follows. `request` is the incoming Web `Request`; supply `FLUID_DROPLET_SECRET` from the receiver's server-only secret storage. This example performs no backend write or member lookup.
+
+```js title="member-echo-receiver.js"
+import { verifySignature } from "@fluid-app/droplet-sdk";
+
+export async function receiveMemberEcho(request, secret) {
+  if (!secret) return new Response("Receiver is not configured", { status: 503 });
+  const rawBody = Buffer.from(await request.arrayBuffer());
+  const verified = verifySignature({
+    rawBody, secret,
+    timestamp: request.headers.get("x-fluid-timestamp"),
+    signature: request.headers.get("x-fluid-signature"),
+  });
+  if (!verified.valid) return new Response("Invalid signature", { status: 401 });
+  let query;
+  try { query = JSON.parse(rawBody.toString("utf8")); }
+  catch { return new Response("Invalid JSON", { status: 400 }); }
+  const member = query?.member;
+  if (!Number.isInteger(query?.company?.id) || query.company.id <= 0 ||
+      !query.company.fluid_shop || query.company.fluid_shop !== request.headers.get("x-fluid-shop") ||
+      !member || typeof member.id !== "string" || typeof member.public_id !== "string" ||
+      !(member.external_id === null || typeof member.external_id === "string") ||
+      query.operation !== "member.echo" || !query.params || Array.isArray(query.params) ||
+      typeof query.params !== "object" || Object.keys(query.params).length !== 0) {
+    return new Response("Unsupported query", { status: 422 });
+  }
+  return Response.json({ member: query.member }, { headers: { "Cache-Control": "private, no-store" } });
+}
+```
+
+## Give Mist a complete task
+
+> Build a Portal widget using the built-in `queryDropletData` function, declared in `uses`, with my installed Droplet's public UUID. Follow the Portal Droplet data guide. Implement the read-only `member.echo` receiver and display the verified member's three approved identity fields as JSON text. Verify the SDK export, deployed Portal context support and package-version capability approval. Do not invent member data, a custom host bridge, a worker fetch, or a member-storefront client.
+
+Before calling the integration complete, test two real member scopes, missing installation, missing/stale package approval, preview, unknown operation, signature/timestamp failure, and sign-out/account switch while a response is delayed. A stale reply must not render in the next scope. Test the deployed contract, not merely source merge status or successful asset downloads.
+
+For other application-specific capabilities, a [custom typed portal function](/portal-widgets/widget-packages/portal-functions) can still be implemented by a host integrator. That advanced seam is not required for built-in Droplet reads and must not be used as an automatic fallback when this capability is unavailable.

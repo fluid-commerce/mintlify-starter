@@ -2,6 +2,14 @@
 openapi: 3.1.0
 info:
   title: Fluid Onboarding API
+  description: |
+    **Sandbox test companies.** A sandbox test company is linked to a live
+    company. While the test company cannot be reached, because sandbox access
+    is turned off for its live company or the live company was deleted, every
+    operation in this API that resolves the company from the request's
+    credential refuses a credential for it with `403` and the body
+    `{"error": "<message>"}`, before the operation runs. The refusal is
+    documented here once rather than on each operation.
   version: v0
   contact:
     email: support@fluid.app
@@ -162,6 +170,22 @@ components:
       - type: string
       - "$ref": "#/components/schemas/ErrorBag"
       - type: 'null'
+    RegistrationSubmissionInProgressResponse:
+      description: A campaign-fact write refused while messaging registration submission holds its lease.
+      type: object
+      additionalProperties: false
+      required: [error_message, errors, meta]
+      properties:
+        error_message:
+          type: string
+          enum: [Registration submission in progress; try again in a few minutes]
+        errors:
+          type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type: { type: string, enum: [registration_submission_in_progress] }
+        meta: { "$ref": "#/components/schemas/OnboardingMeta" }
     StandardErrorResponse:
       description: Common legacy error response envelope. Older endpoints may return
         one or more of these fields depending on the controller path.
@@ -179,6 +203,26 @@ components:
           "$ref": "#/components/schemas/OnboardingMeta"
       additionalProperties:
         "$ref": "#/components/schemas/JsonValue"
+    OnboardingEntityRateLimitedResponse:
+      description: >-
+        Refusal of a change to an entity's business identification number (EIN)
+        once the company has made its daily number of changes. The count resets
+        at the end of the UTC day; meta.retry_after carries the seconds until then.
+      allOf:
+      - "$ref": "#/components/schemas/StandardErrorResponse"
+      - type: object
+        required:
+        - meta
+        properties:
+          meta:
+            type: object
+            required:
+            - retry_after
+            properties:
+              retry_after:
+                type: integer
+                minimum: 1
+                description: Seconds until the company may change an EIN again
     StandardUnauthorizedResponse:
       description: Common legacy unauthorized response envelope.
       allOf:
@@ -1267,9 +1311,9 @@ components:
           - 'null'
         billing_descriptor:
           description: >-
-            Card-statement descriptor for this legal entity, shown to customers
-            in billing disclosures. Display only, never sent to the payment
-            processor. Allows letters, numbers, spaces and the characters
+            Name this legal entity's charges are disclosed under in customer
+            billing emails. Display only, never sent to the payment processor,
+            so it does not set the card statement text. Allows letters, numbers, spaces and the characters
             & , . ' # * and -, up to 22 characters. Surrounding whitespace is
             trimmed on save, so the limit is measured against what you submit.
             Send null or an empty string to clear it.
@@ -1333,6 +1377,11 @@ components:
             additionalProperties:
               "$ref": "#/components/schemas/JsonValue"
         business_identification_number:
+          description: For a US entity, a 9-digit EIN such as 12-3456789. A label
+            such as EIN and up to three spaces, punctuation marks or math symbols
+            (such as a minus sign) between digits are accepted. Blank is allowed. A US value that is not an EIN returns
+            422 when the request changes it or the entity's country. Other
+            countries have no format rule.
           type:
           - string
           - number
@@ -1409,6 +1458,10 @@ components:
         work_email:
           type: string
         phone:
+          description: The owner's phone. A number without a country code is read
+            in the owner's country_iso, or the US when it is blank, and stored as
+            E.164, such as +18015550100. A number that is not a real phone
+            number returns 422 when the request changes it.
           type: string
         native_name:
           type: string
@@ -1931,9 +1984,9 @@ components:
           - 'null'
         billing_descriptor:
           description: >-
-            Card-statement descriptor for this legal entity, shown to customers
-            in billing disclosures. Display only, never sent to the payment
-            processor. Maximum 22 characters; letters, numbers, spaces and the
+            Name this legal entity's charges are disclosed under in customer
+            billing emails. Display only, never sent to the payment processor,
+            so it does not set the card statement text. Maximum 22 characters; letters, numbers, spaces and the
             characters & , . ' # * and -.
           type:
           - string
@@ -2151,6 +2204,27 @@ components:
         updated_at:
           type: string
           format: date-time
+  responses:
+    OnboardingEntityRateLimited:
+      description: Too many new EINs on this company's entities today, so
+        nothing in the request was saved. Each company may put a new
+        nine-digit EIN on its entities a fixed number of times per UTC day (20
+        by default). The value counts whatever the entity's country, since the
+        country can change in the same moment. A value still being typed, a
+        blank value, an identifier that is not EIN-shaped, the EIN the entity
+        already holds written another way, a change of country, and a change
+        that fails to save do not count. Root administrators are not limited.
+        Undoing the EIN change lets the rest of the request save.
+      headers:
+        Retry-After:
+          description: Seconds until the company may set a new EIN again
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/OnboardingEntityRateLimitedResponse"
 paths:
   "/api/companies/set_bundle_subscriptions":
     post:
@@ -2233,6 +2307,12 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardUnauthorizedResponse"
+        '403':
+          description: Forbidden. A Droplet installation may not set a tax class that clears tax callback registrations owned by another owner (another installation or the company)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '422':
           description: Invalid tax class or missing provider configuration
           content:
@@ -2307,7 +2387,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2343,7 +2423,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2389,7 +2469,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2429,7 +2509,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2480,7 +2560,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2511,7 +2591,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2547,7 +2627,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2593,7 +2673,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2633,7 +2713,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2678,11 +2758,17 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/UnauthorizedResponse"
+        '403':
+          description: Forbidden. A Droplet installation may not change or remove a country's tax callback registration owned by another owner (another installation or the company)
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '204':
           description: company country deleted successfully
         '422':
@@ -2709,7 +2795,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2745,7 +2831,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2772,6 +2858,8 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+        '429':
+          "$ref": "#/components/responses/OnboardingEntityRateLimited"
       requestBody:
         content:
           application/json:
@@ -2801,7 +2889,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2841,7 +2929,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2874,6 +2962,8 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/StandardErrorResponse"
+        '429':
+          "$ref": "#/components/responses/OnboardingEntityRateLimited"
       requestBody:
         content:
           application/json:
@@ -2902,7 +2992,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2911,8 +3001,8 @@ paths:
           description: entity deleted successfully
         '422':
           description: entity is still in use - it is the default entity, has
-            live payment accounts, or has countries assigned to it, and those
-            references must be moved before it can be deleted
+            live payment accounts, has countries assigned to it, or retains
+            provisioning history
           content:
             application/json:
               schema:
@@ -2934,7 +3024,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2968,7 +3058,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -2987,9 +3077,23 @@ paths:
                 required:
                 - company
         '409':
-          description: onboarding_info_version is stale - the onboarding info
-            changed after it was loaded, so the caller should re-fetch and reapply
-            its changes
+          description: onboarding_info_version is stale, or a messaging registration
+            submission is using the policy links; re-fetch and retry the change
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/StandardErrorResponse"
+                - "$ref": "#/components/schemas/RegistrationSubmissionInProgressResponse"
+        '403':
+          description: forbidden - either the credential lacks the onboarding update
+            permission or scope, or a signed-in person is required. Accepting the
+            terms (terms_and_conditions_info turning to agreed) and saving
+            onboarding_steps each record the person who made them, and a company,
+            partner, droplet or client token has none; errors.onboarding_info then
+            names each refused field. onboarding_steps counts whenever it is
+            non-empty, changed or not, so a token leaves it out. Other saves by a
+            token still succeed
           content:
             application/json:
               schema:
@@ -3017,7 +3121,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3057,7 +3161,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3092,7 +3196,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3135,7 +3239,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3170,8 +3274,14 @@ paths:
         schema:
           type: integer
       responses:
+        '422':
+          description: The owner is invalid, such as a phone that is not a real number
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3217,7 +3327,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3256,8 +3366,14 @@ paths:
         schema:
           type: integer
       responses:
+        '422':
+          description: The owner is invalid, such as a phone that is not a real number
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:
@@ -3302,7 +3418,7 @@ paths:
           type: integer
       responses:
         '401':
-          description: unauthorized - company access denied
+          description: unauthorized - company access denied, or the caller is not an admin of the company
           content:
             application/json:
               schema:

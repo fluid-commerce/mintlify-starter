@@ -70,15 +70,34 @@ export function collectOperations(specName, spec) {
   return ops;
 }
 
-// Public: The URL slug Mintlify gives an operation's page: its first tag and its
-// summary, lowercased, apostrophes dropped, other runs collapsed to hyphens, under
-// the spec's output directory when it has one.
+// Internal: Mintlify's prepareStringToBeValidFilename (@mintlify/common,
+// dist/openapi/filenameUtils.js, in the mint version validate.yml pins), step for
+// step, because live page URLs follow its quirks. It keeps _ : $ > + " and \u2019, and
+// it removes {}(),.' and / without leaving a hyphen. It trims one edge hyphen
+// before that removal, and its single "--" pass leaves "---" as "--". An empty
+// string gives undefined, as it does in Mintlify. The x-mint href and x-excluded
+// extensions aren't modeled, since no synced spec uses either.
+function mintlifyFileName(s) {
+  return s
+    ? s
+        .replaceAll(" ", "-")
+        .replace(/\{.*?\}/g, "-")
+        .replace(/^-/, "")
+        .replace(/-$/, "")
+        .replace(/[{}(),.'\n/]/g, "")
+        .replaceAll("--", "-")
+        .toLowerCase()
+    : undefined;
+}
+
+// Public: The URL slug Mintlify gives an operation's page. It is the operation's
+// first tag and its summary (or its method and path when there's no summary),
+// each run through mintlifyFileName, under the spec's output directory when it
+// has one. Empty parts drop out, as they do in Mintlify's path join.
 export function pageSlug(op, config) {
-  const slug = (s) =>
-    s.toLowerCase().replace(/['\u2019]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const dir = config.specs?.[op.spec]?.openapi?.directory;
-  const prefix = dir ? dir.replace(/^api-reference\/?/, "") + "/" : "";
-  return `${prefix}${slug(op.tag)}/${slug(op.summary)}`;
+  const title = mintlifyFileName(op.summary) ?? `${op.method}-${mintlifyFileName(op.path)}`;
+  return [dir?.replace(/^api-reference\/?/, ""), mintlifyFileName(op.tag), title].filter(Boolean).join("/");
 }
 
 // Public: Whether a rule (or exclude entry) matches an operation.
