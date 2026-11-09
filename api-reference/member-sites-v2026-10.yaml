@@ -803,7 +803,7 @@ components:
           - draft
           - published
           - taken_down
-          description: The branch site's status. A branch is published when it is made, and taken down when its parent is.
+          description: The branch site's status. A Liquid branch is published when it is made. A V1 branch remains draft until its files and database copy are ready, then is published automatically. It is taken down when its parent is.
         frame_path:
           type: string
           description: The path of the branch's home page in its frame, on the company's host. It renders for the branch's owner and for company admins, and any other signed-in member gets 404.
@@ -3039,11 +3039,12 @@ paths:
     post:
       summary: Copy a site
       description: |
-        This operation currently copies the older Liquid authoring tree described below. It does not copy a static V1 site's published bundle or its built files. A copy of a V1 site therefore has no current V1 bundle and is not served until it has a bundle of its own. V1 bundle-copy support is separate work; the `copy` share permission does not change this limitation.
-
-        Copies the published content of a site into a new draft site the member owns. The copy holds the site's published layouts, sections and snippets, its published pages, its published settings, its published access declaration, its text assets and its menus. The declaration becomes a draft of the copy, so it is not published until the copy is. It never holds a draft above a published file, a file that was never published, or a page that is not published. A menu item that links to a page that was not copied is left out with the items below it. The copy is always private, is not published, and is not required; it counts toward the 25-site limit. The original is not changed, and the copy shares no rows with it: the content of each is independent, so changing either one never changes the other, and deleting either one never deletes the other. The new site's `copied_from_id` is the original's id; deleting the original sets the copy's `copied_from_id` to null and keeps the copy.
+        For an older Liquid site, copies the published content into a new draft site the member owns. The copy holds the site's published layouts, sections and snippets, its published pages, its published settings, its published access declaration, its text assets and its menus. The declaration becomes a draft of the copy, so it is not published until the copy is. It never holds a draft above a published file, a file that was never published, or a page that is not published. A menu item that links to a page that was not copied is left out with the items below it. The copy is always private, is not published, and is not required; it counts toward the 25-site limit. The original is not changed, and the copy shares no rows with it: the content of each is independent, so changing either one never changes the other, and deleting either one never deletes the other. The new site's `copied_from_id` is the original's id; deleting the original sets the copy's `copied_from_id` to null and keeps the copy.
 
         A member can copy a site they own, and a published site that a share with `copy` permission opens to them; when several shares match, the highest permission counts. A member who can open the site, such as a published public site with no share for them or one shared with them to view, but may not copy it gets 403. A site the member cannot open, such as another member's draft, a draft or taken-down site shared with them, a private site no share matches, a site in another company and an unknown id, returns 404, whatever the body holds. A member who owns a site an admin took down gets 422. The body is optional.
+
+        For a gateway-served V1 source with a current bundle, the copy instead holds an independent prepared bundle with that snapshot's files, routes, access declaration, page metadata and database schema. Blob transfer is asynchronous and does not hold the request open. The copy remains a private draft. List its bundles and publish the prepared bundle explicitly after transfer completes; an early publish answers 409 `copy_in_progress` and keeps the bundle uploading. The source's database rows are never copied: the first publish creates an empty database from the copied schema. The prepared draft is retained until the copy's first bundle becomes current. A terminal transfer failure leaves the bundle failed and the site unserved; a temporary gateway failure is retried in the background. Once transferred, the copy is independent of the source, including source deletion.
+
       operationId: member_sites_copy
       tags:
       - sites
@@ -3988,7 +3989,7 @@ paths:
         '404':
           "$ref": "#/components/responses/BundleNotFound"
         '409':
-          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it, or another publish of the site changed its database after this one planned its schema change or before it switched; the bundle stays uploading, so send the same publish again and it is planned anew), `schema_change_pending` (another upload's change to the site's database may have run and is not recorded yet; `details.pendingBundle` is that upload's id, and the message says to send it again to finish it, after which this publish can be sent again; nothing was applied and the bundle stays uploading), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
+          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it, or another publish of the site changed its database after this one planned its schema change or before it switched; the bundle stays uploading, so send the same publish again and it is planned anew), `schema_change_pending` (another upload's change to the site's database may have run and is not recorded yet; `details.pendingBundle` is that upload's id, and the message says to send it again to finish it, after which this publish can be sent again; nothing was applied and the bundle stays uploading), `copy_in_progress` (the copied bundle's background file transfer or the branch's database copy has not completed; it stays uploading and the same publish may be retried), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
           content:
             application/json:
               schema:
@@ -4137,9 +4138,12 @@ paths:
     post:
       summary: Branch a site
       description: |
-        Makes a branch of one of the member's published sites: a second site, owned as the parent is, cloned from the parent's published layouts, sections, snippets, pages, settings, text assets and menus, and published at once, so its `frame_path` renders what the parent renders. Nothing the parent holds in draft is copied, and the parent is never changed. The branch is private and cannot be shared or made public, only its owner and company admins can open it, and it is left out of the site list and the account menu. It has no Git repository. It counts toward the member's 25-site limit.
+        For an older Liquid site, makes a branch of one of the member's published sites: a second site, owned as the parent is, cloned from the parent's published layouts, sections, snippets, pages, settings, text assets and menus, and published at once, so its `frame_path` renders what the parent renders. Nothing the parent holds in draft is copied, and the parent is never changed. The branch is private and cannot be shared or made public, only its owner and company admins can open it, and it is left out of the site list and the account menu. It has no Git repository. It counts toward the member's 25-site limit.
 
         Edit the branch with the files and pages operations and publish it with the publish operation, using `site_id` as the site id. A site has one branch at a time; delete it to make another. A draft site, a taken-down site and a branch cannot be branched, and a site holding a binary asset cannot be branched. The body is optional.
+
+        For a gateway-served V1 parent, prepares an independent copy of its current bundle. The branch starts as a private draft while its files and, when present, database rows are copied in the background. It is published automatically through the normal bundle publisher only after both are ready. Read the branch's status to see when it is published. A database schema change on the parent during copying can prevent publication of the captured bundle; the branch remains unserved and its failed bundle is visible through the bundle list. Editing a V1 branch uses its app files and bundle operations, rather than the older Liquid file operations.
+
       operationId: member_site_branches_create
       tags:
       - site-branches
@@ -4154,7 +4158,7 @@ paths:
               slug: staging
       responses:
         '201':
-          description: The new branch, published and private.
+          description: The new private branch. A V1 branch starts as draft until its background copies finish. A failed database provisioning attempt keeps the accepted draft for automatic retry; publication waits until its database is ready.
           content:
             application/json:
               schema:
