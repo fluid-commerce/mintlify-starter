@@ -185,3 +185,16 @@ test("the committed mapping names only defined sections and groups", () => {
   const real = JSON.parse(readFileSync(join(ROOT, ".github/api-reference-nav.json"), "utf8"));
   assert.doesNotThrow(() => buildNav(real, []));
 });
+
+
+test("hidden sections retain generated operation references and URLs", () => {
+  const hidden = { ...config, sections: config.sections.map((section) => ({ ...section, hidden: true })) };
+  const visible = buildNav(config, specs);
+  const generated = buildNav(hidden, specs);
+  assert.equal(generated.sections[0].hidden, true);
+  assert.equal(generated.sections[1].hidden, true);
+  assert.deepEqual(generated.sections[0].pages, visible.sections[0].pages);
+  assert.equal(countRefs(generated.sections), countRefs(visible.sections));
+  assert.equal(generated.excluded, visible.excluded);
+  assert.equal(visible.sections[0].hidden, undefined);
+});

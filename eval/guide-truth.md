@@ -3067,3 +3067,17 @@ covered without treating the existing SDK/schema tutorial as a newly audited API
 contract guide. The surrounding tutorial remains outside this registry's full-page
 coverage scope; this addition does not claim otherwise. The generated owner-read
 references remain the source for request, response, paging and error contracts.
+
+## Member Sites API navigation
+
+`api/member-sites.mdx` is the V1 API selection guide. Keep viewing site metadata
+separate from opening the published app in a browser. Keep V1 copying marked
+unavailable until the bundle-copy implementation and its API reference ship;
+the existence of the older copy operation alone does not establish V1 support.
+
+The older Member Sites references remain generated under a hidden compatibility
+group so previously shared URLs keep resolving. Do not exclude their operations
+from generation or rename their tags and summaries to remove them from the
+sidebar. The navigation generator passes the section's `hidden: true` through to
+Mintlify; its regression test verifies that hiding preserves operation references.
+This applies to Member Sites compatibility only, not storefront theme APIs.
