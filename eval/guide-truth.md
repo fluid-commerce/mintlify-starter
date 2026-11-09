@@ -3071,9 +3071,11 @@ references remain the source for request, response, paging and error contracts.
 ## Member Sites API navigation
 
 `api/member-sites.mdx` is the V1 API selection guide. Keep viewing site metadata
-separate from opening the published app in a browser. Keep V1 copying marked
-unavailable until the bundle-copy implementation and its API reference ship;
-the existence of the older copy operation alone does not establish V1 support.
+separate from opening the published app in a browser. The V1 copy navigation and
+workflow follow the merged bundle-copy implementation. Keep the rollout note until
+the API, migration and database sweep deployment are verified for the environment;
+endpoint existence and a docs merge alone do not establish runtime availability.
+Ordinary copies carry schema but no source rows; do not conflate them with branches.
 
 The older Member Sites references remain generated under a hidden compatibility
 group so previously shared URLs keep resolving. Do not exclude their operations
