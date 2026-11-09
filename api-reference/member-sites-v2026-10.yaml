@@ -69,6 +69,9 @@ tags:
 - name: site-database
   x-fluid-section: Members
   description: 'The database of one of the member''s sites, read and written through the site''s own backend with six fixed operations. The status, tables and rows operations are served to the owner''s bearer and, on the cookie mount, to a site that sends its own `X-Fluid-Member-Site` label and has published a declaration naming `database: read` or `database: write`; the SQL statement operation is bearer only.'
+- name: site-data
+  x-fluid-section: Members
+  description: The tables and rows of the database of one of the member's V1 (bundle) sites, read only, served to the site's owner's bearer so a builder such as member Mist can show them. The rows are the ones the owner can download whole with the database export.
 components:
   securitySchemes:
     MemberBearer:
@@ -2209,6 +2212,105 @@ components:
       - status
       - data
       - meta
+    SiteDataTable:
+      type: object
+      description: One table of a V1 site's database, as the site's current bundle declares it.
+      additionalProperties: false
+      required:
+      - name
+      - columns
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,62}$"
+          description: The table's name.
+        columns:
+          type: array
+          description: The columns the schema declares, then the four system columns (`id`, `created_by`, `created_at`, `updated_at`).
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - name
+            - type
+            properties:
+              name:
+                type: string
+                description: The column's name.
+              type:
+                type: string
+                enum:
+                - text
+                - integer
+                - number
+                - boolean
+                - date
+                - timestamp
+                - uuid
+                - json
+                description: The column's type.
+    SiteDataTablesResponse:
+      type: object
+      description: The tables of a V1 site's database.
+      additionalProperties: false
+      required:
+      - tables
+      - status
+      - meta
+      properties:
+        tables:
+          type: array
+          description: The tables the schema declares, in its order.
+          items:
+            "$ref": "#/components/schemas/SiteDataTable"
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+    SiteDataRowsResponse:
+      type: object
+      description: A page of one table's rows, newest first.
+      additionalProperties: false
+      required:
+      - rows
+      - status
+      - meta
+      properties:
+        rows:
+          type: array
+          description: The rows on this page. Each is an object of the table's columns and its four system columns, with the values the sites gateway answers (`integer` above 2^53 as a string, `json` as JSON).
+          items:
+            type: object
+            additionalProperties: true
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                type: object
+                additionalProperties: false
+                required:
+                - limit
+                - offset
+                - count
+                properties:
+                  limit:
+                    type: integer
+                    description: The rows asked for per page.
+                  offset:
+                    type: integer
+                    description: The rows skipped.
+                  count:
+                    type: integer
+                    minimum: 0
+                    description: The rows the table holds.
   responses:
     Unauthorized:
       description: Missing or unusable member credential.
@@ -5089,6 +5191,151 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '504':
           description: The sites gateway did not begin to answer within 25 seconds. Nothing was sent; ask again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/data":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List the tables of a site's database
+      description: |
+        The tables the current bundle of one of the member's V1 (bundle) sites declares, each with its columns and the four system columns every table has. Nothing is read from the database. Read-only: no operation inserts, changes or deletes a row. Every response is `private, no-store` and has no ETag.
+
+        Only the site's owner is served, the same policy as the database export. Bearer only: a request on the cookie mount is refused with `403`, tagged with `X-Fluid-Member-Site` or not, and so is a member session JWT, the kind order and subscription email links carry. It answers `404` until the sites gateway is released to the member's company, for a site the member does not own, for a site of another company, and for a site with no active database or no published schema. One answer for each, so it never says whether a site exists. It is not the database of the earlier site backend, which is served under `/sites/{site_id}/database`.
+      operationId: member_sites_data_tables
+      tags:
+      - site-data
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The site's tables.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDataTablesResponse"
+              example:
+                tables:
+                - name: notes
+                  columns:
+                  - name: title
+                    type: text
+                  - name: id
+                    type: uuid
+                  - name: created_by
+                    type: text
+                  - name: created_at
+                    type: timestamp
+                  - name: updated_at
+                    type: timestamp
+                status: 200
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The request is on the cookie mount, which never serves a site's data, with or without the `X-Fluid-Member-Site` header; the credential is a member session JWT; or it belongs to a sandbox test company that cannot be reached now.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the member does not own it, the site has no active database or no schema, or the sites gateway is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/data/{table}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - name: table
+      in: path
+      required: true
+      description: The table's name, as the tables operation lists it.
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9_]{0,62}$"
+    get:
+      summary: Read the rows of a table of a site's database
+      description: |
+        A page of one table's rows of one of the member's V1 (bundle) sites, newest first, with the table's row count in `meta.pagination.count`. The sites gateway reads them with no table rule applied and records the member's user as the query's viewer. Every call is logged with the member, the site, the table and the page before the gateway is asked, and never a value. Read-only: no operation inserts, changes or deletes a row. Every response is `private, no-store` and has no ETag.
+
+        Only the site's owner is served, the same policy as the database export, which downloads these same rows. Bearer only: a request on the cookie mount is refused with `403`, tagged with `X-Fluid-Member-Site` or not, and so is a member session JWT. It answers `404` until the sites gateway is released to the member's company, for a site the member does not own, for a site of another company, for a site with no active database or no published schema, and for a table the schema does not have.
+      operationId: member_sites_data_rows
+      tags:
+      - site-data
+      x-fluid-audience: member
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        description: Rows per page. Default 25, maximum 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      - name: offset
+        in: query
+        required: false
+        description: Rows to skip. Default 0.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          default: 0
+      responses:
+        '200':
+          description: A page of rows.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDataRowsResponse"
+              example:
+                rows:
+                - id: 0199537f-0000-7000-8000-0000000000a1
+                  title: Hello
+                  created_by: '42'
+                  created_at: '2026-11-05T10:00:00.000Z'
+                  updated_at: '2026-11-05T10:00:00.000Z'
+                status: 200
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:05:00Z'
+                  pagination:
+                    limit: 25
+                    offset: 0
+                    count: 1
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The request is on the cookie mount, which never serves a site's data, with or without the `X-Fluid-Member-Site` header; the credential is a member session JWT; or it belongs to a sandbox test company that cannot be reached now.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the member does not own it, the site has no active database or no schema, the schema has no such table, or the sites gateway is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A `limit` outside 1 to 100, an `offset` outside 0 to 1,000,000, another query key, or a request the sites gateway refused as `validation`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: The sites gateway could not complete the call, because it was unreachable or refused, or answered with something unexpected, or Rails has no secret for it. `details.error` names which, and nothing the gateway said is passed on.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '504':
+          description: The sites gateway did not answer in time.
           content:
             application/json:
               schema:
