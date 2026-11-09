@@ -1,67 +1,169 @@
 ---
 title: "The member site database"
 sidebarTitle: "Database"
-description: "Declare a member site's tables in db/schema.json, choose who may read and write each one with table rules, query them with fluid.db, change them safely on publish, and learn how a site database is billed."
+description: "Declare a member site's tables in db/schema.json, choose who may read and write each one with table rules, query them with fluid.db, change them safely on publish, and download or moderate the data."
 ---
 
 A member site can keep its own data: RSVPs, guestbook entries, a team's goals. You declare its tables in `db/schema.json`, and your code reads and writes them through `fluid.db`. The browser never sends SQL and never holds a database credential. Each request goes to your site's host, which checks it against your schema and your table rules before it touches a row.
 
-A site has no database until it needs one. The first publish whose folder has a `db/schema.json` creates the site's database and applies the schema. A site without a `db/` folder has no database, and nothing to bill.
+This page covers `db/schema.json` and `fluid.db`. The older `fluid member-site database` commands belong to a separate backend approach. Use `db/schema.json` and `fluid sites publish` for the database described here.
+
+<Note>
+  Site databases are available to companies Fluid has turned member sites on for. For any other company, publishing answers `404`. To ask for them, [contact support](/help/getting-help).
+</Note>
+
+## Create a database for your site
+
+You don't turn a database on. The first publish of a site whose folder has a `db/schema.json` creates the site's database and applies the schema, before the new version goes live. A new site published without `db/schema.json` has no database, and `fluid.db` answers `no_database`. A newly created database is empty. Removing the file from a later build does not turn an existing database off.
+
+Follow these steps in order.
+
+<Steps>
+  <Step title="Go to the site's folder">
+    Open a terminal in the folder that holds `package.json`, `config/` and `.member-site.json`. If the folder has no `.member-site.json`, bind it first. See [Before you start](/member-sites-v1/publishing#before-you-start).
+  </Step>
+  <Step title="Create db/schema.json">
+    Make a `db` folder in the site's folder, next to `config/` and `src/`, and put the schema in it as `db/schema.json`. The file name and the folder name must be exactly these. Don't put it in `dist/` or `src/`. A publish reads it from `db/`, and it is never served as a file.
+
+    This schema is complete. It keeps the events a site lists and the RSVPs people leave for them. Copy it as it is, then change the names to fit your site:
+
+    ```json db/schema.json
+    {
+      "version": 1,
+      "tables": {
+        "events": {
+          "columns": {
+            "title": { "type": "text", "required": true },
+            "starts_on": { "type": "date", "required": true },
+            "capacity": { "type": "integer", "default": 50 },
+            "ticket_price": { "type": "number", "default": 0 },
+            "is_public": { "type": "boolean", "default": true },
+            "details": { "type": "json" }
+          },
+          "rules": {
+            "read": "public",
+            "insert": "owner",
+            "update": "owner",
+            "delete": "owner"
+          },
+          "indexes": [["starts_on"]]
+        },
+        "rsvps": {
+          "columns": {
+            "event_id": { "type": "uuid", "required": true },
+            "name": { "type": "text", "required": true },
+            "guests": { "type": "integer", "default": 1 },
+            "note": { "type": "text" },
+            "checked_in_at": { "type": "timestamp" }
+          },
+          "rules": {
+            "read": "signed_in",
+            "insert": "signed_in",
+            "update": "creator",
+            "delete": "creator"
+          },
+          "indexes": [["event_id"]],
+          "unique": [["event_id", "created_by"]]
+        }
+      }
+    }
+    ```
+
+    - `events` can be read by anyone, including a guest. Only the site's owner can add, change or delete an event. On a company site, that means a company admin.
+    - `rsvps` can be read and added by any signed-in visitor. A visitor changes or deletes only the rows they wrote.
+    - Each visitor can leave one RSVP for each event: `unique` is `["event_id", "created_by"]`.
+    - `indexes` and `unique` are optional.
+  </Step>
+  <Step title="Check the schema">
+    ```bash
+    npm run build
+    fluid sites lint
+    ```
+    Build the app before running lint, because lint also checks your build output. The command makes no request and needs no login. It checks `db/schema.json` against the same rules a publish checks. A clean folder prints nothing and exits `0`. Each problem prints as an error that names its file and exits `1`. Fix each one and run it again.
+  </Step>
+  <Step title="Build and publish">
+    ```bash
+    fluid sites publish
+    ```
+    Add `--as member` for a member's site, or `--as admin` for a company site. A successful publish prints lines like these, with your own numbers:
+
+    ```text
+    Hashed 14 files (0.4 MiB).
+    Uploading 6 of 12 blobs; the site stores the others already.
+      Uploaded 6 of 6.
+    Published member site diamond-leaders.
+      Bundle: 0199537f-1000-7000-8000-000000000001
+      Manifest: 5c1d0e6f...
+    ```
+
+    The CLI prints no separate line about the database. The command exits `0` and prints `Published member site <handle>.` (or `company site`) only after the schema was applied and the new version went live. With `--json` it prints one object, `{"ok":true,"site":"diamond-leaders","bundle":"...","manifestSha256":"..."}`. If the command fails, check the error before retrying. A timeout can leave the outcome unknown, and a schema change can succeed before the new build becomes current. See [What the answers mean](/member-sites-v1/publishing#what-the-answers-mean).
+  </Step>
+  <Step title="Use it from the site's code">
+    Import `fluid` from `@fluid-app/sites` and read and write the tables. See [Query a table](#query-a-table).
+  </Step>
+  <Step title="Check that it works">
+    Sign in on the published site as its owner and add an `events` row from your code. Then a company admin can see the row on the site's page. See [Review and delete rows](#review-and-delete-rows). The site's owner can also download everything. See [Download the data](#download-the-data).
+  </Step>
+</Steps>
+
+Later publishes compare `db/schema.json` with what the database holds. See [Change the schema](#change-the-schema).
 
 ## Declare the tables
 
-`db/schema.json` lists the site's tables. This one keeps RSVPs for the site's events:
-
-```json db/schema.json
-{
-  "version": 1,
-  "tables": {
-    "rsvps": {
-      "columns": {
-        "event_id": { "type": "text", "required": true },
-        "name": { "type": "text", "required": true },
-        "guests": { "type": "integer", "default": 0 },
-        "note": { "type": "text" }
-      },
-      "rules": {
-        "read": "signed_in",
-        "insert": "signed_in",
-        "update": "creator",
-        "delete": "creator"
-      },
-      "indexes": [["event_id"]],
-      "unique": [["event_id", "created_by"]]
-    }
-  }
-}
-```
+`db/schema.json` is one JSON object. This section lists everything it can hold. A key that isn't listed here is refused, at every level.
 
 | Key | What it holds |
 | --- | --- |
-| `version` | Always `1` |
-| `tables` | The tables, by name. At most 32 |
-| `columns` | A table's columns, by name. At most 64. Each has a `type`, and optionally `required` (default `false`) and a `default`, a literal value of the column's type |
-| `rules` | Who may `read`, `insert`, `update` and `delete`. See [Choose who reads and writes](#choose-who-reads-and-writes) |
-| `indexes` | At most 8 indexes, each of 1 to 3 columns |
-| `unique` | At most 4 unique sets, each of 1 to 3 columns |
-| `migrations` | The destructive changes you confirm on publish. See [Change the schema](#change-the-schema) |
+| `version` | Required. Always the number `1` |
+| `tables` | Required. An object of tables, by name. At most 32. It may be empty |
+| `migrations` | Optional. The destructive changes you confirm on publish. See [Change the schema](#change-the-schema) |
 
-A table or column name starts with a lowercase letter and holds lowercase letters, digits and underscores, at most 63 characters. It can't start with `_` or `pg_`, and a column can't take a system column's name. The whole file is at most 1 MiB.
+A table is an object with these keys:
+
+| Key | What it holds |
+| --- | --- |
+| `columns` | Required. An object of columns, by name. At most 64 |
+| `rules` | Optional. Who may `read`, `insert`, `update` and `delete`. See [Choose who reads and writes](#choose-who-reads-and-writes) |
+| `indexes` | Optional. An array of at most 8 indexes. Each is an array of 1 to 3 column names, such as `["event_id"]` |
+| `unique` | Optional. An array of at most 4 unique sets. Each is an array of 1 to 3 column names. No two rows may hold the same non-null values in all the columns of a set |
+
+A column is an object with these keys:
+
+| Key | What it holds |
+| --- | --- |
+| `type` | Required. One of `text`, `integer`, `number`, `boolean`, `date`, `timestamp`, `uuid` or `json` |
+| `required` | Optional. `true` or `false`. The default is `false`. A write that sets it to `null`, or leaves it out when it has no `default`, fails with `validation` |
+| `default` | Optional. A literal value of the column's type, used when an insert leaves the column out. Not an expression. `null` is allowed unless the column is `required` |
+
+### Names
+
+A table name and a column name must match `^[a-z][a-z0-9_]{0,62}$`: a lowercase letter first, then lowercase letters, digits and underscores, 63 characters at most. A name can't start with `pg_`. A column can't take a system column's name. The names in `indexes` and `unique` are columns you declared, or `created_by`, `created_at`, `updated_at` or `id`. The whole schema is at most 1 MiB as compact UTF-8 JSON. A JSON value in a column default or migration fill can nest at most 1,000 levels.
 
 ### Column types
 
-| Type | Holds | In JSON |
+| Type | Holds | In JSON, and in `default` |
 | --- | --- | --- |
 | `text` | UTF-8 text, at most 64 KiB | A string |
-| `integer` | A signed 64-bit integer | A number, or a string above 2^53 |
+| `integer` | A signed 64-bit integer | A whole number between -9007199254740991 and 9007199254740991, or a string of an integer for a larger value, such as `"9007199254740993"` |
 | `number` | A double-precision number | A number |
 | `boolean` | `true` or `false` | A boolean |
-| `date` | A calendar date | `"2026-11-20"` |
-| `timestamp` | An instant, to the millisecond, in UTC | `"2026-11-20T18:30:00.000Z"` |
-| `uuid` | A UUID | A lowercase string |
-| `json` | Any JSON value, at most 64 KiB | JSON |
+| `date` | A calendar date | `"2026-11-20"`: year, month and day, with a day that exists |
+| `timestamp` | An instant, in UTC, to the millisecond | `"2026-11-20T18:30:00.000Z"`: the date, `T`, the time, and a `Z`. The fraction of a second is optional, and has up to 3 digits |
+| `uuid` | A UUID | A lowercase string, such as `"0199537f-0000-7000-8000-0000000000a1"` |
+| `json` | Any JSON value, at most 64 KiB | Any JSON value, an object or an array included |
 
 One request's body is at most 1 MiB (see [Limits](#limits)), so a row you write through `fluid.db` is smaller than that. A `json` column compares as a whole value: filter it with `eq`, `neq`, `in` or `is` only, and don't order by it.
+
+### What the schema check refuses
+
+- A `version` that isn't `1`, or a key that isn't listed above.
+- A column type that isn't one of the eight, such as `float`, `string` or `datetime`.
+- A table or column name that has a capital letter, starts with `_`, a digit or `pg_`, or is longer than 63 characters.
+- A column named `id`, `created_by`, `created_at` or `updated_at`.
+- A rule that isn't `public`, `signed_in`, `creator`, `owner` or `nobody`, and `creator` as the `insert` rule.
+- A `default` that isn't a value of the column's type, such as `5` for a `text` column, a `date` of `"2026-02-30"`, or `null` on a `required` column.
+- An index or unique set that names a column the table doesn't have, has no column, or has more than 3.
+- More than 32 tables, 64 columns in a table, 8 indexes or 4 unique sets in a table.
 
 ### System columns
 
@@ -103,47 +205,127 @@ So with no `rules`, signed-in visitors can add rows and change their own, and on
 
 ## Query a table
 
-`fluid.db.from(table)` starts a query. Await it to send one request. It resolves `{ data, error }` whatever happens, and never throws for an answer.
+### Import the SDK
+
+```ts
+import { fluid } from "@fluid-app/sites";
+```
+
+Importing `@fluid-app/sites` also puts `fluid` on `window.fluid`. `fluid.db` has one method, `from(table: string)`, which starts a query on one of your tables. Await the query to send one request. It resolves `{ data, error }`, and `count` when you ask for it, whatever the answer. HTTP errors resolve in `error`, and a request that can't reach the site's host resolves with the `unavailable` error. Invalid query construction can still throw, as described below. These types come from the same package: `DbError`, `DbResponseV1`, `QueryBuilder`, `Row` and `Value`.
+
+```ts
+interface DbResponseV1 {
+  data: Row[] | null;
+  count?: number;
+  error: DbError | null;
+}
+interface DbError {
+  code: "validation" | "rule_denied" | "quota_exceeded" | "unique_violation" | "timeout" | "unavailable" | "no_database";
+  message: string;
+  details?: JsonValue; // any JSON value
+}
+```
+
+### The query methods
+
+Each method returns the query, so you chain them. These are all of them:
+
+| Method | Does |
+| --- | --- |
+| `select(columns?: string, opts?: { count?: "exact" })` | Reads rows. `columns` is `"a,b"` or `"*"` |
+| `insert(rows: Row \| Row[])` | Adds one row, or an array of up to 500 |
+| `update(set: Row)` | Changes the rows the filter matches |
+| `delete()` | Removes the rows the filter matches |
+| `eq`, `neq`, `gt`, `gte`, `lt`, `lte` `(column: string, value: Value)` | Filter by a comparison |
+| `in(column: string, values: Value[])` | Filter to any of the values |
+| `is(column: string, value: null)` | Filter to `null` |
+| `like`, `ilike` `(column: string, pattern: string)` | Filter by a pattern, with `%` and `_` |
+| `not(column: string, op: string, value: Value)` | The opposite of one condition |
+| `or(filters: string)` | Any of the conditions in a string such as `"a.eq.1,b.gt.2"` |
+| `match(values: Row)` | Every column equals its value |
+| `order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean })` | Orders the rows. `ascending` is `true` by default |
+| `limit(count: number)` | At most `count` rows, 1 to 1,000 |
+| `range(from: number, to: number)` | Rows `from` to `to`, counting from 0, both included |
+| `single()` | Awaits to `{ data, error }` with one row. It fails with `validation` unless exactly one row matches |
+| `maybeSingle()` | Like `single()`, and `data` is `null` when no row matches |
+
+`Row` is an object of column names and values. `Value` is a string, a number, a boolean, `null` or any JSON value. Pass `uuid`, `date` and `timestamp` values as strings.
+
+The builder throws a `TypeError`, before it sends anything, when the calls can't make a request: `update` or `delete` with no filter, `insert` with a filter, an `order`, `limit` or `range` on a write, or a `select()` that follows a `select()`. `fluid.db` leaves out the Supabase methods this table doesn't list, such as `upsert`, `rpc`, `textSearch` and joins in `select`. They throw a `NotSupportedError` that names the method.
 
 ### Read rows
 
 ```ts
-const { data, error } = await fluid.db
+import { fluid } from "@fluid-app/sites";
+
+const eventId = "0199537f-0000-7000-8000-0000000000a1";
+
+const { data, error, count } = await fluid.db
   .from("rsvps")
-  .select("name,guests,created_at")
-  .eq("event_id", "fall-launch")
+  .select("name,guests,created_at", { count: "exact" })
+  .eq("event_id", eventId)
   .order("created_at", { ascending: false })
   .limit(50);
 ```
 
 - `select()` or `select("*")` reads every declared column, then the system columns.
-- `select("name,guests", { count: "exact" })` also returns `count`, the number of rows that match.
+- `select("name,guests", { count: "exact" })` also returns `count`, the number of rows that match, whatever the limit.
 - `limit(n)` takes at most 1,000 rows. With no limit, a select returns 100.
 - `range(0, 49)` reads the first 50 rows, and `range(50, 99)` the next 50.
-- `single()` resolves the one row, and `validation` unless exactly one matches. `maybeSingle()` resolves `null` when none matches.
+- A row of a select holds the columns you asked for. A `uuid` or `date` is a string, and an `integer` past 2^53 is a string.
+
+To read one row:
+
+```ts
+import { fluid } from "@fluid-app/sites";
+
+const eventId = "0199537f-0000-7000-8000-0000000000a1";
+
+const one = await fluid.db.from("events").select().eq("id", eventId).single();
+const maybe = await fluid.db
+  .from("rsvps")
+  .select("id")
+  .eq("event_id", eventId)
+  .maybeSingle();
+```
 
 ### Write rows
 
 ```ts
-const { error } = await fluid.db
-  .from("rsvps")
-  .insert({ event_id: "fall-launch", name: "Ana Rivera", guests: 2 });
+import { fluid } from "@fluid-app/sites";
 
-const { data: updated } = await fluid.db
+const eventId = "0199537f-0000-7000-8000-0000000000a1";
+const rsvpId = "0199537f-0000-7000-8000-0000000000b2";
+
+const created = await fluid.db
+  .from("rsvps")
+  .insert({ event_id: eventId, name: "Ana Rivera", guests: 2 })
+  .select();
+
+const updated = await fluid.db
   .from("rsvps")
   .update({ guests: 3 })
   .eq("id", rsvpId)
   .select();
 
-await fluid.db.from("rsvps").delete().eq("id", rsvpId);
+const removed = await fluid.db.from("rsvps").delete().eq("id", rsvpId);
 ```
 
-- `insert` takes one row or an array of up to 500.
-- `update` and `delete` need a filter, so they never touch every row.
-- Add `.select()` after a write to get the written rows back.
+- `insert` takes one row or an array of up to 500. Leave out `id`, `created_by`, `created_at` and `updated_at`: the site's host sets them.
+- `update` sets at most 100 values together with the filter's values.
+- `update` and `delete` need a filter that picks rows, to limit the rows they change. A broad filter can still match every row, so use a row id when you mean to change just one.
+- Add `.select()` after a write to get the written rows back in `data`.
 - A `creator` rule adds "rows this visitor wrote" to the filter for you, so an update on another person's row changes nothing.
 
 ### Filter
+
+```ts
+import { fluid } from "@fluid-app/sites";
+
+await fluid.db.from("events").select("title").gte("capacity", 10).in("is_public", [true]).is("details", null);
+await fluid.db.from("events").select("title").or("capacity.gt.100,ticket_price.eq.0").range(0, 49);
+await fluid.db.from("events").select().ilike("title", "fall%").not("capacity", "lt", 5).match({ is_public: true });
+```
 
 | Method | Matches |
 | --- | --- |
@@ -153,30 +335,45 @@ await fluid.db.from("rsvps").delete().eq("id", rsvpId);
 | `is(column, null)` | `null`. `eq(column, null)` matches nothing |
 | `like`, `ilike` | A pattern with `%` and `_`. `ilike` ignores the case of ASCII letters |
 | `not(column, op, value)` | The opposite of one condition |
-| `or("status.eq.open,guests.gt.2")` | Any of the conditions, in Supabase's filter-string form |
-| `match({ event_id: "fall-launch", guests: 2 })` | Every pair |
-
-Methods that `fluid.db` leaves out, such as `upsert`, `rpc`, `textSearch` and joins in `select`, throw a `NotSupportedError` that names the method.
+| `or("capacity.gt.100,ticket_price.eq.0")` | Any of the conditions, in Supabase's filter-string form |
+| `match({ is_public: true, capacity: 50 })` | Every pair |
 
 ### Handle errors
 
-`error` is `null` on success. Otherwise it has a `code`, a `message`, and sometimes `details`:
+`error` is `null` on success. Otherwise it has a `code`, a `message`, and sometimes `details`. Check `error` after every call:
 
 ```ts
-const { error } = await fluid.db.from("rsvps").insert({ event_id: "fall-launch", name });
+import { fluid } from "@fluid-app/sites";
 
-if (error?.code === "rule_denied") fluid.auth.signIn();
+const eventId = "0199537f-0000-7000-8000-0000000000a1";
+
+const { error } = await fluid.db
+  .from("rsvps")
+  .insert({ event_id: eventId, name: "Ana Rivera" });
+
+if (error) {
+  switch (error.code) {
+    case "rule_denied":
+      console.log("Sign in with the site’s sign-in button to continue.");
+      break;
+    case "unique_violation":
+      console.log("You already replied to this event.");
+      break;
+    default:
+      console.log(error.message);
+  }
+}
 ```
 
-| Code | Status | What it means |
-| --- | --- | --- |
-| `validation` | 400 | The request doesn't fit the schema or a limit: an unknown table or column, a value of the wrong type, a write to a system column. `details` names the problem |
-| `rule_denied` | 403 | The table's rule doesn't admit this visitor, such as a guest on a `signed_in` table |
-| `no_database` | 404 | The site has no database. Publish a `db/schema.json` to create one |
-| `unique_violation` | 409 | The write breaks a `unique` set |
-| `quota_exceeded` | 429 | Too many requests, or the site's database is at its row or storage limit. `details.limit` is `viewer` for one visitor's request limit, and `site` for the site's limits |
-| `unavailable` | 503 | The database couldn't answer. Try again |
-| `timeout` | 504 | The request took longer than 5 seconds |
+| Code | Status | What it means | What to do |
+| --- | --- | --- | --- |
+| `validation` | 400 | The request doesn't fit the schema or a limit: an unknown table or column, a value of the wrong type, a required column left out or set to `null`, a write to a system column, or `single()` with more or fewer than one row. `details` names the problem | Fix the call or the schema. Sending it again unchanged fails again |
+| `rule_denied` | 403 | The table's rule doesn't admit this visitor, such as a guest on a `signed_in` table | For a guest, offer a sign-in button that calls `fluid.auth.signIn()` from its click handler. For a signed-in visitor, don't retry. If the rule is wrong, change it in `db/schema.json` and publish |
+| `no_database` | 404 | The site has no database: it has never been published with a `db/schema.json`, or it is a branch whose copy hasn't landed | Publish the schema. On a branch, wait for the copy. See [Branches](#branches) |
+| `unique_violation` | 409 | The write breaks a `unique` set | Tell the visitor the row already exists, or change the values |
+| `quota_exceeded` | 429 | A request limit or a size limit is reached. `details.limit` is `viewer` for one visitor's request limit, and `site` for the site's request, storage and row limits. See [Limits](#limits) | Wait until the minute ends and try again. For a full database, delete rows or ask for a higher limit |
+| `unavailable` | 503 | The database couldn't answer, or the request couldn't reach it | Try again after a short wait. For a write, check whether it succeeded before sending it again |
+| `timeout` | 504 | The request took longer than 5 seconds. A write may still have gone through | Read the rows before you send a write again |
 
 ### Limits
 
@@ -187,45 +384,149 @@ if (error?.code === "rule_denied") fluid.auth.signIn();
 | Rows in one site | 1,000,000 |
 | Storage of one site | 1 GiB |
 | Request body | 1 MiB |
+| Rows in one `insert` | 500 |
+| Values set and filtered in one `update` | 100 |
 | Values in one filter | 90 |
 | Filter depth | 8 |
 | `like` or `ilike` pattern | 50 bytes |
+| Time for one request | 5 seconds |
 
-The row, storage and request limits of one site can be raised for your company.
+What happens at a limit:
 
-Once a site's database reaches its row or storage limit, inserts and updates answer `quota_exceeded`, and reads and deletes still work. The usage the limits are checked against is refreshed regularly, not on each write, so a site can pass a limit for a short time before writes are refused.
-
-## Billing
-
-A site's database is charged to your company's usage credits. Fluid meters each site's database by the UTC day, on three things:
-
-- rows read;
-- rows written;
-- storage.
-
-There's no free allowance. The number of requests isn't billed, only the rows they read and write. A site with no database is never billed. The [limits](#limits) above apply to each site.
+- **A request limit** refuses the request with `quota_exceeded`. The count restarts each minute, so try again when the minute ends.
+- **The storage and row limits** refuse an `insert` or an `update` with `quota_exceeded`. Reads and deletes still work, so you can free space by deleting rows.
+- **The size figures lag a little.** A site's rows and storage are measured on a schedule, so a size limit can take effect shortly after the database reaches it.
+- **The per-visitor limit is fixed.** The site's request, row and storage limits can be raised for your company. A company admin with the `application_themes.update` permission raises them with [Replace the company's member site policy](/api-reference/member-site-policy/replace-the-companys-member-site-policy), in `databaseLimits`. [Read the company's member site policy](/api-reference/member-site-policy/read-the-companys-member-site-policy) shows what is set. A limit left out, or `null`, goes back to its default.
 
 ## Change the schema
 
-Each publish compares your new `db/schema.json` with the schema the site's database holds.
+Edit `db/schema.json` and publish again. Each publish compares your new file with the schema the site's database holds, and applies the difference before the new version goes live.
 
 | Change | On publish |
 | --- | --- |
 | Add a table; add a column that's optional or has a default; add or drop an index; drop a unique set; stop requiring a column; change a rule or a default | Applied |
 | Add a unique set | Applied, unless existing rows break it: then the publish fails with `unique_violation` |
-| Drop or rename a table or column; change a column's type; make a column required | Applied only when a migration names it and you confirm the migration |
+| Drop or rename a table or column; change a column's type; make a column required | Applied only when a migration names it and you confirm the migration. With no migration, the publish fails with `validation` |
+| Add a column that's required and has no default | Refused with `validation`. Add it as optional, or give it a default |
+| A type change the `change_type` list below doesn't allow, such as `text` to `integer` | Refused with `validation`, even with a migration |
 
-A destructive change needs a migration in `migrations`, with an id unique in the site. Keep every other key of the table as it was: a rule you leave out goes back to its default, and changing a rule is applied with no confirmation. This example renames `guests` and drops `note`, and changes nothing else:
+### Add to the schema
+
+An additive change needs no flag. This file is the first example with a `location` column added to `events` and a new `announcements` table. Every table of the schema stays in the file:
 
 ```json db/schema.json
 {
   "version": 1,
   "tables": {
+    "events": {
+      "columns": {
+        "title": { "type": "text", "required": true },
+        "starts_on": { "type": "date", "required": true },
+        "capacity": { "type": "integer", "default": 50 },
+        "ticket_price": { "type": "number", "default": 0 },
+        "is_public": { "type": "boolean", "default": true },
+        "details": { "type": "json" },
+        "location": { "type": "text" }
+      },
+      "rules": { "read": "public", "insert": "owner", "update": "owner", "delete": "owner" },
+      "indexes": [["starts_on"]]
+    },
     "rsvps": {
       "columns": {
-        "event_id": { "type": "text", "required": true },
+        "event_id": { "type": "uuid", "required": true },
         "name": { "type": "text", "required": true },
-        "party_size": { "type": "integer", "default": 0 }
+        "guests": { "type": "integer", "default": 1 },
+        "note": { "type": "text" },
+        "checked_in_at": { "type": "timestamp" }
+      },
+      "rules": { "read": "signed_in", "insert": "signed_in", "update": "creator", "delete": "creator" },
+      "indexes": [["event_id"]],
+      "unique": [["event_id", "created_by"]]
+    },
+    "announcements": {
+      "columns": {
+        "title": { "type": "text", "required": true },
+        "body": { "type": "text" },
+        "pinned": { "type": "boolean", "default": false }
+      },
+      "rules": { "read": "public", "insert": "owner", "update": "owner", "delete": "owner" }
+    }
+  }
+}
+```
+
+Run the same command as before:
+
+```bash
+fluid sites publish
+```
+
+### Make a destructive change
+
+A destructive change needs a migration in `migrations`, with an `id` unique in the site, 1 to 100 characters. Keep every other key of every table as it was: a rule you leave out goes back to its default, a table you leave out is refused with `validation` unless a confirmed `drop_table` migration names it, and changing a rule is applied with no confirmation. This file keeps the additions from [Add to the schema](#add-to-the-schema). It renames `guests` to `party_size` and drops `note`:
+
+```json db/schema.json
+{
+  "version": 1,
+  "tables": {
+    "events": {
+      "columns": {
+        "title": {
+          "type": "text",
+          "required": true
+        },
+        "starts_on": {
+          "type": "date",
+          "required": true
+        },
+        "capacity": {
+          "type": "integer",
+          "default": 50
+        },
+        "ticket_price": {
+          "type": "number",
+          "default": 0
+        },
+        "is_public": {
+          "type": "boolean",
+          "default": true
+        },
+        "details": {
+          "type": "json"
+        },
+        "location": {
+          "type": "text"
+        }
+      },
+      "rules": {
+        "read": "public",
+        "insert": "owner",
+        "update": "owner",
+        "delete": "owner"
+      },
+      "indexes": [
+        [
+          "starts_on"
+        ]
+      ]
+    },
+    "rsvps": {
+      "columns": {
+        "event_id": {
+          "type": "uuid",
+          "required": true
+        },
+        "name": {
+          "type": "text",
+          "required": true
+        },
+        "party_size": {
+          "type": "integer",
+          "default": 1
+        },
+        "checked_in_at": {
+          "type": "timestamp"
+        }
       },
       "rules": {
         "read": "signed_in",
@@ -233,23 +534,64 @@ A destructive change needs a migration in `migrations`, with an id unique in the
         "update": "creator",
         "delete": "creator"
       },
-      "indexes": [["event_id"]],
-      "unique": [["event_id", "created_by"]]
+      "indexes": [
+        [
+          "event_id"
+        ]
+      ],
+      "unique": [
+        [
+          "event_id",
+          "created_by"
+        ]
+      ]
+    },
+    "announcements": {
+      "columns": {
+        "title": {
+          "type": "text",
+          "required": true
+        },
+        "body": {
+          "type": "text"
+        },
+        "pinned": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "rules": {
+        "read": "public",
+        "insert": "owner",
+        "update": "owner",
+        "delete": "owner"
+      }
     }
   },
   "migrations": [
     {
       "id": "2026-11-20-rsvp-party-size",
       "steps": [
-        { "op": "rename_column", "table": "rsvps", "from": "guests", "to": "party_size" },
-        { "op": "drop_column", "table": "rsvps", "column": "note" }
+        {
+          "op": "rename_column",
+          "table": "rsvps",
+          "from": "guests",
+          "to": "party_size"
+        },
+        {
+          "op": "drop_column",
+          "table": "rsvps",
+          "column": "note"
+        }
       ]
     }
   ]
 }
 ```
 
-| Step | Fields |
+A migration is a list of `steps`, run in order. Each step has an `op` and these fields, spelled exactly:
+
+| `op` | Fields |
 | --- | --- |
 | `drop_table` | `table` |
 | `rename_table` | `from`, `to` |
@@ -258,10 +600,108 @@ A destructive change needs a migration in `migrations`, with an id unique in the
 | `change_type` | `table`, `column`, `to`. Allowed: `integer` to `number` or `text`, `number` to `text`, `boolean` to `text`, `date` to `timestamp`, `uuid` to `text` |
 | `require` | `table`, `column`, `fill`, the value that replaces each `null` first |
 
-Confirm each migration by its id when you publish:
+A step can't name a system column. Confirm each migration by its `id` when you publish:
 
 ```bash
 fluid sites publish --confirm 2026-11-20-rsvp-party-size
 ```
 
-Without the confirmation, the publish fails with `destructive_change_unconfirmed`, lists each unconfirmed migration, and changes nothing. A migration runs once: a later publish with the same migration doesn't run it again. A schema change that fails leaves the database and the current version of the site as they were.
+Repeat `--confirm` for each migration. Without it, the publish fails with `destructive_change_unconfirmed`, lists each unconfirmed migration and its steps, and changes nothing. A destructive change that no migration names fails with `validation`, and the error names the table and column. A refused schema plan or a failed schema transaction leaves the schema unchanged. A successful schema change can remain even if a later step of publishing fails; the old build may still be current. See [Finish an interrupted publish](#finish-an-interrupted-publish).
+
+How migrations run:
+
+- **A migration runs once.** A later publish with the same migration doesn't run it again, so you can leave it in `db/schema.json`.
+- **The first publish skips them.** A new database is created in its final form, so there is nothing to change and nothing to confirm.
+- **A drop or a rename takes its indexes with it.** A migration that drops or renames a column also drops the indexes and unique sets that list it. Declare the ones you still want in the new schema, under the column's new name.
+- **The data goes with a drop.** Dropping a table or a column deletes its rows or values, and a rename keeps them. Check what a step removes before you confirm it.
+
+### Finish an interrupted publish
+
+A publish that runs out of time while it applies a schema change may have applied it. Until that publish is finished, the next publish is refused with `409` and `schema_change_pending`, and nothing changes. The answer names the pending bundle in `details.pendingBundle`.
+
+`fluid sites publish` handles it for you:
+
+- **In a terminal,** it asks whether to publish the pending bundle again to finish it. A bare Enter says yes.
+- **With `--finish-pending`,** it finishes the pending bundle without asking.
+- **With `--json`, or with no terminal, and no flag,** it prints the command to run and sends nothing.
+
+Finishing the pending bundle makes that bundle the current version. Your own build isn't published by that run. Run `fluid sites publish` again to publish it. Finishing the pending bundle uses its existing upload. Publishing your own build afterwards may upload files it still needs.
+
+If the pending bundle holds a destructive migration, finishing it is refused with `destructive_change_unconfirmed`, and the command lists the pending bundle's own migration ids. Confirm them with `--confirm-pending`:
+
+```bash
+fluid sites publish --finish-pending --confirm-pending 2026-11-18-drop-notes
+```
+
+`--confirm` never goes to the pending bundle. A migration id is unique only within one schema, so an id you confirmed for this build could match a different migration in the pending one. Check the pending bundle's schema before you confirm.
+
+### Go back to an earlier version
+
+You can't make an earlier version current when it has a `db/schema.json`. [Make an earlier bundle current](/api-reference/site-bundles/make-an-earlier-bundle-current-roll-back) answers `no_database` and changes nothing. To go back, change your folder and publish again. The rules above still apply to the schema you publish.
+
+## Branches
+
+A branch of a site that has a database gets a database of its own, with a copy of the parent's tables and rows. You make the branch with [Branch a site](/api-reference/site-branches/branch-a-site), or for a company site [Branch a company site](/api-reference/member-site-branches/branch-a-company-site).
+
+- **The copy is separate.** What the branch writes never reaches the parent, and what the parent writes after the copy never reaches the branch.
+- **The copy isn't made at once.** The copy runs in the background when scheduled database processing is enabled for your environment. Wait for it before publishing a schema on the branch. A failed copy can need support to repair it; retrying the publish does not repair the copy.
+- **Until the copy lands, the branch has no database.** `fluid.db` on the branch answers `no_database`, and so does a publish of the branch that has a `db/schema.json`. Nothing changes. Try again after the copy lands.
+- **The branch starts with the parent's schema.** Its next publish is compared with that schema, so the rules in [Change the schema](#change-the-schema) apply to it.
+- **A parent with no database gives the branch none.** The branch's first publish with a `db/schema.json` creates an empty one.
+- **A failed setup removes the branch.** If the branch's database can't be made when you create the branch, the call answers `409` and the branch isn't kept. Try again.
+
+## Billing
+
+A site's database uses the company's hosting credits. Usage is metered by UTC day for three things:
+
+- The rows the site read that day.
+- The rows the site wrote that day.
+- The storage the database holds.
+
+There is no free allowance. Requests aren't charged on their own. The days a branch spends waiting for its copy aren't charged. Billing depends on the company’s credit terms and billing being enabled; ask your company admin about charges for your environment.
+
+## Download the data
+
+You can download every table and row of a site's database as one file. The file is NDJSON, a JSON value on each line. This shortened example shows its structure:
+
+```text
+{"format":"fluid-site-db","version":1,"schema":{"version":1,"tables":{"rsvps":{"columns":{"event_id":{"type":"uuid","required":true}}}}}}
+{"table":"rsvps","row":{"id":"0199537f-0000-7000-8000-0000000000a1","event_id":"0199537f-0000-7000-8000-0000000000e1","created_by":"42","created_at":"2026-11-05T10:00:00.000Z","updated_at":"2026-11-05T10:00:00.000Z"}}
+```
+
+- **The first line is the header.** It holds the format, its version and the database's schema.
+- **Each other line is one row.** It names the table and holds every column, the system columns included.
+- **Tables come in name order.** Each table's rows come by `id`.
+- **Values are written as the schema says.** An integer past 2^53 is a string, and a timestamp carries its milliseconds.
+
+The file streams as the database is read. It is not a snapshot: rows can change during a download. Avoid writes while exporting when you need a consistent copy. Check that the download finishes successfully and every line ends with a newline; a newline alone does not prove that a download is complete. If the download fails after it started, the last line is `{"error":"export_interrupted"}`. That line isn't a row. Download again.
+
+A site's owner downloads with the member API, using the member's own bearer token and the `site_id` in the folder's `.member-site.json`:
+
+```bash
+curl "https://api.fluid.app/api/member/v2026-10/sites/$SITE_ID/database-export" \
+  -H "Authorization: Bearer $MEMBER_TOKEN" \
+  -o site-database.ndjson
+```
+
+- **Only the owner can download.** A site's own code can't, and neither can a member session link from an email. Both are refused with `403`.
+- **A site with no database answers `404`.** So does a company that member sites aren't on for.
+- **A failure before the file starts answers `502` or `504`.** Ask again.
+
+See [Download a site's database](/api-reference/site-database/download-a-sites-database) for the full contract. A company admin with the `member_site_data.view` permission downloads any site of the company with [Download a site's database](/api-reference/member-site-database/download-a-sites-database) on the company API.
+
+## Review and delete rows
+
+Company admins can read and delete the rows of any site in the company, a member's site included. An admin never adds or changes a row. A table's rules don't apply to an admin, so a table whose `read` rule is `nobody` is still readable here.
+
+- **Reading and deleting need their own permissions.** `member_site_data.view` reads rows and `member_site_data.delete` deletes them. Both also need `application_themes.view`, and a signed-in admin.
+- **Every call is logged.** The log holds the admin, the site and the table, and for a delete the row ids.
+- **The admin screen does it for you.** See [Member Sites](/help/admin/member-sites).
+
+With the API, [List the tables of a site's database](/api-reference/member-site-data/list-the-tables-of-a-sites-database) shows the tables the site's current version declares. [Read the rows of a table of a site's database](/api-reference/member-site-data/read-the-rows-of-a-table-of-a-sites-database) returns a page of rows, newest first. [Delete rows of a table of a site's database](/api-reference/member-site-data/delete-rows-of-a-table-of-a-sites-database) removes the selected row ids. A row already gone is ignored, so sending the same delete again is safe.
+
+## Next steps
+
+- [Publish a member site](/member-sites-v1/publishing) covers the login, the checks and what each answer means.
+- [The member sites SDK](/member-sites-v1/sdk) covers the rest of `fluid`.
+- [Member site declarations](/member-sites-v1/declarations) covers `config/access.json`.
