@@ -3057,3 +3057,13 @@ It is left for ENG-4380.
   2026-11-03).
 - **Time estimates** (the headline and the per-step table): agent work only,
   with no code behind them.
+
+### Member-site owner database inspection
+
+The owner inspection section of `member-sites-v1/database.mdx` is imported from
+`snippets/member-site-owner-database-inspection.mdx`. Register that focused snippet
+as a guide against `member-sites-v2026-10.yaml`: its new workflow claims are fully
+covered without treating the existing SDK/schema tutorial as a newly audited API
+contract guide. The surrounding tutorial remains outside this registry's full-page
+coverage scope; this addition does not claim otherwise. The generated owner-read
+references remain the source for request, response, paging and error contracts.
