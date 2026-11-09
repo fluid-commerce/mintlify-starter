@@ -3,6 +3,8 @@ openapi: 3.1.0
 info:
   title: Fluid Member API v2026-10 — Sites
   description: |
+    Site management is shared by static V1 sites and older Liquid sites. For a static V1 site, create or change the site with the `sites` operations, then upload and publish its built content with the `site-bundles` operations. V1 published versions are bundles, not the Git history returned by the older versions and restore operations. The `site-database` operations marked as the older backend are not the database used by `db/schema.json` and `fluid.db`; the database download operation is a V1 operation.
+
     The authenticated member's own sites: list, create, read, change, delete, publish and copy, list a site's versions and restore one, with the files and pages that make up each site, and the branch a member makes to try a change to a published site. The credential alone determines the member and company; a site and a page are identified by their public ids, never by a numeric id. A member can read and change only the sites they own. Any other id, and any id of a site in another company, returns 404.
 
     These operations take a bearer only, the site menu, the site removals and the share-target search included, except the status, tables and rows operations of a site's database (see the `site-database` tag), which a site's own script reaches on the cookie mount when the site has declared them. On the same-origin cookie mount, a request with a valid member session is refused with `403`, with or without an `X-Fluid-Member-Site` header, because a script on the company's storefront shares that origin and would otherwise act as the visiting member, so no cookie path to them can be kept from it; a request with a missing or unusable session is refused with `401` first, as on every cookie-mount route. A page that draws the account menu holds the member's bearer and sends it itself.
@@ -68,7 +70,12 @@ tags:
   description: Whom the member may share a site with, inside the reach their company's messaging policy gives them.
 - name: site-database
   x-fluid-section: Members
-  description: 'The database of one of the member''s sites, read and written through the site''s own backend with six fixed operations. The status, tables and rows operations are served to the owner''s bearer and, on the cookie mount, to a site that sends its own `X-Fluid-Member-Site` label and has published a declaration naming `database: read` or `database: write`; the SQL statement operation is bearer only.'
+  description: >-
+    This group contains two separate database approaches. Download a site's database is the static V1 database export.
+    The status, turn-on, turn-off, tables, rows and schema-statement operations use the older per-site backend,
+    whose rollout is paused. They do not access the static V1 database. For V1, declare `db/schema.json`,
+    publish a bundle and use `fluid.db` in site code. See [The member site database](https://docs.fluid.app/member-sites-v1/database).
+    The older backend operation contracts remain below for existing integrations.
 - name: site-data
   x-fluid-section: Members
   description: The tables and rows of the database of one of the member's V1 (bundle) sites, read only, served to the site's owner's bearer so a builder such as member Mist can show them. The rows are the ones the owner can download whole with the database export.
@@ -250,19 +257,20 @@ components:
           description: Public id of the site this one was copied from, or null for a site that was not copied. It becomes null when the original is deleted. A member who can no longer open the original keeps the id, which names no content.
         access:
           "$ref": "#/components/schemas/SiteAccess"
+          description: The published declaration of the older Liquid authoring tree. This is not the declaration in a static V1 site's current bundle and is not a V1 grant response.
         layout_name:
           type:
           - string
           - 'null'
-          description: The default layout for the site's pages, or null to use the site's own `site` layout.
+          description: Older Liquid authoring only. The default layout for the site's pages, or null to use the site's own `site` layout. It does not select a layout in a static V1 build.
         settings:
           type: object
           additionalProperties: true
-          description: Design tokens such as colors and fonts, read as `settings` in the site's templates.
+          description: Older Liquid authoring only. Design tokens such as colors and fonts, read as `settings` in the site's templates. They do not change a static V1 build.
         content_version:
           type: string
           format: uuid
-          description: Replaced on every publish.
+          description: The older Liquid content version, replaced by a Liquid publish. This is not a static V1 bundle id and does not advance on a V1 bundle publish.
         share_url:
           type:
           - string
@@ -2690,7 +2698,10 @@ paths:
   "/api/member/v2026-10/sites":
     get:
       summary: List the member's sites
-      description: Every site the member owns, newest first, except a branch, which is found through its site's branches and by its own id. A member owns at most 25 sites, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+      description: |
+        Works for static V1 sites as well as older Liquid sites. This is a management list, not a list of the member's published bundles. The presence of `status: published` alone does not mean the gateway serves a site; use the returned `share_url` for a share button, and do not construct a link when it is null. See [List a site's bundles](https://docs.fluid.app/api-reference/site-bundles/list-a-sites-bundles) for V1 upload and publication history.
+
+        Every site the member owns, newest first, except a branch, which is found through its site's branches and by its own id. A member owns at most 25 sites, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
       operationId: member_sites_index
       tags:
       - sites
@@ -2726,7 +2737,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
-                  share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                  share_url:
                   company_lock: none
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
@@ -2749,7 +2760,10 @@ paths:
           "$ref": "#/components/responses/NotFound"
     post:
       summary: Add a site
-      description: Adds a site owned by the member, as a draft. Without a handle one is proposed from the name, and a number is added when it is taken. A member can own at most 25 sites.
+      description: |
+        Creates the site record for either approach. For static V1 content, follow creation with [Start a bundle upload](https://docs.fluid.app/api-reference/site-bundles/start-a-bundle-upload), upload the returned blobs, then [Publish a bundle](https://docs.fluid.app/api-reference/site-bundles/publish-a-bundle). Creating the site does not upload or publish its build.
+
+        Adds a site owned by the member, as a draft. Without a handle one is proposed from the name, and a number is added when it is taken. A member can own at most 25 sites.
       operationId: member_sites_create
       tags:
       - sites
@@ -2789,7 +2803,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
-                  share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                  share_url:
                   company_lock: none
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
@@ -2814,7 +2828,10 @@ paths:
     - "$ref": "#/components/parameters/SiteId"
     get:
       summary: Show a site
-      description: One of the member's sites. Another member's site, a missing one and a malformed id all return 404. Privately cacheable with revalidation on every read.
+      description: |
+        Works for static V1 sites as well as older Liquid sites. This returns the site's management details. `layout_name`, `settings`, `content_version` and `access` describe the older Liquid authoring tree; they are not the current V1 bundle, its manifest or its granted scopes. Use [List a site's bundles](https://docs.fluid.app/api-reference/site-bundles/list-a-sites-bundles) to identify the current V1 build, and the returned `share_url` to share a served site.
+
+        One of the member's sites. Another member's site, a missing one and a malformed id all return 404. Privately cacheable with revalidation on every read.
       operationId: member_sites_show
       tags:
       - sites
@@ -2850,7 +2867,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
-                  share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                  share_url:
                   company_lock: none
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
@@ -2873,7 +2890,10 @@ paths:
           "$ref": "#/components/responses/NotFound"
     patch:
       summary: Change a site
-      description: Changes the supplied fields. Send the `lock_version` you last read to refuse the change if the site changed since; without it the change is applied to the current site. A handle change keeps the site's public id.
+      description: |
+        Use this operation for management changes such as the name and visibility of a static V1 site. Older Liquid authoring fields such as `settings` and `layout_name` do not change a V1 build. Publish changed V1 files or declarations through [Publish a bundle](https://docs.fluid.app/api-reference/site-bundles/publish-a-bundle).
+
+        Changes the supplied fields. Send the `lock_version` you last read to refuse the change if the site changed since; without it the change is applied to the current site. A handle change keeps the site's public id.
       operationId: member_sites_update
       tags:
       - sites
@@ -2911,7 +2931,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
-                  share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                  share_url:
                   company_lock: none
                   lock_version: 1
                   created_at: '2026-09-01T10:00:00.000000Z'
@@ -2935,7 +2955,10 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
     delete:
       summary: Delete a site
-      description: Deletes the site and its pages.
+      description: |
+        Works for static V1 sites as well as older Liquid sites. A deleted V1 site stops being served. Its recorded site and bundle state is retained for the deletion recovery window; this operation is not a database turn-off or a database rollback. See [The member site database](https://docs.fluid.app/member-sites-v1/database) for V1 database behavior.
+
+        Deletes the site and its pages.
       operationId: member_sites_destroy
       tags:
       - sites
@@ -2956,7 +2979,10 @@ paths:
     - "$ref": "#/components/parameters/SiteId"
     post:
       summary: Publish a site
-      description: Marks the site published and replaces its `content_version`. Publishing a site that is already published publishes its current content again. It publishes the draft access declaration (`config/access.json`) together with the settings; a site with no draft declaration publishes none, which removes the one it had published. The request has no body.
+      description: |
+        Older Liquid publishing only. This operation publishes the site's Liquid authoring tree; it does not upload or switch a static V1 bundle. For V1, use [Start a bundle upload](https://docs.fluid.app/api-reference/site-bundles/start-a-bundle-upload), upload the returned blobs, then [Publish a bundle](https://docs.fluid.app/api-reference/site-bundles/publish-a-bundle).
+
+        Marks the site published and replaces its `content_version`. Publishing a site that is already published publishes its current content again. It publishes the draft access declaration (`config/access.json`) together with the settings; a site with no draft declaration publishes none, which removes the one it had published. The request has no body.
       operationId: member_sites_publish
       tags:
       - sites
@@ -2985,7 +3011,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d99'
-                  share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                  share_url: https://shop.example.com/sam-lee/sites/rileys-shop
                   company_lock: none
                   lock_version: 1
                   created_at: '2026-09-01T10:00:00.000000Z'
@@ -3013,6 +3039,8 @@ paths:
     post:
       summary: Copy a site
       description: |
+        This operation currently copies the older Liquid authoring tree described below. It does not copy a static V1 site's published bundle or its built files. A copy of a V1 site therefore has no current V1 bundle and is not served until it has a bundle of its own. V1 bundle-copy support is separate work; the `copy` share permission does not change this limitation.
+
         Copies the published content of a site into a new draft site the member owns. The copy holds the site's published layouts, sections and snippets, its published pages, its published settings, its published access declaration, its text assets and its menus. The declaration becomes a draft of the copy, so it is not published until the copy is. It never holds a draft above a published file, a file that was never published, or a page that is not published. A menu item that links to a page that was not copied is left out with the items below it. The copy is always private, is not published, and is not required; it counts toward the 25-site limit. The original is not changed, and the copy shares no rows with it: the content of each is independent, so changing either one never changes the other, and deleting either one never deletes the other. The new site's `copied_from_id` is the original's id; deleting the original sets the copy's `copied_from_id` to null and keeps the copy.
 
         A member can copy a site they own, and a published site that a share with `copy` permission opens to them; when several shares match, the highest permission counts. A member who can open the site, such as a published public site with no share for them or one shared with them to view, but may not copy it gets 403. A site the member cannot open, such as another member's draft, a draft or taken-down site shared with them, a private site no share matches, a site in another company and an unknown id, returns 404, whatever the body holds. A member who owns a site an admin took down gets 422. The body is optional.
@@ -3053,7 +3081,7 @@ paths:
                   settings:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e02'
-                  share_url: https://shop.example.com/sam-lee/accounts/fall-shop
+                  share_url:
                   company_lock: none
                   lock_version: 0
                   created_at: '2026-09-02T10:00:00.000000Z'
@@ -3085,6 +3113,8 @@ paths:
     get:
       summary: List a site's versions
       description: |
+        Older Liquid Git history only, not V1 bundle history. For the published versions of a static V1 site, use [List a site's bundles](https://docs.fluid.app/api-reference/site-bundles/list-a-sites-bundles). A V1 bundle publish does not create a Git-history version for this operation.
+
         The versions of one of the member's sites, newest first. Each publish of the site, and each restore, is saved to the site's history as a version, and any version can be restored with `POST /sites/{id}/restore`. Listing changes nothing. A site that was never published has no history yet and answers 409. The response is never cached (`Cache-Control: private, no-store`). The oldest entry is the commit GitHub created with the repo, before the first publish; it holds no site, and restoring it answers 422 `not_a_site_version`.
       operationId: member_sites_versions
       tags:
@@ -3144,6 +3174,8 @@ paths:
     post:
       summary: Restore a site to a version
       description: |
+        Older Liquid Git restore only. This operation does not change the current static V1 bundle. To choose an earlier V1 build, use [Make an earlier bundle current](https://docs.fluid.app/api-reference/site-bundles/make-an-earlier-bundle-current-roll-back). That operation currently refuses a bundle with a database schema; do not use a Liquid restore as a database rollback.
+
         Puts one of the member's sites back to a version from its history: its files, pages, menus, settings and access declaration become the version's, and it is published. A version with no `config/access.json` clears the site's declaration. Unpublished drafts are replaced by the version's content. The site's name, handle, visibility, status and shares do not change. The restore is saved as a new version, so it can be undone by restoring the version before it. Either the whole version is restored or nothing changes. The response is never cached (`Cache-Control: private, no-store`).
 
         A restore waits for the site's latest change to be saved to its history first: until it is, the request answers 409 `sync_pending` and the save is started, so retry shortly.
@@ -4586,7 +4618,7 @@ paths:
                     company_lock: none
                     removable: false
                     removal_id:
-                    share_url: https://shop.example.com/sam-lee/accounts/acme-launch
+                    share_url: https://shop.example.com/sam-lee/sites/acme-launch
                     access:
                       declared: false
                       uses: []
@@ -4603,7 +4635,7 @@ paths:
                     company_lock: none
                     removable: false
                     removal_id:
-                    share_url: https://shop.example.com/sam-lee/accounts/my-shop
+                    share_url:
                     access:
                       declared: false
                       uses: []
@@ -4620,7 +4652,7 @@ paths:
                     company_lock: none
                     removable: true
                     removal_id:
-                    share_url: https://shop.example.com/sam-lee/accounts/rileys-shop
+                    share_url: https://shop.example.com/sam-lee/sites/rileys-shop
                     access:
                       declared: true
                       uses:
@@ -4639,7 +4671,7 @@ paths:
                     company_lock: none
                     removable: true
                     removal_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d90'
-                    share_url: https://shop.example.com/sam-lee/accounts/team-hub
+                    share_url: https://shop.example.com/sam-lee/sites/team-hub
                     access:
                       declared: false
                       uses: []
@@ -5139,6 +5171,8 @@ paths:
     get:
       summary: Download a site's database
       description: |
+        Static V1 database export. Unlike the older backend operations in this group, this downloads the database declared by a published V1 bundle. It does not use the older backend's on/off, raw SQL or row routes.
+
         Downloads every table and row of one of the member's sites' databases as a file, from the sites gateway, which reads the database as the request is served. The answer is NDJSON, the contract's `DumpV1`: a first line with the format, its version and the schema (`{"format":"fluid-site-db","version":1,"schema":{...}}`), then one line for each row (`{"table":"notes","row":{...}}`). The same bytes import into any driver. It is sent as it is read, so it begins at once and no copy is held, however large the database is; the `Content-Disposition` header names the file `site-database-<site id>.ndjson`. It is not cached.
 
         A failure before the first byte is a normal error answer (`502`, or `504` when the gateway did not begin in time). A failure after it cannot change the status, which is already `200`, so the dump ends with one more line, `{"error":"export_interrupted"}`, which is neither a header nor a row and has no newline after it. A dump is whole only when the response ends cleanly and every line, the last included, is a header or a row and ends with a newline. A connection that is cut gives an HTTP error (a missing final chunk) or a last line without its newline. Download again.
@@ -5346,6 +5380,8 @@ paths:
     get:
       summary: Show a site's database status
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         The state of the site's database and the limits of its routes. It reads Fluid's own record and sends nothing to the backend, so it answers while the backend is still being created and for a draft site, and a site with no database is 404. It never returns a storage figure, the backend's address, its secret or a vendor id. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: read`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
       operationId: member_site_database_status
       tags:
@@ -5392,6 +5428,8 @@ paths:
     post:
       summary: Turn on a site's database
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Creates the database of one of the member's own sites, on the company's hosting account and credits, and answers 202 with the state `GET` of this path renders: `provisioning` until the first deploy finishes, then `live`. The operation routes answer 409 `database_unavailable` until it is `live`. A site whose database cannot serve (its hosting failed, was removed or deleted) gets a new one, and the answer is the same 202. A site whose database is `provisioning` or `live` is 409. A company holds at most 20 databases, a company's own site, another member's site and a missing site are 404, and a branch and a taken-down site are 422. The request takes no body and no query key. A bearer that can write only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot spend the company's credits. The response never holds the signing secret, the database's address or a vendor id. Every response is `private, no-store`.
       operationId: member_site_database_create
       tags:
@@ -5446,6 +5484,8 @@ paths:
     delete:
       summary: Turn off a site's database
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Turns off the database of one of the member's own sites, whatever state its hosting is in: running, still being created with nothing left to finish it, failed, already being removed, or discarded. The hosting is handed to Fluid's teardown, which removes its hosting resources later, and its billing stops from now. The site's link to it is removed in the same step, so `GET` of this path answers 404 afterwards and the owner may turn the database on again, which creates a new one with a new signing secret. It answers 202 with the state the hosting has once it is released: `pending_destroy` for a hosting that was running, or `archived` or `discarded` for one that was already gone. A site with no database, including one this operation just turned off, a company's own site, another member's site and a missing site are 404. If a step of creating the database holds the hosting, the request waits for it, and answers 409 `database_busy` with nothing changed when the wait is too long. The request takes no body and no query key. A bearer that can write only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot remove its own database. Every response is `private, no-store`.
       operationId: member_site_database_destroy
       tags:
@@ -5497,6 +5537,8 @@ paths:
     get:
       summary: List the tables of a site's database
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         The tables of the database's `public` schema with their columns, from the backend's `tables.list` operation. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: read`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`. No query key or body is taken.
       operationId: member_site_database_tables_index
       tags:
@@ -5553,6 +5595,8 @@ paths:
     post:
       summary: Run a schema statement on a site's database
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Runs one schema statement through the backend's `sql.run` operation. Rails does not read the statement: the backend accepts only the forms that cannot read or rewrite rows and refuses the rest with 422 `invalid_statement` before it contacts the database. A bearer only: the cookie mount answers 403 whether or not the request carries `X-Fluid-Member-Site`, so a page's script cannot drop a table. Every response is `private, no-store`.
       operationId: member_site_database_sql_create
       tags:
@@ -5616,6 +5660,8 @@ paths:
     get:
       summary: List the rows of a table
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         A page of the table's rows, from the backend's `rows.list` operation, with the cursor of the next page in `meta.pagination.next_cursor` (null on the last page).
 
         Filters are query keys of the form `filter[<column>][<operator>]=<value>`, ANDed, at most 50. They are described here and not declared, because OpenAPI has no query parameter for two levels of brackets. The operators are `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in` and `is_null`. `in` takes its values as repeated `filter[<column>][in][]=<value>` entries or as one comma-separated list, one to 100 values, and a value that holds a comma goes in the repeated form. `is_null` takes `true` or `false`. Every other operator takes one string, which the database reads as the column's type. A filter on a column that is not in the table is 422. The shell passes at most 2,048 characters of query string, so a longer filter is sent with a bearer.
@@ -5675,6 +5721,8 @@ paths:
     post:
       summary: Insert rows into a table
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Inserts one to 100 rows in one statement, all or none, through the backend's `rows.insert` operation, and returns the inserted rows. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`. A unique or foreign-key violation is 409 `conflict`, and any other integrity violation is 422.
       operationId: member_site_database_rows_create
       tags:
@@ -5741,6 +5789,8 @@ paths:
     patch:
       summary: Change a row
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Writes the values to the one row the table's single-column primary key addresses, through the backend's `rows.update` operation, and returns the row. The values may not name the primary key. A row with that key that does not exist is 404, and a table with no single-column primary key is 422. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
       operationId: member_site_database_rows_update
       tags:
@@ -5799,6 +5849,8 @@ paths:
     delete:
       summary: Remove a row
       description: |
+        Older per-site backend; rollout paused. This operation does not read or manage the static V1 database. For V1, create tables by publishing `db/schema.json` and query them from site code with `fluid.db`. See [The member site database](https://docs.fluid.app/member-sites-v1/database). The older backend contract follows; do not use it for a V1 site's Database tab.
+
         Removes the one row the table's single-column primary key addresses, through the backend's `rows.delete` operation. A row with that key that does not exist is 404. On the cookie mount, the request needs the session cookie, the CSRF token on a write, the `X-Fluid-Member-Site` header naming this site, and a published declaration of the site that lists `database: write`; a site that declared nothing is refused, because an owner holds no `database` scope unless the site declares it. A bearer reaches it as the owner whatever the site declares. Every response is `private, no-store`.
       operationId: member_site_database_rows_destroy
       tags:
