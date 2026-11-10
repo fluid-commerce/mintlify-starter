@@ -120,6 +120,9 @@ tags:
 - name: member-site-policy
   description: The scopes the company's rep sites may use on a visitor's data, and the caps it has raised on its sites' databases.
   x-fluid-section: Members
+- name: member-site-conversion
+  description: Turning a public company site into a Mist app, and the rule that says whether a new project should be a site or an app.
+  x-fluid-section: Members
 - name: member-site-preview
   description: The draft of a company site, rendered as it will be served once published, for its builder's own tools.
   x-fluid-section: Members
@@ -1607,6 +1610,160 @@ components:
           description: The HTTP status.
         meta:
           $ref: '#/components/schemas/ListMeta'
+    SiteAppConversion:
+      type: object
+      description: One conversion of a company site into a Mist app.
+      additionalProperties: false
+      required:
+      - id
+      - state
+      - mist_id
+      - source
+      - redirect_url
+      - error
+      - created_at
+      - finished_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The conversion's id.
+        state:
+          type: string
+          enum:
+          - queued
+          - running
+          - deploying
+          - publishing
+          - failing
+          - succeeded
+          - failed
+          description: '`queued` until the job starts, `running` while the app is built, `deploying` while the app''s first deployment builds, `publishing` for the moment the app''s address is attached and the site is archived (the site cannot be made private or taken down then), `failing` while a lost worker''s conversion is being cleaned up, then `succeeded` or `failed`. The site keeps its own address until `succeeded`.'
+        mist_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The id of the Mist app the conversion created, once it has one. Read it at `/api/v202604/mists/{id}`.
+        source:
+          type:
+          - string
+          - 'null'
+          enum:
+          - repo
+          - bundle
+          - null
+          description: Where the app's code came from once it succeeded, the site's own repository (`repo`) or its current bundle's files (`bundle`).
+        redirect_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The app's address, where `/sites/<handle>` now sends visitors, once the conversion succeeded.
+        error:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          required:
+          - code
+          - message
+          description: Why a failed conversion failed, or null.
+          properties:
+            code:
+              type: string
+              description: The reason, as a code, such as `source_unavailable` or `provisioning_failed`.
+            message:
+              type: string
+              description: The reason in plain words.
+        created_at:
+          type: string
+          format: date-time
+          description: When the conversion was asked for.
+        finished_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When it succeeded or failed, or null while it runs.
+    SiteAppConversionResponse:
+      type: object
+      description: A site's conversion into a Mist app.
+      additionalProperties: false
+      required:
+      - conversion
+      - status
+      - meta
+      properties:
+        conversion:
+          $ref: '#/components/schemas/SiteAppConversion'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    ProjectLaunchRecommendationRequest:
+      type: object
+      description: What is being built, and the needs the caller already knows. Every field is optional. A need left out is read from the description; a need set to `false` is not.
+      additionalProperties: false
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+          maxLength: 10000
+          description: What the user is building, in their words.
+        needs:
+          type: object
+          additionalProperties: false
+          description: The needs the caller knows, each a Boolean.
+          properties:
+            custom_domain:
+              type: boolean
+              description: The project must answer at its own domain.
+            server_rendering:
+              type: boolean
+              description: The project renders pages on the server (SSR).
+            heavy_functions:
+              type: boolean
+              description: The project runs long or heavy server code.
+    ProjectLaunchRecommendation:
+      type: object
+      description: Whether to launch the project as a site or an app, and why.
+      additionalProperties: false
+      required:
+      - kind
+      - reasons
+      - status
+      - meta
+      properties:
+        kind:
+          type: string
+          enum:
+          - site
+          - app
+          description: '`site` (static files on the sites gateway, with light functions and a database) unless the project needs a custom domain, server rendering or heavy server code, which make it an `app` (Mist).'
+        reasons:
+          type: array
+          description: Why, one entry for each need found, or why a site fits.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - code
+            - message
+            properties:
+              code:
+                type: string
+                description: '`custom_domain`, `server_rendering` or `heavy_functions` for an app; `static_site` or `converts_later` for a site.'
+              message:
+                type: string
+                description: The reason in plain words.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteBundleCurrent:
       type: object
       description: The site's current version after a publish, and its public address.
@@ -2510,6 +2667,67 @@ components:
 security:
 - bearer_auth: []
 paths:
+  /api/company/v2026-10/project-launch-recommendations:
+    post:
+      operationId: companyProjectLaunchRecommendationCreate
+      x-fluid-audience: company
+      summary: Recommend a site or an app for a new project
+      description: |
+        Says whether a new project should launch as a **site** or an **app**, by the one rule Fluid's MCP tools, CLI and docs share. A project is a site (static files on the sites gateway, with optional light functions and a database) unless it needs a custom domain, server rendering or heavy server code; any of those makes it an app (a Mist app). A site that outgrows these limits can be converted into an app later.
+
+        Pass what the user is building as `description`, and any need you already know in `needs`. A need you leave out is read from plain phrases in the description, such as "its own domain" or "server-side rendering"; a need you set to `false` is not. It reads and changes nothing.
+
+        Needs `application_themes.view`. A droplet installation token is refused with 403.
+      tags:
+      - member-site-conversion
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectLaunchRecommendationRequest'
+            example:
+              description: An event page for our spring launch, on launch.example.com
+              needs:
+                custom_domain: true
+      responses:
+        '200':
+          description: The recommendation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectLaunchRecommendation'
+              example:
+                kind: app
+                reasons:
+                - code: custom_domain
+                  message: It needs its own domain. Sites live at a Fluid address, and apps can have a custom domain
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission or is a droplet installation token.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Member sites are not enabled for this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body has a field that is not listed, or a need that is not a Boolean.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-sites:
     get:
       operationId: companyMemberSitesList
@@ -5472,6 +5690,136 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: The sites gateway did not begin to answer within 25 seconds. Nothing was sent; ask again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/conversion:
+    post:
+      operationId: companyMemberSiteConversionCreate
+      x-fluid-audience: company
+      summary: Convert a company site into a Mist app
+      description: |
+        Starts turning one public company site into a Mist app, for a project that has outgrown sites: it needs its own domain, server rendering or heavier server code. The answer is `202` with the queued conversion; the app is built in the background and its first deployment follows, usually within a few minutes. The site is archived and its address redirected only once that deployment is ready. Read its progress with `GET` on the same path.
+
+        The app starts from the site's code: its own source repository when it has one, otherwise the files of its current bundle, which become the whole of the app's repository and are served as a static project. Once the app is built the site is archived (not deleted), and `/sites/<handle>` sends visitors to the app's address at the same path.
+
+        Only a public company site converts, because an app has no Fluid sign-in to keep a private or members-only site closed. What is refused, with `details.reason`: a member's site (`not_company_site`, 403); a branch (`branch`), a taken-down site (`taken_down`), an archived site (`archived`), a site that is private, made private by the company or declares visitor data (`not_public`), a site not published through the sites gateway (`not_published`), a site with a database (`has_database`: its rows can't be moved into an app yet; download them with the database export) and no usable Mist template (`template_unavailable`), all 422; a site being converted (`conversion_in_progress`) or already converted (`already_converted`), 409; and a company with no credits for a new app (`credits_exhausted`), 402. Nothing is created for a refusal. Env vars are not carried yet: sites have none until they are added.
+
+        Needs `application_themes.update`, `mist.create` and `mist.code`, because the app is built from the site's code, and a signed-in admin. A site converted from its bundle is served as built files and never built again: its files go under `public/`, and Fluid's own `vercel.json` turns off install and build, so no script from the bundle runs. A droplet installation token and an OAuth client token are refused with 403. It answers 404 for every caller that passes those checks until the sites gateway is released to the company.
+      tags:
+      - member-site-conversion
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      responses:
+        '202':
+          description: The conversion is queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteAppConversionResponse'
+              example:
+                conversion:
+                  id: 019a6f00-0000-7000-8000-000000000001
+                  state: queued
+                  mist_id: null
+                  source: null
+                  redirect_url: null
+                  error: null
+                  created_at: '2026-11-10T10:00:00.000Z'
+                  finished_at: null
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: The company has no credits left for a new Mist app (`credits_exhausted`). Add credits, then convert again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller lacks a permission or a signed-in admin, is a droplet installation token or an OAuth client token, or the site is a member's (`not_company_site`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site is being converted (`conversion_in_progress`) or was already converted (`already_converted`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The site can't be converted. `details.reason` says why, and the message says it in plain words.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: Only a public site can become an app. An app can't keep a private or members-only site closed to the public, so make the site public first, or keep it as a site
+                  details:
+                    reason: not_public
+                status: 422
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+    get:
+      operationId: companyMemberSiteConversionShow
+      x-fluid-audience: company
+      summary: Read a site's conversion into a Mist app
+      description: |
+        The site's latest conversion: `queued`, `running`, `deploying`, `publishing`, `failing`, `succeeded` with the app's id and address, or `failed` with the reason. Poll it after a start until it is `succeeded` or `failed`.
+
+        Needs `application_themes.view`, `mist.view` and a signed-in admin. A droplet installation token and an OAuth client token are refused with 403. A member's site is refused with 403. It answers 404 when the site was never converted, and for every caller that passes those checks until the sites gateway is released to the company.
+      tags:
+      - member-site-conversion
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      responses:
+        '200':
+          description: The site's latest conversion.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteAppConversionResponse'
+              example:
+                conversion:
+                  id: 019a6f00-0000-7000-8000-000000000001
+                  state: succeeded
+                  mist_id: 019a6f00-0000-7000-8000-000000000002
+                  source: bundle
+                  redirect_url: https://my-site-ab12cd.mist.fluid.app
+                  error: null
+                  created_at: '2026-11-10T10:00:00.000Z'
+                  finished_at: '2026-11-10T10:01:10.000Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks a permission or a signed-in admin, is a droplet installation token or an OAuth client token, or the site is a member's.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site was never converted, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
