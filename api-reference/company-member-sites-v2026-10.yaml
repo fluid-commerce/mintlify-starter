@@ -1449,6 +1449,43 @@ components:
           description: The HTTP status.
         meta:
           $ref: '#/components/schemas/Meta'
+    MemberSiteGitCredentialResponse:
+      type: object
+      description: The credential for a company site's source.
+      additionalProperties: false
+      required:
+      - git_credential
+      - status
+      - meta
+      properties:
+        git_credential:
+          type: object
+          description: A short-lived Git credential for the site's source repository.
+          additionalProperties: false
+          required:
+          - remote_url
+          - expires_at
+          - repo
+          - branch
+          properties:
+            remote_url:
+              type: string
+              description: The HTTPS git remote, with a token limited to the one repository in its user info. Treat it as a secret.
+            expires_at:
+              type: string
+              format: date-time
+              description: When the token expires, in ISO 8601.
+            repo:
+              type: string
+              description: The repository's `owner/name`.
+            branch:
+              type: string
+              description: The git branch the site's source is on, `main` or a branch site's slug.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteBundleStarted:
       type: object
       description: The bundle that was started, and the uploads it still needs.
@@ -1770,7 +1807,7 @@ components:
         sha:
           type: string
           pattern: '^[0-9a-f]{7,40}$'
-          description: The commit's sha; send it to restore this version.
+          description: The commit's sha.
         short_sha:
           type: string
           description: The first seven characters of the sha, for display.
@@ -3174,7 +3211,7 @@ paths:
       operationId: companyMemberSitesVersions
       x-fluid-audience: company
       summary: List a site's versions
-      description: The versions of any site of the company, a company site or a member's, newest first. Each publish of the site, and each restore, is saved to its history as a version. Listing changes nothing. A site that was never published has no history yet and answers 409. Needs `application_themes.view`. A company API token can list; a droplet token needs the `website` scope and an installation role that grants `application_themes.view`. For a droplet reading a sandbox test company, a message's admin name is replaced with `Admin`.
+      description: The versions of any site of the company, a company site or a member's, newest first. A site whose source is in its repository lists the commits pushed to it; an older site lists each publish that was saved to its history. Listing changes nothing. A site that was never published has no history yet and answers 409. Needs `application_themes.view`. A company API token can list; a droplet token needs the `website` scope and an installation role that grants `application_themes.view`. For a droplet reading a sandbox test company, a message's admin name is replaced with `Admin`.
       tags:
       - member-sites
       parameters:
@@ -3230,7 +3267,7 @@ paths:
       operationId: companyMemberSitesRestore
       x-fluid-audience: company
       summary: Restore a site to a version
-      description: Puts any site of the company, a company site or a member's, back to a version from its history, as the signed-in admin, whom the restore's version names. The site's files, pages, menus and settings become the version's, and it is published; unpublished drafts are replaced. Its name, handle, visibility, status and shares do not change, so a site that was taken down stays taken down. The restore is saved as a new version, so it can be undone by restoring the version before it. Either the whole version is restored or nothing changes. A restore waits for the site's latest change to be saved to its history first; until it is, it answers 409 `sync_pending` and the save is started, so retry shortly. Needs `application_themes.update` and a signed-in admin.
+      description: Refused. A site's source is its Git repository, which the builder pushes, so Fluid cannot put a site back to a version of its history. To publish an earlier version, check out its commit, build it and publish the bundle, or make an earlier bundle current. A request for any site of the company with a well-formed sha answers 409 `not_restorable` and changes nothing. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-sites
       parameters:
@@ -3244,21 +3281,6 @@ paths:
             example:
               sha: a1b2c3d
       responses:
-        '200':
-          description: The site now equals the version.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MemberSiteRestoredResponse'
-              example:
-                restored:
-                  sha: a1b2c3d
-                  files_written: 12
-                  files_removed: 2
-                status: 200
-                meta:
-                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
-                  timestamp: '2026-10-30T14:05:12Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3270,25 +3292,19 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site's history holds no version with this sha, or member sites are not enabled for the company.
+          description: No such site in this company, or member sites are not enabled for the company.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The site's history cannot be used right now. `error.details.error` is `not_provisioned` (no history yet), `not_connected`, `sync_pending` (the latest change is still being saved; retry shortly), `sync_failing` (saving the latest change failed), `not_restorable` (a member's site whose owner was removed) or `conflict` (the site is being changed; retry).
+          description: The site cannot be restored (`error.details.error` is `not_restorable`). Nothing changed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: The sha is malformed, the body holds an unknown field, the commit is not a site version (such as the history's first commit), or a file of the version could not be written, which `error.details.path` names. Nothing changed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '502':
-          description: The version could not be read from the site's history. Nothing changed; retry later.
+          description: The sha is malformed or the body holds an unknown field. Nothing changed.
           content:
             application/json:
               schema:
@@ -3981,6 +3997,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: The sites gateway could not prepare the uploads, because it was unreachable, timed out or answered with something unexpected. `details.error` names which. The bundle is failed; start again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/git-credential:
+    post:
+      operationId: companyMemberSiteGitCredentialCreate
+      x-fluid-audience: company
+      summary: Get a Git credential for a company site's source
+      description: |
+        A short-lived credential for the GitHub repository a company site keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents; it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site its slug, on its parent's repository. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
+
+        A site with no repository yet has one made from the static site template, and the request answers 409 `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers 503 `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
+
+        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not change: its owner builds it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-bundles
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      responses:
+        '200':
+          description: The credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteGitCredentialResponse'
+              example:
+                git_credential:
+                  remote_url: https://x-access-token:ghs_example@github.com/Fluid-WeCommerce/site-42.git
+                  expires_at: '2026-11-10T11:00:00Z'
+                  repo: Fluid-WeCommerce/site-42
+                  branch: main
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, whose source its owner builds, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site's repository is not usable. `details.error` is `repo_not_ready` while it is being made (ask again shortly) or `repo_disconnected` when it was disconnected for good.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The site, or the parent of a branch, was taken down (`details.error` is `site_taken_down`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: GitHub could not issue the credential (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The site's repository could not be made (`details.error` is `repo_unavailable`), because no GitHub organization has room for it or GitHub refused to create it. The request asked for it again; publish again later rather than retrying at once.
           content:
             application/json:
               schema:
