@@ -2932,3 +2932,155 @@ Durable decisions:
 - **Today's benefits are product facts.** Posting never notifies anyone (the
   Flow settings copy says so); the large-community rationale comes from the
   product owner.
+
+## Agent signup and launch pages — adoption record (2026-11-03, ENG-1673)
+
+`api/agent-signup.mdx` (prefix `agent-signup`) maps to `company-v0`.
+`api/agent-launch.mdx` (prefix `agent-launch`) maps to `company-v0` and
+`themes-v0`. These are the pages `ard.json`, the RFC 9727 API catalog and
+`llms.txt` point agents at.
+
+The two pages rest on very different amounts of spec. Only a few claims are
+mechanical: `POST /api/company` (its auth, request fields, example body,
+response fields and the 200/403/422/429 codes), plus two themes operations.
+The rest are semantic. Most of the launch page describes `fluid …` CLI commands, and no
+OpenAPI spec covers those. The semantic pass checked every claim against the
+fluid monorepo at `0ac5bb240bf`: the Rails API in `apps/rails` and the CLI in
+`packages/cli/*`, which is where the published `@fluid-app/fluid-cli*` packages
+are built. The run record is on ENG-1673.
+
+### Corrected at adoption
+
+The semantic pass refuted these sentences, and both pages were fixed in the
+adoption PR:
+
+- **A `422` can arrive after the company was created.** No longer true. Since
+  fluid #28599 (ENG-1566), nothing is committed before the only block that can
+  answer `422`. A company can now be followed only by a `5xx` or a dropped
+  connection, and the page's retry advice moved to those. `company-v0`'s own
+  operation description still carries the old sentence until the next
+  `company-v0` sync (fluid #30949 is merged).
+- **`is taken` after an unnormalized first request.** The retry fails under
+  `errors.company.base`, because the taken check compares the value as sent
+  (`Api::Companies::CreateAction#company_exists?`).
+- **Opening the confirmation link confirms the signup.** The link waits for a
+  **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
+- **Where the discovery documents are served.** `ard.json` and `api-catalog`
+  are served on the `fluid.app` apex only (`Site::PlatformDiscovery`), and
+  `fluid.app/llms.txt` redirects to docs.
+- **Making a theme live.** `POST …/publish` writes the published version and
+  never changes `status`. The storefront serves the `active` theme. The page now
+  says to use Update an application theme with `active` (registered
+  mechanically, `application_theme.active`), as the admin's Publish button does.
+- **Avalara needs a company code.** Fluid refuses to turn on commits until the
+  slot or the country has one (`CompanyCountry::TaxCommitRefusal#company_code_refusal`),
+  and files every document under it (`Avalara::InvoiceAssembler`), so it isn't
+  only for an account holding several companies.
+- **Removed:** a service that sets up social channel accounts from the payments
+  onboarding form. Nothing in the CLI, the Rails params or the admin
+  onboarding implements it.
+
+### The gate covers these pages only partly (accepted risk)
+
+The decision ENG-1673 asked for: these pages keep their behaviour claims as
+semantic claims, and the residual risk is recorded here. Nothing here asserts
+against a source other than OpenAPI, and nothing new was built in this repo.
+
+What the gate catches on these pages:
+
+- an edit to a registered sentence (quote presence);
+- a new backticked snake_case token or a covered status code (coverage lint);
+- a spec change that breaks one of the mechanical claims.
+
+What it does not catch:
+
+- **A change in fluid that makes a semantic claim false.** Nothing in this
+  repository runs when the signup flow, the CLI or the serving rules change.
+  This has happened twice. A serving rule changed on 2026-10-05 and made the
+  "goes live right after signup" claim false. fluid #28599 (2026-10-27) made
+  the `422` warning false. Both stayed live until someone checked by hand.
+- **Tokens the lint doesn't scan.** The lint scans only `/api/v202604/` paths
+  and the statuses 200/201/202/401/403/404/422. The signup endpoint
+  (`/api/company`) and `429` are registered as claims, but a new sentence naming
+  them passes the lint. Widening the token set is global and would affect every
+  guide, so it was left out of this adoption.
+- **CLI flag and output changes.** No spec models the CLI.
+
+Where each group of semantic claims gets its truth. A change to one of these
+files is the trigger to re-run the semantic pass on these pages:
+
+| Topic | Source in fluid (`apps/rails` unless noted) |
+| --- | --- |
+| Signup request, `422` forms, taken check | `app/services/api/companies/create_action.rb`, `Company#clean_up_subdomain`, `Companies::CreationService` |
+| Rate limits, `403`/`429` bodies | `config/initializers/rack_attack.rb` |
+| Confirmation email, one-hour window, resend | `NotificationMailer#signup_email_confirmation`, `SignupConfirmationResender` |
+| What confirms a signup | `apps/fluid-login` (Sign in click), `ConfirmMfaAction`, `Company::SignupConfirmationClaimer` |
+| Serving before confirmation, deferred provisioning | `Company.servable`, `Site::Resolver`, `Company::SignupProvisioner` |
+| 14-day removal | `Company::SignupReaper` (behind the `company-signup-reaper` flag) |
+| Discovery documents | `app/lib/site/platform_discovery.rb`, `config/routes/platform_discovery.rb` |
+| CLI sign-up, sign-in, session | `packages/cli/core` (`signup`, `login`, `whoami`), `JwtService::SESSION_DURATION` |
+| Payments onboarding, test order | `packages/cli/payments`, `OnboardingInfo::UpdateAction` |
+| Countries, languages, products, channels | `packages/cli/localization`, `packages/cli/products`, `packages/cli/channels` |
+| Themes | `packages/cli/theme-dev`, `Themes::Theme` (`active_for_company`), `Publishable#publish` |
+
+A check that fails a fluid PR when it touches a file in this table is possible.
+fluid's CI already clones this repository for `bin/openapi-mintlify-validate`.
+It is left for ENG-4380.
+
+### Accepted omissions (deliberate — do not re-litigate without cause)
+
+| Omitted fact | Rationale |
+| ------------ | --------- |
+| An existing user's `first_name`/`last_name` are ignored on signup | Low harm: nothing an agent does depends on it. |
+| A discarded company still holds its subdomain until the reaper deletes it | Rare for a first signup; the `is taken` guidance already covers the outcome. |
+| The 2-minute resend window that creation starts, and the resend endpoint's 5/min limit | The admin banner shows the countdown; the page's recovery path stays correct. |
+| The reaper spares a company that shows use (an order, product, domain, contact or extra member) | The page says "may be removed", which stays true. Listing what counts as use would invite agents to game it. |
+| `403`/`429` bodies are Rack::Attack's, with no `meta` | The page documents `meta` only for the `422` body. |
+| `RATE_LIMIT_WHITELIST_IPS` for shared egress | An operator setting, not something an agent can act on. |
+| Sign-in code limits (10/min) and the link-based sign-in path | New public signups don't use the link path; the CLI prints the code's expiry. |
+| `fluid theme dev` creates a development theme on the company | It shows up in the admin's theme list, but it does no harm to the flow. |
+| Avalara commits gated by the global `avalara-void-recovery-live` flag | A release flag; the guide should not track it. |
+| Signed preview tokens for Mist-made and branch themes | Outside this flow, which pushes its own theme. |
+
+### Low-confidence claims
+
+- **TikTok Shop "US seller accounts only"** (`agent-launch` TikTok claim). The CLI
+  accepts `--region GLOBAL`, but whether production has the global app's
+  credentials isn't visible in code. The guided setup also says US. Kept.
+- **"A `422` means the company was not created"** (`agent-signup-103`). True
+  except when the database connection is lost mid-request, which
+  `CreateAction` documents as an accepted gap.
+- **Portal and account hosts return `404` before confirmation.** Established by
+  reading `Site::Resolver`; an integration test covers only the storefront host.
+- **External facts:** pricing and billing wording, the "100+ countries" count,
+  the clone skill's repository (published under a personal GitHub account) and
+  its Firecrawl requirement, and the public discovery URLs (checked by GET on
+  2026-11-03).
+- **Time estimates** (the headline and the per-step table): agent work only,
+  with no code behind them.
+
+### Member-site owner database inspection
+
+The owner inspection section of `member-sites-v1/database.mdx` is imported from
+`snippets/member-site-owner-database-inspection.mdx`. Register that focused snippet
+as a guide against `member-sites-v2026-10.yaml`: its new workflow claims are fully
+covered without treating the existing SDK/schema tutorial as a newly audited API
+contract guide. The surrounding tutorial remains outside this registry's full-page
+coverage scope; this addition does not claim otherwise. The generated owner-read
+references remain the source for request, response, paging and error contracts.
+
+## Member Sites API navigation
+
+`api/member-sites.mdx` is the V1 API selection guide. Keep viewing site metadata
+separate from opening the published app in a browser. The V1 copy navigation and
+workflow follow the merged bundle-copy implementation. Keep the rollout note until
+the API, migration and database sweep deployment are verified for the environment;
+endpoint existence and a docs merge alone do not establish runtime availability.
+Ordinary copies carry schema but no source rows; do not conflate them with branches.
+
+The older Member Sites references remain generated under a hidden compatibility
+group so previously shared URLs keep resolving. Do not exclude their operations
+from generation or rename their tags and summaries to remove them from the
+sidebar. The navigation generator passes the section's `hidden: true` through to
+Mintlify; its regression test verifies that hiding preserves operation references.
+This applies to Member Sites compatibility only, not storefront theme APIs.

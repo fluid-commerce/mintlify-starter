@@ -34,7 +34,7 @@ tags:
   - name: single-sign-ons
     description: SSO-flow aliases of the authentication MFA and lookup endpoints.
   - name: social-auth
-    description: Google, Facebook, and Apple OAuth URLs, callback handling, and Apple account linking.
+    description: Google, Facebook, and Apple OAuth URLs and callback handling.
   - name: switch-role
     description: Switch the current admin user between admin and rep roles.
   - name: token-exchange
@@ -103,6 +103,11 @@ components:
         meta:
           description: Response metadata (request id and generation timestamp).
           $ref: '#/components/schemas/Meta'
+        sign_in_path:
+          description: Present only on the `send_mfa` answer, and only as `identity`, when the request sent `identity_hint_supported=true` and the address belongs to a staff person who signs in through the identity service, and no code or link was sent. The client hands the person back to the calling app instead of asking for a code. Absent otherwise.
+          type: string
+          enum:
+            - identity
     TokenSignInPath:
       description: How the token's holder signs in. `identity` means the legacy sign-in would no longer issue this token, because the token's company signs in through the identity service or its holder is Fluid staff while the Fluid company does; a client must not forward it and hands the person back to the calling app instead. `legacy` means the token may be used as before.
       type: string
@@ -730,6 +735,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/mobile/minimum_version:
+    get:
+      summary: Fetch the minimum mobile app version
+      description: Public endpoint that returns the oldest mobile app build that signs in through the identity service and where to get a newer one. The body is deployment configuration, the same for every caller, and carries no company or person data. No authentication required.
+      tags:
+        - authentication
+      operationId: auth_v0_mobile_minimum_version
+      x-fluid-lint-exempt: path is fixed by the shipped mobile app contract (fluid-mobile); internal auth-v0 endpoint, unversioned by design
+      responses:
+        '200':
+          description: The minimum version and store links
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - minimum_version
+                  - store_urls
+                properties:
+                  minimum_version:
+                    description: Oldest build, as `<version>-<build>` (for example `1.4.0-212`), that signs in through identity. `null` while no minimum is configured; the field reports only the configured cutoff and says nothing about whether the server still offers the legacy sign-in exception, so clients must not treat `null` as a policy statement (no forced upgrade).
+                    type:
+                      - string
+                      - 'null'
+                    examples:
+                      - 1.4.0-212
+                  store_urls:
+                    description: Where to download the app.
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - ios
+                      - android
+                    properties:
+                      ios:
+                        description: App Store URL, or `null` when not set.
+                        type:
+                          - string
+                          - 'null'
+                      android:
+                        description: Play Store URL, or `null` when not set.
+                        type:
+                          - string
+                          - 'null'
+      security: []
   /api/authentication/company/{fluid_shop}:
     get:
       summary: Fetch company details from Fluid Shop name
@@ -935,6 +986,14 @@ paths:
           description: The page the sign-in started from. When the person is emailed an identity sign-in link instead of a passcode, the link returns them there, provided its origin is one of the platform's app callbacks; any other value is ignored.
           schema:
             type: string
+        - name: identity_hint_supported
+          in: query
+          required: false
+          description: Set to `true` by a client that hands an identity-routed staff person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed; shoppers are always emailed the link.
+          schema:
+            type: string
+            enum:
+              - 'true'
       responses:
         '201':
           description: Created
@@ -1401,6 +1460,14 @@ paths:
           description: The page the sign-in started from. When the person is emailed an identity sign-in link instead of a passcode, the link returns them there, provided its origin is one of the platform's app callbacks; any other value is ignored.
           schema:
             type: string
+        - name: identity_hint_supported
+          in: query
+          required: false
+          description: Set to `true` by a client that hands an identity-routed staff person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed; shoppers are always emailed the link.
+          schema:
+            type: string
+            enum:
+              - 'true'
       responses:
         '201':
           description: Created
@@ -1613,79 +1680,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/SocialAuthUrl'
       security: []
-  /api/social_auth/link_apple:
-    post:
-      operationId: auth_v0_social_auth_link_apple
-      summary: Link Apple account
-      description: Link an Apple account to the authenticated user.
-      tags:
-        - social-auth
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - apple_external_id
-                properties:
-                  apple_external_id:
-                    type: string
-                  meta:
-                    $ref: '#/components/schemas/Meta'
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UnauthorizedResponse'
-        '403':
-          description: Authenticated principal is a service token, not a user-company member allowed to link an Apple account.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-        '409':
-          description: The Apple ID is already linked to a different account.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: No Apple identifier could be resolved, or the user already has a different Apple ID linked.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-      requestBody:
-        required: false
-        description: Provide exactly one Apple identifier. `sub` is an alias for `apple_external_id`; `id_token` is decoded to extract its `sub` claim.
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                apple_external_id:
-                  type: string
-                sub:
-                  type: string
-                  description: Alias for apple_external_id.
-                id_token:
-                  type: string
-                  description: Apple ID token; decoded to extract the sub claim.
-            examples:
-              by_apple_external_id:
-                summary: Link using the Apple subject identifier
-                value:
-                  apple_external_id: 001234.abcd5678ef901234.5678
-              by_id_token:
-                summary: Link using an Apple ID token (sub is decoded from it)
-                value:
-                  id_token: eyJraWQiOiJmaDZCcyJ9.eyJzdWIiOiIwMDEyMzQuYWJjZCJ9.Ab12Cd
-      security:
-        - bearer_auth: []
   /api/social_auth/providers:
     get:
       operationId: auth_v0_social_auth_providers
@@ -1867,6 +1861,15 @@ paths:
         `token_exchange`). The JWT is supplied in the request body, so no bearer
         header is required. Returns `401` when the JWT is invalid or has been rejected
         by a lock/flush.
+
+        A JWT minted from an admin-revealed login code is restricted to one company
+        and is never exchanged for the long-lived token. When the company allows
+        revealed-code mobile sessions and the member is a rep or company admin, the
+        response instead carries a JWT restricted to that company in
+        `user_company_token`, with `restricted: true`. It expires within two hours,
+        is not extended by refreshes, and authenticates only the mobile app's read
+        actions. Otherwise the restricted JWT is refused with `401`, and its
+        `error_message` says why.
       tags:
         - token-exchange
       responses:
@@ -1881,11 +1884,15 @@ paths:
                   - user_company_token
                 properties:
                   user_company_token:
+                    description: The long-lived user-company token, or, when `restricted` is true, a JWT restricted to one company that expires within two hours. Send either as the bearer credential.
                     type: string
+                  restricted:
+                    description: Present and true when `user_company_token` is a revealed-code session restricted to one company.
+                    type: boolean
                   meta:
                     $ref: '#/components/schemas/Meta'
         '401':
-          description: The JWT is invalid or has been rejected by a lock/flush.
+          description: The JWT is invalid, rejected by a lock/flush, or restricted to one company by a revealed login code.
           content:
             application/json:
               schema:

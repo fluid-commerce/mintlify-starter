@@ -72,7 +72,7 @@ components:
           "$ref": "#/components/schemas/SubscriptionSchedule"
         code:
           type: string
-          description: Machine code for the refusal. This surface serves shoppers, who are never refused for a blackout day. A picked bill date on one is saved on the next open day, and the success response carries the saved date. `next_bill_date_blackout` is kept for clients that already read it.
+          description: Machine code for the refusal. This surface serves shoppers, who are never refused for a blackout day. A picked bill date on one is saved on the next open day, and the success response carries the saved date. `early_order_confirmation_required` marks a shopper's earlier date that needs confirming. `next_bill_date_blackout` is kept for clients that already read it.
           example: next_bill_date_blackout
         blocked_date:
           type: string
@@ -90,6 +90,23 @@ components:
           format: date
           description: Present with `next_bill_date_blackout`. The nearest date the merchant's blackout rules allow, the date to offer instead.
           example: '2026-11-28'
+        scheduled_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The next bill date the subscription was scheduled to use, as an ISO 8601 calendar date.
+          example: '2026-12-10'
+        last_bill_date:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: Present with `early_order_confirmation_required`. The last local billed date, or null when the subscription has never billed.
+          example: '2026-11-10'
+        requested_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
+          example: '2026-11-30'
       required:
       - request_uuid
       - timestamp
@@ -1073,6 +1090,9 @@ components:
           type: integer
           minimum: 1
           description: Upcoming cycles to skip before resuming, subject to the same future-date and horizon limits.
+        confirm_early_order:
+          type: boolean
+          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       not:
         required: [next_bill_date, number_of_orders]
     SubscriptionResume:
@@ -1084,6 +1104,9 @@ components:
           type: string
           format: date
           description: Optional future local billing date with the same horizon as pause. Exhausted-cycle recovery uses its existing schedule and ignores this field.
+        confirm_early_order:
+          type: boolean
+          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
     SubscriptionReactivate:
       type: object
       description: Reactivate a cancelled subscription, optionally confirming a saved shipping address in its existing country.
@@ -1221,6 +1244,13 @@ components:
           type: string
           format: date
           description: A date strictly after today in the subscription's timezone. Preserves billing time of day and aligned shipping. Maximum two years for yearly plans, twelve months otherwise.
+        confirm_early_order:
+          type: boolean
+          description: >
+            The shopper's acknowledgement that an earlier next_bill_date places
+            and charges a new order. Required for a shopper write that moves
+            the date earlier than the scheduled one; without it the write is
+            refused with meta.code early_order_confirmation_required.
         auto_apply_points:
           type: boolean
           description: Opt in or out of automatically applying points on renewal. Requires an actual JSON boolean.
@@ -2127,6 +2157,7 @@ paths:
         owned or credited. Filters apply before pagination. Only page[cursor] and page[limit] pagination is supported;
         undeclared query parameters are refused. Keyword search requires filter[relationship]=placed, because it
         matches buyer names and emails, which are not searchable on credited orders. Whole-history bucket counts are not returned.
+        A site's script acting for a share holder reads own purchases only, and an order credited to them is left out.
         Responses are private and must be revalidated.
       parameters:
       - name: filter[relationship]
@@ -2295,6 +2326,7 @@ paths:
         Returns an own purchase or volume-credited order within the credential’s company. A credited order shows its buyer
         (customer, email, phone, shipping and billing addresses) only when the company's Team contact-visibility
         policy lets the caller see contact details, and never to an email-link credential; an own purchase always does.
+        A site's script acting for a share holder reads own purchases only, and an order credited to them is 404.
         The policy is applied on every read, on the primary, so a conditional request returns 200 when a
         visibility change alters the response body. Authentication runs before conditional cache handling.
         Responses are private. A credited order that shows its buyer has a zero-second freshness lifetime
@@ -2858,6 +2890,9 @@ paths:
                   maxLength: 255
                   description: IANA timezone used when the selected subscriptions do not already share one.
                   example: America/Los_Angeles
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a next_bill_date earlier than a member's scheduled date places and charges a new order for that member. Required for a shopper write that moves any member earlier; without it the write is refused with meta.code early_order_confirmation_required.
             example:
               subscription_ids:
               - '019a23a4-9211-71bf-8fa5-a5f31a82a0d1'
@@ -3103,6 +3138,10 @@ paths:
         subscription IDs, including an empty changed_ids array for no-op edits. Responses
         are no-store and never return 304. backup_cards_enabled, sent on its own, turns backup
         cards on or off for the member at this company instead of editing the subscription.
+        A shopper's earlier next_bill_date needs `confirm_early_order` set to true; without
+        it the 422 carries the `early_order_confirmation_required` code with
+        `scheduled_date`, `requested_date` and `last_bill_date`, which is null
+        when the subscription has never billed.
       parameters:
       - name: id
         in: path
