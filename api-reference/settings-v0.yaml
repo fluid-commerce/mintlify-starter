@@ -1421,6 +1421,7 @@ components:
         - instrument_type
         - failure_message
         - invoice_available
+        - action_required
         - top_up_cents
         - amount_cents
         - bonus_percent
@@ -1473,6 +1474,9 @@ components:
         invoice_available:
           type: boolean
           description: Whether the purchase has a paid Stripe invoice to open; GET /api/settings/billing/credits/purchases/{id}/invoice returns its link.
+        action_required:
+          type: boolean
+          description: Whether a card purchase is waiting for its cardholder to confirm it with their bank (3D Secure). Nothing is charged until they do. The response that made the purchase carries next_action; GET /api/settings/billing/credits/purchases/{id}/authentication returns it again and DELETE gives the wait up. status is processing while it waits.
         amount_cents:
           type: integer
           minimum: 1
@@ -1541,12 +1545,33 @@ components:
           properties:
             pagination:
               $ref: '#/components/schemas/BillingCreditMovementPagination'
+    BillingCreditPurchaseNextAction:
+      type: object
+      additionalProperties: false
+      description: 'What the browser needs to finish confirming a card purchase with the cardholder''s bank: build Stripe.js with publishable_key and call stripe.handleNextAction({ clientSecret: client_secret }). The secret lets its holder finish this one payment; show it to the cardholder''s browser only, never store or log it. The credits are granted when Stripe reports the money received, not by this call.'
+      required:
+        - type
+        - client_secret
+        - publishable_key
+      properties:
+        type:
+          type: string
+          enum:
+            - confirm_payment_intent
+          description: What to do with the secret.
+        client_secret:
+          type: string
+          description: The PaymentIntent's client secret.
+        publishable_key:
+          type: string
+          description: The Stripe publishable key of the mode the purchase was made in (pk_test_ for sandbox, pk_live_ for live).
     BillingCreditPurchaseResponse:
       type: object
       required:
         - credit_purchase
         - balance_cents
         - duplicate
+        - next_action
       properties:
         credit_purchase:
           $ref: '#/components/schemas/BillingCreditPurchase'
@@ -1557,9 +1582,40 @@ components:
         duplicate:
           type: boolean
           description: Whether this returns a purchase already made with the same key.
+        next_action:
+          oneOf:
+            - $ref: '#/components/schemas/BillingCreditPurchaseNextAction'
+            - type: 'null'
+          description: 'Set while credit_purchase.action_required: confirm the payment with the cardholder''s bank. Null otherwise, and when Stripe could not be read (then GET the purchase''s authentication).'
     BillingCreditPayNowResponse:
       type: object
       description: The charge Pay now made.
+      required:
+        - credit_purchase
+        - balance_cents
+        - next_action
+      properties:
+        credit_purchase:
+          $ref: '#/components/schemas/BillingCreditPurchase'
+        balance_cents:
+          type: integer
+          description: The credit balance after the charge
+          in cents. Still below zero while a bank payment settles.: null
+        next_action:
+          oneOf:
+            - $ref: '#/components/schemas/BillingCreditPurchaseNextAction'
+            - type: 'null'
+          description: 'Set while credit_purchase.action_required: confirm the payment with the cardholder''s bank. Null otherwise, and when Stripe could not be read (then GET the purchase''s authentication).'
+    BillingCreditPurchaseNextActionResponse:
+      type: object
+      required:
+        - next_action
+      properties:
+        next_action:
+          $ref: '#/components/schemas/BillingCreditPurchaseNextAction'
+    BillingCreditPurchaseStateResponse:
+      type: object
+      description: A credit purchase as it stands, with the credit balance.
       required:
         - credit_purchase
         - balance_cents
@@ -1568,8 +1624,8 @@ components:
           $ref: '#/components/schemas/BillingCreditPurchase'
         balance_cents:
           type: integer
-          description: The credit balance after the charge
-          in cents. Still below zero while a bank payment settles.: null
+          description: The credit balance now
+          in cents.: null
     BillingPayment:
       type: object
       description: One pull from the company's bank account or card. submitted means the bank has not settled it yet; a bank debit usually settles in four business days. returned means the bank took the money back after it settled.
@@ -3435,6 +3491,145 @@ components:
             - 200
         meta:
           $ref: '#/components/schemas/Meta'
+    SubscriptionProSmsOnboarding:
+      type: object
+      additionalProperties: false
+      required:
+        - state
+        - requested
+        - publicly_traded
+        - needs_public_answer
+        - sms_reminders_enabled
+        - sms_available
+        - disclosure_published
+        - can_resubmit
+        - phone_number
+        - submitted_at
+        - verified_at
+        - missing
+        - rejection
+      properties:
+        state:
+          type: string
+          enum:
+            - not_started
+            - needs_details
+            - provisioning
+            - in_review
+            - approved
+            - rejected
+          description: 'not_started: the merchant has not asked yet. needs_details: the merchant asked, and Fluid cannot file the verification until the fields in missing are fixed. provisioning: the merchant asked and nothing is missing; Fluid is registering the toll-free number and filing the verification. in_review: Twilio is reviewing (about 3 business days). approved: Twilio approved; sms_reminders turns on by itself when the merchant asked, else the merchant turns it on. rejected: Twilio rejected the verification (see rejection).'
+        requested:
+          type: boolean
+          description: Whether the merchant asked for SMS reminders. Approval turns the sms_reminders setting on by itself while this is true.
+        publicly_traded:
+          type:
+            - boolean
+            - 'null'
+          description: The merchant's answer to "is the business publicly traded?", or null before it answered.
+        needs_public_answer:
+          type: boolean
+          description: Whether the merchant still has to answer publicly_traded. True when the legal entity is a plain corporation or C-corp and no answer is stored.
+        sms_reminders_enabled:
+          type: boolean
+          description: Whether the sms_reminders setting is on.
+        sms_available:
+          type: boolean
+          description: Whether Fluid can set up SMS in this environment. False where live SMS is switched off.
+        disclosure_published:
+          type: boolean
+          description: Whether the SMS consent disclosure is published. Filing waits for it, and so does the sms_reminders setting.
+        can_resubmit:
+          type: boolean
+          description: Whether a rejected verification can be sent again now (rejected, with nothing missing).
+        phone_number:
+          type:
+            - string
+            - 'null'
+          description: The merchant's own toll-free number, in E.164, once it is registered.
+        submitted_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        verified_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        missing:
+          type: array
+          description: What Fluid still needs from the merchant, with a reason a merchant can act on. Names only; the values never leave the server. Empty while the verification is in review or approved.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - field
+              - type
+              - reason
+            properties:
+              field:
+                type: string
+                description: The Twilio verification field
+                for example business_registration_number or privacy_policy_url.: null
+              type:
+                type: string
+                description: missing_entity, missing_authorized_signatory, missing_field, invalid_field, missing_ein, unsupported_business_type, business_type_needs_public_answer or unsupported_country.
+              reason:
+                type: string
+        rejection:
+          description: Twilio's rejection, or null unless the state is rejected.
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required:
+                - reason
+                - reasons
+                - edit_allowed
+                - edit_deadline
+              properties:
+                reason:
+                  type:
+                    - string
+                    - 'null'
+                reasons:
+                  type: array
+                  items:
+                    type: object
+                edit_allowed:
+                  type: boolean
+                  description: Whether Twilio still allows an edit of this verification (resubmit then edits it; otherwise it files a new one).
+                edit_deadline:
+                  type:
+                    - string
+                    - 'null'
+                  format: date-time
+    SubscriptionProSmsOnboardingResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - subscription_pro_sms_onboarding
+        - status
+        - meta
+      properties:
+        subscription_pro_sms_onboarding:
+          $ref: '#/components/schemas/SubscriptionProSmsOnboarding'
+        status:
+          type: integer
+          enum:
+            - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
+    SubscriptionProSmsOnboardingAnswerRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - publicly_traded
+      properties:
+        publicly_traded:
+          type: boolean
+          description: Whether the business is publicly traded. It picks Twilio's PUBLIC_PROFIT or PRIVATE_PROFIT business type.
     SubscriptionProSettingsRequest:
       type: object
       additionalProperties: false
@@ -7537,6 +7732,280 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscription_pro/sms_onboarding:
+    get:
+      x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
+      x-fluid-audience: company
+      summary: Show where the company stands in setting up SMS reminders
+      description: The state of the merchant's own toll-free number and Twilio verification, what Fluid still needs from the merchant (names and reasons, never values), the publicly traded question when the legal entity is a plain corporation or C-corp, and Twilio's rejection reasons and edit deadline. A sender Fluid set up by hand reads as in_review or approved. Reading changes nothing and calls nothing. Responses are not cached.
+      tags:
+        - subscription-pro
+      operationId: settings_v0_get_subscription_pro_sms_onboarding
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProSmsOnboardingResponse'
+              example:
+                subscription_pro_sms_onboarding:
+                  state: needs_details
+                  requested: true
+                  publicly_traded: null
+                  needs_public_answer: true
+                  sms_reminders_enabled: false
+                  sms_available: true
+                  disclosure_published: true
+                  can_resubmit: false
+                  phone_number: null
+                  submitted_at: null
+                  verified_at: null
+                  missing:
+                    - field: business_registration_number
+                      type: missing_ein
+                      reason: Add the business's EIN to its legal entity.
+                    - field: business_type
+                      type: business_type_needs_public_answer
+                      reason: Tell us whether your company is publicly traded.
+                  rejection: null
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-11-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription Pro is not active for the company (details.error is subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
+      x-fluid-audience: company
+      summary: Turn on SMS reminders
+      description: 'Records that the merchant wants SMS reminders and queues the work: register the merchant''s own toll-free number, file Twilio''s verification with the merchant''s own details and opt-in images, and turn the sms_reminders setting on when Twilio approves (about 3 business days). Nothing is bought or filed while details are missing; the answer lists them. Safe to repeat: it keeps the first request, adopts an existing sender, and never files a verification twice. Repeat it after fixing missing fields. Answers 409 sms_not_allowed where live SMS is switched off.'
+      tags:
+        - subscription-pro
+      operationId: settings_v0_create_subscription_pro_sms_onboarding
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: The request is recorded; the status says what happens next
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProSmsOnboardingResponse'
+              example:
+                subscription_pro_sms_onboarding:
+                  state: needs_details
+                  requested: true
+                  publicly_traded: null
+                  needs_public_answer: true
+                  sms_reminders_enabled: false
+                  sms_available: true
+                  disclosure_published: true
+                  can_resubmit: false
+                  phone_number: null
+                  submitted_at: null
+                  verified_at: null
+                  missing:
+                    - field: business_registration_number
+                      type: missing_ein
+                      reason: Add the business's EIN to its legal entity.
+                    - field: business_type
+                      type: business_type_needs_public_answer
+                      reason: Tell us whether your company is publicly traded.
+                  rejection: null
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-11-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription Pro is not active for the company (details.error is subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: SMS is switched off for this company or environment (sms_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    patch:
+      x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
+      x-fluid-audience: company
+      summary: Answer whether the business is publicly traded
+      description: Stores the merchant's answer. It becomes Twilio's business type (PUBLIC_PROFIT or PRIVATE_PROFIT) while the legal entity is a plain corporation or C-corp, and is ignored for any other entity. When the merchant already turned SMS reminders on, the setup continues.
+      tags:
+        - subscription-pro
+      operationId: settings_v0_update_subscription_pro_sms_onboarding
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionProSmsOnboardingAnswerRequest'
+            example:
+              publicly_traded: false
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProSmsOnboardingResponse'
+              example:
+                subscription_pro_sms_onboarding:
+                  state: provisioning
+                  requested: true
+                  publicly_traded: false
+                  needs_public_answer: false
+                  sms_reminders_enabled: false
+                  sms_available: true
+                  disclosure_published: true
+                  can_resubmit: false
+                  phone_number: null
+                  submitted_at: null
+                  verified_at: null
+                  missing: []
+                  rejection: null
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-11-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription Pro is not active for the company (details.error is subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The verification is already submitted or verified, so its business type cannot change (verification_in_progress).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: publicly_traded is missing, not a boolean, or the body has another key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscription_pro/sms_onboarding/resubmit:
+    post:
+      x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
+      x-fluid-audience: company
+      summary: Send a rejected verification to Twilio again
+      description: After the merchant fixed what Twilio rejected or what was missing, edits the rejected verification while Twilio allows it (edit_allowed, before edit_deadline) and files a new one after. Runs the Twilio call now. Answers 409 not_rejected unless the verification is rejected, and 422 incomplete_details, with the missing fields in details.problems, while something is still missing.
+      tags:
+        - subscription-pro
+      operationId: settings_v0_resubmit_subscription_pro_sms_onboarding
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: Sent again; the status is in_review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProSmsOnboardingResponse'
+              example:
+                subscription_pro_sms_onboarding:
+                  state: in_review
+                  requested: true
+                  publicly_traded: null
+                  needs_public_answer: false
+                  sms_reminders_enabled: false
+                  sms_available: true
+                  disclosure_published: true
+                  can_resubmit: false
+                  phone_number: '+18005550199'
+                  submitted_at: '2026-11-10T14:05:31Z'
+                  verified_at: null
+                  missing: []
+                  rejection: null
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-11-10T14:05:31Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the orders.settings permission, or a droplet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription Pro is not active for the company (details.error is subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The verification is not rejected (not_rejected), SMS is switched off (sms_not_allowed), another request holds the sender (provisioning_in_progress), or the disclosure is not published (opt_in_proof_unavailable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Details are still missing (incomplete_details, with details.problems).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '502':
+          description: Twilio refused the request (twilio_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/subscription_pro/blackout_preview:
     post:
       x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) on Api::Settings::BaseSettingsController, next to /api/subscription_pro/settings, which the fluid-admin settings pages call with the admin session. A dated path would need the v202604 controller base and envelope, a separate change.
@@ -9877,6 +10346,7 @@ paths:
                     instrument_type: card
                     failure_message: null
                     invoice_available: true
+                    action_required: false
                     top_up_cents: null
                     amount_cents: 100000
                     bonus_percent: 10
@@ -9895,6 +10365,7 @@ paths:
                     instrument_type: card
                     failure_message: null
                     invoice_available: false
+                    action_required: false
                     top_up_cents: null
                     amount_cents: 20000
                     bonus_percent: 0
@@ -9913,6 +10384,7 @@ paths:
                     instrument_type: card
                     failure_message: Your card was declined.
                     invoice_available: false
+                    action_required: false
                     top_up_cents: 2500
                     amount_cents: 12500
                     bonus_percent: 0
@@ -9954,7 +10426,7 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
     post:
       summary: Buy credits with the saved card or bank account
-      description: 'Charges the company''s saved card or bank account off-session and grants the credits, and the bonus its tier gives, once Stripe reports the money received: at once for a card that succeeds, else when the payment settles. The server prices every purchase: expected_credit_cents must equal what it quotes, expected_surcharge_cents the credit card fee it charges (0 when left out), expected_payment_method_key the payment method it charges (not checked when left out), and terms_version the terms in force, or nothing is charged (409). A repeat of the same purchase_key charges once and returns the first purchase (200). A declined card returns the purchase as failed with its reason. Needs billing.update; never a Droplet token.'
+      description: 'Charges the company''s saved card or bank account off-session and grants the credits, and the bonus its tier gives, once Stripe reports the money received: at once for a card that succeeds, else when the payment settles. The server prices every purchase: expected_credit_cents must equal what it quotes, expected_surcharge_cents the credit card fee it charges (0 when left out), expected_payment_method_key the payment method it charges (not checked when left out), and terms_version the terms in force, or nothing is charged (409). A repeat of the same purchase_key charges once and returns the first purchase (200). A declined card returns the purchase as failed with its reason. A card charged with the merchant present may be waiting for the cardholder to confirm it with their bank (3D Secure): the purchase is processing with action_required true, nothing is charged yet, and next_action carries what the browser needs to finish it. A new purchase is refused (409, purchase_awaiting_action) while one waits. Needs billing.update; never a Droplet token.'
       tags:
         - billing
       operationId: settings_v0_create_billing_credit_purchase
@@ -10020,6 +10492,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  action_required: false
                   top_up_cents: null
                   amount_cents: 100000
                   bonus_percent: 10
@@ -10034,6 +10507,7 @@ paths:
                   failed_at: null
                 balance_cents: 185500
                 duplicate: true
+                next_action: null
                 status: 200
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -10052,6 +10526,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  action_required: false
                   top_up_cents: null
                   amount_cents: 100000
                   bonus_percent: 10
@@ -10066,6 +10541,7 @@ paths:
                   failed_at: null
                 balance_cents: 185500
                 duplicate: false
+                next_action: null
                 status: 201
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -10083,7 +10559,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '409':
-          description: The quote or the purchase terms changed since the page showed them (quote_changed, terms_changed), or an earlier purchase still has no answer (purchase_unanswered); nothing was charged
+          description: The quote or the purchase terms changed since the page showed them (quote_changed, terms_changed), an earlier purchase still has no answer (purchase_unanswered), or a card purchase is waiting for its cardholder to confirm it (purchase_awaiting_action, details.purchase_id names it); nothing was charged
           content:
             application/json:
               schema:
@@ -10159,6 +10635,150 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/settings/billing/credits/purchases/{id}/authentication:
+    get:
+      summary: Get what the browser needs to confirm a waiting card purchase
+      description: For a card purchase waiting for its cardholder to confirm it with their bank (3D Secure; credit_purchase.action_required), the Stripe publishable key and the PaymentIntent's client secret, read from Stripe now. Buying credits and Pay now already return the same as next_action; use this when the browser lost it (a reload, a failed read). The secret lets its holder finish this one payment, so the answer is never cached. Reading changes nothing. Needs billing.update; never a Droplet token.
+      tags:
+        - billing
+      x-fluid-lint-exempt: Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions.
+      x-fluid-audience: company
+      operationId: settings_v0_get_billing_credit_purchase_authentication
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The credit purchase's id.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The purchase is waiting for its cardholder; confirm it with these
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingCreditPurchaseNextActionResponse'
+              example:
+                next_action:
+                  type: confirm_payment_intent
+                  client_secret: pi_3Qx0aBCdEfGhIjKl1AbCdEfG_secret_Zy9XwVuTsRqPoNmLkJiHgFeDc
+                  publishable_key: pk_live_51Mx0aBCdEfGhIjKlMnOpQrStUvWxYz
+                status: 200
+                meta:
+                  request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
+                  timestamp: '2026-09-30T14:05:11Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Missing billing.update permission, not an admin, or a Droplet token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No such purchase for the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The purchase is not waiting for its cardholder any more (not_awaiting_action); it was paid, failed or never needed confirming
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: Stripe could not be read, or card confirmation is not configured (provider_unavailable); try again
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    delete:
+      summary: Give up a waiting card purchase
+      description: Cancels the PaymentIntent of a card purchase that is waiting for its cardholder to confirm it with their bank, and closes the purchase as failed (failure_message says the card was not confirmed). Nothing was charged, no automatic charge is blocked, and the merchant can buy or pay again at once. If the cardholder finished confirming first, the purchase is settled instead and comes back succeeded. A purchase that is not waiting comes back as it stands. A wait the merchant does not end is ended by Fluid after about 15 to 30 minutes. Needs billing.update; never a Droplet token.
+      tags:
+        - billing
+      x-fluid-lint-exempt: Joins the unversioned merchant billing settings routes (settings-v0) the Admin app already calls; a dated path would split one resource family across two versions.
+      x-fluid-audience: company
+      operationId: settings_v0_delete_billing_credit_purchase_authentication
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The credit purchase's id.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The purchase as it stands now
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingCreditPurchaseStateResponse'
+              example:
+                credit_purchase:
+                  id: 7343
+                  origin: manual
+                  status: failed
+                  instrument_type: card
+                  failure_message: The card was not confirmed in time. Nothing was charged.
+                  invoice_available: false
+                  action_required: false
+                  top_up_cents: null
+                  amount_cents: 100000
+                  bonus_percent: 10
+                  bonus_cents: 10000
+                  credit_cents: 110000
+                  surcharge_cents: 0
+                  total_cents: 100000
+                  refunded_cents: 0
+                  credits_expire_at: '2027-09-12T16:20:05Z'
+                  created_at: '2026-09-12T16:19:58Z'
+                  succeeded_at: null
+                  failed_at: '2026-09-12T16:24:40Z'
+                balance_cents: 75500
+                status: 200
+                meta:
+                  request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
+                  timestamp: '2026-09-30T14:05:11Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Missing billing.update permission, not an admin, or a Droplet token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No such purchase for the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: Stripe would not cancel the payment and it is not finished either (not_released); try again
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: Stripe could not be reached (provider_unavailable); the purchase is still waiting, try again
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/settings/billing/credits/pay-now:
     post:
       summary: Pay the overdrawn credit balance now
@@ -10199,6 +10819,7 @@ paths:
                   instrument_type: card
                   failure_message: null
                   invoice_available: false
+                  action_required: false
                   top_up_cents: 0
                   amount_cents: 100000
                   bonus_percent: 0
@@ -10212,6 +10833,7 @@ paths:
                   succeeded_at: '2026-09-30T14:05:11Z'
                   failed_at: null
                 balance_cents: 0
+                next_action: null
                 status: 201
                 meta:
                   request_id: f3b8c2d1-6a4e-4f7b-9c1d-2e5a8b7c4d90
@@ -10235,7 +10857,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '409':
-          description: A charge is already on its way (in_flight), or the total is not the one the page showed (quote_changed); nothing was charged
+          description: A charge is already on its way (in_flight), a card payment is waiting for its cardholder to confirm it (awaiting_action, details.purchase_id names it), or the total is not the one the page showed (quote_changed); nothing was charged
           content:
             application/json:
               schema:
