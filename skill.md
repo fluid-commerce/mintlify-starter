@@ -28,7 +28,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
-| Build a member site: a static Vite and React app on `@fluid-app/sites` that runs at `/accounts/<site-handle>/<path>` on the company's storefront. It replaces theme member sites, which are deprecated | https://docs.fluid.app/member-sites-v1/overview, then https://docs.fluid.app/member-sites-v1/sdk and https://docs.fluid.app/member-sites-v1/publishing |
+| Build a member site: a static Vite and React app on `@fluid-app/sites` that runs at `/sites/<site-handle>/<path>` on the company's storefront. It replaces theme member sites, which are deprecated | https://docs.fluid.app/member-sites-v1/overview, then https://docs.fluid.app/member-sites-v1/sdk and https://docs.fluid.app/member-sites-v1/publishing |
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
 | Build, host or troubleshoot a Mist app: hosting, database, env vars, integration points, domains, billing | https://docs.fluid.app/mist-apps/overview |
 | Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
@@ -49,7 +49,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
-| Member site, site for my members | A member site: a site a member or the company owns and builds, at `/accounts/<site-handle>`. It is not MySite, and not a theme's member storefront site, which is deprecated. | https://docs.fluid.app/member-sites-v1/overview |
+| Member site, site for my members | A member site: a site a member or the company owns and builds, at `/sites/<site-handle>`. It is not MySite, and not a theme's member storefront site, which is deprecated. | https://docs.fluid.app/member-sites-v1/overview |
 | Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
