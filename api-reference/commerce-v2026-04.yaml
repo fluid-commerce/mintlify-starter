@@ -237,6 +237,11 @@ components:
             (smallest unit 0.01) returns HTTP 422, and so does "12.3" on a JPY
             order (smallest unit 1), rather than being rounded. The 422 names
             the smallest unit in its details.
+
+            For an admin credential on a company with admin order editing
+            enabled, the server prices a non-overridden line for the order's
+            buyer tier and currency and ignores this value. It is stored as
+            sent for an `overridden` line and for every other credential.
         overridden:
           type: boolean
           default: false
@@ -246,7 +251,35 @@ components:
             permission in addition to `orders.update`; without it the
             request returns HTTP 403 with the wrapped `ErrorResponse`
             body. The server never infers an override from the price
-            value — only this explicit flag triggers the check.
+            value — only this explicit flag triggers the check. An
+            overridden line from an admin credential on a company with admin
+            order editing enabled records the server-resolved tier amount as
+            its standard price when the server resolves one, otherwise the
+            variant's price.
+
+            Without `overridden`, that admin path returns HTTP 422 with
+            `details.code` `price_unavailable` when no tier amount resolves
+            in the order's currency, `bundle_requires_override` for a bundle
+            or group-priced variant, and `enrollment_requires_override` for
+            a line on an enrollment order that has no cart. The last two ask
+            for `overridden: true` and the `orders.override` permission.
+        price_authority:
+          type: string
+          enum:
+          - server
+          - manual
+          description: |
+            Declares who prices this line. `server` (with `overridden` false)
+            means the server prices it and ignores `price`; `manual` (with
+            `overridden: true`) means `price` is a hand-entered amount. When
+            present and the request is not in admin order-editing mode (the
+            `admin-order-editing` flag is off for the company, or the
+            credential is not an admin), the request returns HTTP 422 with
+            `details.code` `order_editing_unavailable` and nothing is stored.
+            A value that disagrees with `overridden` returns HTTP 422 with
+            `details.code` `conflicting_pricing_markers` (after the 403
+            `not_authorized` an `overridden` line gets without
+            `orders.override`). Omit it to keep the previous behaviour.
     RemoveItemOperation:
       type: object
       additionalProperties: false
@@ -1071,6 +1104,11 @@ components:
           description: The edited order, including the eight recalculated
             `current_*` totals and its `adjustments`.
           "$ref": "#/components/schemas/Order"
+        settlement:
+          description: Present when an admin edit changed the order's total
+            and the difference was collected from or refunded to the order's
+            stored card.
+          "$ref": "#/components/schemas/OrderEditSettlement"
         status:
           type: integer
           description: HTTP status code, repeated in the body (`200` on
@@ -1163,6 +1201,54 @@ components:
           - object
           - "null"
           description: The order's state after the edit, when stored.
+    OrderEditSettlement:
+      description: The charge an admin edit collected from the order's stored
+        card, or the refund it returned to it.
+      type: object
+      required:
+      - kind
+      - state
+      - amount
+      properties:
+        kind:
+          type: string
+          enum: [charge, refund]
+        state:
+          type: string
+          description: "`captured`, or `committed` when the capture is still
+            to be completed by the recovery job; for a refund, `refunded`, or
+            `requested` when the refund is still to be completed by the
+            recovery job."
+        amount:
+          type: string
+          description: The amount charged or refunded, as a decimal string.
+    PreviewSettlement:
+      description: The settlement an edit needs.
+      type: object
+      required:
+      - kind
+      - amount
+      - available
+      - unavailable_reason
+      properties:
+        kind:
+          type: string
+          enum: [none, charge, refund]
+        amount:
+          type: string
+          description: The absolute amount, as a decimal string.
+        available:
+          type: boolean
+          description: Whether the settlement can be carried out.
+        unavailable_reason:
+          type:
+          - string
+          - 'null'
+          description: Why it cannot be carried out, for example
+            `refund_exceeds_latest_capture`, `refund_spans_captures`, `refund_target_unavailable`, `refunds_permission_required`, `refund_capture_unsettled`, `refund_gateway_unknown`, `refund_gateway_mismatch`, `order_not_paid`, `points_payment`,
+            `unsupported_payment_method`, `payment_account_unavailable`,
+            `no_stored_card`, `apple_pay_unsupported`, `not_rebillable` or
+            `cart_only_capture` or `refunded_order`.
     PreviewOrderResponse:
       description: |
         Dry-run response for POST /api/v202604/orders/{order_id}/edits/preview.
@@ -1181,6 +1267,11 @@ components:
           description: The would-be order state, with `current_*` totals
             reflecting the hypothetical post-operation result. Not persisted.
           "$ref": "#/components/schemas/Order"
+        settlement:
+          description: What the edit would owe or be owed, and whether it
+            can be collected. Present on admin edits with admin order editing
+            on.
+          "$ref": "#/components/schemas/PreviewSettlement"
         dry_run:
           type: boolean
           const: true
@@ -1845,18 +1936,49 @@ paths:
         On success, the `order_edited` lifecycle event fires so subscribed
         webhooks receive the post-edit payload.
 
-        An edit made by an admin user with admin order editing on also stores
-        the order's state before and after it. The `order_edited` webhook
-        payload then carries `order_edit`, beside `order`:
-        `{ id, revision, before, after }`. `revision` rises by one per such
-        edit of the order, so a receiver can drop a delivery older than the
-        latest it has seen. `before` and `after` are
+        With admin order editing on, an admin edit that raises the order's
+        total is collected from the order's stored card, and needs an
+        `Idempotency-Key`. The card is authorized first, the edit commits only
+        if it still owes the amount authorized, and the capture follows. A
+        decline answers `402` with the gateway message and changes nothing.
+        An order that cannot be charged answers `422` with
+        `settlement_unavailable:<reason>` before any authorization; an edit
+        that lowers the total is refunded to the original card after it commits
+        and needs an `Idempotency-Key`; a refund that is not confirmed is
+        completed by a recovery job under the same key. A capture that
+        fails after the edit committed is completed by a recovery job; a retry
+        under the same key never authorizes again. `409` with
+        `settlement_pending` means an earlier charge on the order has not
+        ended.
+
+        With admin order editing on for the company, every edit of the order
+        (admin, droplet or system) stores the order's state before and after it.
+        The `order_edited` webhook payload then carries `order_edit`, beside
+        `order`: `{ id, revision, before, after }`. `before` and `after` are
         `{ currency_code, totals, lines }`: `totals` holds `amount_cents`,
-        `subtotal_cents`, `tax_cents`, `shipping_cents` and their
-        `current_*` counterparts, and each line holds `id`, `variant_id`,
-        `product_id`, `sku`, `title`, `quantity`, `unit_price_cents` and
-        `tax_cents`. They describe that edit alone, not the order when the
-        webhook is sent. Other edits send the payload without `order_edit`.
+        `subtotal_cents`, `tax_cents`, `shipping_cents`, `discount_cents`,
+        `current_amount_cents`, `current_subtotal_cents`, `current_tax_cents`,
+        `current_shipping_cents`, `current_discount_cents`,
+        `current_adjustment_total_cents`, `refund_total_cents`, `cv_cents`,
+        `qv_cents`, `current_cv_cents` and `current_qv_cents`, and each line
+        holds `id`, `variant_id`, `product_id`, `sku`, `title`, `quantity`,
+        `unit_price_cents` and `tax_cents`. Snapshots stored before this
+        change hold only `amount_cents`, `subtotal_cents`, `tax_cents`,
+        `shipping_cents` and their four `current_*` counterparts in `totals`. They describe that edit
+        alone, not the order when the webhook is sent.
+
+        The same payloads, and every `order_updated` that goes through the order
+        webhook notifier, also carry `order_totals`
+        beside `order`: `{ revision, snapshot }`. `snapshot` has the same
+        `{ currency_code, totals, lines }` shape. On `order_edited` it is the
+        order after the edit. On `order_updated` it is the order as it stood
+        when the update was sent; when nothing changed since the previous
+        revision, it is that latest revision. `revision` is one per-order
+        sequence shared with `order_edit.revision`. It rises with each edit or
+        changed update but may skip numbers between edits, so a receiver can
+        drop any delivery older than the latest it has seen. With the flag off
+        for the company, none of `order_edit` or `order_totals` is sent and
+        payloads are unchanged.
 
         `editor_type` and `editor_id` are derived from the authenticated
         credential — droplet installations land as `("droplet", handle)`,
@@ -1965,6 +2087,13 @@ paths:
           "$ref": "#/components/responses/BadRequest"
         '401':
           "$ref": "#/components/responses/Unauthorized"
+        '402':
+          description: The order's card declined the charge for the increase.
+            Nothing was changed. `message` carries the gateway's message.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
         '403':
           "$ref": "#/components/responses/Forbidden"
         '404':

@@ -185,3 +185,43 @@ test("the committed mapping names only defined sections and groups", () => {
   const real = JSON.parse(readFileSync(join(ROOT, ".github/api-reference-nav.json"), "utf8"));
   assert.doesNotThrow(() => buildNav(real, []));
 });
+
+
+test("hidden sections retain generated operation references and URLs", () => {
+  const hidden = { ...config, sections: config.sections.map((section) => ({ ...section, hidden: true })) };
+  const visible = buildNav(config, specs);
+  const generated = buildNav(hidden, specs);
+  assert.equal(generated.sections[0].hidden, true);
+  assert.equal(generated.sections[1].hidden, true);
+  assert.deepEqual(generated.sections[0].pages, visible.sections[0].pages);
+  assert.equal(countRefs(generated.sections), countRefs(visible.sections));
+  assert.equal(generated.excluded, visible.excluded);
+  assert.equal(visible.sections[0].hidden, undefined);
+});
+
+
+test("member and company copies are visible while Liquid publication stays hidden", () => {
+  const real = JSON.parse(readFileSync(join(ROOT, ".github/api-reference-nav.json"), "utf8"));
+  const sources = [
+    { name: "member-sites-v2026-10", prefix: "/api/member/v2026-10/sites", tag: "sites", group: "Sites", section: "Member Sites APIs" },
+    { name: "company-member-sites-v2026-10", prefix: "/api/company/v2026-10/member-sites", tag: "member-sites", group: "Company member sites", section: "Website" },
+  ];
+  for (const source of sources) {
+    const spec = {
+      name: source.name,
+      source: `api-reference/${source.name}.yaml`,
+      doc: { paths: Object.fromEntries(["copy", "publish"].map((action) => [
+        `${source.prefix}/{id}/${action}`,
+        { post: { tags: [source.tag], summary: `${action} a site`, responses: {} } },
+      ])) },
+    };
+    const { sections } = buildNav(real, [spec]);
+    const current = sections.find((section) => section.group === source.section);
+    assert.notEqual(current.hidden, true);
+    assert.ok(current.pages.find((group) => group.group === source.group).pages.some((ref) => ref.endsWith("/{id}/copy")));
+    const compatibility = sections.find((section) => section.group === "Member Sites compatibility");
+    assert.equal(compatibility.hidden, true);
+    assert.ok(compatibility.pages.some((group) => group.pages.some((ref) => ref.endsWith("/{id}/publish"))));
+    assert.equal(countRefs(sections), 2);
+  }
+});
