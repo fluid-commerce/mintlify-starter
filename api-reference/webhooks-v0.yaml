@@ -1179,7 +1179,7 @@ components:
         The amounts the renewal reminder email shows for this order, as decimal
         strings at the currency's precision. An estimate: billing prices the
         order again when it runs. Null when no estimate is available.
-      required: [subtotal, discount, tax, shipping, total, currency]
+      required: [subtotal, discount, tax, shipping, total, currency, tax_inclusive]
       properties:
         subtotal:
           type: string
@@ -1199,12 +1199,21 @@ components:
           example: '5.0'
         total:
           type: string
-          description: Estimated order total.
+          description: >-
+            Estimated order total: subtotal less discount plus shipping, plus
+            tax unless tax_inclusive is true.
           example: '102.18'
         currency:
           type: string
           description: ISO 4217 currency of every amount.
           example: USD
+        tax_inclusive:
+          type: boolean
+          description: >-
+            True when the prices already include tax (a VAT-inclusive
+            country). The total then does not add tax, which is the VAT
+            already inside subtotal and shipping.
+          example: false
     SubscriptionUpcomingRenewalItem:
       type: object
       additionalProperties: false
@@ -1375,6 +1384,115 @@ components:
                 path:
                   type: string
                   example: /api/company/v2026-10/health
+    ChannelMessagePostedWebhookPayload:
+      type: object
+      additionalProperties: true
+      description: >-
+        Payload of the channel_message_posted webhook: one message a person
+        of the company wrote in a Flow channel, sent once the message is
+        delivered. Direct messages, groups (private channels and group DMs),
+        admins-only channels, bot posts, incoming-webhook posts and guests'
+        messages from a company the channel is shared with are never sent. Alongside channel_message the body carries the metadata every
+        delivery carries (event_name, schema_version, schema_hash,
+        company_id, resource_name, resource, event, actor).
+      required: [channel_message, event_name]
+      properties:
+        event_name:
+          type: string
+          description: Always channel_message_posted.
+          example: channel_message_posted
+        channel_message:
+          type: object
+          additionalProperties: false
+          required: [id, conversation, thread_parent_id, sender, body, attachments, sent_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: The message's id. Deduplicate on it.
+              example: 019a6b2e-4f1c-7d3a-9b0e-2c6d8f4a1b57
+            conversation:
+              type: object
+              additionalProperties: false
+              required: [id, kind, name]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                  description: The conversation's id.
+                  example: 019a6b2e-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                kind:
+                  type: string
+                  enum: [channel]
+                  description: Always channel today; more kinds may be added.
+                  example: channel
+                name:
+                  type: [string, 'null']
+                  example: General
+            thread_parent_id:
+              type: [string, 'null']
+              format: uuid
+              description: The id of the message whose thread this reply is in, or null for a message in the conversation itself.
+              example:
+            sender:
+              type: object
+              additionalProperties: false
+              required: [id, name, member_id, admin_id]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                  description: The sender's seat in Flow, the id mention tokens name.
+                  example: 019a6b2e-0c1d-7e2f-8a3b-4c5d6e7f8a9b
+                name:
+                  type: [string, 'null']
+                  example: Patrick Owner
+                member_id:
+                  type: [string, 'null']
+                  format: uuid
+                  description: The member the sender is, when they are one.
+                  example: 656389f5-3497-5845-9e0e-7d264a8448f8
+                admin_id:
+                  type: [string, 'null']
+                  format: uuid
+                  description: The admin the sender is, when they are one.
+                  example:
+            body:
+              type: [string, 'null']
+              description: >-
+                The message text as written. A mention is the token
+                @[recipient=<id>], where id is the mentioned person's sender
+                id; @[recipient] marks a mention of someone not in the
+                conversation or no longer there.
+              example: Thanks @[recipient=019a6b2e-0c1d-7e2f-8a3b-4c5d6e7f8a9b], shipping today.
+            attachments:
+              type: array
+              description: The files attached to the message, metadata only.
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, filename, content_type, size, kind]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  filename:
+                    type: [string, 'null']
+                    example: invoice.pdf
+                  content_type:
+                    type: [string, 'null']
+                    example: application/pdf
+                  size:
+                    type: [integer, 'null']
+                    description: Size in bytes.
+                    example: 48213
+                  kind:
+                    type: [string, 'null']
+                    example: pdf
+            sent_at:
+              type: string
+              format: date-time
+              example: '2026-11-09T18:04:12Z'
     MistAppErrorSpikeWebhookPayload:
       type: object
       additionalProperties: true
@@ -3458,6 +3576,8 @@ paths:
                   - update_cart_email
                   - add_items
                   - remove_items
+                  channel_message:
+                  - posted
                   company_health:
                   - changed
                   contact:
@@ -4043,6 +4163,65 @@ paths:
                   resource: member_sponsorships
                   event: reassigned
 webhooks:
+  channel_message_posted:
+    post:
+      operationId: channel_message_posted
+      summary: Deliver channel message posted
+      description: >-
+        Sent to the URL configured in a droplet webhook subscription with
+        resource channel_message and event posted, once
+        for each message a person of the company writes in a Flow channel,
+        after it is delivered. Thread replies are included and name their
+        thread in thread_parent_id. Direct messages and groups (private
+        channels and group DMs) are never sent, nor are admins-only channels,
+        bot posts, incoming-webhook posts or messages from guests of a
+        company the channel is shared with. Only a droplet installation may
+        subscribe (a company webhook is refused with topic_out_of_scope), and
+        it subscribes and receives deliveries only while it holds the opt-in
+        messaging scope. Edits, removals and reactions send nothing.
+        Delivery is at most once: a message can be missed if Fluid stops
+        between sending it and queueing the notification, so read the
+        channel when completeness matters. This is an outgoing notification,
+        not an API route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/ChannelMessagePostedWebhookPayload"
+            examples:
+              posted:
+                summary: A person posted in a channel
+                value:
+                  event_name: channel_message_posted
+                  company_id: 1405
+                  resource_name: DirectMessage
+                  resource: channel_message
+                  event: posted
+                  actor:
+                  channel_message:
+                    id: 019a6b2e-4f1c-7d3a-9b0e-2c6d8f4a1b57
+                    conversation:
+                      id: 019a6b2e-1a2b-7c3d-8e4f-5a6b7c8d9e0f
+                      kind: channel
+                      name: General
+                    thread_parent_id:
+                    sender:
+                      id: 019a6b2e-0c1d-7e2f-8a3b-4c5d6e7f8a9b
+                      name: Patrick Owner
+                      member_id: 656389f5-3497-5845-9e0e-7d264a8448f8
+                      admin_id:
+                    body: Shipping the restock today.
+                    attachments:
+                    - id: 019a6b2e-7a8b-7c9d-8e0f-1a2b3c4d5e6f
+                      filename: restock.pdf
+                      content_type: application/pdf
+                      size: 48213
+                      kind: pdf
+                    sent_at: '2026-11-09T18:04:12Z'
+      responses:
+        '200':
+          description: The subscriber accepts the notification.
   company_health_changed:
     post:
       operationId: company_health_changed
@@ -4193,6 +4372,7 @@ webhooks:
                         shipping: '5.0'
                         total: '102.18'
                         currency: USD
+                        tax_inclusive: false
                       manage_url: https://checkout.fluid.app/manage/link#token=sml_eyJfcmFpbHMiOnsiZGF0YSI6e30sInB1ciI6InN1YnNjcmlwdGlvbl9tYW5hZ2VfbGluayJ9fQ--4f1c2a9e7b3d5f6081a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5
       responses:
         '200':

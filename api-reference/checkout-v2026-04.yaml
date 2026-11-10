@@ -440,6 +440,13 @@ components:
         exempt. The ship-to country is the country of the `address_id` the
         request sends, or of the subscription's own address when it sends
         none. Nothing is written and the subscription stays cancelled.
+
+        `meta.code` is `early_order_confirmation_required` when a shopper's
+        `next_bill_date` is earlier than the scheduled one and the request
+        does not send `confirm_early_order: true`. `meta` then carries
+        `scheduled_date`, `requested_date` and, when the subscription has
+        billed before, `last_bill_date` as ISO 8601 dates; `last_bill_date`
+        is null for a subscription that has never billed. Nothing is written.
       content:
         application/json:
           schema:
@@ -1710,6 +1717,14 @@ components:
                     type: string
                   next_bill_date:
                     type: string
+                  confirm_early_order:
+                    type: boolean
+                    description: >
+                      The shopper's acknowledgement that an earlier next_bill_date
+                      places and charges a new order. Required for a shopper write
+                      that moves the date earlier than the scheduled one; without
+                      it the write is refused with meta.code
+                      early_order_confirmation_required.
                   volume_rep_id:
                     type: [integer, 'null']
                   metadata:
@@ -2144,7 +2159,7 @@ components:
           format: date-time
         code:
           type: string
-          description: Machine code for the refusal, for example `payment_unconfirmed`, `subscription_plan_inactive` (a subscribed line or requested plan is no longer active), or `next_bill_date_blackout` when a merchant caller (an admin credential) picks a bill date on a blackout day. A shopper is never refused for a blackout day. Their date is saved on the next open day and the success response carries the saved date.
+          description: Machine code for the refusal, for example `payment_unconfirmed`, `subscription_plan_inactive` (a subscribed line or requested plan is no longer active), `next_bill_date_blackout` when a merchant caller (an admin credential) picks a bill date on a blackout day, or `early_order_confirmation_required` when a shopper's earlier date is not confirmed. A shopper is never refused for a blackout day. Their date is saved on the next open day and the success response carries the saved date.
         blocked_date:
           type: string
           format: date
@@ -2161,6 +2176,23 @@ components:
           format: date
           description: Present with `next_bill_date_blackout`. The nearest date the merchant's blackout rules allow, the date to offer instead.
           example: '2026-11-28'
+        scheduled_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The next bill date the subscription was scheduled to use, as an ISO 8601 calendar date.
+          example: '2026-12-10'
+        last_bill_date:
+          type:
+          - string
+          - 'null'
+          format: date
+          description: Present with `early_order_confirmation_required`. The last local billed date, or null when the subscription has never billed.
+          example: '2026-11-10'
+        requested_date:
+          type: string
+          format: date
+          description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
+          example: '2026-11-30'
         payment_uuid:
           type: string
           description: Present with `payment_unconfirmed`. The payment to look up before charging again.
@@ -2799,9 +2831,25 @@ components:
             timestamp:
               type: string
               format: date-time
+            scheduled_date:
+              type: string
+              format: date
+              description: Present with `early_order_confirmation_required`. The next bill date the refused member was scheduled to use.
+            last_bill_date:
+              type:
+              - string
+              - 'null'
+              format: date
+              description: Present with `early_order_confirmation_required`. The refused member's last local billed date, or null when it has never billed.
+            requested_date:
+              type: string
+              format: date
+              description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
             code:
               description: |
-                Why the write was refused. `profile_changed` (409): the tokens no
+                Why the write was refused. `early_order_confirmation_required`: the
+                date is earlier than a member's schedule and the request did not
+                send `confirm_early_order: true`. `profile_changed` (409): the tokens no
                 longer name one profile; `errors.subscription_tokens` lists the
                 profile's current members. `profile_would_change`: the change
                 would split the profile. `plan_not_offered`: an item's product
@@ -7674,7 +7722,8 @@ components:
           # enrollment_pack, enrollment_member_type, pricing_snapshot and
           # resulting_member_type, which both views declare (enrollment_member_type
           # and resulting_member_type added in AC-5.2: requested intent and
-          # purchase-time recorded outcome). No field is `if:`-gated.
+          # purchase-time recorded outcome), and the two points decimal twins of
+          # :with_decimal_points (ENG-4383). No field is `if:`-gated.
           # Everything else appears in only one of the two views and stays optional.
           required:
           - id
@@ -7693,10 +7742,12 @@ components:
           - financial_status
           - warehouse_id
           - points_applied
+          - points_applied_decimal
           - points_applied_amount
           - points_applied_amount_in_currency
           - order_total_after_points_redemption
           - total_points_credited
+          - total_points_credited_decimal
           - free_shipping
           - discount_codes
           - created_subscriptions
@@ -7775,6 +7826,16 @@ components:
               - 'null'
             points_applied:
               type: integer
+            points_applied_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              example: "120.0000"
+              description: The same figure as points_applied, as a decimal string with four places; points_applied is this figure rounded down to a whole number.
+            total_points_credited_decimal:
+              type: string
+              pattern: '^-?\d+\.\d{4}$'
+              example: "120.0000"
+              description: The same figure as total_points_credited, as a decimal string with four places; total_points_credited is this figure rounded down to a whole number.
             points_applied_amount:
               type: number
             points_applied_amount_in_currency:
@@ -9879,6 +9940,25 @@ components:
       - type: object
         additionalProperties:
           "$ref": "#/components/schemas/JsonValue"
+    WalletOwnedElsewhereResponse:
+      description: |
+        403 body when the wallet found by the caller's email belongs to another
+        account. Returned only while FLUID_PAY_EMAIL_FALLBACK_OWNERSHIP is on.
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      properties:
+        errors:
+          type: object
+          additionalProperties: false
+          required:
+          - fluid_pay_account
+          properties:
+            fluid_pay_account:
+              type: array
+              items:
+                type: string
     ErrorBag:
       description: Validation errors keyed by field, a list of errors, a single error
         message, or null when no structured error details are available.
@@ -24492,6 +24572,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24618,6 +24708,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24723,6 +24823,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24792,6 +24902,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -24930,6 +25050,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -24960,6 +25090,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -24990,6 +25130,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25469,6 +25619,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25555,6 +25715,16 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25854,6 +26024,16 @@ paths:
       - bearer_auth: []
       description: Vaults payment credentials via VGS. Requires a valid customer JWT.
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -25911,6 +26091,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -25941,6 +26131,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '200':
@@ -25971,6 +26171,16 @@ paths:
         schema:
           type: integer
       responses:
+        '403':
+          description: The wallet matching the caller's email belongs to another account
+            (`WalletOwnedElsewhereResponse`), or a restricted session was refused
+            (`StandardErrorResponse`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - "$ref": "#/components/schemas/WalletOwnedElsewhereResponse"
+                - "$ref": "#/components/schemas/StandardErrorResponse"
         '401':
           description: Unauthorized
           content:
@@ -27862,6 +28072,14 @@ paths:
                       type:
                       - integer
                       - 'null'
+                    confirm_early_order:
+                      type: boolean
+                      description: >
+                        The shopper's acknowledgement that a next_bill_date earlier
+                        than a member's scheduled date places and charges a new
+                        order for that member. Required for a shopper write that
+                        moves any member earlier; without it the write is refused
+                        with meta.code early_order_confirmation_required.
                   required:
                   - subscription_tokens
                   - next_bill_date
@@ -27915,6 +28133,14 @@ paths:
                   type: string
                   format: date
                   description: The date every member bills next, in the members' shared timezone.
+                confirm_early_order:
+                  type: boolean
+                  description: >
+                    The shopper's acknowledgement that a next_bill_date earlier
+                    than the scheduled date places and charges a new order for
+                    every member. Required for a shopper write that moves the
+                    date earlier; without it the write is refused with meta.code
+                    early_order_confirmation_required.
       responses:
         '200':
           description: The profile after the change.
@@ -28463,6 +28689,10 @@ paths:
                   type: string
                   format: date
                   description: The date billing resumes for every member.
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a date earlier
+                    than the scheduled one places and charges a new order.
       responses:
         '200':
           description: The profile after the change.
@@ -28551,6 +28781,11 @@ paths:
                   minItems: 2
                   items:
                     type: string
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that the resume places
+                    and charges a new order earlier than a member's scheduled one.
+                    The server accepts it but does not require it yet.
       responses:
         '200':
           description: The profile after the change.
@@ -31873,6 +32108,13 @@ paths:
           with next_bill_date.
         schema:
           type: integer
+      - name: confirm_early_order
+        in: query
+        required: false
+        description: The shopper's acknowledgement that a date earlier than the
+          scheduled one places and charges a new order.
+        schema:
+          type: boolean
       responses:
         '401':
           description: Unauthorized
@@ -32559,6 +32801,13 @@ paths:
         schema:
           type: string
           format: date
+      - name: confirm_early_order
+        in: query
+        required: false
+        description: The shopper's acknowledgement that a date earlier than the
+          scheduled one places and charges a new order.
+        schema:
+          type: boolean
       responses:
         '401':
           description: Unauthorized
