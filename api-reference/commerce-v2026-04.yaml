@@ -263,6 +263,23 @@ components:
             or group-priced variant, and `enrollment_requires_override` for
             a line on an enrollment order that has no cart. The last two ask
             for `overridden: true` and the `orders.override` permission.
+        price_authority:
+          type: string
+          enum:
+          - server
+          - manual
+          description: |
+            Declares who prices this line. `server` (with `overridden` false)
+            means the server prices it and ignores `price`; `manual` (with
+            `overridden: true`) means `price` is a hand-entered amount. When
+            present and the request is not in admin order-editing mode (the
+            `admin-order-editing` flag is off for the company, or the
+            credential is not an admin), the request returns HTTP 422 with
+            `details.code` `order_editing_unavailable` and nothing is stored.
+            A value that disagrees with `overridden` returns HTTP 422 with
+            `details.code` `conflicting_pricing_markers` (after the 403
+            `not_authorized` an `overridden` line gets without
+            `orders.override`). Omit it to keep the previous behaviour.
     RemoveItemOperation:
       type: object
       additionalProperties: false
@@ -395,6 +412,8 @@ components:
             received in a prior order response verbatim. Callers that
             don't load the order first can omit this and bypass the
             check.
+        expected_settlement:
+          "$ref": "#/components/schemas/ExpectedSettlement"
         operations:
           type: array
           minItems: 1
@@ -1205,12 +1224,38 @@ components:
         amount:
           type: string
           description: The amount charged or refunded, as a decimal string.
+    ExpectedSettlement:
+      description: |
+        The settlement the admin was shown in the preview. Required when an
+        `insert_item` operation carries `price_authority`: a missing value
+        answers `422` with `details.code` `expected_settlement_required`, and
+        a value that differs from the settlement the save works out answers
+        `409` with `details.code` `settlement_changed` and the fresh
+        settlement in `details.settlement`, with nothing charged, refunded or
+        written. It is checked whenever it is sent, and required only with
+        `price_authority`.
+      type: object
+      additionalProperties: false
+      required:
+      - kind
+      - amount_cents
+      - currency_code
+      properties:
+        kind:
+          type: string
+          enum: [none, charge, refund]
+        amount_cents:
+          type: integer
+        currency_code:
+          type: string
     PreviewSettlement:
       description: The settlement an edit needs.
       type: object
       required:
       - kind
       - amount
+      - amount_cents
+      - currency_code
       - available
       - unavailable_reason
       properties:
@@ -1220,6 +1265,11 @@ components:
         amount:
           type: string
           description: The absolute amount, as a decimal string.
+        amount_cents:
+          type: integer
+          description: The absolute amount in cents.
+        currency_code:
+          type: string
         available:
           type: boolean
           description: Whether the settlement can be carried out.
@@ -1933,6 +1983,13 @@ paths:
         under the same key never authorizes again. `409` with
         `settlement_pending` means an earlier charge on the order has not
         ended.
+
+        A request with an `insert_item` carrying `price_authority` also sends
+        `expected_settlement`, the settlement its preview showed. Without it
+        the answer is `422` `expected_settlement_required`; when the save's
+        settlement differs, the answer is `409` `settlement_changed` with the
+        fresh settlement in `details.settlement`, and nothing is charged,
+        refunded or written.
 
         With admin order editing on for the company, every edit of the order
         (admin, droplet or system) stores the order's state before and after it.
