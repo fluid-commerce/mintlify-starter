@@ -105,6 +105,9 @@ tags:
 - name: member-site-env-vars
   description: The environment variables of a company site, which its server functions read as `ctx.secrets`. A secret's value is never read back.
   x-fluid-section: Members
+- name: member-site-hosting
+  description: "A company site's deployments, log and traffic: what was published and when, what happened, and who visited."
+  x-fluid-section: Members
 - name: member-site-database
   description: Downloading a site's database as a DumpV1 file.
   x-fluid-section: Members
@@ -298,6 +301,7 @@ components:
       - content_version
       - share_url
       - site_url
+      - url
       - lock_version
       - created_at
       - updated_at
@@ -419,6 +423,12 @@ components:
           - 'null'
           format: uri
           description: Where members open the site, `/sites/<handle>` on the company's storefront, for example `https://shop.example.com/sites/riley-shop`. Set whatever the site's status, so an admin can show and copy it for a draft or a taken-down site too, but members can open it only while the site is `published`. Null when the company's storefront serves no member sites. There is no preview address; a company site's draft is read through `preview/pages`, which needs the admin's credentials.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, for example `https://shop.example.com/sites/riley-shop`. Set whatever the site's status, but it opens only while the site is `published`. Null when the company's storefront serves no member sites. The CLI prints it after a deploy.
         lock_version:
           type: integer
           minimum: 0
@@ -1156,6 +1166,7 @@ components:
       - status
       - frame_path
       - shell_path
+      - url
       - parent_changed
       - created_at
       properties:
@@ -1186,6 +1197,12 @@ components:
         shell_path:
           type: string
           description: The path of the branch's home page in the site shell.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The branch site's absolute public address, `https://<storefront>/sites/<branch handle>`. A branch is private, so it opens only for its owner and company admins. Null when the company's storefront serves no member sites.
         parent_changed:
           type: boolean
           description: Whether the parent's published content is no longer what the branch started from. False when the branch is made, true once the parent publishes a change.
@@ -1592,10 +1609,11 @@ components:
           $ref: '#/components/schemas/ListMeta'
     MemberSiteBundleCurrent:
       type: object
-      description: The site's current version after a publish.
+      description: The site's current version after a publish, and its public address.
       additionalProperties: false
       required:
       - bundle
+      - url
       - status
       - meta
       properties:
@@ -1614,6 +1632,218 @@ components:
               type: string
               pattern: "^[0-9a-f]{64}$"
               description: The SHA-256 of the manifest the gateway wrote, which an access decision names.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, where the bundle is now served; print it after a deploy. Null when the company's storefront serves no member sites.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteDeployment:
+      type: object
+      description: One deployment of a site, a bundle that was published. Rolling back to it is the bundle's `current` operation, with `bundle_id`.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The deployment's id, the same as its `bundle_id`.
+        bundle_id:
+          type: string
+          format: uuid
+          description: The id of the published bundle, which the bundle operations take.
+        published_at:
+          type: string
+          format: date-time
+          description: When the bundle was published.
+        published_by:
+          type:
+          - string
+          - 'null'
+          description: The name of the admin who published it. Null when that account is gone or has no name, and for a caller without `company_admins.view`.
+        file_count:
+          type: integer
+          minimum: 0
+          description: How many files the bundle holds.
+        total_bytes:
+          type: integer
+          minimum: 0
+          description: The size of the bundle's files together, in bytes.
+        current:
+          type: boolean
+          description: Whether the site serves this deployment now.
+        retained:
+          type: boolean
+          description: Whether the deployment's files are still kept, so a rollback can reach it. The 25 newest deployments and the current one are kept.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's public address, where its current deployment is served. Null when the company's storefront serves no member sites.
+      required:
+      - id
+      - bundle_id
+      - published_at
+      - published_by
+      - file_count
+      - total_bytes
+      - current
+      - retained
+      - url
+    MemberSiteLogLine:
+      type: object
+      description: One line of a site's log.
+      additionalProperties: false
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: When it happened, to the millisecond. Read on from the last line's `at` as the next `since`.
+        level:
+          type: string
+          enum:
+          - info
+          - warn
+          - error
+          description: How serious it is.
+        source:
+          type: string
+          enum:
+          - publish
+          - function
+          - gateway
+          description: What wrote it. Only `publish` writes lines today. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site.
+        message:
+          type: string
+          description: The line, in plain words.
+      required:
+      - at
+      - level
+      - source
+      - message
+    MemberSiteTraffic:
+      type: object
+      description: A site's traffic over a period, counted by the sites gateway.
+      additionalProperties: false
+      properties:
+        period:
+          type: string
+          enum:
+          - 24h
+          - 7d
+          - 30d
+          description: The period, as whole hours up to and including the current one.
+        visits:
+          type: integer
+          minimum: 0
+          description: Pages visitors opened. A file a page loads, such as an image or a script, is not a visit.
+        unique_visitors:
+          type: integer
+          minimum: 0
+          description: An estimate of the distinct visitors, within about 1%. A visitor is a device and browser, not a person.
+        top_pages:
+          type: array
+          description: "The most visited pages, most visited first, at most 10. A page is named as the bundle names it: a file's path, a directory with an index, a `path` route, or a `prefix` route as `<prefix>/*`, so the rest of a visitor's path, which can carry a token, is never reported."
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              path:
+                type: string
+              visits:
+                type: integer
+                minimum: 0
+            required:
+            - path
+            - visits
+        referrers:
+          type: array
+          description: The sites visitors came from, by host, most first, at most 10. A visit with no referrer is not listed, and the storefront's site page opens a site with none, so most visits have none. Past 100 hosts in an hour, and for a host longer than 100 characters, visits count under the host `other`.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              host:
+                type: string
+              visits:
+                type: integer
+                minimum: 0
+            required:
+            - host
+            - visits
+        errors:
+          type: object
+          description: The site's requests answered with a client error (4xx, such as a missing file) or a server error (5xx).
+          additionalProperties: false
+          properties:
+            4xx:
+              type: integer
+              minimum: 0
+            5xx:
+              type: integer
+              minimum: 0
+          required:
+          - 4xx
+          - 5xx
+      required:
+      - period
+      - visits
+      - unique_visitors
+      - top_pages
+      - referrers
+      - errors
+    MemberSiteDeploymentsResponse:
+      type: object
+      description: A page of a site's deployments, newest first.
+      required:
+      - deployments
+      - status
+      - meta
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberSiteDeployment'
+          description: The deployments on this page.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/ListMeta'
+    MemberSiteLogsResponse:
+      type: object
+      description: The lines of a site's log, oldest first.
+      additionalProperties: false
+      required:
+      - logs
+      - status
+      - meta
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberSiteLogLine'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteTrafficResponse:
+      type: object
+      description: A site's traffic.
+      additionalProperties: false
+      required:
+      - traffic
+      - status
+      - meta
+      properties:
+        traffic:
+          $ref: '#/components/schemas/MemberSiteTraffic'
         status:
           type: integer
           description: The HTTP status.
@@ -2403,6 +2633,7 @@ paths:
                   content_version: 019a2b3c-5e6f-7a7b-8c9d-0e1f2a3b4c5d
                   share_url: https://shop.example.com/home/sites/primex-launch
                   site_url: https://shop.example.com/sites/primex-launch
+                  url: https://shop.example.com/sites/primex-launch
                   lock_version: 2
                   created_at: '2026-10-12T10:20:33Z'
                   updated_at: '2026-10-13T09:00:00Z'
@@ -2433,6 +2664,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 0
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-10-14T11:00:00Z'
@@ -2522,6 +2754,7 @@ paths:
                   content_version: 019a2b3c-5e6f-7a7b-8c9d-0e1f2a3b4c5d
                   share_url: https://shop.example.com/home/sites/fall-launch
                   site_url: https://shop.example.com/sites/fall-launch
+                  url: https://shop.example.com/sites/fall-launch
                   lock_version: 0
                   created_at: '2026-10-23T14:05:12Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -2607,6 +2840,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 0
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-10-14T11:00:00Z'
@@ -2693,6 +2927,7 @@ paths:
                   content_version: 019a2b3c-5e6f-7a7b-8c9d-0e1f2a3b4c5d
                   share_url: https://shop.example.com/home/sites/primex-launch
                   site_url: https://shop.example.com/sites/primex-launch
+                  url: https://shop.example.com/sites/primex-launch
                   lock_version: 3
                   created_at: '2026-10-12T10:20:33Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -2841,6 +3076,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 3
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -2937,6 +3173,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 4
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-11-09T09:30:00Z'
@@ -3030,6 +3267,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 3
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -3121,6 +3359,7 @@ paths:
                   content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                   share_url: https://shop.example.com/home/sites/riley-shop
                   site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
                   lock_version: 3
                   created_at: '2026-10-14T11:00:00Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -3225,6 +3464,7 @@ paths:
                   content_version: 019a2d5e-7a8b-7c9d-8e0f-2a3b4c5d6e7f
                   share_url: https://shop.example.com/home/sites/fall-shop
                   site_url: https://shop.example.com/sites/fall-shop
+                  url: https://shop.example.com/sites/fall-shop
                   lock_version: 1
                   created_at: '2026-10-24T09:30:00Z'
                   updated_at: '2026-10-24T09:30:00Z'
@@ -3308,6 +3548,7 @@ paths:
                   content_version: 019a2b3c-8a9b-7c1d-8e2f-3a4b5c6d7e8f
                   share_url: https://shop.example.com/home/sites/primex-launch
                   site_url: https://shop.example.com/sites/primex-launch
+                  url: https://shop.example.com/sites/primex-launch
                   lock_version: 3
                   created_at: '2026-10-12T10:20:33Z'
                   updated_at: '2026-10-23T14:05:12Z'
@@ -3843,6 +4084,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/019a4e5f-7081-7c92-8da3-b4c5d6e7f80a"
                   shell_path: "/sites/primex-launch-staging"
+                  url: https://shop.example.com/sites/primex-launch-staging
                   parent_changed: false
                   created_at: '2026-10-16T10:00:00Z'
                 status: 200
@@ -3900,6 +4142,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/019a4e5f-7081-7c92-8da3-b4c5d6e7f80a"
                   shell_path: "/sites/primex-launch-staging"
+                  url: https://shop.example.com/sites/primex-launch-staging
                   parent_changed: false
                   created_at: '2026-10-16T10:00:00Z'
                 status: 201
@@ -4238,6 +4481,7 @@ paths:
                 bundle:
                   id: 0199537f-0000-7000-8000-000000000004
                   manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                url: https://shop.example.com/sites/primex-launch
                 status: 200
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
@@ -4333,6 +4577,7 @@ paths:
                 bundle:
                   id: 0199537f-0000-7000-8000-000000000004
                   manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                url: https://shop.example.com/sites/primex-launch
                 status: 200
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
@@ -4810,6 +5055,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/019a4e5f-7081-7c92-8da3-b4c5d6e7f80a"
                   shell_path: "/sites/primex-launch-staging"
+                  url: https://shop.example.com/sites/primex-launch-staging
                   parent_changed: true
                   created_at: '2026-10-16T10:00:00Z'
                 status: 200
@@ -4904,6 +5150,7 @@ paths:
                     content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
                     share_url: https://shop.example.com/home/sites/riley-shop
                     site_url: https://shop.example.com/sites/riley-shop
+                    url: https://shop.example.com/sites/riley-shop
                     lock_version: 2
                     created_at: '2026-10-14T11:00:00Z'
                     updated_at: '2026-10-14T11:00:00Z'
@@ -5604,3 +5851,227 @@ paths:
           $ref: '#/components/responses/PreviewRefused'
         '404':
           $ref: '#/components/responses/PreviewNotFound'
+  /api/company/v2026-10/member-sites/{id}/deployments:
+    get:
+      operationId: companyMemberSiteDeploymentsList
+      x-fluid-audience: company
+      summary: List a company site's deployments
+      description: |
+        The deployments of one company site, newest first: each bundle that was published, with who published it, how many files it holds, their total size, whether the site serves it now (`current`) and whether a rollback can still reach it (`retained`). An upload that was never published is not a deployment; the bundle list shows those. Roll back with the bundle's `current` operation and the deployment's `bundle_id`.
+
+        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404, as on the bundle list: its owner reads its deployments. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-hosting
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: page[cursor]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Opaque cursor from `meta.pagination.next_cursor` or `prev_cursor`. Do not construct or decode it.
+      - name: page[limit]
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+        example: 25
+        description: Deployments per page. Default 25, maximum 100.
+      responses:
+        '200':
+          description: A page of deployments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDeploymentsResponse'
+              example:
+                deployments:
+                - id: 0199537f-0000-7000-8000-000000000005
+                  bundle_id: 0199537f-0000-7000-8000-000000000005
+                  published_at: '2026-11-05T10:02:00.000Z'
+                  published_by: Pat Admin
+                  file_count: 12
+                  total_bytes: 482113
+                  current: true
+                  retained: true
+                  url: https://shop.example.com/sites/primex-launch
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A bad cursor, or a `page[limit]` that is not an integer from 1 to 100.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/logs:
+    get:
+      operationId: companyMemberSiteLogsList
+      x-fluid-audience: company
+      summary: Read a company site's log
+      description: |
+        The log of one company site, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log, ask again with the last line's `at` as `since`. Only publishing writes lines today: each upload's start, its publish and who published it (named only to a caller with `company_admins.view`), and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site. Never stored (`no-store`).
+
+        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-hosting
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: since
+        in: query
+        required: false
+        description: An ISO 8601 time; only lines after it are answered. Defaults to 7 days ago.
+        schema:
+          type: string
+          format: date-time
+      - name: limit
+        in: query
+        required: false
+        description: The most lines to answer, the oldest first. Defaults to 100, at most 500.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+      responses:
+        '200':
+          description: The site's log lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteLogsResponse'
+              example:
+                logs:
+                - at: '2026-11-05T10:00:00.000000Z'
+                  level: info
+                  source: publish
+                  message: Upload 0199537f-0000-7000-8000-000000000005 started with 12 files
+                - at: '2026-11-05T10:02:00.000000Z'
+                  level: info
+                  source: publish
+                  message: Published 0199537f-0000-7000-8000-000000000005 by Pat Admin
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A `since` that is not a time, or a `limit` that is not an integer from 1 to 500.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/traffic:
+    get:
+      operationId: companyMemberSiteTrafficShow
+      x-fluid-audience: company
+      summary: Read a company site's traffic
+      description: |
+        The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, and the requests answered with an error. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+
+        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-hosting
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - name: period
+        in: query
+        required: false
+        description: The period to count. Defaults to `24h`.
+        schema:
+          type: string
+          enum:
+          - 24h
+          - 7d
+          - 30d
+      responses:
+        '200':
+          description: The site's traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteTrafficResponse'
+              example:
+                traffic:
+                  period: 7d
+                  visits: 120
+                  unique_visitors: 41
+                  top_pages:
+                  - path: "/"
+                    visits: 80
+                  referrers:
+                  - host: instagram.com
+                    visits: 9
+                  errors:
+                    4xx: 3
+                    5xx: 0
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A `period` other than `24h`, `7d` or `30d`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The traffic counts cannot be read right now (`details.error` is `traffic_unavailable`); try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
