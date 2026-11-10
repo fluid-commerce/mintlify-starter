@@ -3087,3 +3087,30 @@ from generation or rename their tags and summaries to remove them from the
 sidebar. The navigation generator passes the section's `hidden: true` through to
 Mintlify; its regression test verifies that hiding preserves operation references.
 This applies to Member Sites compatibility only, not storefront theme APIs.
+
+### Company sites on the storefront
+
+`storefront/sites.mdx` documents company sites as a v2026-04 storefront resource
+(`/api/v202604/sites`, `/api/v202604/company/sites`) and the moderator take-down
+(fluid#32617). It merged before the synced `storefront-v2026-04.yaml` carried the
+`sites` operations, so every `sf-sites-*` claim is `semantic`, verified against the
+source spec, the phase docs (member-sites phase 027, storefront-resource-standardization
+phase 003) and the Rails code on that branch. Once the synced spec carries the
+operations, convert the endpoint, parameter and status claims to `mechanical`.
+
+Durable decisions:
+
+- Only company-owned sites are storefront resources. Member-owned sites stay on the
+  Member API and are never in the public catalog. Do not document `filter[owner]`.
+- An inactive site (`active: false`) is out of the public show as well as the catalog:
+  the model's showable scope requires `active`. The spec's public-show description said
+  an inactive site still resolves by slug; the code wins. Re-check the spec text when
+  converting these claims.
+- Today any company admin takes a site down and brings it back, a company site
+  included. The planned split (a Fluid root admin for company-owned resources) is not
+  documented until it ships. The admin's **Take down** sends no reason; the reason is
+  API-only.
+- The owner of a member site sees the reason only in the Flow message. The member API
+  does not return it; `taken_down_reason` is on the company member-site API only.
+- The page head's canonical link is described as "usually" `/home/sites/<handle>`
+  plus the path: a company not on the sites gateway keeps `/sites/<handle>` there.
