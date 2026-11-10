@@ -1651,7 +1651,11 @@ Durable authoring boundaries:
   pages never claim it is active. Do not broaden that into "hydration works everywhere".
 - Member pages are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
-  `/members/...` storefront paths from older planning documents.
+  `/members/...` storefront paths from older planning documents. V1 member sites open
+  at `/sites/<handle>[/<path>]` since fluid#32600; the credited `/<credit>/sites/<handle>`
+  form needs the sites gateway. Their old `/accounts/<handle>` addresses were deleted
+  with no redirect. Account screens such as `/accounts/profile` are not sites and keep
+  their paths.
 - No root theme ships member templates or a member layout. The pages say so and describe
   the not-found behavior that follows. Do not document shipped defaults until a root
   theme carries them.
