@@ -3057,3 +3057,29 @@ It is left for ENG-4380.
   2026-11-03).
 - **Time estimates** (the headline and the per-step table): agent work only,
   with no code behind them.
+
+### Member-site owner database inspection
+
+The owner inspection section of `member-sites-v1/database.mdx` is imported from
+`snippets/member-site-owner-database-inspection.mdx`. Register that focused snippet
+as a guide against `member-sites-v2026-10.yaml`: its new workflow claims are fully
+covered without treating the existing SDK/schema tutorial as a newly audited API
+contract guide. The surrounding tutorial remains outside this registry's full-page
+coverage scope; this addition does not claim otherwise. The generated owner-read
+references remain the source for request, response, paging and error contracts.
+
+## Member Sites API navigation
+
+`api/member-sites.mdx` is the V1 API selection guide. Keep viewing site metadata
+separate from opening the published app in a browser. The V1 copy navigation and
+workflow follow the merged bundle-copy implementation. Keep the rollout note until
+the API, migration and database sweep deployment are verified for the environment;
+endpoint existence and a docs merge alone do not establish runtime availability.
+Ordinary copies carry schema but no source rows; do not conflate them with branches.
+
+The older Member Sites references remain generated under a hidden compatibility
+group so previously shared URLs keep resolving. Do not exclude their operations
+from generation or rename their tags and summaries to remove them from the
+sidebar. The navigation generator passes the section's `hidden: true` through to
+Mintlify; its regression test verifies that hiding preserves operation references.
+This applies to Member Sites compatibility only, not storefront theme APIs.

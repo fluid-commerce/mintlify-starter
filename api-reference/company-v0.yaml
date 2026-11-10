@@ -24084,9 +24084,25 @@ components:
             timestamp:
               type: string
               format: date-time
+            scheduled_date:
+              type: string
+              format: date
+              description: Present with `early_order_confirmation_required`. The next bill date the refused member was scheduled to use.
+            last_bill_date:
+              type:
+                - string
+                - 'null'
+              format: date
+              description: Present with `early_order_confirmation_required`. The refused member's last local billed date, or null when it has never billed.
+            requested_date:
+              type: string
+              format: date
+              description: Present with `early_order_confirmation_required`. The earlier date the request asked to save.
             code:
               description: |
-                Why the write was refused. `profile_changed` (409): the tokens no
+                Why the write was refused. `early_order_confirmation_required`: the
+                date is earlier than a member's schedule and the request did not
+                send `confirm_early_order: true`. `profile_changed` (409): the tokens no
                 longer name one profile; `errors.subscription_tokens` lists the
                 profile's current members. `profile_would_change`: the change
                 would split the profile. `plan_not_offered`: an item's product
@@ -24481,6 +24497,92 @@ components:
         updated_at:
           type: string
           format: date-time
+    SubscriptionSmsConsentEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - event
+        - source
+        - occurred_at
+      properties:
+        event:
+          type: string
+          enum:
+            - opt_in
+            - opt_out
+            - confirmation_sent
+            - opt_in_requested
+            - confirmation_requested
+          description: What happened to the consent.
+        source:
+          type: string
+          enum:
+            - checkout
+            - manage_page
+            - admin
+            - keyword_start
+            - keyword_stop
+            - carrier_21610
+            - keyword_yes
+          description: Where it happened.
+        occurred_at:
+          type: string
+          format: date-time
+    SubscriptionSmsConsent:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - phone_last4
+        - phone_ref
+        - events
+      properties:
+        status:
+          type: string
+          enum:
+            - opted_in
+            - pending_confirmation
+            - opted_out
+            - never_asked
+        phone_last4:
+          type:
+            - string
+            - 'null'
+          description: The last 4 digits of the phone. Null when the customer has no phone Fluid can text.
+        phone_ref:
+          type:
+            - string
+            - 'null'
+          description: An opaque reference to the phone, to send back with an opt-out. Null when there is no phone.
+        events:
+          type: array
+          description: The consent ledger, newest first, at most 50.
+          items:
+            $ref: '#/components/schemas/SubscriptionSmsConsentEvent'
+    SubscriptionSmsConsentResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - sms_consent
+        - meta
+      properties:
+        sms_consent:
+          $ref: '#/components/schemas/SubscriptionSmsConsent'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    SubscriptionSmsConsentOptOutRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - phone_ref
+      properties:
+        phone_ref:
+          type: string
+          pattern: ^[0-9a-f]{16}$
+          description: The phone_ref the read returned for the phone the admin saw.
+        customer_id:
+          type: integer
+          description: The customer, on the customer-level route.
     SubscriptionMilestoneItemsResponse:
       type: object
       additionalProperties: false
@@ -44711,6 +44813,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
+        '404':
+          description: The pack does not exist, belongs to another company, or is hidden from the caller's member type
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error_message:
+                    type: string
+                  errors:
+                    type: object
+                  meta:
+                    type: object
     delete:
       summary: Delete an enrollment pack
       description: Delete an enrollment pack. The pack is archived rather than erased and no longer appears in lists. Returns the deleted pack's ID, or 404 when the pack does not belong to the authenticated company. Admin users, company API tokens, and partner tokens need the `enrollment_packs` update permission.
@@ -51850,6 +51965,9 @@ paths:
                         - integer
                         - 'null'
                       description: Rep to credit with the bundle's volume.
+                    confirm_early_order:
+                      type: boolean
+                      description: The shopper's acknowledgement that a next_bill_date earlier than a member's scheduled date places and charges a new order for that member. Required for a shopper write that moves any member earlier; without it the write is refused with meta.code early_order_confirmation_required.
             example:
               bundle:
                 subscription_tokens:
@@ -53454,7 +53572,7 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
         '403':
           description: |
-            The caller lacks the subscriptions update permission, or is a customer.
+            The caller lacks the subscriptions retry permission, or is a customer.
             Retrying a renewal is a back-office action, not a shopper one.
           content:
             application/json:
@@ -53549,7 +53667,7 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
         '403':
           description: |
-            The caller lacks the subscriptions update permission, or is a customer.
+            The caller lacks the subscriptions retry permission, or is a customer.
             Booking a renewal's retry is a back-office action, not a shopper one.
           content:
             application/json:
@@ -54539,6 +54657,133 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscriptions/sms_consent:
+    get:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions routes beside /milestone_items and /profiles, which the fluid-admin subscription and customer pages call; a dated path would need a dated subscriptions controller, a separate change (docs/plans/subscription-pro/admin-audit/REPORT.md, gap 3).
+      summary: Show the SMS consent of a customer's phone
+      description: 'The Subscription Pro SMS consent of a customer''s phone: its status (opted_in, pending_confirmation, opted_out, or never_asked when the phone has no consent or the customer has no phone Fluid can text), the phone masked to its last 4 digits, and the consent ledger newest first (event, time, source; at most 50). Requires the `subscriptions` view permission and an admin, and Subscription Pro active for the company. The merchant''s SMS reminders switch does not matter. Responses are not cached.'
+      tags:
+        - subscriptions
+      operationId: commerce_v0_show_customer_sms_consent
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: customer_id
+          in: query
+          required: true
+          description: The customer.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionSmsConsentResponse'
+              example:
+                sms_consent:
+                  status: opted_in
+                  phone_last4: '0147'
+                  phone_ref: 5b1f0c2e9a7d4e83
+                  events:
+                    - event: opt_in
+                      source: keyword_yes
+                      occurred_at: '2026-10-11T09:12:44Z'
+                    - event: opt_in_requested
+                      source: checkout
+                      occurred_at: '2026-10-10T17:03:10Z'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the subscriptions view permission, or Subscription Pro is not active for the company (errors.error subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Customer not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscriptions/sms_consent/opt_out:
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions routes beside /milestone_items and /profiles, which the fluid-admin subscription and customer pages call; a dated path would need a dated subscriptions controller, a separate change (docs/plans/subscription-pro/admin-audit/REPORT.md, gap 3).
+      summary: Opt a customer's phone out of SMS
+      description: 'Records that the customer no longer agrees to subscription texts, for a customer''s phone. Appends an opt_out event to the consent ledger with source admin and the acting admin as actor, and stops reminders to that phone the way a STOP reply does. It never opts a phone in: opt-in stays with the shopper. `phone_ref` must be the reference the read returned; a phone that changed since, even to one with the same last 4 digits, is refused (phone_changed). A key the request does not declare is refused. Repeating it on an opted-out phone changes nothing. Requires the `subscriptions` update permission and an admin user (a droplet or client token is refused), and Subscription Pro active for the company. Returns the standing after the write.'
+      tags:
+        - subscriptions
+      operationId: commerce_v0_opt_out_customer_sms_consent
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionSmsConsentOptOutRequest'
+            example:
+              phone_ref: 5b1f0c2e9a7d4e83
+              customer_id: 4021
+      responses:
+        '200':
+          description: The standing after the opt-out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionSmsConsentResponse'
+              example:
+                sms_consent:
+                  status: opted_out
+                  phone_last4: '0147'
+                  phone_ref: 5b1f0c2e9a7d4e83
+                  events:
+                    - event: opt_out
+                      source: admin
+                      occurred_at: '2026-10-12T14:30:00Z'
+                    - event: opt_in
+                      source: keyword_yes
+                      occurred_at: '2026-10-11T09:12:44Z'
+                    - event: opt_in_requested
+                      source: checkout
+                      occurred_at: '2026-10-10T17:03:10Z'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin user, missing the subscriptions update permission, a droplet or client token, or Subscription Pro is not active for the company (errors.error subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Customer not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: 'Invalid parameters, or a refusal named in errors.error: phone_required (no phone Fluid can text), phone_changed (the phone is no longer the one phone_ref names) or invalid. Nothing was written.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/subscriptions/profiles:
     get:
       x-fluid-audience: company
@@ -54781,6 +55026,9 @@ paths:
                   type: string
                   format: date
                   description: The date every member bills next, in the members' shared timezone.
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a next_bill_date earlier than a member's scheduled date places and charges a new order for that member. Required for a shopper write that moves any member earlier; without it the write is refused with meta.code early_order_confirmation_required.
       responses:
         '200':
           description: The profile after the change.
@@ -55425,6 +55673,9 @@ paths:
                   type: string
                   format: date
                   description: The date billing resumes for every member.
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: The profile after the change.
@@ -56064,6 +56315,137 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscriptions/{token}/sms_consent:
+    get:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions routes beside /milestone_items and /profiles, which the fluid-admin subscription and customer pages call; a dated path would need a dated subscriptions controller, a separate change (docs/plans/subscription-pro/admin-audit/REPORT.md, gap 3).
+      summary: Show the SMS consent of a subscription's reminder phone
+      description: 'The Subscription Pro SMS consent of a subscription''s reminder phone: its status (opted_in, pending_confirmation, opted_out, or never_asked when the phone has no consent or the customer has no phone Fluid can text), the phone masked to its last 4 digits, and the consent ledger newest first (event, time, source; at most 50). Requires the `subscriptions` view permission and an admin, and Subscription Pro active for the company. The merchant''s SMS reminders switch does not matter. Responses are not cached.'
+      tags:
+        - subscriptions
+      operationId: commerce_v0_show_subscription_sms_consent
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionSmsConsentResponse'
+              example:
+                sms_consent:
+                  status: opted_in
+                  phone_last4: '0147'
+                  phone_ref: 5b1f0c2e9a7d4e83
+                  events:
+                    - event: opt_in
+                      source: keyword_yes
+                      occurred_at: '2026-10-11T09:12:44Z'
+                    - event: opt_in_requested
+                      source: checkout
+                      occurred_at: '2026-10-10T17:03:10Z'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin, missing the subscriptions view permission, or Subscription Pro is not active for the company (errors.error subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscriptions/{token}/sms_consent/opt_out:
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions routes beside /milestone_items and /profiles, which the fluid-admin subscription and customer pages call; a dated path would need a dated subscriptions controller, a separate change (docs/plans/subscription-pro/admin-audit/REPORT.md, gap 3).
+      summary: Opt a subscription's reminder phone out of SMS
+      description: 'Records that the customer no longer agrees to subscription texts, for a subscription''s reminder phone. Appends an opt_out event to the consent ledger with source admin and the acting admin as actor, and stops reminders to that phone the way a STOP reply does. It never opts a phone in: opt-in stays with the shopper. `phone_ref` must be the reference the read returned; a phone that changed since, even to one with the same last 4 digits, is refused (phone_changed). A key the request does not declare is refused. Repeating it on an opted-out phone changes nothing. Requires the `subscriptions` update permission and an admin user (a droplet or client token is refused), and Subscription Pro active for the company. Returns the standing after the write.'
+      tags:
+        - subscriptions
+      operationId: commerce_v0_opt_out_subscription_sms_consent
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionSmsConsentOptOutRequest'
+            example:
+              phone_ref: 5b1f0c2e9a7d4e83
+      responses:
+        '200':
+          description: The standing after the opt-out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionSmsConsentResponse'
+              example:
+                sms_consent:
+                  status: opted_out
+                  phone_last4: '0147'
+                  phone_ref: 5b1f0c2e9a7d4e83
+                  events:
+                    - event: opt_out
+                      source: admin
+                      occurred_at: '2026-10-12T14:30:00Z'
+                    - event: opt_in
+                      source: keyword_yes
+                      occurred_at: '2026-10-11T09:12:44Z'
+                    - event: opt_in_requested
+                      source: checkout
+                      occurred_at: '2026-10-10T17:03:10Z'
+                meta:
+                  request_id: 3e8b1f2a-6c4d-4a7e-9b10-2d5f8c3a1e67
+                  timestamp: '2026-10-11T09:13:02Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Not an admin user, missing the subscriptions update permission, a droplet or client token, or Subscription Pro is not active for the company (errors.error subscription_pro_inactive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: 'Invalid parameters, or a refusal named in errors.error: phone_required (no phone Fluid can text), phone_changed (the phone is no longer the one phone_ref names) or invalid. Nothing was written.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/subscriptions/{token}/orders:
     get:
       summary: Show orders created from the subscription
@@ -56177,6 +56559,12 @@ paths:
             type: integer
           required: false
           description: Number of billing cycles to skip. Cannot be used with next_bill_date.
+        - name: confirm_early_order
+          in: query
+          schema:
+            type: boolean
+          required: false
+          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: Success
@@ -56766,6 +57154,12 @@ paths:
             type: string
             format: date
           required: false
+        - name: confirm_early_order
+          in: query
+          schema:
+            type: boolean
+          required: false
+          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: Subscription billing resumed
