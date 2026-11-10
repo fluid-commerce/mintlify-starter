@@ -240,7 +240,7 @@ export function buildNav(config, specs) {
     for (const [group, node] of nodes) {
       if (!(nest[group] && nodes.has(nest[group]))) pages.push(node);
     }
-    if (pages.length > 0) sections.push({ group: section.section, pages });
+    if (pages.length > 0) sections.push({ group: section.section, ...(section.hidden === true ? { hidden: true } : {}), pages });
   }
 
   if (unsorted.length > 0) {

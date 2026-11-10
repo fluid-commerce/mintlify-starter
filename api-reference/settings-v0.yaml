@@ -3237,6 +3237,23 @@ components:
               minLength: 1
         address:
           $ref: '#/components/schemas/WarehouseSettingsAddressRequest'
+        country_assignments:
+          type: array
+          description: 'Countries to route to this warehouse, honored only when the warehouse-country-assignment flag is on for the company. Add or re-point only: countries already on the warehouse that are not listed stay. All or nothing: any invalid entry changes nothing, including the other fields. An empty array changes no routing.'
+          items:
+            type: object
+            required:
+              - country_id
+            properties:
+              country_id:
+                type: integer
+                description: The id of one of the company's countries.
+              customs:
+                type: string
+                enum:
+                  - DDP
+                  - DAP
+                description: Required when the country differs from the warehouse country; ignored otherwise.
     AssignWarehouseToCountryRequestBodyApplicationJsonSchema:
       type: object
       required:
@@ -3361,6 +3378,9 @@ components:
           items:
             $ref: '#/components/schemas/BlackoutRule'
           description: The blackout calendar, empty when the company has set no rule. The rules apply only while the blackout_dates feature works for the company.
+        customer_milestone_rules:
+          type: boolean
+          description: 'Always true: every company may publish milestone rules limited once per customer. Deprecated and kept for clients that still read it.'
         features:
           type: object
           additionalProperties: false
@@ -4135,7 +4155,8 @@ components:
           enum:
             - subscription
             - order
-          description: subscription gives each matching subscription its own items. order gives the items once per order. first_order takes order.
+            - customer
+          description: subscription gives each matching subscription its own items. order gives the items once per order. customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -4432,6 +4453,25 @@ components:
           properties:
             pagination:
               $ref: '#/components/schemas/BillingCreditMovementPagination'
+    SubscriptionProMilestoneReportExportResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+        - status
+        - meta
+      description: The link sits at the top level of the body, beside status and meta, with no wrapper key.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: A signed link to the CSV. It expires 12 hours after the response.
+        status:
+          type: integer
+          enum:
+            - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
     SubscriptionProMilestoneRule:
       type: object
       additionalProperties: false
@@ -4544,6 +4584,8 @@ components:
           enum:
             - subscription
             - order
+            - customer
+          description: customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -4630,6 +4672,8 @@ components:
           enum:
             - subscription
             - order
+            - customer
+          description: customer gives each occurrence once per customer, across every subscription the customer has. first_order takes order or customer.
         items:
           type: array
           minItems: 1
@@ -7738,6 +7782,89 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/subscription_pro/milestone_report/export_csv:
+    post:
+      x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/milestone_report on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change.
+      x-fluid-audience: company
+      summary: Export the company's milestone items as a CSV
+      description: 'The grants that the milestone report would count for the same range and filters, newest first, as a CSV with one row per grant: id, created_at, updated_at, subscription_token, rule_id, rule_name, source, status, deferral_reason, occurrence_key, variant_id, variant_title, main_variant_id, substituted, quantity, unit_price, currency_code, volume_policy and order_id. The file is built in the request, so a range of more than 20000 grants is refused; choose a shorter range or filter by rule, status or source. The response names a signed link to the file that expires after 12 hours. Needs the milestone_items feature to work for the company. Nothing is changed. Responses are not cached.'
+      tags:
+        - subscription-pro
+      operationId: settings_v0_export_subscription_pro_milestone_report
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              description: The range and filters of the milestone report. A page is not taken.
+              properties:
+                from:
+                  type: string
+                  format: date
+                  description: The first day (UTC). Defaults to 29 days before to.
+                to:
+                  type: string
+                  format: date
+                  description: The last day (UTC), inclusive. Defaults to today. At most 365 days after from.
+                rule_id:
+                  type: integer
+                  description: Only the grants of this rule.
+                status:
+                  type: string
+                  enum:
+                    - planned
+                    - on_order
+                    - fulfilled
+                    - deferred
+                    - skipped_out_of_stock
+                    - voided
+                  description: Only the grants in this status.
+                source:
+                  type: string
+                  enum:
+                    - rule
+                    - manual
+                    - retention_offer
+                  description: Only the grants from this source.
+            example:
+              from: '2026-10-01'
+              to: '2026-10-31'
+              status: fulfilled
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProMilestoneReportExportResponse'
+              example:
+                url: https://storage.googleapis.com/fluid-uploads/uploads/20261031/6f1c2d9e-3b7a-4c1e-9d2f-8a5b7c3e1f40/milestone-report-2026-10-01-2026-10-31.csv
+                status: 200
+                meta:
+                  request_id: 7d2f4c1a-9b3e-4f6d-8a21-3c5e0b9f1d42
+                  timestamp: '2026-10-31T12:00:00Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: 'Not an admin, missing the orders.settings or subscriptions.view permission (a role needs both), a droplet without both the settings and orders scopes, or the milestone_items feature does not work for the company. A closed feature names the failed check in error.details.error: subscription_pro_inactive, setting_off or legacy_renewal_lane.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid filters, a range of more than 366 days or ending before it starts, or a range of more than 20000 grants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/subscription_pro/milestone_rules:
     get:
       x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/settings on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change.
@@ -7803,7 +7930,7 @@ paths:
       x-fluid-lint-exempt: Joins the unversioned merchant settings API (settings-v0.yaml) next to /api/subscription_pro/settings on Api::Settings::BaseSettingsController, which the fluid-admin settings pages call with the admin session (doc/plans/subscription-pro.md, sections 3.3 and 8). A dated path would need the v202604 controller base and envelope, a separate change.
       x-fluid-audience: company
       summary: Add a draft milestone rule
-      description: Adds a draft rule with its first version. A draft gives nothing until it is published. Every variant, plan and product must belong to the company. A first_order rule gives one unit of each item once per order (grant_per order, quantity 1, no fallbacks). Needs the milestone_items feature to work for the company.
+      description: Adds a draft rule with its first version. A draft gives nothing until it is published. Every variant, plan and product must belong to the company. A first_order rule gives one unit of each item once per order or customer (grant_per order or customer, quantity 1, no fallbacks). Needs the milestone_items feature to work for the company.
       tags:
         - subscription-pro
       operationId: settings_v0_create_subscription_pro_milestone_rule
@@ -13396,6 +13523,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The warehouse or a country assignment is invalid; nothing is changed. Errors under country_assignments are keyed by the assignment's index. With the warehouse-country-assignment flag on, deactivating a warehouse that countries still ship from answers errors.active, naming them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
       requestBody:
         content:
           application/json:
@@ -13410,6 +13543,9 @@ paths:
                 city: Scranton
                 state: PA
                 postal_code: '18505'
+              country_assignments:
+                - country_id: 40
+                  customs: DAP
       parameters:
         - name: id
           in: path
@@ -13423,7 +13559,7 @@ paths:
       security:
         - bearer_auth: []
       operationId: settings_v0_delete_warehouse_settings
-      description: Delete a warehouse by ID.
+      description: Delete a warehouse by ID. Refused while a country ships from it, when the warehouse-country-assignment flag is on.
       responses:
         '200':
           description: Success
@@ -13449,6 +13585,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: 'The warehouse cannot be deleted: it has inventory or orders. With the warehouse-country-assignment flag on, countries that still ship from it are named in errors.warehouse and checked first.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
       parameters:
         - name: id
           in: path
