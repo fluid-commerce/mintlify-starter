@@ -2650,8 +2650,10 @@ concerns, the messaging participant rule, and the member move policy) and the el
 
 - **Credentials.** The page lists member tokens, member session JWTs, and portal JWTs. It doesn't
   name the identity service's access tokens until they're public (Mike, 2026-10-09). They resolve
-  only where an environment setting turns the identity service on. Member session JWTs and portal
-  JWTs are read-only. Admin and impersonation credentials get `401`.
+  only where an environment setting turns the identity service on. Member session JWTs are read-only.
+  Since fluid#31060 a portal JWT can write unless Fluid issued it read-only, and a company
+  admin's portal JWT acts as that person's own rep membership. Other admin and impersonation
+  credentials get `401`.
 - **Email-link JWT.** The member session JWT travels in order and subscription email links.
   Contacts (with their imports, activities, notes, tasks, orders, and subscriptions), groups,
   notes, tasks, messaging, AI conversations, the statistics reads, My Site statistics, push
