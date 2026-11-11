@@ -2654,8 +2654,10 @@ concerns, the messaging participant rule, and the member move policy) and the el
 
 - **Credentials.** The page lists member tokens, member session JWTs, and portal JWTs. It doesn't
   name the identity service's access tokens until they're public (Mike, 2026-10-09). They resolve
-  only where an environment setting turns the identity service on. Member session JWTs and portal
-  JWTs are read-only. Admin and impersonation credentials get `401`.
+  only where an environment setting turns the identity service on. Member session JWTs are read-only.
+  Since fluid#31060 a portal JWT can write unless Fluid issued it read-only, and a company
+  admin's portal JWT acts as that person's own rep membership. Other admin and impersonation
+  credentials get `401`.
 - **Email-link JWT.** The member session JWT travels in order and subscription email links.
   Contacts (with their imports, activities, notes, tasks, orders, and subscriptions), groups,
   notes, tasks, messaging, AI conversations, the statistics reads, My Site statistics, push
@@ -2915,11 +2917,12 @@ Durable decisions:
   **Messaging** screen and the app's **Messaging** tab); Today is the company
   social feed inside it. The specs use "Flow" without defining it; the
   definition comes from the product owner (`messaging-001`, `messaging-002`).
-- **A new bot starts with `use_ai` enabled.** `company-bots-v2026-10`'s
-  `info.description` and the bot manager agree; the **Create a bot** operation
-  description ("an empty grant and no capability enabled") is stale. Upstream
-  spec gap — the guide follows `info.description` (`we-bots` starter-capability
-  claim).
+- **A bot's owner's permissions decide its capabilities.** Since fluid#30829, a
+  run is offered every capability its owner's permissions cover, and no setting
+  or template switches one off. The settings `capabilities` list is still
+  stored but switches nothing. `company-bots-v2026-10`'s `info.description`
+  says the same (`we-bots-038`). This replaces the earlier starter-capability
+  decision (a new bot enabling only `use_ai`).
 - **The enrollment webhook payload** carries `member.id` and `sponsor.id`; this
   was read from the payload builder, not the spec, so the claim is semantic.
 - **The droplet `messaging` scope** is the single opt-in droplet scope; the
