@@ -50,7 +50,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
-| Member site, site for my members | A Site: a site a member or the company owns and builds, at `/home/sites/<site-handle>` (also `/sites/<site-handle>`) on the storefront. It is not MySite, and not a theme's member storefront site, which is deprecated. | https://docs.fluid.app/member-sites-v1/overview |
+| Member site, site for my members | A Site: a site a member or the company owns and builds, at `/home/sites/<site-handle>` (also `/sites/<site-handle>`) on the storefront. It is not MySite, and not a theme's member storefront site, which is deprecated. A company's own sites are also storefront resources, at `/api/v202604/sites`. | https://docs.fluid.app/member-sites-v1/overview, then https://docs.fluid.app/storefront/sites |
 | Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
