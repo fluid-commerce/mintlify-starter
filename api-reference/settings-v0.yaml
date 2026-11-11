@@ -5424,12 +5424,37 @@ components:
           description: All stored Avalara credential slots ordered production first, or an empty array when none are configured.
           items:
             $ref: '#/components/schemas/AvalaraAccountSlot'
+        credential_sources:
+          type: array
+          description: Which credentials each governing scope quotes with, as markers only. Present only while the tax-settings-credentials flag is on for the company. One entry per governing scope.
+          items:
+            $ref: '#/components/schemas/AvalaraCredentialSource'
         status:
           type: integer
           enum:
             - 200
         meta:
           $ref: '#/components/schemas/Meta'
+      additionalProperties: false
+    AvalaraCredentialSource:
+      type: object
+      required:
+        - scope
+        - source
+      properties:
+        scope:
+          type: string
+          description: company when the tax class is neither fluid nor per-country, otherwise the ISO code of a company country.
+        source:
+          type: string
+          description: own (the merchant's active Avalara slot; for a sandbox twin, its own sandbox account), own_missing (Avalara class with no active slot; quotes fall back to manual, never for a sandbox twin, which reports none), shared (Fluid's shared Avalara account), legacy (the merchant's legacy settings username and password), legacy_partial (legacy settings with a credential missing; a nil setting falls back to the platform value) or none (no Avalara credentials in use). Markers only. Credentials are never returned or logged; usability checks may decrypt them.
+          enum:
+            - own
+            - own_missing
+            - shared
+            - legacy
+            - legacy_partial
+            - none
       additionalProperties: false
     AvalaraAccountResponse:
       type: object
@@ -5542,6 +5567,93 @@ components:
             organization_code:
               $ref: '#/components/schemas/SovosReadinessMarker'
           additionalProperties: false
+        revision:
+          type: array
+          description: The [slot id, lock_version] pair to send back as expected_revision. Present only while the tax-settings-credentials flag is on for the company.
+          minItems: 2
+          maxItems: 2
+          items:
+            type: integer
+            minimum: 0
+      additionalProperties: false
+    VerifiedUpdateSovosAccountRequest:
+      type: object
+      description: Body of the Sovos verified save and of the candidate Test Connection.
+      required:
+        - sovos_account
+      properties:
+        sovos_account:
+          type: object
+          required:
+            - environment
+            - expected_revision
+          properties:
+            environment:
+              type: string
+              enum:
+                - sandbox
+                - production
+            expected_revision:
+              type:
+                - array
+                - 'null'
+              description: The `revision` of the slot as last read, or null when no slot existed for the environment.
+              minItems: 2
+              maxItems: 2
+              items:
+                type: integer
+                minimum: 0
+            username:
+              type: string
+              minLength: 1
+              description: Sovos username. The obfuscation marker keeps the stored username.
+            password:
+              type: string
+              minLength: 1
+              description: Sovos password. The obfuscation marker keeps the stored password.
+            hmac_key:
+              type: string
+              minLength: 1
+              description: Sovos HMAC key. The obfuscation marker keeps the stored key.
+            organization_code:
+              type: string
+              minLength: 1
+              description: Sovos organization code.
+          additionalProperties: false
+      additionalProperties: false
+    VerifiedSovosAccountResponse:
+      type: object
+      required:
+        - sovos_account
+        - verification
+        - audit
+        - status
+        - meta
+      properties:
+        sovos_account:
+          $ref: '#/components/schemas/SovosAccountSlot'
+        verification:
+          type: object
+          required:
+            - outcome
+          properties:
+            outcome:
+              type: string
+              enum:
+                - credential_authenticated
+          additionalProperties: false
+        audit:
+          type: string
+          description: incomplete means the connection attempt event could not be recorded; the credentials were still saved.
+          enum:
+            - recorded
+            - incomplete
+        status:
+          type: integer
+          enum:
+            - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
       additionalProperties: false
     SovosReadinessMarker:
       type: string
@@ -5713,6 +5825,12 @@ components:
         message:
           type: string
           description: A merchant-facing explanation of the outcome. Never contains credentials.
+        audit:
+          type: string
+          description: Present only while the tax-settings-credentials flag is on for the company. incomplete means the connection test event could not be recorded; the verdict is still valid.
+          enum:
+            - recorded
+            - incomplete
         status:
           type: integer
           enum:
@@ -5740,13 +5858,20 @@ components:
             - production
         outcome:
           type: string
-          description: verified; rejected (HTTP 401 or 403); rate_limited (HTTP 429); unavailable (timeout, network failure, redirect or HTTP 5xx); unexpected_response (any other status, invalid JSON, an error in the body or a result that does not match the request).
+          description: verified; rejected (HTTP 401 or 403); rate_limited (HTTP 429); unavailable (timeout, network failure, redirect or HTTP 5xx); unexpected_response (any other status, invalid JSON, an error in the body or a result that does not match the request). A probe of submitted credentials reports credential_authenticated instead of verified.
           enum:
             - verified
             - rejected
             - rate_limited
             - unavailable
             - unexpected_response
+            - credential_authenticated
+        audit:
+          type: string
+          description: Present only while the tax-settings-credentials flag is on for the company. incomplete means the connection test event could not be recorded; the verdict is still valid.
+          enum:
+            - recorded
+            - incomplete
         status:
           type: integer
           enum:
@@ -12290,6 +12415,95 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+  /api/settings/sovos_account/verified:
+    put:
+      x-fluid-lint-exempt: Sub-route of the shipped settings-v0 /api/settings/sovos_account resource; a dated path would split one settings resource across two versions. Behind a default-off flag.
+      summary: Verify and save a merchant Sovos account slot
+      description: Probes Sovos with the submitted credentials (stored values fill any omitted ones) and saves them only when Sovos authenticates them and the slot is still at expected_revision. The probe runs before the write and is never repeated. Never activates a slot; the first Sovos credentials for a company are refused here and are entered through the existing settings form. 404 while the tax-settings-credentials flag or the tax-sovos-account feature flag is off. Requires the companies.update permission.
+      tags:
+        - taxes
+      operationId: settings_v0_verified_update_sovos_account
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifiedUpdateSovosAccountRequest'
+            example:
+              sovos_account:
+                environment: sandbox
+                expected_revision:
+                  - 12
+                  - 3
+                hmac_key: Scr4nton-Hmac-2026
+      responses:
+        '200':
+          description: Verified and saved, or already identical
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifiedSovosAccountResponse'
+              example:
+                sovos_account:
+                  environment: sandbox
+                  username: '********'
+                  password: '********'
+                  hmac_key: '********'
+                  organization_code: DUNDERMIFFLIN
+                  active: false
+                  readiness:
+                    username: set
+                    password: set
+                    hmac_key: set
+                    organization_code: set
+                  revision:
+                    - 12
+                    - 4
+                verification:
+                  outcome: credential_authenticated
+                audit: recorded
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Missing companies.update permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The tax-settings-credentials flag is off for the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The stored credentials changed since they were read (details.error is revision_conflict). Read them again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid params; Sovos did not verify the credentials (details.error is credentials_not_verified, details.outcome names the result); a sandbox-twin company probing production credentials (details.error is probe_refused, no request is sent); credentials that cannot be tested, such as a username with control characters (details.error is unusable_credentials, no request is sent); the first slot (first_slot_activation_refused); or invalid or in-use credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The save could not be completed right now (details.error is save_unavailable). Nothing was saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
   /api/settings/sovos_account:
     get:
       summary: List the merchant Sovos account slots
@@ -12519,13 +12733,31 @@ paths:
       parameters:
         - name: environment
           in: query
-          required: true
-          description: The stored credential slot to test, which also picks the Sovos host.
+          required: false
+          description: The stored credential slot to test, which also picks the Sovos host. Required unless a `sovos_account` body is sent while the tax-settings-credentials flag is on; the body's environment is used then.
           schema:
             type: string
             enum:
               - sandbox
               - production
+      requestBody:
+        required: false
+        description: Optional while the tax-settings-credentials flag is on for the company; ignored while it is off. Probes the submitted credentials over the stored slot and records one attempt event with save not_requested. Nothing is saved.
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/VerifiedUpdateSovosAccountRequest'
+                - type: object
+                  description: An empty object. The stored slot named by the environment query parameter is probed.
+                  additionalProperties: false
+            example:
+              sovos_account:
+                environment: sandbox
+                expected_revision:
+                  - 7
+                  - 1
+                hmac_key: new-hmac-key
       responses:
         '200':
           description: Success
@@ -12559,8 +12791,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: A submitted candidate's expected_revision no longer matches the stored slot (details.error is revision_conflict). No request is sent to Sovos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
         '422':
-          description: Missing or invalid environment, no stored credentials for that environment, stored credentials that cannot be read, or a non-sandbox slot probed by a sandbox-twin company. No request is sent to Sovos.
+          description: Missing or invalid environment, no stored credentials for that environment, stored credentials that cannot be read, a candidate that is not a complete credential set (details.error is unusable_candidate), a non-sandbox slot probed by a sandbox-twin company (for a candidate, details.error is probe_refused), or, for a candidate, credentials that cannot be tested such as a username with control characters (details.error is unusable_candidate). No request is sent to Sovos.
           content:
             application/json:
               schema:
