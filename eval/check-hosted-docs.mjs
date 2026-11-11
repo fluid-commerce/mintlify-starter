@@ -542,6 +542,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["tiktok/publish-fluid-products-to-the-connected-tiktok-shop", "POST /api/v202506/tiktok/product_listings"],
   ["tiktok/retry-a-failed-tiktok-product-listing-publish", "POST /api/v202506/tiktok/product_listings/{id}/retry"],
   ["tiktok/set-or-clear-a-tiktok-listings-category-override", "PATCH /api/v202506/tiktok/product_listings/{id}"],
+  ["tiktok/start-the-tiktok-creator-sales-app-authorization", "POST /api/v202506/tiktok/connection/creator-sales/authorize-url"],
   ["tiktok/start-the-tiktok-oauth-connect-flow", "POST /api/v202506/tiktok/connection/authorize_url"],
   ["tiktok/unpublish-a-tiktok-product-listing", "DELETE /api/v202506/tiktok/product_listings/{id}"],
   ["tokens/create-a-public-token", "POST /api/v2025-06/tokens/public"],
