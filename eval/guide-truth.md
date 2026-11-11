@@ -3092,25 +3092,28 @@ This applies to Member Sites compatibility only, not storefront theme APIs.
 
 `storefront/sites.mdx` documents company sites as a v2026-04 storefront resource
 (`/api/v202604/sites`, `/api/v202604/company/sites`) and the moderator take-down
-(fluid#32617). It merged before the synced `storefront-v2026-04.yaml` carried the
-`sites` operations, so every `sf-sites-*` claim is `semantic`, verified against the
-source spec, the phase docs (member-sites phase 027, storefront-resource-standardization
-phase 003) and the Rails code on that branch. Once the synced spec carries the
-operations, convert the endpoint, parameter and status claims to `mechanical`.
+(fluid#32617, #32624, #32629). The synced `storefront-v2026-04.yaml` carries the
+`sites` operations, so the endpoint, auth, parameter, request-field, response-field,
+status-code and example claims are `mechanical`. Runtime rules (what counts as live,
+who opens an inactive site, the take-down, `/account`) stay `semantic`, verified
+against fluid `main` on 2026-11-10: the spec, `MemberSites::AccessResolver`,
+`MemberSites::SeoDefaultsResolver`, `MemberSites::ShellHeadTags`, the account hub and
+the fluid-admin site screen.
 
 Durable decisions:
 
 - Only company-owned sites are storefront resources. Member-owned sites stay on the
   Member API and are never in the public catalog. Do not document `filter[owner]`.
-- An inactive site (`active: false`) is out of the public show as well as the catalog:
-  the model's showable scope requires `active`. The spec's public-show description said
-  an inactive site still resolves by slug; the code wins. Re-check the spec text when
-  converting these claims.
+- An inactive site (`active: false`) is out of the public show as well as the catalog.
+  The synced spec's public-show description now says so too.
 - Today any company admin takes a site down and brings it back, a company site
   included. The planned split (a Fluid root admin for company-owned resources) is not
-  documented until it ships. The admin's **Take down** sends no reason; the reason is
-  API-only.
-- The owner of a member site sees the reason only in the Flow message. The member API
-  does not return it; `taken_down_reason` is on the company member-site API only.
-- The page head's canonical link is described as "usually" `/home/sites/<handle>`
-  plus the path: a company not on the sites gateway keeps `/sites/<handle>` there.
+  documented until it ships. The admin's **Take down** asks for the same optional
+  reason as the API (fluid#32638).
+- The owner sees the reason in the Flow message and as `taken_down_reason` on the
+  member API's site (only on their own sites). For a company site, the Flow message
+  goes to the company's admins.
+- The page head's canonical link is always `/home/sites/<handle>` plus the path, on
+  both shells (gateway or not).
+- Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
+  off-by-default release gate. Don't document it on this page until it's on.
