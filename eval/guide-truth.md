@@ -3067,7 +3067,7 @@ It is left for ENG-4380.
 
 ### Member-site owner database inspection
 
-The owner inspection section of `member-sites-v1/database.mdx` is imported from
+The owner inspection section of `sites/database.mdx` is imported from
 `snippets/member-site-owner-database-inspection.mdx`. Register that focused snippet
 as a guide against `member-sites-v2026-10.yaml`: its new workflow claims are fully
 covered without treating the existing SDK/schema tutorial as a newly audited API
