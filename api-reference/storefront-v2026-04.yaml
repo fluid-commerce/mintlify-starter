@@ -168,6 +168,11 @@ tags:
 - name: member-sites
   description: The public sites a company's members made, listed by member without a token.
   x-fluid-section: Storefront
+- name: sites
+  description: |
+    A company's own sites as storefront resources: the public catalog and
+    show, and the company CRUD with shares, Lighthouse and compliance.
+  x-fluid-section: Storefront
 components:
   securitySchemes:
     bearer_auth:
@@ -241,7 +246,10 @@ components:
         lifecycle, countries, metafields, SEO, and associations in the
         same payload are ignored, so translating a title cannot change
         the slug or move `status`. Send those in a request against the
-        store's default locale.
+        store's default locale. Each resource's schema marks which of its
+        fields are translatable; a site's are `description` and
+        `image_url`, so a site's `title` sent with such a `lang` is not
+        written.
 
         Products are the exception: a product PATCH with a non-default
         `lang` writes the translated fields for that locale AND applies
@@ -4326,6 +4334,292 @@ components:
       properties:
         page:
           $ref: "#/components/schemas/PageWrite"
+    SiteBase:
+      type: object
+      description: |
+        Storefront Site — a company site as a storefront resource. Like a
+        page, it is a METADATA surface: the site itself opens at
+        `canonical_url`, not in the API. The common top matches every other
+        v202604 storefront resource. `status` is resolved at read time from
+        the stored lifecycle and `publish_at`: a site published or scheduled
+        with a future `publish_at` reads `scheduled`, a site published or
+        scheduled with a null or past `publish_at` reads `published`, and a
+        site its owner archived reads `archived`. "Live" = `active == true`
+        AND resolved `status == published` AND `visibility == public` AND
+        not suspended by a moderator.
+      required:
+        [id, slug, title, description, image_url, canonical_url, images,
+         active, status, publish_at, seo, metafields, languages,
+         countries, visibility, owner_kind]
+      properties:
+        id:
+          type: integer
+          description: The site's id on the v202604 surface.
+          example: 52018
+        slug:
+          type: string
+          description: The site's slug, the last segment of `canonical_url`.
+          example: scranton-branch
+        title:
+          type: string
+          description: The site's title. Translatable via `lang`.
+          example: Scranton Branch
+        description:
+          type: [string, "null"]
+          description: Longer-form copy describing the site. Translatable via `lang`.
+          example: Paper, toner and the people who sell them, straight from the Scranton branch.
+        image_url:
+          type: [string, "null"]
+          description: The site's primary image. Translatable via `lang`.
+          example: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+        canonical_url:
+          type: string
+          description: Where the site opens on the store domain, `/home/sites/{slug}`.
+          example: https://shop.dundermifflin.com/home/sites/scranton-branch
+        images:
+          $ref: "#/components/schemas/ResponsiveImageSet"
+        active:
+          type: boolean
+          description: The merchant's on/off toggle. An inactive site is never live.
+          example: true
+        status:
+          type: string
+          enum: [draft, scheduled, published, archived]
+          description: |
+            Lifecycle, resolved at read time. `draft` = never published;
+            `scheduled` = waiting for a future `publish_at`; `published` =
+            live now; `archived` = put away by its owner. A moderator
+            suspension is not a status: a suspended site keeps the status
+            it had.
+          example: published
+        publish_at:
+          type: [string, "null"]
+          format: date-time
+          description: When a scheduled site goes live. null = no schedule.
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          description: When the site was created (ISO 8601, UTC). Read-only.
+          example: "2026-11-01T12:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: When the site was last modified (ISO 8601, UTC). Read-only.
+          example: "2026-11-08T09:30:00Z"
+        seo:
+          $ref: "#/components/schemas/Seo"
+        metafields:
+          type: array
+          description: The site's embedded metafields.
+          items:
+            $ref: "#/components/schemas/Metafield"
+        languages:
+          type: array
+          description: The language ISO codes the site has content in.
+          items:
+            type: string
+          example: [en]
+        countries:
+          type: array
+          items:
+            type: string
+          description: |
+            ISO codes restricting availability. Empty array means available
+            in every country the company sells in (unrestricted).
+          example: []
+        visibility:
+          type: string
+          enum: [private, public]
+          description: |
+            Who may open the site. Only a `public` site is a public storefront
+            resource; the public catalog and show never return a private one.
+          example: public
+        owner_kind:
+          type: string
+          enum: [company]
+          description: Who owns the site. Always `company` on this surface; members' sites are not storefront resources.
+          example: company
+    Site:
+      description: |
+        Public Site read shape — the storefront (unauthenticated)
+        projection. Closed so an authenticated-only field leaking onto the
+        public surface is caught in conformance.
+      allOf:
+        - $ref: "#/components/schemas/SiteBase"
+      unevaluatedProperties: false
+    SiteAuthenticated:
+      description: |
+        Authenticated (company-surface) Site read shape: the public
+        `SiteBase` plus the admin fields `required`, `position` and
+        `lock_version`, and the read-only moderator suspension
+        (`suspended_at`, `suspension_reason`).
+      allOf:
+        - $ref: "#/components/schemas/SiteBase"
+        - type: object
+          required: [required, position, lock_version, suspended_at, suspension_reason]
+          properties:
+            required:
+              type: boolean
+              description: Whether every member is shown the site.
+              example: false
+            position:
+              type: integer
+              description: The site's place in the company's list of sites.
+              example: 0
+            lock_version:
+              type: integer
+              description: The site's optimistic lock version; it moves on every write.
+              example: 3
+            suspended_at:
+              type: [string, "null"]
+              format: date-time
+              description: |
+                When a moderator suspended the site, or null. Read-only: a
+                suspension is a moderator action, separate from the owner's
+                `status`, and this API cannot set or lift it. A suspended
+                site is off the public storefront whatever its status, and
+                its `status` cannot be changed until the suspension is lifted.
+              example: null
+            suspension_reason:
+              type: [string, "null"]
+              description: Why a moderator suspended the site, or null. Read-only. Null for a droplet whose attached role cannot view the storefront.
+              example: null
+      unevaluatedProperties: false
+    SiteListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [sites]
+          properties:
+            sites:
+              type: array
+              items:
+                $ref: "#/components/schemas/Site"
+            meta:
+              allOf:
+                - $ref: "#/components/schemas/Meta"
+                - required: [pagination]
+    SiteShowResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [site]
+          properties:
+            site:
+              $ref: "#/components/schemas/Site"
+    SiteCompanyListResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [sites]
+          properties:
+            sites:
+              type: array
+              items:
+                $ref: "#/components/schemas/SiteAuthenticated"
+            meta:
+              allOf:
+                - $ref: "#/components/schemas/Meta"
+                - required: [pagination]
+    SiteCompanyShowResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [site]
+          properties:
+            site:
+              $ref: "#/components/schemas/SiteAuthenticated"
+    SiteWrite:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          description: The site's title.
+          example: Scranton Branch
+        slug:
+          type: [string, "null"]
+          description: |
+            The site's slug. Proposed from the title when blank on create.
+            A later title change never changes it.
+          example: scranton-branch
+        description:
+          type: [string, "null"]
+          description: Longer-form copy describing the site.
+        image_url:
+          type: [string, "null"]
+          description: The site's primary image.
+        visibility:
+          type: [string, "null"]
+          enum: [private, public, null]
+          description: Who may open the site. Only a public site is listed or shown publicly.
+        active:
+          type: [boolean, "null"]
+          description: The merchant's on/off toggle.
+        status:
+          type: [string, "null"]
+          enum: [draft, scheduled, published, archived, null]
+          description: |
+            Moves the site through its owner lifecycle. `published`
+            publishes the site's current content and clears a future
+            `publish_at`; `draft`, `scheduled` and `archived` take it off
+            the storefront; `scheduled` needs a `publish_at`. Archiving is
+            the owner's choice, not a moderator suspension. A suspended site
+            cannot be published or scheduled (422); it can be drafted or
+            archived and stays suspended.
+        publish_at:
+          type: [string, "null"]
+          format: date-time
+          description: When a scheduled site goes live.
+        country_isos:
+          type: [array, "null"]
+          items:
+            type: string
+          description: |
+            ISO codes restricting availability. `[]` clears restrictions;
+            key omitted leaves countries unchanged.
+        metafields_attributes:
+          type: array
+          description: |
+            Metafields to add, change, or delete, matched by `namespace` +
+            `key`, with the same rules as every storefront resource. Send
+            `_destroy: true` to delete one.
+          items:
+            type: object
+            required: [namespace, key, value, value_type]
+            properties:
+              namespace: { type: string }
+              key: { type: string }
+              value: {}
+              value_type: { type: string }
+              description: { type: [string, "null"] }
+              _destroy: { type: [boolean, "null"] }
+        search_engine_optimizer_attributes:
+          type: [object, "null"]
+          description: The site's SEO overrides. The response key is `seo`.
+          properties:
+            id: { type: [integer, "null"] }
+            title: { type: [string, "null"] }
+            description: { type: [string, "null"] }
+            image_url: { type: [string, "null"] }
+            indexable: { type: [boolean, "null"] }
+    SiteCreateRequest:
+      type: object
+      required: [site]
+      additionalProperties: false
+      properties:
+        site:
+          allOf:
+            - $ref: "#/components/schemas/SiteWrite"
+            - required: [title]
+    SiteUpdateRequest:
+      type: object
+      required: [site]
+      additionalProperties: false
+      properties:
+        site:
+          $ref: "#/components/schemas/SiteWrite"
     PlaylistBase:
       type: object
       description: |
@@ -5400,7 +5694,7 @@ components:
         resource_type:
           type: string
           description: PascalCase type name of the scanned resource.
-          enum: [Category, Collection, Product, Library, Medium, Post, EnrollmentPack, Page]
+          enum: [Category, Collection, Product, Library, Medium, Post, EnrollmentPack, Page, MemberSite]
           example: Category
         resource_id:
           type: integer
@@ -11871,6 +12165,772 @@ paths:
       parameters:
         - name: id
           description: The unique identifier of the page.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: Scan accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanQueued"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/sites:
+    get:
+      tags: [sites]
+      summary: Public Sites catalog
+      operationId: storefrontSitesIndex
+      x-fluid-audience: public
+      description: |
+        Unauthenticated. Company is resolved from the request host. Returns
+        ONLY live company sites: company-owned, `visibility: public`, not a
+        branch, `active`, not suspended by a moderator, and resolved
+        `published` (published or scheduled with a null or past
+        `publish_at`), country- and language-eligible.
+        Members' sites are never listed here; they stay on
+        `/credits/{credit}/sites`. While member sites are off for the
+        company the list is empty.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/FilterCountry"
+        - $ref: "#/components/parameters/FilterLanguage"
+        - $ref: "#/components/parameters/SortNoPosition"
+      responses:
+        "200":
+          description: A page of live company sites.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteListResponse"
+              example:
+                status: 200
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+                sites:
+                - id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: published
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: true
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api/v202604/sites/{slug}:
+    get:
+      tags: [sites]
+      summary: Public Site by slug
+      operationId: storefrontSiteShow
+      x-fluid-audience: public
+      description: |
+        Unauthenticated. Resolves a company site by slug. Show is more
+        permissive than the catalog: a draft or scheduled public company
+        site still resolves by direct slug, with `seo.indexable: false`. A
+        private, inactive, archived, branch or member-owned site returns
+        404, never 403, and so does a site a moderator
+        suspended, whatever its status, and every site while member sites
+        are off for the company.
+      security: []
+      parameters:
+        - name: slug
+          description: The site's slug.
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Lang"
+      responses:
+        "200":
+          description: The Site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteShowResponse"
+              example:
+                status: 200
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                site:
+                  id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: published
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: true
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/sites:
+    get:
+      tags: [sites]
+      summary: Company Sites index
+      operationId: companySitesIndex
+      x-fluid-audience: company
+      description: |
+        Token-authenticated; requires `storefront.view` (`application_themes.view`
+        accepted). Returns the company's own sites in every state but
+        archived, unless `filter[status]=archived` asks for those. Members'
+        sites and branches are not listed. Returns 404 while member sites
+        are off for the company.
+      security:
+        - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/Lang"
+        - $ref: "#/components/parameters/Q"
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/FilterCountry"
+        - $ref: "#/components/parameters/FilterLanguage"
+        - name: filter[status]
+          in: query
+          required: false
+          description: |
+            One of `draft`, `scheduled`, `published` or `archived`. Matches the
+            status the response shows, resolved at read time, so a scheduled
+            site whose `publish_at` has passed matches `published`. Suspended
+            sites are listed under the status they show.
+          schema:
+            type: string
+            enum: [draft, scheduled, published, archived]
+        - $ref: "#/components/parameters/FilterActive"
+        - name: filter[slug]
+          in: query
+          required: false
+          description: |
+            An exact slug. Returns the company site with that slug, or an empty
+            page; not a search, so a partial slug matches nothing. A member's
+            site is never listed here, whatever its slug.
+          schema:
+            type: string
+            maxLength: 255
+          example: scranton-branch
+        - $ref: "#/components/parameters/SortNoPosition"
+      responses:
+        "200":
+          description: A page of the company's sites.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteCompanyListResponse"
+              example:
+                status: 200
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                  pagination:
+                    cursor: null
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+                sites:
+                - id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: published
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: true
+                    id: null
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+                  required: false
+                  position: 0
+                  lock_version: 3
+                  suspended_at: null
+                  suspension_reason: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    post:
+      tags: [sites]
+      summary: Create a Site
+      operationId: companySitesCreate
+      x-fluid-audience: company
+      description: |
+        Token-authenticated; requires `storefront.update` and a signed-in
+        admin. Creates a company site, a draft unless `status` says
+        otherwise; `status: published` publishes it at once. A blank `slug`
+        is proposed from the title. Triggers fresh Lighthouse and compliance
+        scans. Returns 404 while member sites are off for the company.
+      security:
+        - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/LangWrite"
+        - $ref: "#/components/parameters/Lang"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteCreateRequest"
+            examples:
+              minimal:
+                summary: Minimal create
+                value:
+                  site:
+                    title: Scranton Branch
+              full:
+                summary: Full create
+                value:
+                  site:
+                    title: Scranton Branch
+                    slug: scranton-branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    visibility: public
+                    status: published
+                    country_isos: [US]
+                    metafields_attributes:
+                      - namespace: custom
+                        key: tagline
+                        value: Limitless paper in a paperless world
+                        value_type: single_line_text_field
+                    search_engine_optimizer_attributes:
+                      title: Scranton Branch — Dunder Mifflin
+                      indexable: true
+      responses:
+        "201":
+          description: The created Site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteCompanyShowResponse"
+              example:
+                status: 201
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                site:
+                  id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: published
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: true
+                    id: null
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+                  required: false
+                  position: 0
+                  lock_version: 3
+                  suspended_at: null
+                  suspension_reason: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            Validation failed. Also answered when a moderator suspended the
+            site and the write would publish, schedule or activate it or
+            make it public (message `Site is suspended`, `details` naming the
+            refused field, `status` when the request names none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  message: Site is suspended
+                  details:
+                    status: [is suspended]
+                status: 422
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+
+  /api/v202604/company/sites/{id}:
+    get:
+      tags: [sites]
+      summary: Company Site show
+      operationId: companySiteShow
+      x-fluid-audience: company
+      description: |
+        Token-authenticated; requires `storefront.view`. Returns one of the
+        company's own sites in any state. A member's site, a branch, or an
+        unknown id returns 404.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+      responses:
+        "200":
+          description: The Site, including its admin fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteCompanyShowResponse"
+              example:
+                status: 200
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                site:
+                  id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: published
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: true
+                    id: null
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+                  required: false
+                  position: 0
+                  lock_version: 3
+                  suspended_at: null
+                  suspension_reason: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [sites]
+      summary: Update a Site
+      operationId: companySiteUpdate
+      x-fluid-audience: company
+      description: |
+        Token-authenticated; requires `storefront.update` and a signed-in
+        admin. Only the keys sent change. A `status` change runs after the
+        other fields are saved. While a moderator suspension stands
+        (`suspended_at`), the site cannot be published, scheduled, activated
+        or made public (422); it can still be edited, drafted or archived. Triggers fresh Lighthouse and compliance
+        scans. With `lang`, only the translated fields (`title`,
+        `description` and `image_url`) are written for that locale.
+      security:
+        - bearer_auth: []
+      parameters:
+        - $ref: "#/components/parameters/LangWrite"
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/Lang"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteUpdateRequest"
+            example:
+              site:
+                description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                status: archived
+      responses:
+        "200":
+          description: The updated Site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteCompanyShowResponse"
+              example:
+                status: 200
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+                site:
+                  id: 52018
+                  slug: scranton-branch
+                  title: Scranton Branch
+                  description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                  image_url: https://ik.imagekit.io/fluidapp/dunder-mifflin/sites/scranton-branch.png
+                  canonical_url: https://shop.dundermifflin.com/home/sites/scranton-branch
+                  images:
+                    thumb:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-200,c-at_max,f-auto,q-70/dunder-mifflin/sites/scranton-branch.png
+                      width: 200
+                    medium:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-600,c-at_max,f-auto,q-75/dunder-mifflin/sites/scranton-branch.png
+                      width: 600
+                    large:
+                      url: https://ik.imagekit.io/fluidapp/tr:w-1200,c-at_max,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                      width: 1200
+                  active: true
+                  status: archived
+                  publish_at: null
+                  created_at: "2026-11-01T12:00:00Z"
+                  updated_at: "2026-11-08T09:30:00Z"
+                  seo:
+                    title: Scranton Branch
+                    description: Paper, toner and the people who sell them, straight from the Scranton branch.
+                    image_url: https://ik.imagekit.io/fluidapp/tr:w-1200,h-630,c-maintain_ratio,fo-auto,f-auto,q-80/dunder-mifflin/sites/scranton-branch.png
+                    indexable: false
+                    id: null
+                  metafields: []
+                  languages:
+                  - en
+                  countries: []
+                  visibility: public
+                  owner_kind: company
+                  required: false
+                  position: 0
+                  lock_version: 5
+                  suspended_at: null
+                  suspension_reason: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            Validation failed. Also answered when a moderator suspended the
+            site and the write would publish, schedule or activate it or
+            make it public (message `Site is suspended`, `details` naming the
+            refused field, `status` when the request names none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  message: Site is suspended
+                  details:
+                    status: [is suspended]
+                status: 422
+                meta:
+                  request_id: 7f3c9a1e-52d4-4b8e-9c61-2a8e4f0d7b35
+                  timestamp: "2026-11-09T14:08:31Z"
+    delete:
+      tags: [sites]
+      summary: Delete a Site
+      operationId: companySiteDestroy
+      x-fluid-audience: company
+      description: |
+        Token-authenticated; requires `storefront.update` and a signed-in
+        admin. Removes the site.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/sites/{id}/shares:
+    get:
+      tags: [sites]
+      summary: Share statistics for a Site
+      operationId: companySiteShares
+      x-fluid-audience: company
+      description: |
+        Read-only aggregate share-link statistics for the site, the shape
+        every storefront resource returns. Not the access grants of the
+        v2026-10 member-sites API.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Share statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/sites/{id}/lighthouse:
+    get:
+      tags: [sites]
+      summary: Latest Lighthouse result for a site
+      operationId: companySiteLighthouseShow
+      x-fluid-audience: company
+      description: |
+        Returns the most recent successful Lighthouse scan of the site's
+        `canonical_url`. When none exists, one is triggered and the answer
+        is 202.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Latest Lighthouse result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LighthouseResult"
+        "202":
+          description: No Lighthouse scan existed yet; one was triggered automatically.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LighthouseScanTriggered"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [sites]
+      summary: Trigger a Lighthouse scan for a site
+      operationId: companySiteLighthouseScan
+      x-fluid-audience: company
+      description: |
+        Queues a fresh Lighthouse scan for the site and returns 202 at once;
+        the result lands at `GET :id/lighthouse`.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: Scan accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanQueued"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v202604/company/sites/{id}/compliance:
+    get:
+      tags: [sites]
+      summary: Latest compliance result for a site
+      operationId: companySiteComplianceShow
+      x-fluid-audience: company
+      description: |
+        Returns the most recent compliance scan result for the site. When
+        none exists, one is triggered and the answer is 202.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Latest compliance result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceResult"
+        "202":
+          description: No compliance scan existed yet; one was triggered automatically.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceScanTriggered"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [sites]
+      summary: Trigger a compliance scan for a site
+      operationId: companySiteComplianceScan
+      x-fluid-audience: company
+      description: |
+        Queues a fresh compliance scan for the site and returns 202 at once;
+        the result lands at `GET :id/compliance`.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: id
+          description: The site's id.
           in: path
           required: true
           schema:

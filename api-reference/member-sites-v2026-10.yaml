@@ -41,12 +41,21 @@ tags:
 - name: site-bundles
   x-fluid-section: Members
   description: Publishing one of the member's sites as a built static bundle, uploaded straight to Cloud Storage with signed URLs and made the site's current version by a pointer switch.
+- name: site-env-vars
+  x-fluid-section: Members
+  description: The environment variables of one of the member's sites, which its server functions read as `ctx.secrets`. A secret's value is never read back.
+- name: site-hosting
+  x-fluid-section: Members
+  description: "A site's deployments, log and traffic: what was published and when, what happened, and who visited."
 - name: site-files
   x-fluid-section: Members
   description: The files of one of the member's sites (layouts, sections, snippets, assets, page content, settings and menus), addressed by theme-style path.
 - name: site-shares
   x-fluid-section: Members
   description: Who one of the member's sites is shared with, a named member, the member's downline or a segment of the company's members, each with a view or copy permission.
+- name: site-access-requests
+  x-fluid-section: Members
+  description: The requests other members make to see one of the member's private sites, which the site's owner lists, approves or declines. An approval shares the site with the requester.
 - name: site-pages
   x-fluid-section: Members
   description: The pages of one of the member's sites, each with the template that holds its content.
@@ -243,6 +252,12 @@ components:
           - made_private
           - taken_down
           description: Whether a company admin has locked or taken down the site. `made_private` means the company locked it, so it opens only for company admins and the owner cannot open, copy or branch it until it is unlocked; the owner can still edit, share and publish it. `taken_down` matches `status` and is permanent. A site the member does not own is never returned while it is locked.
+        taken_down_reason:
+          type:
+          - string
+          - 'null'
+          description: Why a company admin took the site down, in their words, or null when the site is not taken down or no reason was given. Only the site's owner sees it, on their own sites.
+          example: Uses a competitor's logo
         owner_kind:
           type: string
           enum:
@@ -277,6 +292,12 @@ components:
           - 'null'
           format: uri
           description: The link to share the site, on the company's storefront, with the caller's username as its credit so a visit through it credits them, for example `https://shop.example.com/riley-kim/sites/riley-shop`. A caller whose username cannot be a storefront credit gets the `https://<storefront>/home/sites/<handle>` link, whose `home` credit credits the site's owner. Null while the company is not on the sites gateway, and for a site the gateway cannot serve yet, such as a draft, a taken-down site, or one not yet published under the gateway; show a share button only when it is set, and build no link of your own.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, for example `https://shop.example.com/sites/riley-shop`. Set whatever the site's status, but it opens only while the site is `published`. Null when the company's storefront serves no member sites. The CLI prints it after a deploy.
         lock_version:
           type: integer
           maximum: 2147483647
@@ -297,6 +318,7 @@ components:
       - visibility
       - status
       - company_lock
+      - taken_down_reason
       - owner_kind
       - copied_from_id
       - access
@@ -304,6 +326,7 @@ components:
       - settings
       - content_version
       - share_url
+      - url
       - lock_version
       - created_at
       - updated_at
@@ -597,7 +620,7 @@ components:
               type: object
         functions:
           type: object
-          description: After V1. Each server function's built module and its `config/functions.json` entry. Functions are not available yet, so a request that lists any is refused with `functions_not_available`, and `{}` is none.
+          description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. A browser calls one at `/_fluid/fn/<name>` on the site (`fluid.fn.fetch`).
     SiteBundleUpload:
       type: object
       description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers. They pin the length and refuse a replacement, and `x-goog-hash` pins the CRC32C when the file declared one, so Cloud Storage refuses different bytes.
@@ -713,6 +736,44 @@ components:
       - status
       - data
       - meta
+    SiteGitCredential:
+      type: object
+      description: A short-lived Git credential for a site's source repository.
+      additionalProperties: false
+      properties:
+        remote_url:
+          type: string
+          description: The HTTPS git remote, with a token limited to the one repository in its user info. Treat it as a secret.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the token expires, in ISO 8601.
+        repo:
+          type: string
+          description: The repository's `owner/name`.
+        branch:
+          type: string
+          description: The git branch the site's source is on, `main` or a branch site's slug.
+      required:
+      - remote_url
+      - expires_at
+      - repo
+      - branch
+    SiteGitCredentialEnvelope:
+      type: object
+      description: The credential for a site's source.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteGitCredential"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
     SiteBundleStartedEnvelope:
       type: object
       description: The bundle that was started.
@@ -742,10 +803,11 @@ components:
             maxLength: 100
     SiteBundleCurrent:
       type: object
-      description: The site's current version after a publish.
+      description: The site's current version after a publish, and its public address.
       additionalProperties: false
       required:
       - bundle
+      - url
       properties:
         bundle:
           type: object
@@ -762,6 +824,12 @@ components:
               type: string
               pattern: "^[0-9a-f]{64}$"
               description: The SHA-256 of the manifest the gateway wrote, which an access decision names.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, where the bundle is now served; print it after a deploy. Null when the company's storefront serves no member sites.
     SiteBundleCurrentEnvelope:
       type: object
       description: The site's current version after a publish.
@@ -771,6 +839,296 @@ components:
           description: HTTP status code (mirrors the response status line).
         data:
           "$ref": "#/components/schemas/SiteBundleCurrent"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteEnvVar:
+      type: object
+      description: One environment variable of a site. The site's server functions receive every variable, secret or not, by name in `ctx.secrets`. A secret's value is stored encrypted and never read back, so it is null here.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          pattern: '^(?!FLUID_)[A-Z][A-Z0-9_]{0,63}$'
+          description: The variable's name, unique on the site.
+        secret:
+          type: boolean
+          description: Whether the value is secret. A secret's value is never returned.
+        value:
+          type:
+          - string
+          - 'null'
+          description: The value, or null when the variable is secret.
+        created_at:
+          type: string
+          format: date-time
+          description: When the variable was first set.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the variable was last set.
+      required:
+      - name
+      - secret
+      - value
+      - created_at
+      - updated_at
+    SiteEnvVarWrite:
+      type: object
+      description: The value of a variable and whether it is secret. Any other field is refused.
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+          minLength: 1
+          description: The value, 1 to 5,120 bytes of text.
+        secret:
+          type: boolean
+          description: Whether the value is secret. Set true for API keys and passwords; the value is then never read back.
+      required:
+      - value
+      - secret
+    SiteEnvVarEnvelope:
+      type: object
+      description: One environment variable.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteEnvVar"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteEnvVarsEnvelope:
+      type: object
+      description: All of a site's environment variables.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The site's variables, by name. A site has at most 64, so the list is not paged.
+          items:
+            "$ref": "#/components/schemas/SiteEnvVar"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteDeployment:
+      type: object
+      description: One deployment of a site, a bundle that was published. Rolling back to it is the bundle's `current` operation, with `bundle_id`.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The deployment's id, the same as its `bundle_id`.
+        bundle_id:
+          type: string
+          format: uuid
+          description: The id of the published bundle, which the bundle operations take.
+        published_at:
+          type: string
+          format: date-time
+          description: When the bundle was published.
+        published_by:
+          type:
+          - string
+          - 'null'
+          description: The name of the person who published it. Null when that person's account is gone or has no name.
+        file_count:
+          type: integer
+          minimum: 0
+          description: How many files the bundle holds.
+        total_bytes:
+          type: integer
+          minimum: 0
+          description: The size of the bundle's files together, in bytes.
+        current:
+          type: boolean
+          description: Whether the site serves this deployment now.
+        retained:
+          type: boolean
+          description: Whether the deployment's files are still kept, so a rollback can reach it. The 25 newest deployments and the current one are kept.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The site's public address, where its current deployment is served. Null when the company's storefront serves no member sites.
+      required:
+      - id
+      - bundle_id
+      - published_at
+      - published_by
+      - file_count
+      - total_bytes
+      - current
+      - retained
+      - url
+    SiteDeploymentsEnvelope:
+      type: object
+      description: One page of the deployments of a site.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The deployments of the page, newest first.
+          items:
+            "$ref": "#/components/schemas/SiteDeployment"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteLogLine:
+      type: object
+      description: One line of a site's log.
+      additionalProperties: false
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: When it happened, to the millisecond. Read on from the last line's `at` as the next `since`.
+        level:
+          type: string
+          enum:
+          - info
+          - warn
+          - error
+          description: How serious it is.
+        source:
+          type: string
+          enum:
+          - publish
+          - function
+          - gateway
+          description: What wrote it. Only `publish` writes lines today. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site.
+        message:
+          type: string
+          description: The line, in plain words.
+      required:
+      - at
+      - level
+      - source
+      - message
+    SiteLogsEnvelope:
+      type: object
+      description: The lines of a site's log, oldest first.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          items:
+            "$ref": "#/components/schemas/SiteLogLine"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteTraffic:
+      type: object
+      description: A site's traffic over a period, counted by the sites gateway.
+      additionalProperties: false
+      properties:
+        period:
+          type: string
+          enum:
+          - 24h
+          - 7d
+          - 30d
+          description: The period, as whole hours up to and including the current one.
+        visits:
+          type: integer
+          minimum: 0
+          description: Pages visitors opened. A file a page loads, such as an image or a script, is not a visit.
+        unique_visitors:
+          type: integer
+          minimum: 0
+          description: An estimate of the distinct visitors, within about 1%. A visitor is a device and browser, not a person.
+        top_pages:
+          type: array
+          description: "The most visited pages, most visited first, at most 10. A page is named as the bundle names it: a file's path, a directory with an index, a `path` route, or a `prefix` route as `<prefix>/*`, so the rest of a visitor's path, which can carry a token, is never reported."
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              path:
+                type: string
+              visits:
+                type: integer
+                minimum: 0
+            required:
+            - path
+            - visits
+        referrers:
+          type: array
+          description: The sites visitors came from, by host, most first, at most 10. A visit with no referrer is not listed, and the storefront's site page opens a site with none, so most visits have none. Past 100 hosts in an hour, and for a host longer than 100 characters, visits count under the host `other`.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              host:
+                type: string
+              visits:
+                type: integer
+                minimum: 0
+            required:
+            - host
+            - visits
+        errors:
+          type: object
+          description: The site's requests answered with a client error (4xx, such as a missing file) or a server error (5xx).
+          additionalProperties: false
+          properties:
+            4xx:
+              type: integer
+              minimum: 0
+            5xx:
+              type: integer
+              minimum: 0
+          required:
+          - 4xx
+          - 5xx
+      required:
+      - period
+      - visits
+      - unique_visitors
+      - top_pages
+      - referrers
+      - errors
+    SiteTrafficEnvelope:
+      type: object
+      description: A site's traffic.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteTraffic"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -810,6 +1168,12 @@ components:
         shell_path:
           type: string
           description: The path of the branch's home page in the member's site shell.
+        url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The branch site's absolute public address, `https://<storefront>/sites/<branch handle>`. A branch is private, so it opens only for its owner and company admins. Null when the company's storefront serves no member sites.
         parent_changed:
           type: boolean
           description: Whether the parent's published content is no longer what the branch started from. False when the branch is made, true once the parent publishes a change.
@@ -825,6 +1189,7 @@ components:
       - status
       - frame_path
       - shell_path
+      - url
       - parent_changed
       - created_at
     SiteBranchCreate:
@@ -879,7 +1244,7 @@ components:
         sha:
           type: string
           pattern: '^[0-9a-f]{7,40}$'
-          description: "The commit's sha; send it to restore this version. The history's first commit, which GitHub creates with the repo, holds no site and answers 422 `not_a_site_version` if restored."
+          description: The commit's sha.
         short_sha:
           type: string
           description: The first seven characters of the sha, for display.
@@ -1306,6 +1671,107 @@ components:
           description: The shares of the page, oldest first.
           items:
             "$ref": "#/components/schemas/SiteShare"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteAccessRequest:
+      type: object
+      description: One member's request to see one of the member's private sites. It is the owner who sees it, so it carries the requester's account email address.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the request.
+        state:
+          type: string
+          enum:
+          - pending
+          - approved
+          - declined
+          description: Where the request stands. A list holds `pending` requests only; approving answers `approved` and declining answers `declined`.
+        message:
+          type:
+          - string
+          - 'null'
+          description: What the requester wrote, at most 500 characters, or null when they wrote nothing. It is the requester's text, not Fluid's; show it as plain text.
+        requester:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The member who asked, or null when they have left the company since. A request of a member who left is not listed, but approving or declining it again by its id still answers it.
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Id of the member.
+            name:
+              type:
+              - string
+              - 'null'
+              description: The member's name, or null when none is set.
+            email:
+              type: string
+              description: The member's account email address.
+          required:
+          - id
+          - name
+          - email
+        created_at:
+          type: string
+          format: date-time
+          description: When the request was made, to the microsecond, in UTC.
+        closed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the owner decided the request, or null while it is pending.
+      required:
+      - id
+      - state
+      - message
+      - requester
+      - created_at
+      - closed_at
+    SiteAccessRequestEnvelope:
+      type: object
+      description: One access request.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteAccessRequest"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteAccessRequestsEnvelope:
+      type: object
+      description: One page of the pending access requests of a site.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The pending requests of the page, newest first.
+          items:
+            "$ref": "#/components/schemas/SiteAccessRequest"
         meta:
           allOf:
           - "$ref": "#/components/schemas/ResponseMeta"
@@ -2569,6 +3035,14 @@ components:
       schema:
         type: string
         pattern: '^.+$'
+    EnvVarName:
+      name: name
+      in: path
+      required: true
+      description: 'The variable''s name: a capital letter, then up to 63 capital letters, digits and underscores, not starting with `FLUID_`.'
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_]+$'
     BranchSlug:
       name: slug
       in: path
@@ -2596,6 +3070,14 @@ components:
       schema:
         type: string
         pattern: '^.+$'
+    AccessRequestId:
+      name: id
+      in: path
+      required: true
+      description: Id of one of the site's access requests.
+      schema:
+        type: string
+        format: uuid
     ShareId:
       name: id
       in: path
@@ -2738,7 +3220,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
                   share_url:
+                  url: https://shop.example.com/sites/rileys-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
                   updated_at: '2026-09-01T10:00:00.000000Z'
@@ -2804,7 +3288,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
                   share_url:
+                  url: https://shop.example.com/sites/rileys-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
                   updated_at: '2026-09-01T10:00:00.000000Z'
@@ -2868,7 +3354,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
                   share_url:
+                  url: https://shop.example.com/sites/rileys-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 0
                   created_at: '2026-09-01T10:00:00.000000Z'
                   updated_at: '2026-09-01T10:00:00.000000Z'
@@ -2932,7 +3420,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d68'
                   share_url:
+                  url: https://shop.example.com/sites/rileys-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 1
                   created_at: '2026-09-01T10:00:00.000000Z'
                   updated_at: '2026-09-01T10:05:00.000000Z'
@@ -3012,7 +3502,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d99'
                   share_url: https://shop.example.com/sam-lee/sites/rileys-shop
+                  url: https://shop.example.com/sites/rileys-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 1
                   created_at: '2026-09-01T10:00:00.000000Z'
                   updated_at: '2026-09-01T10:10:00.000000Z'
@@ -3085,7 +3577,9 @@ paths:
                     primary_color: "#112233"
                   content_version: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5e02'
                   share_url:
+                  url: https://shop.example.com/sites/fall-shop
                   company_lock: none
+                  taken_down_reason: null
                   lock_version: 0
                   created_at: '2026-09-02T10:00:00.000000Z'
                   updated_at: '2026-09-02T10:00:00.000000Z'
@@ -3118,7 +3612,7 @@ paths:
       description: |
         Older Liquid Git history only, not V1 bundle history. For the published versions of a static V1 site, use [List a site's bundles](https://docs.fluid.app/api-reference/site-bundles/list-a-sites-bundles). A V1 bundle publish does not create a Git-history version for this operation.
 
-        The versions of one of the member's sites, newest first. Each publish of the site, and each restore, is saved to the site's history as a version, and any version can be restored with `POST /sites/{id}/restore`. Listing changes nothing. A site that was never published has no history yet and answers 409. The response is never cached (`Cache-Control: private, no-store`). The oldest entry is the commit GitHub created with the repo, before the first publish; it holds no site, and restoring it answers 422 `not_a_site_version`.
+        The versions of one of the member's sites, newest first. A site whose source is in its repository lists the commits pushed to it; an older site lists each publish that was saved to its history. Listing changes nothing. A site that was never published has no history yet and answers 409. The response is never cached (`Cache-Control: private, no-store`).
       operationId: member_sites_versions
       tags:
       - sites
@@ -3177,11 +3671,9 @@ paths:
     post:
       summary: Restore a site to a version
       description: |
-        Older Liquid Git restore only. This operation does not change the current static V1 bundle. To choose an earlier V1 build, use [Make an earlier bundle current](https://docs.fluid.app/api-reference/site-bundles/make-an-earlier-bundle-current-roll-back). That operation currently refuses a bundle with a database schema; do not use a Liquid restore as a database rollback.
+        Refused. A site's source is its Git repository, which the builder pushes, so Fluid cannot put a site back to a version of its history. To publish an earlier version, check out its commit, build it and publish the bundle, or make an earlier bundle current with [Make an earlier bundle current](https://docs.fluid.app/api-reference/site-bundles/make-an-earlier-bundle-current-roll-back).
 
-        Puts one of the member's sites back to a version from its history: its files, pages, menus, settings and access declaration become the version's, and it is published. A version with no `config/access.json` clears the site's declaration. Unpublished drafts are replaced by the version's content. The site's name, handle, visibility, status and shares do not change. The restore is saved as a new version, so it can be undone by restoring the version before it. Either the whole version is restored or nothing changes. The response is never cached (`Cache-Control: private, no-store`).
-
-        A restore waits for the site's latest change to be saved to its history first: until it is, the request answers 409 `sync_pending` and the save is started, so retry shortly.
+        A request for a site of the member's with a well-formed sha answers 409 `not_restorable` and changes nothing. The response is never cached (`Cache-Control: private, no-store`).
       operationId: member_sites_restore
       tags:
       - sites
@@ -3195,45 +3687,24 @@ paths:
             example:
               sha: a1b2c3d
       responses:
-        '200':
-          description: The site now equals the version.
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/SiteRestoredEnvelope"
-              example:
-                status: 200
-                data:
-                  sha: a1b2c3d
-                  files_written: 12
-                  files_removed: 2
-                meta:
-                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
-                  timestamp: '2026-10-30T15:08:21Z'
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
           "$ref": "#/components/responses/ReadOnlyCredential"
         '404':
-          description: No site of the member's has this id, the site's history holds no version with this sha, or member sites are not enabled for the member's company.
+          description: No site of the member's has this id, or member sites are not enabled for the member's company.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '409':
-          description: The site's history cannot be used right now. `error.details.error` is `not_provisioned` (no history yet), `not_connected`, `sync_pending` (the latest change is still being saved; retry shortly), `sync_failing` (saving the latest change failed), `not_restorable` (the member was removed while the restore ran) or `conflict` (the site is being changed; retry).
+          description: The site cannot be restored (`error.details.error` is `not_restorable`). Nothing changed.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
-          description: The sha is malformed, the body holds an unknown field, the commit is not a site version (such as the history's first commit), or a file of the version could not be written, which `error.details.path` names. Nothing changed.
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/ErrorEnvelope"
-        '502':
-          description: The version could not be read from the site's history, because GitHub failed or Fluid could not reach it. Nothing changed; retry later.
+          description: The sha is malformed or the body holds an unknown field. Nothing changed.
           content:
             application/json:
               schema:
@@ -3778,6 +4249,206 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/access-requests":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's access requests
+      description: |
+        The pending requests to see one of the member's private sites, newest first, each with who asked (name and account email address), what they wrote and when. Requests the owner has decided and requests that expired are not listed, and neither are requests from members who have left the company. A pending request is listed as stored: whether it can still be granted is checked when it is approved, so a request whose site has since been made public, taken down or locked, or whose requester the messaging policy no longer lets the owner share with, is still listed, and approving it answers `422` with the reason it was superseded. The list is paged by cursor, 25 to a page; follow `meta.pagination.next_cursor` until it is null to read every request. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        A bearer only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header. A member JWT, which travels in order and subscription email links, is refused with `403` too, so a forwarded email never lists who asked to see a site. A portal JWT can read. It answers `404` until access requests are enabled for the member's company.
+      operationId: member_site_access_requests_index
+      tags:
+      - site-access-requests
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      - name: page[cursor]
+        in: query
+        required: false
+        description: >-
+          Opaque cursor from `meta.pagination.next_cursor`, valid only for the same site.
+          A cursor this list did not issue starts the list again from its first page.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: A page of the site's pending requests.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteAccessRequestsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d02'
+                  state: pending
+                  message:
+                  requester:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d12'
+                    name: Casey Brooks
+                    email: casey@example.com
+                  created_at: '2026-11-08T09:30:00.000000Z'
+                  closed_at:
+                - id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d01'
+                  state: pending
+                  message: I'd love to see the launch plan.
+                  requester:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+                    name: Nathan Cho
+                    email: nathan@example.com
+                  created_at: '2026-11-07T16:05:00.000000Z'
+                  closed_at:
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-09T15:08:21Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, it is a member JWT (the credential of email links, which never reads requests), or the request is on the cookie mount, which never serves access requests.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the site has no such request, or member sites or access requests are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A parameter this operation does not take, such as `page[limit]`, because the page size is fixed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/access-requests/{id}/approve":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/AccessRequestId"
+    post:
+      summary: Approve an access request
+      description: |
+        Shares the site with the requester: adds a `view` share for them, closes the request as `approved`, and emails the requester once it commits. Access comes from the share alone; the request grants nothing. Approving an approved request writes and sends nothing and returns the same request with `200`.
+
+        The request is checked again when it is approved. If the site is no longer published and private, the requester has left the company, or the company's messaging policy no longer lets the owner share with them, the request is closed as superseded, no share is written, and the answer is `422` with the reason in `error.details.reason`: `site_not_published`, `site_not_private`, `requester_left`, `outside_messaging_scope` or `not_owner`. Approving it again answers the same.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` until access requests are enabled for the member's company.
+      operationId: member_site_access_requests_approve
+      tags:
+      - site-access-requests
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The approved request.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteAccessRequestEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d01'
+                  state: approved
+                  message: I'd love to see the launch plan.
+                  requester:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d11'
+                    name: Nathan Cho
+                    email: nathan@example.com
+                  created_at: '2026-11-07T16:05:00.000000Z'
+                  closed_at: '2026-11-09T15:08:21.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-09T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: No site of the member's has this id, the site has no such request, or member sites or access requests are not enabled for the member's company. The request was declined or has expired.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Another change to the request happened at the same moment and nothing was decided. Send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The request can no longer be granted and is now closed as superseded; `error.details.reason` says why.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/access-requests/{id}/decline":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/AccessRequestId"
+    post:
+      summary: Decline an access request
+      description: |
+        Closes the request as `declined`. The requester is not told, and the request can be made again. Declining a declined request writes nothing and returns the same request with `200`.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` until access requests are enabled for the member's company.
+      operationId: member_site_access_requests_decline
+      tags:
+      - site-access-requests
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The declined request.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteAccessRequestEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d02'
+                  state: declined
+                  message:
+                  requester:
+                    id: '0192f4e5-1a01-7b8c-9d0e-1f2a3b4c5d12'
+                    name: Casey Brooks
+                    email: casey@example.com
+                  created_at: '2026-11-08T09:30:00.000000Z'
+                  closed_at: '2026-11-09T15:08:21.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-09T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: No site of the member's has this id, the site has no such request, or member sites or access requests are not enabled for the member's company. The request was approved, superseded or has expired.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Another change to the request happened at the same moment and nothing was decided. Send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/bundles":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
@@ -3932,13 +4603,83 @@ paths:
         '409':
           "$ref": "#/components/responses/BundleConflict"
         '422':
-          description: The request fails its contract, and nothing was started. `details.error` names the problem and `details.path` the value that has it. `reserved_path` is a path under `/_fluid/`, `invalid_path` a path that is not absolute and normalised, `content_type_not_allowed` and `content_type_mismatch` a file outside the allowlist or with the wrong type, `unknown_file` a route, or the default `/index.html` route of a request with no `routes`, to a file the request lacks, `functions_not_available` a request that lists server functions, `unknown_field`, `unknown_family`, `session_not_declarable` and `repeated_entry` an entry of the `access` declaration that is not a member field or scope the site may declare, names the `session` family, or is listed twice, `inconsistent` two paths of one `sha256` that declare different `crc32c` values, `out_of_range` a limit exceeded (2,000 files, 25 MiB a file, 250 MiB a bundle), and `invalid_shape` or `invalid_format` a field of the wrong kind or form, including a `schema` or `meta` that breaks its contract (`details.path` starts at `schema` or `meta`).
+          description: The request fails its contract, and nothing was started. `details.error` names the problem and `details.path` the value that has it. `reserved_path` is a path under `/_fluid/`, `invalid_path` a path that is not absolute and normalised, `content_type_not_allowed` and `content_type_mismatch` a file outside the allowlist or with the wrong type, `unknown_file` a route, or the default `/index.html` route of a request with no `routes`, to a file the request lacks, `invalid_shape` or `out_of_range` under `functions` an entry that breaks its contract, `unknown_field`, `unknown_family`, `session_not_declarable` and `repeated_entry` an entry of the `access` declaration that is not a member field or scope the site may declare, names the `session` family, or is listed twice, `inconsistent` two paths of one `sha256` that declare different `crc32c` values, `out_of_range` a limit exceeded (2,000 files, 25 MiB a file, 250 MiB a bundle), and `invalid_shape` or `invalid_format` a field of the wrong kind or form, including a `schema` or `meta` that breaks its contract (`details.path` starts at `schema` or `meta`).
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '502':
           description: The sites gateway could not prepare the uploads, because it was unreachable, timed out or answered with something unexpected. `details.error` names which. The bundle is failed; start again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/git-credential":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    post:
+      summary: Get a Git credential for a site's source
+      description: |
+        A short-lived credential for the GitHub repository one of the member's sites keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents; it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site its slug, on its parent's repository. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
+
+        A site with no repository yet has one made from the static site template, and the request answers `409` `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers `503` `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
+
+        Bearer only: a request on the cookie mount is refused with `403`, so a site's own code never gets a token for its source. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_git_credential_create
+      tags:
+      - site-bundles
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteGitCredentialEnvelope"
+              example:
+                status: 200
+                data:
+                  remote_url: https://x-access-token:ghs_example@github.com/Fluid-WeCommerce/site-42.git
+                  expires_at: '2026-11-10T11:00:00Z'
+                  repo: Fluid-WeCommerce/site-42
+                  branch: main
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never serves a site's credential, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id, the member may not change it, or the sites gateway is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: The site's repository is not usable. `details.error` is `repo_not_ready` while it is being made (ask again shortly) or `repo_disconnected` when it was disconnected for good.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The site, or the parent of a branch, was taken down (`details.error` is `site_taken_down`).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: GitHub could not issue the credential (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '503':
+          description: The site's repository could not be made (`details.error` is `repo_unavailable`), because no GitHub organization has room for it or GitHub refused to create it. The request asked for it again; publish again later rather than retrying at once.
           content:
             application/json:
               schema:
@@ -3981,6 +4722,7 @@ paths:
                   bundle:
                     id: 0199537f-0000-7000-8000-000000000004
                     manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                  url: https://shop.example.com/sites/rileys-shop
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
@@ -4006,7 +4748,7 @@ paths:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
         '422':
-          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema` and the site's database was destroyed; a site with none gets one on its first schema publish), `destructive_change_unconfirmed` (C-L34; a migration that drops, renames or retypes a table or column, or makes a column required, is not in `confirmMigrations`; `details.unconfirmed` lists the ids, and the bundle stays uploading so the publish can be sent again with them confirmed), `validation` (C-L34; the schema is over 1 MiB as compact UTF-8 JSON, with `details.bytes` and `details.limit`, or nests deeper than 1,000 levels, with `details.limit` 1000, and `details.cause` says which; or the gateway cannot plan the change, such as a drop no migration names, and `details.cause` holds its reasons, with the `table` and `column`) or `unique_violation` (rows break a unique set the schema adds), `expired` (the upload expired, unless a publish of this bundle already applied its schema to the site's database, in which case it is published when the publish is sent again), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down`, `destructive_change_unconfirmed` and the body errors also mark the bundle failed.
+          description: Nothing was published. `details.error` is `blobs_not_verified` (a blob is missing or differs from the one pinned; `details.problems` lists each with its `path`, `sha256` and `problem`), `functions_not_available` (the bundle has server functions and this Fluid environment does not run functions yet; the bundle stays uploading, so the same publish can be sent again once it does), a contract code for a manifest that fails its checks (as the start names them, with `details.path`), `no_database` (the manifest has a `schema` and the site's database was destroyed; a site with none gets one on its first schema publish), `destructive_change_unconfirmed` (C-L34; a migration that drops, renames or retypes a table or column, or makes a column required, is not in `confirmMigrations`; `details.unconfirmed` lists the ids, and the bundle stays uploading so the publish can be sent again with them confirmed), `validation` (C-L34; the schema is over 1 MiB as compact UTF-8 JSON, with `details.bytes` and `details.limit`, or nests deeper than 1,000 levels, with `details.limit` 1000, and `details.cause` says which; or the gateway cannot plan the change, such as a drop no migration names, and `details.cause` holds its reasons, with the `table` and `column`) or `unique_violation` (rows break a unique set the schema adds), `expired` (the upload expired, unless a publish of this bundle already applied its schema to the site's database, in which case it is published when the publish is sent again), `taken_down` (a company admin took the site down, and a publish never lifts that), or, for the body, `invalid_shape` (a key other than `confirmMigrations`, with `details.path` naming it; or a `confirmMigrations` that is not a list, null included, or holds a non-string) and `out_of_range` (an id of fewer than 1 or more than 100 characters, with `details.path` naming its place). The body is checked before anything else, so a bad body changes nothing. All but `taken_down`, `destructive_change_unconfirmed` and the body errors also mark the bundle failed.
           content:
             application/json:
               schema:
@@ -4061,6 +4803,7 @@ paths:
                   bundle:
                     id: 0199537f-0000-7000-8000-000000000004
                     manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                  url: https://shop.example.com/sites/rileys-shop
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
@@ -4085,6 +4828,180 @@ paths:
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
+  "/api/member/v2026-10/sites/{site_id}/env-vars":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's environment variables
+      description: |
+        The environment variables of one of the member's sites, by name. The site's server functions receive every one of them in `ctx.secrets`. A secret's `value` is null; its value is never read back. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        Bearer only: a request on the cookie mount is refused with `403`, so a site's own page code can never read them. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_env_vars_index
+      tags:
+      - site-env-vars
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The site's variables.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvVarsEnvelope"
+              example:
+                status: 200
+                data:
+                - name: SHEET_ID
+                  secret: false
+                  value: 1AbCdEf
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  updated_at: '2026-11-10T09:00:00.000Z'
+                - name: STRIPE_KEY
+                  secret: true
+                  value:
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  updated_at: '2026-11-10T09:00:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:05:00Z'
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never serves a site's environment variables, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+  "/api/member/v2026-10/sites/{site_id}/env-vars/{name}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/EnvVarName"
+    put:
+      summary: Set a site's environment variable
+      description: |
+        Adds the variable the path names to one of the member's sites, or replaces its value and secrecy. Mark API keys and passwords `secret`: the value is stored encrypted and never read back, so the answer's `value` is null. A site holds at most 64 variables, and a value is 1 to 5,120 bytes. When a published version of the site has server functions, the change is passed to them at once.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_env_vars_update
+      tags:
+      - site-env-vars
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteEnvVarWrite"
+            example:
+              value: sk_live_51H
+              secret: true
+      responses:
+        '200':
+          description: The variable was replaced.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvVarEnvelope"
+              example:
+                status: 200
+                data:
+                  name: STRIPE_KEY
+                  secret: true
+                  value:
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  updated_at: '2026-11-10T09:10:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:10:00Z'
+        '201':
+          description: The variable was added.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteEnvVarEnvelope"
+              example:
+                status: 201
+                data:
+                  name: STRIPE_KEY
+                  secret: true
+                  value:
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  updated_at: '2026-11-10T09:00:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: The site already holds 64 variables (`details.error` is `env_var_limit`), the variable changed while it was being set, or another change of the site's variables is still reaching its functions (`details.error` is `busy`). Remove a variable, or retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The name breaks the pattern, the value is empty or longer than 5,120 bytes, `secret` is not a boolean, or the body holds another field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: The variable was saved, but the sites gateway could not pass the change to the site's deployed functions. `details.error` names the gateway's failure. Send the same request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+    delete:
+      summary: Remove a site's environment variable
+      description: Removes the variable the path names from one of the member's sites. When a published version of the site has server functions, they stop receiving it at once. Bearer only.
+      operationId: member_sites_env_vars_destroy
+      tags:
+      - site-env-vars
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The variable was removed.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: The site, or the variable, is not found, or the member may not change the site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Another change of the site's variables is still reaching its functions (`details.error` is `busy`). Retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: The variable was removed, but the sites gateway could not pass the change to the site's deployed functions. `details.error` names the gateway's failure. Send the same request again, which passes the removal again and then answers 404.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/branches":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
@@ -4119,6 +5036,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/0192f4e5-8b01-7b8c-9d0e-1f2a3b4c5d01"
                   shell_path: "/sites/rileys-shop-staging"
+                  url: https://shop.example.com/sites/rileys-shop-staging
                   parent_changed: false
                   created_at: '2026-09-03T10:00:00.000000Z'
                 meta:
@@ -4175,6 +5093,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/0192f4e5-8b01-7b8c-9d0e-1f2a3b4c5d01"
                   shell_path: "/sites/rileys-shop-staging"
+                  url: https://shop.example.com/sites/rileys-shop-staging
                   parent_changed: false
                   created_at: '2026-09-03T10:00:00.000000Z'
                 meta:
@@ -4233,6 +5152,7 @@ paths:
                   status: published
                   frame_path: "/accounts/_frame/0192f4e5-8b01-7b8c-9d0e-1f2a3b4c5d01"
                   shell_path: "/sites/rileys-shop-staging"
+                  url: https://shop.example.com/sites/rileys-shop-staging
                   parent_changed: true
                   created_at: '2026-09-03T10:00:00.000000Z'
                 meta:
@@ -5887,3 +6807,234 @@ paths:
           "$ref": "#/components/responses/DatabaseBadGateway"
         '503':
           "$ref": "#/components/responses/DatabaseServiceUnavailable"
+  "/api/member/v2026-10/sites/{site_id}/deployments":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's deployments
+      description: |
+        The deployments of one of the member's sites, newest first: each bundle that was published, with who published it, how many files it holds, their total size, whether the site serves it now (`current`) and whether a rollback can still reach it (`retained`). An upload that was never published is not a deployment; the bundle list shows those. Roll back with the bundle's `current` operation and the deployment's `bundle_id`. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_deployments_index
+      tags:
+      - site-hosting
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      - name: page[cursor]
+        in: query
+        required: false
+        description: >-
+          Opaque cursor from `meta.pagination.next_cursor`, valid only for the same site.
+          A malformed, tampered or expired cursor returns 400.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Page size. Defaults to 25, at most 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the site's deployments.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteDeploymentsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 0199537f-0000-7000-8000-000000000005
+                  bundle_id: 0199537f-0000-7000-8000-000000000005
+                  published_at: '2026-11-05T10:02:00.000Z'
+                  published_by: Riley Kim
+                  file_count: 12
+                  total_bytes: 482113
+                  current: true
+                  retained: true
+                  url: https://shop.example.com/sites/rileys-shop
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:05:00Z'
+                  pagination:
+                    next_cursor:
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '400':
+          description: The pagination cursor is malformed, tampered with or expired.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never serves a site's deployments.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/BundleNotFound"
+        '422':
+          description: A `page[limit]` that is not an integer from 1 to 100, or a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/logs":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: Read a site's log
+      description: |
+        The log of one of the member's sites, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log (`fluid sites logs --tail`), ask again with the last line's `at` as `since`. Only publishing writes lines today: each upload's start, its publish and who published it, and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site; the traffic operation counts the gateway's errors meanwhile. Never stored (`no-store`).
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_logs_index
+      tags:
+      - site-hosting
+      x-fluid-audience: member
+      parameters:
+      - name: since
+        in: query
+        required: false
+        description: An ISO 8601 time; only lines after it are answered. Defaults to 7 days ago.
+        schema:
+          type: string
+          format: date-time
+      - name: limit
+        in: query
+        required: false
+        description: The most lines to answer, the oldest first. Defaults to 100, at most 500.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      responses:
+        '200':
+          description: The site's log lines.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteLogsEnvelope"
+              example:
+                status: 200
+                data:
+                - at: '2026-11-05T10:00:00.000000Z'
+                  level: info
+                  source: publish
+                  message: Upload 0199537f-0000-7000-8000-000000000005 started with 12 files
+                - at: '2026-11-05T10:02:00.000000Z'
+                  level: info
+                  source: publish
+                  message: Published 0199537f-0000-7000-8000-000000000005 by Riley Kim
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never serves a site's log.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/BundleNotFound"
+        '422':
+          description: A `since` that is not a time, a `limit` that is not an integer from 1 to 500, or a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/traffic":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: Read a site's traffic
+      description: |
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, and the requests answered with an error. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_traffic_show
+      tags:
+      - site-hosting
+      x-fluid-audience: member
+      parameters:
+      - name: period
+        in: query
+        required: false
+        description: The period to count. Defaults to `24h`.
+        schema:
+          type: string
+          enum:
+          - 24h
+          - 7d
+          - 30d
+          default: 24h
+      responses:
+        '200':
+          description: The site's traffic.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteTrafficEnvelope"
+              example:
+                status: 200
+                data:
+                  period: 7d
+                  visits: 120
+                  unique_visitors: 41
+                  top_pages:
+                  - path: "/"
+                    visits: 80
+                  - path: "/menu"
+                    visits: 40
+                  referrers:
+                  - host: instagram.com
+                    visits: 9
+                  errors:
+                    4xx: 3
+                    5xx: 0
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never serves a site's traffic.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/BundleNotFound"
+        '422':
+          description: A `period` other than `24h`, `7d` or `30d`, or a parameter this operation does not take.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '503':
+          description: The traffic counts cannot be read right now (`details.error` is `traffic_unavailable`); try again shortly.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
