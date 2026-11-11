@@ -102,6 +102,9 @@ tags:
 - name: member-site-bundles
   description: Publishing a company site as a built static bundle, uploaded straight to Cloud Storage with signed URLs.
   x-fluid-section: Members
+- name: member-site-builds
+  description: Building a company site on Fluid from its source, files sent inline or a ref of its repo, and publishing the result as a bundle.
+  x-fluid-section: Members
 - name: member-site-env-vars
   description: The environment variables of a company site, which its server functions read as `ctx.secrets`. A secret's value is never read back.
   x-fluid-section: Members
@@ -1544,6 +1547,183 @@ components:
           description: The HTTP status.
         meta:
           $ref: '#/components/schemas/Meta'
+    MemberSiteBuildCreateBody:
+      type: object
+      description: The source of a build. Send exactly one of `files` and `ref`.
+      additionalProperties: false
+      properties:
+        files:
+          type: object
+          description: The project's source files by path inside the project, such as `package.json` or `src/main.ts`, at most 1,000 files and 10 MiB in all. Leave out `node_modules` and `.git`. The project needs a `package.json` with a build script, or an `index.html`, at its root.
+          maxProperties: 1000
+          additionalProperties:
+            type: object
+            description: One file, as UTF-8 text (`content`) or Base64 (`content_base64`), not both.
+            additionalProperties: false
+            properties:
+              content:
+                type: string
+                description: The file as UTF-8 text.
+              content_base64:
+                type: string
+                description: The file's bytes as standard Base64.
+        ref:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: A branch, tag or commit of the site's own repo to build instead.
+    MemberSiteBuild:
+      type: object
+      description: One build of a site on Fluid. It is queued, runs in an isolated box that installs and builds the project, and ends succeeded with the bundle it published or failed with why.
+      additionalProperties: false
+      required:
+      - id
+      - status
+      - source
+      - ref
+      - commitSha
+      - framework
+      - bundleId
+      - url
+      - failure
+      - createdAt
+      - startedAt
+      - finishedAt
+      - deadlineAt
+      - logs
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The build's id.
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - succeeded
+          - failed
+          description: Where the build is. Read it again until it is `succeeded` or `failed`.
+        source:
+          type: string
+          enum:
+          - upload
+          - repo
+          - push
+          description: Where its source came from, as files sent inline, a ref of the site's repo, or a push to that repo.
+        ref:
+          type:
+          - string
+          - 'null'
+          description: The ref built, for a repo or push build.
+        commitSha:
+          type:
+          - string
+          - 'null'
+          description: The commit a push build builds.
+        framework:
+          type:
+          - string
+          - 'null'
+          description: The framework the build found, such as `vite` or `astro`, once it has looked.
+        bundleId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The bundle the build started, once it has one.
+        url:
+          type:
+          - string
+          - 'null'
+          description: The site's address, once the build succeeded.
+        failure:
+          oneOf:
+          - type: 'null'
+          - type: object
+            additionalProperties: false
+            required:
+            - code
+            - message
+            properties:
+              code:
+                type: string
+                enum:
+                - launch_failed
+                - launch_lost
+                - timed_out
+                - runner_exited
+                - build_failed
+                - bundle_refused
+                - publish_failed
+                description: Why it failed, as a code.
+              message:
+                type: string
+                description: Why it failed, in plain words.
+          description: Why the build failed, once it has.
+        createdAt:
+          type: string
+          format: date-time
+          description: When it was queued.
+        startedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When its box started.
+        finishedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When it ended.
+        deadlineAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When a running build is stopped, 15 minutes after it starts.
+        logs:
+          type: array
+          description: What the build printed while it installed, built and published, oldest first, up to 2,000 lines.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - at
+            - level
+            - message
+            properties:
+              at:
+                type: string
+                format: date-time
+                description: When the line was printed.
+              level:
+                type: string
+                enum:
+                - info
+                - warn
+                - error
+                description: How serious it is.
+              message:
+                type: string
+                description: The line.
+    MemberSiteBuildResponse:
+      type: object
+      description: One build of a site.
+      additionalProperties: false
+      required:
+      - member_site_build
+      - status
+      - meta
+      properties:
+        member_site_build:
+          $ref: '#/components/schemas/MemberSiteBuild'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteBundlePublishBody:
       type: object
       description: What a publish may carry. The body is optional.
@@ -1878,9 +2058,10 @@ components:
           type: string
           enum:
           - publish
+          - build
           - function
           - gateway
-          description: What wrote it. Only `publish` writes lines today. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site.
+          description: What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site.
         message:
           type: string
           description: The line, in plain words.
@@ -2520,6 +2701,14 @@ components:
       in: path
       required: true
       description: The id of the site to stop featuring.
+      schema:
+        type: string
+        format: uuid
+    BuildId:
+      name: build_id
+      in: path
+      required: true
+      description: The build's id.
       schema:
         type: string
         format: uuid
@@ -4848,6 +5037,165 @@ paths:
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
                   timestamp: '2026-11-05T10:00:00Z'
+  /api/company/v2026-10/member-sites/{id}/builds:
+    post:
+      operationId: companyMemberSiteBuildsCreate
+      x-fluid-audience: company
+      summary: Build a company site on Fluid
+      description: |
+        Builds a company site from its source on Fluid, so no Node is needed on the caller's machine, and publishes the result. Send the project's source files inline (`files`) or a ref of the site's own repo (`ref`). Fluid queues the build and answers 202 at once; an isolated box then finds the framework (Vite, Astro, Next.js static export and the others `fluid deploy` knows, or plain HTML), installs with the project's package manager (npm, pnpm or Yarn; Bun projects install with npm), runs its `build` script and publishes the output as a bundle through the same checks as the bundles routes. Read the build until it is `succeeded`, with the site's `url`, or `failed`, with why and its log.
+
+        A box may reach only the npm and Yarn registries, Fluid's API and the storage host uploads go to, and runs for at most 15 minutes. A site has one build going at a time and a company three.
+
+        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. Where builds are not set up yet the answer is 422 with `details.error` `builds_not_configured`: build locally and start a bundle instead.
+      tags:
+      - member-site-builds
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBuildCreateBody'
+            example:
+              files:
+                package.json:
+                  content: '{"scripts":{"build":"vite build"},"devDependencies":{"vite":"^6.0.0"}}'
+                index.html:
+                  content: <div id="app"></div><script type="module" src="/src/main.ts"></script>
+                src/main.ts:
+                  content: document.querySelector('#app').textContent = 'Hello'
+      responses:
+        '202':
+          description: The queued build.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBuildResponse'
+              example:
+                member_site_build:
+                  id: 0199537f-0000-7000-8000-000000000009
+                  status: queued
+                  source: upload
+                  ref: null
+                  commitSha: null
+                  framework: null
+                  bundleId: null
+                  url: null
+                  failure: null
+                  createdAt: '2026-11-10T10:00:00.000Z'
+                  startedAt: null
+                  finishedAt: null
+                  deadlineAt: null
+                  logs: []
+                status: 202
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site already has a build going (`details.error` is `build_in_progress`), or the company has three (`limit_reached`). Wait for one to end.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body is not exactly one of `files` and `ref`, a file or ref is refused (`details.error` is `invalid_source` or `invalid_ref`, with `details.path`), the site has no repo to build a ref from (`no_repo`), or builds are not set up here (`builds_not_configured`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                not-configured:
+                  summary: Builds on Fluid are not set up in this environment
+                  value:
+                    error:
+                      message: Builds on Fluid aren't set up here yet; build locally and deploy the built files
+                      details:
+                        error: builds_not_configured
+                    status: 422
+                    meta:
+                      request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                      timestamp: '2026-11-10T10:00:00Z'
+  /api/company/v2026-10/member-sites/{id}/builds/{build_id}:
+    get:
+      operationId: companyMemberSiteBuildsShow
+      x-fluid-audience: company
+      summary: Read a build of a company site
+      description: |
+        One build of a company site: its status, the framework it found, what it printed, and how it ended. Once it `succeeded`, `bundleId` is the bundle it published and `url` the site's address; once it `failed`, `failure` says why. Read it every few seconds while it is `queued` or `running`. The answer is never cached.
+
+        Needs `application_themes.view` and a signed-in admin. A member's site, and a build of another site, are refused with 404. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-builds
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/BuildId'
+      responses:
+        '200':
+          description: The build.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBuildResponse'
+              example:
+                member_site_build:
+                  id: 0199537f-0000-7000-8000-000000000009
+                  status: succeeded
+                  source: upload
+                  ref: null
+                  commitSha: null
+                  framework: vite
+                  bundleId: 0199537f-0000-7000-8000-000000000004
+                  url: https://primex.fluid.app/sites/launch
+                  failure: null
+                  createdAt: '2026-11-10T10:00:00.000Z'
+                  startedAt: '2026-11-10T10:00:02.000Z'
+                  finishedAt: '2026-11-10T10:00:41.000Z'
+                  deadlineAt: '2026-11-10T10:15:02.000Z'
+                  logs:
+                  - at: '2026-11-10T10:00:05.000Z'
+                    level: info
+                    message: Found Vite.
+                  - at: '2026-11-10T10:00:40.000Z'
+                    level: info
+                    message: 'Published: https://primex.fluid.app/sites/launch'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-10T10:00:45Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site or build in this company, the site is a member's, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-sites/{id}/env-vars:
     get:
       operationId: companyMemberSiteEnvVarsList

@@ -5316,6 +5316,101 @@ components:
         active:
           type: boolean
           description: Whether this slot is the active environment. A company with slots always has exactly one active slot.
+        revision:
+          type: array
+          description: The [slot id, lock_version] pair to send back as expected_revision on the verified save. Present only while the tax-settings-credentials flag is on for the company.
+          minItems: 2
+          maxItems: 2
+          items:
+            type: integer
+            minimum: 0
+      additionalProperties: false
+    VerifiedUpdateAvalaraAccountRequest:
+      type: object
+      required:
+        - avalara_account
+      properties:
+        avalara_account:
+          type: object
+          required:
+            - environment
+            - expected_revision
+          properties:
+            environment:
+              type: string
+              enum:
+                - sandbox
+                - production
+            expected_revision:
+              type:
+                - array
+                - 'null'
+              description: The `revision` of the slot as last read, or null when no slot existed for the environment.
+              minItems: 2
+              maxItems: 2
+              items:
+                type: integer
+                minimum: 0
+            username:
+              type: string
+              minLength: 1
+              description: Avalara account username. The obfuscation marker keeps the stored username.
+            password:
+              type: string
+              minLength: 1
+              description: Avalara account password. The obfuscation marker is ignored.
+            company_code:
+              type:
+                - string
+                - 'null'
+              description: AvaTax companyCode; null clears it.
+          additionalProperties: false
+      additionalProperties: false
+    VerifiedAvalaraAccountResponse:
+      type: object
+      required:
+        - avalara_account
+        - verification
+        - audit
+        - status
+        - meta
+      properties:
+        avalara_account:
+          $ref: '#/components/schemas/AvalaraAccountSlot'
+        verification:
+          type: object
+          required:
+            - outcome
+            - company_code
+          properties:
+            outcome:
+              type: string
+              enum:
+                - credential_authenticated
+            company_code:
+              type: object
+              required:
+                - checked
+                - found
+              properties:
+                checked:
+                  type: boolean
+                found:
+                  type: boolean
+              additionalProperties: false
+          additionalProperties: false
+        audit:
+          type: string
+          description: incomplete means the connection attempt event could not be recorded; the credentials were still saved.
+          enum:
+            - recorded
+            - incomplete
+        status:
+          type: integer
+          enum:
+            - 200
+        meta:
+          $ref: '#/components/schemas/Meta'
       additionalProperties: false
     AvalaraAccountsResponse:
       type: object
@@ -12105,6 +12200,92 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
           description: Invalid environment, no credentials to test, stored credentials that cannot be read, or a sandbox environment asking to test production
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/settings/avalara_account/verified:
+    put:
+      x-fluid-lint-exempt: Sub-route of the shipped settings-v0 /api/settings/avalara_account resource that the fluid-admin Avalara form already calls; a dated path would split one settings resource across two versions. Behind a default-off flag.
+      summary: Verify and save a merchant Avalara account slot
+      description: Probes Avalara with the submitted credentials (stored values fill any omitted ones) and saves them only when Avalara authenticates them and the slot is still at expected_revision. The probe runs before the write and is never repeated. Never activates a slot; the first Avalara credentials for a company are refused here and are entered through the existing settings form. 404 while the tax-settings-credentials flag is off. Requires the companies.update permission.
+      tags:
+        - taxes
+      operationId: settings_v0_verified_update_avalara_account
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifiedUpdateAvalaraAccountRequest'
+            example:
+              avalara_account:
+                environment: sandbox
+                expected_revision:
+                  - 12
+                  - 3
+                password: Scr4nton-Paper-2026
+      responses:
+        '200':
+          description: Verified and saved, or already identical
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifiedAvalaraAccountResponse'
+              example:
+                avalara_account:
+                  environment: sandbox
+                  username: '********'
+                  password: '********'
+                  company_code: DUNDERMIFFLIN-SBX
+                  active: false
+                  revision:
+                    - 12
+                    - 4
+                verification:
+                  outcome: credential_authenticated
+                  company_code:
+                    checked: true
+                    found: true
+                audit: recorded
+                status: 200
+                meta:
+                  request_id: c4f1b9e2-7a3d-4e8b-9f21-5d6a0b3e8c47
+                  timestamp: '2026-09-14T15:32:08Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: Missing companies.update permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The tax-settings-credentials flag is off for the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The stored credentials changed since they were read (details.error is revision_conflict). Read them again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: Invalid params; Avalara did not verify the credentials (details.error is credentials_not_verified, details.outcome names the result); the first slot (first_slot_activation_refused); or invalid or in-use credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '503':
+          description: The save could not be completed right now (details.error is save_unavailable). Nothing was saved.
           content:
             application/json:
               schema:
