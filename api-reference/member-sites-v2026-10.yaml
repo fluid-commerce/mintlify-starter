@@ -44,6 +44,9 @@ tags:
 - name: site-env-vars
   x-fluid-section: Members
   description: The environment variables of one of the member's sites, which its server functions read as `ctx.secrets`. A secret's value is never read back.
+- name: site-updates
+  x-fluid-section: Members
+  description: The short updates a site's owner posts on one of the member's sites, which every member whose menu lists the site gets on their bell.
 - name: site-hosting
   x-fluid-section: Members
   description: "A site's deployments, log and traffic: what was published and when, what happened, and who visited."
@@ -973,6 +976,64 @@ components:
           description: The site's variables, by name. A site has at most 64, so the list is not paged.
           items:
             "$ref": "#/components/schemas/SiteEnvVar"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SitePostedUpdateWrite:
+      type: object
+      description: The line to post on a site and whether it should go out as a push too. Any other field is refused.
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          description: The line. Surrounding whitespace is trimmed first, and the trimmed line must have 1 to 240 characters, else 422.
+        push:
+          type: boolean
+          default: false
+          description: Whether the poster asks for the update to go out as a push too. It is kept with the update; nothing sends a push yet.
+      required:
+      - text
+    SitePostedUpdate:
+      type: object
+      description: An update posted on a site.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The update's id.
+        site_id:
+          type: string
+          format: uuid
+          description: The id of the site it was posted on.
+        text:
+          type: string
+          description: The line, trimmed.
+        push:
+          type: boolean
+          description: Whether the poster asked for it to go out as a push too.
+        created_at:
+          type: string
+          format: date-time
+          description: When the update was posted.
+      required:
+      - id
+      - site_id
+      - text
+      - push
+      - created_at
+    SitePostedUpdateEnvelope:
+      type: object
+      description: One posted update.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SitePostedUpdate"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -5292,6 +5353,67 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '502':
           description: The variable was removed, but the sites gateway could not pass the change to the site's deployed functions. `details.error` names the gateway's failure. Send the same request again, which passes the removal again and then answers 404.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/updates":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    post:
+      summary: Post an update on a site
+      description: |
+        Posts a short line on one of the member's sites. Every member whose menu lists the site gets it on their bell, and the poster's `push` flag is kept with it. The line is trimmed, then must be 1 to 240 characters. Nothing sends a push yet.
+
+        Bearer only: a request on the cookie mount is refused with `403`, so a site's own page code can never post to the members who read it. It answers `404` until member sites are enabled for the member's company, and for a site the member does not own.
+      operationId: member_sites_updates_create
+      tags:
+      - site-updates
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SitePostedUpdateWrite"
+            example:
+              text: New bundles are in the shop
+              push: false
+      responses:
+        '201':
+          description: The update was posted.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SitePostedUpdateEnvelope"
+              example:
+                status: 201
+                data:
+                  id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d90'
+                  site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  text: New bundles are in the shop
+                  push: false
+                  created_at: '2026-11-10T09:00:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential is read-only, or belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never posts an update, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the site belongs to the company or to another member, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: >-
+            The `text` is missing, blank, or longer than 240 characters once trimmed, `push` is not a boolean, or the body holds another field. Also 422 when nobody but the poster could get the update because of the site's own state (a draft, a suspended, locked or turned-off site, or a site with no share and no other owner to tell): `error.details.reason` is `["site_not_visible"]` and the message is "Nobody else can see this site yet. Publish or share it first." A site others can see whose shares happen to match no one is still posted.
           content:
             application/json:
               schema:
