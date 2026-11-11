@@ -56,6 +56,9 @@ tags:
 - name: site-access-requests
   x-fluid-section: Members
   description: The requests other members make to see one of the member's private sites, which the site's owner lists, approves or declines. An approval shares the site with the requester.
+- name: site-invitations
+  x-fluid-section: Members
+  description: The member's invitations to other members' sites, which the member lists, accepts or declines, and can undo a decline. Accepting shares the site with the member.
 - name: site-pages
   x-fluid-section: Members
   description: The pages of one of the member's sites, each with the template that holds its content.
@@ -759,6 +762,58 @@ components:
       - expires_at
       - repo
       - branch
+    SiteSignInHandoffCreate:
+      type: object
+      description: What a sign-in handoff request carries.
+      additionalProperties: false
+      properties:
+        continuity:
+          type: string
+          minLength: 32
+          maxLength: 128
+          description: A random secret the app generates for this handoff and keeps. Only its digest is stored; the app sends it again in the redeem's body. Treat it as a secret.
+      required:
+      - continuity
+    SiteSignInHandoff:
+      type: object
+      description: A single-use handoff that signs the member in on their company's storefront.
+      additionalProperties: false
+      properties:
+        handoff:
+          type: string
+          description: The handoff. Treat it as a secret, never put it in a URL, and redeem it once by POSTing it with the continuity secret to `redeem_url`.
+        redeem_url:
+          type: string
+          format: uri
+          description: "Where to redeem it, `https://<the company's canonical member host>/auth/redeem`: a POST from the app's own process (not a page, not an HTML form) with a form-encoded body carrying `handoff` and `continuity` and the header `X-Fluid-Sign-In-Handoff: 1`. It answers `204` with the member's storefront session cookie, for the token's identity session and lasting at most 12 hours, or `401` with none for an expired, used, wrong-secret or other-host handoff, credentials in the query string, or a request a browser marks as a page's (`Sec-Fetch-Site` other than `none`). Signing out of that session on the storefront ends the identity session, as any identity sign-out does."
+        site_url:
+          type: string
+          format: uri
+          description: The site on that host, to open once the handoff is redeemed.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the handoff expires, about a minute after it was made, in ISO 8601.
+      required:
+      - handoff
+      - redeem_url
+      - site_url
+      - expires_at
+    SiteSignInHandoffEnvelope:
+      type: object
+      description: The sign-in handoff for a site.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteSignInHandoff"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
     SiteGitCredentialEnvelope:
       type: object
       description: The credential for a site's source.
@@ -1782,6 +1837,171 @@ components:
             properties:
               pagination:
                 "$ref": "#/components/schemas/PaginationMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteInvitation:
+      type: object
+      description: One invitation to a site, as the member it invites sees it. Accepting it shares the site with the member; the invitation itself grants nothing.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the invitation.
+        state:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - declined
+          - revoked
+          - superseded
+          description: Where the invitation stands, as stored. A list holds `pending` invitations that may still be answered; one past `expires_at` is not listed, and answering it is refused with `expired`. `revoked` means the site's owner withdrew it, and `superseded` that it can no longer be honored.
+        role:
+          type: string
+          enum:
+          - view
+          - edit
+          description: What the owner offered. `view` opens the site; `edit` also lets the member work on it with the owner in Mist.
+        site:
+          type: object
+          additionalProperties: false
+          description: The site, with the fields and id of its site-menu entry, so the entry it becomes once accepted can be found by `id`.
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: Public id of the site, the same id as its site-menu entry.
+            handle:
+              type: string
+              description: The site's URL segment.
+            name:
+              type: string
+              description: Display name.
+            status:
+              type: string
+              enum:
+              - draft
+              - published
+              - archived
+              - taken_down
+              description: The site's status as the member's site menu shows it, so `published` means live now. A site published or scheduled but not live yet reads `draft`, and one an admin took down reads `taken_down`. A site that is not published opens for nobody but its owner, so once accepted it joins the member's menu only when it reads `published`.
+            visibility:
+              type: string
+              enum:
+              - private
+              - public
+              description: Who may open the site once it is published.
+            share_url:
+              type:
+              - string
+              - 'null'
+              format: uri
+              description: The link to share the site with the caller's credit, as a site-menu entry's `share_url`. Null while the company is not on the sites gateway, and for a site the gateway cannot serve yet.
+          required:
+          - id
+          - handle
+          - name
+          - status
+          - visibility
+          - share_url
+        invited_by:
+          type:
+          - object
+          - 'null'
+          additionalProperties: false
+          description: The member who sent the invitation, or null once that member is deleted, when accepting it answers `422` superseded.
+          properties:
+            display_name:
+              type: string
+              description: The sender's full name, or an empty string when none is set.
+            avatar_url:
+              type:
+              - string
+              - 'null'
+              format: uri
+              description: The sender's picture, or null when they have none.
+          required:
+          - display_name
+          - avatar_url
+        sent_at:
+          type: string
+          format: date-time
+          description: When the invitation was last sent, to the microsecond, in UTC. Sending again moves it; show the invitation's age from this, not from `created_at`.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the invitation stops being answerable, 7 days after `sent_at`.
+        decided_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the member accepted or declined it, the owner withdrew it, or it was superseded; null while it is pending.
+        created_at:
+          type: string
+          format: date-time
+          description: When the owner first invited the member to the site.
+        share_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Id of the share an accept added or found, or null.
+      required:
+      - id
+      - state
+      - role
+      - site
+      - invited_by
+      - sent_at
+      - expires_at
+      - decided_at
+      - created_at
+      - share_id
+    SiteInvitationEnvelope:
+      type: object
+      description: One site invitation.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteInvitation"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteInvitationsEnvelope:
+      type: object
+      description: One page of the member's pending site invitations.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The pending invitations of the page, newest sent first.
+          items:
+            "$ref": "#/components/schemas/SiteInvitation"
+        meta:
+          allOf:
+          - "$ref": "#/components/schemas/ResponseMeta"
+          - type: object
+            required:
+            - pagination
+            - total_count
+            properties:
+              pagination:
+                "$ref": "#/components/schemas/PaginationMeta"
+              total_count:
+                type: integer
+                minimum: 0
+                description: How many pending invitations the member has in all, on every page.
       required:
       - status
       - data
@@ -3083,6 +3303,14 @@ components:
       in: path
       required: true
       description: Id of one of the site's access requests.
+      schema:
+        type: string
+        format: uuid
+    SiteInvitationId:
+      name: id
+      in: path
+      required: true
+      description: Id of one of the member's site invitations.
       schema:
         type: string
         format: uuid
@@ -4622,6 +4850,64 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/sign-in-handoffs":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    post:
+      summary: Get a sign-in handoff for a site
+      description: |
+        A single-use handoff that signs the member in on their company's storefront, for an app that holds the member's identity access token and opens one of the company's member sites in a browser session of its own, such as Mist's site preview. The app sends a random `continuity` secret it keeps, redeems the handoff once at `redeem_url` (see that field), then opens `site_url`. The handoff expires about a minute after it is made and is never put in a URL. The response is never cached (`Cache-Control: private, no-store`).
+
+        Only for a company that signs in through the identity service, with a person's identity access token (a rep or an admin) for this member; anything else answers `403` `identity_session_required`. Bearer only: the cookie mount is refused with `403`. It answers `404` while member sites or the member storefront are off for the member's company, and for a site the member may not view.
+      operationId: member_sites_sign_in_handoff_create
+      tags:
+      - sites
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteSignInHandoffCreate"
+            example:
+              continuity: 4b3f0d0e8b2a4c5f9e1d7a6b3c2f1e0d9a8b7c6d5e4f3a2b
+      responses:
+        '201':
+          description: The handoff.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteSignInHandoffEnvelope"
+              example:
+                status: 201
+                data:
+                  handoff: 9pQe3LkZ2bW7xR4tYc8vN1mH
+                  redeem_url: https://shop.example.com/auth/redeem
+                  site_url: https://shop.example.com/sites/align-picks
+                  expires_at: '2026-11-10T10:01:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The company does not sign in through the identity service, or the bearer is not a person's identity access token with a session (`details.error` is `identity_session_required`); the storefront refuses the member (`unauthorized`), or the token's identity session is past its bound (`expired`); the credential is the shopper JWT that email links carry, or is otherwise read-only; or the request is on the cookie mount, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id, the member may not view it, or member sites or the member storefront are off for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The body is not a continuity secret of 32 to 128 characters, carries another field, or the handoff could not be saved.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/git-credential":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
@@ -5746,6 +6032,293 @@ paths:
           "$ref": "#/components/responses/WriteRefused"
         '404':
           description: No removal of the member's has this id, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-invitations":
+    get:
+      summary: List the member's site invitations
+      description: |
+        The member's pending invitations to sites, newest sent first, each with the site, who sent it, the role offered and when it expires. Invitations past their expiry, and ones already answered or withdrawn, are not listed. `meta.total_count` counts every pending invitation, so a count needs only the first page. The list is paged by cursor, 25 to a page; follow `meta.pagination.next_cursor` until it is null to read every invitation. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        A bearer only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header (the Passport reads the list through its own cookie route). A member JWT, which travels in order and subscription email links, is refused with `403` too. It answers `404` while member sites are not enabled for the member's company.
+      operationId: member_site_invitations_index
+      tags:
+      - site-invitations
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      - name: page[cursor]
+        in: query
+        required: false
+        description: >-
+          Opaque cursor from `meta.pagination.next_cursor`.
+          A cursor this list did not issue starts the list again from its first page.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: A page of the member's pending invitations.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteInvitationsEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0193a1b2-4c5d-7e6f-8a9b-0c1d2e3f4a5b'
+                  state: pending
+                  role: view
+                  site:
+                    id: '0192f0aa-1b2c-7d3e-8f4a-5b6c7d8e9f01'
+                    handle: riley-shop
+                    name: Riley's Shop
+                    status: published
+                    visibility: private
+                    share_url: https://shop.example.com/casey-brooks/sites/riley-shop
+                  invited_by:
+                    display_name: Riley Park
+                    avatar_url: https://cdn.example.com/avatars/riley.png
+                  sent_at: '2026-11-10T22:00:00.000000Z'
+                  expires_at: '2026-11-17T22:00:00.000000Z'
+                  decided_at:
+                  created_at: '2026-11-10T22:00:00.000000Z'
+                  share_id:
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T22:05:00Z'
+                  pagination:
+                    next_cursor:
+                  total_count: 1
+        '304':
+          description: The representation is unchanged; authentication is checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, it is a member JWT (the credential of email links, which never reads invitations), or the request is on the cookie mount, which never serves invitations.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: Member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: A parameter this operation does not take, such as `page[limit]`, because the page size is fixed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-invitations/{id}/accept":
+    parameters:
+    - "$ref": "#/components/parameters/SiteInvitationId"
+    post:
+      summary: Accept a site invitation
+      description: |
+        Shares the site with the member: adds a `view` share for them, as the member who sent the invitation, and closes the invitation as `accepted`. Access comes from the share alone. Accepting an accepted invitation writes nothing and returns the same invitation with `200` while its share stands; once the owner has removed the share it answers `422` `revoked`.
+
+        The invitation is checked again when it is accepted. If its sender no longer owns the site, or the company's messaging policy no longer lets them share with the member, it is closed as superseded, no share is written, and the answer is `422` with `error.details.error` `superseded` and the reason in `error.details.reason`: `not_owner`, `outside_messaging_scope` or `site_unavailable` (the share could not be written for the site as it is now). Past `expires_at` it answers `422` `expired`, whether or not it was declined, and after the owner withdrew it `422` `revoked`. Declined before its expiry it answers `409` with `error.details.error` `declined`: undo the decline first, since sending it again answers the same. A change to the invitation or its site at the same moment answers `409` with `error.details.error` `conflict` and nothing written; send the request again.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` while member sites are not enabled for the member's company.
+      operationId: member_site_invitations_accept
+      tags:
+      - site-invitations
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The accepted invitation, with the id of its share.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteInvitationEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0193a1b2-4c5d-7e6f-8a9b-0c1d2e3f4a5b'
+                  state: accepted
+                  role: view
+                  site:
+                    id: '0192f0aa-1b2c-7d3e-8f4a-5b6c7d8e9f01'
+                    handle: riley-shop
+                    name: Riley's Shop
+                    status: published
+                    visibility: private
+                    share_url: https://shop.example.com/casey-brooks/sites/riley-shop
+                  invited_by:
+                    display_name: Riley Park
+                    avatar_url: https://cdn.example.com/avatars/riley.png
+                  sent_at: '2026-11-10T22:00:00.000000Z'
+                  expires_at: '2026-11-17T22:00:00.000000Z'
+                  decided_at: '2026-11-10T22:05:00.000000Z'
+                  created_at: '2026-11-10T22:00:00.000000Z'
+                  share_id: '0193a1b2-9f00-7e6f-8a9b-0c1d2e3f4a5c'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T22:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: The member has no invitation with this id, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: The invitation's state cannot take this answer (`error.details.error` is `conflict`), or another change to it happened at the same moment and nothing was answered; send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The invitation has expired, was withdrawn or was superseded; `error.details.error` says which, and for `superseded` `error.details.reason` says why.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-invitations/{id}/decline":
+    parameters:
+    - "$ref": "#/components/parameters/SiteInvitationId"
+    post:
+      summary: Decline a site invitation
+      description: |
+        Closes the invitation as `declined`. The sender is not told. Until `expires_at` the decline can be undone. Declining a declined invitation writes nothing and returns the same invitation with `200`, past its expiry too. Otherwise, past `expires_at` it answers `422` `expired`, after the owner withdrew it `422` `revoked`, when superseded `422` `superseded`, and once accepted `409` with `error.details.error` `accepted`.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` while member sites are not enabled for the member's company.
+      operationId: member_site_invitations_decline
+      tags:
+      - site-invitations
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The declined invitation.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteInvitationEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0193a1b2-4c5d-7e6f-8a9b-0c1d2e3f4a5b'
+                  state: declined
+                  role: view
+                  site:
+                    id: '0192f0aa-1b2c-7d3e-8f4a-5b6c7d8e9f01'
+                    handle: riley-shop
+                    name: Riley's Shop
+                    status: published
+                    visibility: private
+                    share_url: https://shop.example.com/casey-brooks/sites/riley-shop
+                  invited_by:
+                    display_name: Riley Park
+                    avatar_url: https://cdn.example.com/avatars/riley.png
+                  sent_at: '2026-11-10T22:00:00.000000Z'
+                  expires_at: '2026-11-17T22:00:00.000000Z'
+                  decided_at: '2026-11-10T22:05:00.000000Z'
+                  created_at: '2026-11-10T22:00:00.000000Z'
+                  share_id:
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T22:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: The member has no invitation with this id, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: The invitation's state cannot take this answer (`error.details.error` is `conflict`), or another change to it happened at the same moment and nothing was answered; send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The invitation has expired, was withdrawn or was superseded; `error.details.error` says which, and for `superseded` `error.details.reason` says why.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/site-invitations/{id}/undo":
+    parameters:
+    - "$ref": "#/components/parameters/SiteInvitationId"
+    post:
+      summary: Undo declining a site invitation
+      description: |
+        Puts a declined invitation back to `pending`, until the same `expires_at`. Only a decline can be undone. Undoing a pending invitation that can still be answered returns it with `200`. An invitation the list leaves out, because its sender has left the company or no longer owns the site, is closed as superseded instead, and the answer is `422` `superseded` with `error.details.reason` `not_owner`. Past `expires_at` it answers `422` `expired`, after the owner withdrew it `422` `revoked`, when superseded `422` `superseded`, and once accepted `409` with `error.details.error` `accepted`.
+
+        A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` while member sites are not enabled for the member's company.
+      operationId: member_site_invitations_undo
+      tags:
+      - site-invitations
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The invitation, pending again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteInvitationEnvelope"
+              example:
+                status: 200
+                data:
+                  id: '0193a1b2-4c5d-7e6f-8a9b-0c1d2e3f4a5b'
+                  state: pending
+                  role: view
+                  site:
+                    id: '0192f0aa-1b2c-7d3e-8f4a-5b6c7d8e9f01'
+                    handle: riley-shop
+                    name: Riley's Shop
+                    status: published
+                    visibility: private
+                    share_url: https://shop.example.com/casey-brooks/sites/riley-shop
+                  invited_by:
+                    display_name: Riley Park
+                    avatar_url: https://cdn.example.com/avatars/riley.png
+                  sent_at: '2026-11-10T22:00:00.000000Z'
+                  expires_at: '2026-11-17T22:00:00.000000Z'
+                  decided_at:
+                  created_at: '2026-11-10T22:00:00.000000Z'
+                  share_id:
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T22:05:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: The member has no invitation with this id, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: The invitation's state cannot take this answer (`error.details.error` is `conflict`), or another change to it happened at the same moment and nothing was answered; send the request again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The invitation has expired, was withdrawn or was superseded; `error.details.error` says which, and for `superseded` `error.details.reason` says why.
           content:
             application/json:
               schema:
