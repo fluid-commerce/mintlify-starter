@@ -1,0 +1,154 @@
+---
+title: "Call the Member API from a Site"
+sidebarTitle: "Member API"
+description: "Call the Fluid Member API from a Site as the signed-in visitor with fluid.api: how calls are signed in, which scopes a visitor gets, the response envelope, cursor pages, error codes and the routes a Site can't call."
+keywords: ["Member API", "fluid.api", "scopes", "scope_not_granted", "page[cursor]", "page[limit]", "next_cursor", "FluidRequestError", "visitor data"]
+---
+
+A Site calls the Fluid [Member API](/api/member-apis) with `fluid.api` from `@fluid-app/sites`. Each call acts as the visitor who has the Site open, on their own data. Your code never holds a token.
+
+## How a call is signed in
+
+The visitor signs in to your storefront, not to your Site. When your code calls `fluid.api`, the SDK sends the call to the Site's own host, under `/_fluid/api/v2026-10/`. The host checks the visitor's storefront session and passes the call to `/api/member/v2026-10/` as that visitor.
+
+- A visitor who isn't signed in gets `401` `sign_in_required`. Call `fluid.auth.signIn()` from a click to open the storefront's sign-in. See [The Sites SDK](/sites/sdk).
+- Every call reads and writes the visitor's own data: their orders, their tasks, their profile. A Site can't read another person's data through `fluid.api`.
+
+## What a visitor's calls may use
+
+A call is served only when its scope is in the visitor's grant on the Site. The grant is the overlap of:
+
+- the scopes the Site declares in `config/access.json`;
+- the scopes your company allows on Sites. By default that's `search: read` only. An admin turns on others with **Visitor data** on the **Sites** list in the Fluid admin.
+
+A call whose scope isn't granted answers `403` `scope_not_granted`, with the scope it needed in `error.details.scope`. Reads need a family's `read` scope, such as `orders: read`, and writes its `write` scope. See [Fluid data the site uses](/sites/declarations#fluid-data-the-site-uses) for the scope families and how a Site declares them.
+
+### Routes a Site can't call
+
+Some Member API routes answer `403` `forbidden` from a Site page whatever the Site declares:
+
+- payment methods and card verifications;
+- the visitor's companies and Exigo data;
+- realtime messaging;
+- a contact's activities, orders and subscriptions;
+- the Sites routes themselves: Sites, shares, branches, deployments, databases, env vars, logs, traffic and the rest;
+- notifications and features.
+
+These are read-only from a Site page: addresses, notification devices, droplet queries, subscriptions and subscription bundles. A write answers `403` `forbidden`.
+
+## The response
+
+Every answer is JSON with `status`, `data` and `meta`. `fluid.api.get` returns the whole body, so read the records from `data`:
+
+```json
+{
+  "status": 200,
+  "data": [{ "id": "…" }],
+  "meta": {
+    "request_uuid": "…",
+    "timestamp": "2026-11-10T18:04:11Z",
+    "pagination": { "next_cursor": "eyJ…" }
+  }
+}
+```
+
+### Pages
+
+Lists use cursor pages, never page numbers or offsets:
+
+- `page[limit]` sets the page size, at most 100. Search allows at most 50.
+- `meta.pagination.next_cursor` is the cursor for the next page, or `null` on the last page.
+- Pass it back as `page[cursor]` to read the next page, with the same filters.
+
+A cursor that's malformed or too old answers `400` `invalid_pagination`. Start again from the first page.
+
+### Errors
+
+An error answers with `status`, `error` and `meta`. The code is in `error.details.error`:
+
+```json
+{
+  "status": 403,
+  "error": {
+    "message": "This site has not been granted this scope",
+    "details": { "error": "scope_not_granted", "scope": "orders: read" }
+  },
+  "meta": { "request_uuid": "…", "timestamp": "…" }
+}
+```
+
+`fluid.api.get` throws a `FluidRequestError` for any status that isn't 2xx. From `@fluid-app/sites` 0.1.57, its `code` reads `error.details.error` too, so `code` is `scope_not_granted` here. Earlier versions read only a top-level `error` string, so `code` is `null` for a Member API error. To work with both:
+
+```ts
+const code = error.code ?? error.body?.error?.details?.error;
+```
+
+An invalid parameter answers `422`, with `error.details` naming each field and what's wrong with it.
+
+## Examples
+
+### Search the catalogue
+
+Your company allows `search: read` by default, so this works once the Site declares it in `config/access.json` (`{ "uses": ["search: read"] }`) and the visitor is signed in. The template declares no scopes:
+
+```ts
+import { fluid } from "@fluid-app/sites";
+
+const { data } = await fluid.api.get("/search", {
+  q: "protein",
+  types: "products,pages",
+  "page[limit]": "10",
+});
+```
+
+`q` is 2 to 200 characters. `types` is a comma-separated list of `products`, `enrollment-packs`, `pages`, `media`, `playlists` and `posts`. Without `q`, `types` is required and the call browses those kinds.
+
+### List the visitor's orders, a page at a time
+
+Needs `orders: read` declared by the Site and allowed by your company:
+
+```ts
+import { fluid } from "@fluid-app/sites";
+
+async function allOrders() {
+  const orders: unknown[] = [];
+  let cursor: string | null = null;
+  do {
+    const query: Record<string, string> = { "filter[relationship]": "placed", "page[limit]": "25" };
+    if (cursor) query["page[cursor]"] = cursor;
+    const page = await fluid.api.get<{ data: unknown[]; meta: { pagination: { next_cursor: string | null } } }>("/orders", query);
+    orders.push(...page.data);
+    cursor = page.meta.pagination.next_cursor;
+  } while (cursor);
+  return orders;
+}
+```
+
+`filter[relationship]` is `placed`, for orders the visitor bought, or `credited`, for orders credited to them.
+
+### Add a task
+
+Needs `tasks: write`. Tasks belong to reps, so a customer's call answers `403`:
+
+```ts
+import { fluid, FluidRequestError } from "@fluid-app/sites";
+
+const response = await fluid.api.fetch("/tasks", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    title: "Call Jane about the launch",
+    due_at: "2026-11-14T17:00:00Z",
+  }),
+});
+if (!response.ok) throw await FluidRequestError.fromResponse(response);
+const { data: task } = await response.json();
+```
+
+`title` is required. `notes`, `due_at`, `priority` (`low`, `normal` or `high`) and `contact_id` are optional.
+
+## Try it before you publish
+
+`fluid sites dev` answers `fluid.api` with `503` `unavailable`, because there's no visitor on your machine. Mist's previews run as the member you're signed in to Mist as, so calls answer for you there. See [Develop locally](/sites/local-development#in-mist).
+
+For every route, its parameters and its scope, see the [Member API reference](/api/member-apis).
