@@ -1651,7 +1651,11 @@ Durable authoring boundaries:
   pages never claim it is active. Do not broaden that into "hydration works everywhere".
 - Member pages are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
-  `/members/...` storefront paths from older planning documents.
+  `/members/...` storefront paths from older planning documents. V1 member sites open
+  at `/sites/<handle>[/<path>]` since fluid#32600; the credited `/<credit>/sites/<handle>`
+  form needs the sites gateway. Their old `/accounts/<handle>` addresses were deleted
+  with no redirect. Account screens such as `/accounts/profile` are not sites and keep
+  their paths.
 - No root theme ships member templates or a member layout. The pages say so and describe
   the not-found behavior that follows. Do not document shipped defaults until a root
   theme carries them.
@@ -3083,3 +3087,33 @@ from generation or rename their tags and summaries to remove them from the
 sidebar. The navigation generator passes the section's `hidden: true` through to
 Mintlify; its regression test verifies that hiding preserves operation references.
 This applies to Member Sites compatibility only, not storefront theme APIs.
+
+### Company sites on the storefront
+
+`storefront/sites.mdx` documents company sites as a v2026-04 storefront resource
+(`/api/v202604/sites`, `/api/v202604/company/sites`) and the moderator take-down
+(fluid#32617, #32624, #32629). The synced `storefront-v2026-04.yaml` carries the
+`sites` operations, so the endpoint, auth, parameter, request-field, response-field,
+status-code and example claims are `mechanical`. Runtime rules (what counts as live,
+who opens an inactive site, the take-down, `/account`) stay `semantic`, verified
+against fluid `main` on 2026-11-10: the spec, `MemberSites::AccessResolver`,
+`MemberSites::SeoDefaultsResolver`, `MemberSites::ShellHeadTags`, the account hub and
+the fluid-admin site screen.
+
+Durable decisions:
+
+- Only company-owned sites are storefront resources. Member-owned sites stay on the
+  Member API and are never in the public catalog. Do not document `filter[owner]`.
+- An inactive site (`active: false`) is out of the public show as well as the catalog.
+  The synced spec's public-show description now says so too.
+- Today any company admin takes a site down and brings it back, a company site
+  included. The planned split (a Fluid root admin for company-owned resources) is not
+  documented until it ships. The admin's **Take down** asks for the same optional
+  reason as the API (fluid#32638).
+- The owner sees the reason in the Flow message and as `taken_down_reason` on the
+  member API's site (only on their own sites). For a company site, the Flow message
+  goes to the company's admins.
+- The page head's canonical link is always `/home/sites/<handle>` plus the path, on
+  both shells (gateway or not).
+- Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
+  off-by-default release gate. Don't document it on this page until it's on.
