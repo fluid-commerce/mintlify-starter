@@ -1,0 +1,209 @@
+---
+title: "Serve a REST API from a Site"
+sidebarTitle: "Serve a REST API"
+description: "Build a Site whose server functions serve a REST API end to end: write the functions, declare their access, publish with fluid deploy, add an API key, call it with curl, run a job on a schedule and read the log."
+keywords: ["REST API", "site API", "server functions", "API key", "fsk_", "fluid deploy", "schedule", "cron", "webhook"]
+---
+
+This guide builds a company event Site, `fall-gala`, whose page takes RSVPs from signed-in members and whose REST API lets a partner's server read the guest list. A nightly job removes old RSVPs. Every step uses the Fluid CLI. For the full reference, see [Server functions](/sites/functions).
+
+## Before you start
+
+- Fluid CLI with its Sites plugin 0.1.349 or later, signed in with `fluid login`. See [Publish a Site](/sites/publishing#before-you-start).
+- `@fluid-app/sites` 0.1.71 or later in the Site's `package.json`, for `fluid.fn`.
+- A Site folder, from `npm create @fluid-app/fluid-site fall-gala` or an existing project. See the [Sites quickstart](/sites/quickstart).
+- Sites and the sites gateway turned on for your company. Until then, the routes for API keys, environment variables and logs answer `404`. To turn them on, [contact support](/help/getting-help).
+
+<Steps>
+  <Step title="Add a table for the data">
+    Functions read and write the Site's own database. Add the table to `db/schema.json`. See [the site database](/sites/database) for the format and its rules.
+
+    ```json db/schema.json
+    {
+      "version": 1,
+      "tables": {
+        "rsvps": {
+          "columns": {
+            "event_id": { "type": "text", "required": true },
+            "guests": { "type": "integer", "required": true },
+            "member_name": { "type": "text", "required": true }
+          },
+          "rules": { "read": "owner", "insert": "nobody", "update": "nobody", "delete": "nobody" }
+        }
+      }
+    }
+    ```
+
+    The rules keep the page from writing the table directly. Functions query as the Site, so the rules don't apply to them, and the `rsvp` function below is the only way in.
+  </Step>
+
+  <Step title="Write the functions">
+    Each file at the top of `functions/` is one function, named after the file.
+
+    ```ts functions/rsvp.ts
+    // POST /api/rsvp, from the Site's page, for a signed-in member.
+    export default async function (request: Request, ctx: any): Promise<Response> {
+      if (request.method !== "POST") {
+        return Response.json({ error: "method_not_allowed" }, { status: 405 });
+      }
+      const viewer = ctx.caller.kind === "page" ? ctx.caller.viewer : null;
+      if (viewer === null) return Response.json({ error: "sign_in_required" }, { status: 401 });
+
+      const { eventId, guests } = await request.json();
+      if (typeof eventId !== "string" || !Number.isInteger(guests) || guests < 1 || guests > 4) {
+        return Response.json({ error: "invalid", message: "guests must be 1 to 4" }, { status: 422 });
+      }
+      const { data, error } = await ctx.fluid.db
+        .from("rsvps")
+        .insert({ event_id: eventId, guests, member_name: viewer.name })
+        .select();
+      if (error) return Response.json({ error: error.code }, { status: 400 });
+      return Response.json({ rsvp: data[0] }, { status: 201 });
+    }
+    ```
+
+    ```ts functions/guests.ts
+    // GET /api/guests/<event-id>, for a partner's server with a Site API key.
+    export default async function (request: Request, ctx: any): Promise<Response> {
+      if (request.method !== "GET") {
+        return Response.json({ error: "method_not_allowed" }, { status: 405 });
+      }
+      const [, , , eventId] = new URL(request.url).pathname.split("/"); // /api/guests/<event-id>
+      if (!eventId) return Response.json({ error: "not_found" }, { status: 404 });
+
+      const { data, error } = await ctx.fluid.db
+        .from("rsvps")
+        .select("member_name, guests, created_at")
+        .eq("event_id", eventId)
+        .order("created_at")
+        .limit(500);
+      if (error) return Response.json({ error: error.code }, { status: 400 });
+      return Response.json({ event_id: eventId, guests: data });
+    }
+    ```
+
+    ```ts functions/nightly-cleanup.ts
+    // Runs every night at 06:00 UTC: removes RSVPs older than a year.
+    export default async function (_request: Request, ctx: any): Promise<Response> {
+      // Any key opens every `key` function, so refuse callers other than the schedule.
+      if (ctx.caller.kind !== "schedule") {
+        return Response.json({ error: "forbidden" }, { status: 403 });
+      }
+      const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+      const { error } = await ctx.fluid.db.from("rsvps").delete().lt("created_at", cutoff);
+      return Response.json({ ok: error === null }, { status: error ? 500 : 200 });
+    }
+    ```
+
+    Functions run on Cloudflare Workers, not Node.js. Use web APIs such as `fetch` and `crypto.subtle`, not `node:` modules.
+  </Step>
+
+  <Step title="Declare who may call each one">
+    ```json config/functions.json
+    {
+      "version": 1,
+      "functions": {
+        "rsvp": { "access": "signed_in" },
+        "guests": { "access": "key" },
+        "nightly-cleanup": { "access": "key", "schedule": "0 6 * * *" }
+      }
+    }
+    ```
+
+    `signed_in` lets only a signed-in visitor call from the Site's page. `key` needs one of the Site's API keys. Giving the scheduled function `key` access keeps guests from calling it, and its check of `ctx.caller.kind` keeps a key holder, such as the partner, from running it.
+  </Step>
+
+  <Step title="Call the function from the page">
+    ```ts src/rsvp.ts
+    import { fluid } from "@fluid-app/sites";
+
+    export async function sendRsvp(guests: number) {
+      const res = await fluid.fn.fetch("rsvp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: "fall-gala", guests }),
+      });
+      if (res.status === 401) return fluid.auth.signIn();
+      if (!res.ok) throw new Error((await res.json()).error);
+      return (await res.json()).rsvp;
+    }
+    ```
+
+    Use `fluid.fn.fetch`, not the page's own `fetch`: it sends the visitor's sign-in with the call.
+  </Step>
+
+  <Step title="Check and publish">
+    ```bash
+    npm run build
+    fluid sites lint
+    fluid deploy
+    ```
+
+    `fluid sites lint` checks the build output, so build first. It also builds each function and checks `config/functions.json` without a request. `fluid deploy` builds the Site, publishes the page, the schema and the functions together, and prints the Site's address. A new Site is private, so `rsvp` answers only the people it's shared with until you share it or make it public. Ask before you make it public. The partner's key works either way.
+  </Step>
+
+  <Step title="Store any secrets">
+    If a function calls another service, keep its key as a secret. Functions read it from `ctx.secrets`, and a change reaches them without a new publish:
+
+    ```bash
+    printf %s "$PARTNER_WEBHOOK_SECRET" | fluid sites env set PARTNER_WEBHOOK_SECRET --secret --stdin
+    ```
+  </Step>
+
+  <Step title="Add an API key for the partner">
+    There's no CLI command for keys yet, so call the API. For a company Site, use a signed-in admin's token and the `site_id` in the folder's `.member-site.json`:
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/company/v2026-10/member-sites/$SITE_ID/api-keys" \
+      -H "Authorization: Bearer $FLUID_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "Partner guest list"}'
+    ```
+
+    The answer's `api_key.secret`, which starts with `fsk_`, is shown only this once. For a member's own Site, call `POST /api/member/v2026-10/sites/$SITE_ID/api-keys` with the member's token instead: its answer carries the secret at `data.secret`. Give it to the partner over a private channel, and never put it in the Site's code. See [Add an API key to a company site](/api-reference/member-site-api-keys/add-an-api-key-to-a-company-site).
+  </Step>
+
+  <Step title="Call the API">
+    The function answers at the Site's own host, `https://<label>.sites.fluid.app`. The label is normally the company's subdomain and the Site's handle, joined by a hyphen. To be sure, read `window.location.origin` on the Site's page.
+
+    ```bash
+    curl "https://primex-fall-gala.sites.fluid.app/api/guests/fall-gala" \
+      -H "Authorization: Bearer $FALL_GALA_API_KEY"
+    ```
+
+    ```json
+    {
+      "event_id": "fall-gala",
+      "guests": [
+        { "member_name": "Riley Kim", "guests": 2, "created_at": "2026-11-10T18:04:11.212Z" }
+      ]
+    }
+    ```
+
+    A key opens the Site's `key` and `public` functions even while the Site is private. Without the key, the call answers `401` `fn_key_required`.
+  </Step>
+
+  <Step title="Read the log">
+    ```bash
+    fluid sites logs --since 1h
+    fluid sites traffic --period 7d
+    ```
+
+    Each call is one line with its function, caller, status and time, and the nightly run shows up as a `schedule` call. What a function prints with `console.log` isn't in the log.
+  </Step>
+</Steps>
+
+## Rotate or revoke a key
+
+To rotate, add a new key, move the partner to it, then [revoke](/api-reference/member-site-api-keys/revoke-a-company-sites-api-key) the old one by its id. [List the keys](/api-reference/member-site-api-keys/list-a-company-sites-api-keys) to find the id: each shows its name and first 12 characters, never its secret. A revoked key stops working on the next call.
+
+## When something fails
+
+| Answer | What it means |
+| --- | --- |
+| `fluid sites lint` names a file in `functions/` | A function file isn't in `config/functions.json`, has no default export, imports a Node module, or is over 10 MiB |
+| `422` `functions_api_path_taken` on publish | The build has a file under `/api/`, where functions answer. Move it |
+| `401` `fn_api_needs_viewer` inside a function | `ctx.fluid.api` was used on a call with no signed-in visitor, such as a key or schedule call |
+| `500` `fn_error` | The handler threw. The answer and the log line carry the request id |
+
+The full list is in [What the answers mean](/sites/functions#what-the-answers-mean).
