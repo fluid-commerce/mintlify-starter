@@ -1034,7 +1034,7 @@ The prompt could never pass, for two independent reasons, and its notes now carr
 
 The kept group fields are verified in the storefront `ProductBundleGroup` schema: `group_type`,
 `min_selections`, `max_selections`, `selection_type`, `bundle_group_items`, and the item's
-`bundled_variant_id`. `group_type` is **spec-only** — it reaches readers through the spec-driven
+`variant` object, which replaced `bundled_variant_id` in the storefront spec. `group_type` is **spec-only** — it reaches readers through the spec-driven
 Product show reference, not the prose page. That is why this prompt declares two target pages: the
 theme guide supplies the render shape, the generated storefront Product show reference supplies
 `group_type`, and Phase 9.6c.1 already records that this workflow spans two synced contracts.
