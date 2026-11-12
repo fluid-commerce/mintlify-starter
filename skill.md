@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.8"
+  version: "1.9"
 ---
 
 # Fluid
@@ -64,7 +64,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
 - **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
 - **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
-- **Sites (formerly member sites):** a Site is owned by a member or by the company. For a member's own site use the member API, `/api/member/v2026-10/sites`, with the member's own token. For a company site use the company API, `/api/company/v2026-10/member-sites`, with a signed-in admin; a company API token can read but not write. Neither route changes the other owner's sites, and every route answers `404` until Fluid turns Sites on for the company. Don't use `fluid mysite` or `fluid theme` for a member site. Don't build new theme member sites, whose deprecated API is `/api/company/members_sites` and `/api/company/members_pages`, or `members_sites.json` in a theme: https://docs.fluid.app/sites/overview
+- **Sites (formerly member sites):** a Site is owned by a member or by the company. For a member's own site use the member API, `/api/member/v2026-10/sites`, with the member's own token. For a company site, list, create, read, update and delete it with the v2026-04 storefront API, `/api/v202604/company/sites` (fields `slug`, `title`, `status`; the public catalog is `/api/v202604/sites`), with a signed-in admin; use the company API, `/api/company/v2026-10/member-sites/{id}/...`, only for what v2026-04 doesn't have (keys, env vars, bundles, files, data, hosting, shares, take-down). Neither route changes the other owner's sites, and every route answers `404` until Fluid turns Sites on for the company. Don't use `fluid mysite` or `fluid theme` for a member site. Don't build new theme member sites, whose deprecated API is `/api/company/members_sites` and `/api/company/members_pages`, or `members_sites.json` in a theme: https://docs.fluid.app/sites/overview
 
 ## Host a project
 
