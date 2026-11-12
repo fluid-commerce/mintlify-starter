@@ -993,7 +993,7 @@ components:
         push:
           type: boolean
           default: false
-          description: Whether the poster asks for the update to go out as a push too. It is kept with the update; nothing sends a push yet.
+          description: Whether the poster asks for the update to go out as a push too. With `true`, each member it reaches also gets a push on their phone and desktop, subject to their do-not-disturb and push settings.
       required:
       - text
     SitePostedUpdate:
@@ -1034,6 +1034,68 @@ components:
           description: HTTP status code (mirrors the response status line).
         data:
           "$ref": "#/components/schemas/SitePostedUpdate"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SentSiteUpdate:
+      type: object
+      description: An update posted on a site, as its poster sees it in the site's list.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The update's id.
+        site_id:
+          type: string
+          format: uuid
+          description: The id of the site it was posted on.
+        text:
+          type: string
+          description: The line, trimmed.
+        push:
+          type: boolean
+          description: Whether the poster asked for it to go out as a push too.
+        created_at:
+          type: string
+          format: date-time
+          description: When the update was posted.
+        by:
+          type: string
+          description: Who posted it, by their name in the company, else the company's name.
+        by_avatar_url:
+          type:
+          - string
+          - 'null'
+          description: The poster's avatar, when they have one.
+        reached:
+          type: integer
+          minimum: 0
+          description: How many members it reached (got it on their bell).
+      required:
+      - id
+      - site_id
+      - text
+      - push
+      - created_at
+      - by
+      - by_avatar_url
+      - reached
+    SentSiteUpdatesEnvelope:
+      type: object
+      description: The updates posted on a site, newest first.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          maxItems: 50
+          items:
+            "$ref": "#/components/schemas/SentSiteUpdate"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -2529,6 +2591,14 @@ components:
           type: integer
           minimum: 0
           description: How many shared sites are not listed in `shared_sites` because of its limit.
+        unread_updates:
+          type: object
+          description: The member's unread site updates on each listed site (company, own and shared, not removed), keyed by the site's public id, for the red count on the site. A site with none is absent. Opening the site clears its count (`POST /notifications/sites/{site_id}/read`).
+          additionalProperties:
+            type: integer
+            minimum: 1
+          example:
+            '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01': 2
       required:
       - company_sites
       - own_sites
@@ -2539,6 +2609,7 @@ components:
       - pin_order
       - company_pin_order
       - home_site_id
+      - unread_updates
     SiteMenuEnvelope:
       type: object
       description: The member's account menu.
@@ -5693,10 +5764,55 @@ paths:
   "/api/member/v2026-10/sites/{site_id}/updates":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List the updates posted on a site
+      description: |
+        The newest 50 updates posted on one of the member's sites, newest first, each with who posted it and how many members it reached. Not paged.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until member sites are enabled for the member's company, and for a site the member does not own.
+      operationId: member_sites_updates_index
+      tags:
+      - site-updates
+      x-fluid-audience: member
+      responses:
+        '200':
+          description: The site's updates.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SentSiteUpdatesEnvelope"
+              example:
+                status: 200
+                data:
+                - id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d90'
+                  site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  text: New bundles are in the shop
+                  push: false
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  by: Riley Park
+                  by_avatar_url:
+                  reached: 38
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential is a shopper's email-link credential, or belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never lists a site's updates.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's has this id, the site belongs to the company or to another member, or member sites are not enabled for the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
     post:
       summary: Post an update on a site
       description: |
-        Posts a short line on one of the member's sites. Every member whose menu lists the site gets it on their bell, and the poster's `push` flag is kept with it. The line is trimmed, then must be 1 to 240 characters. Nothing sends a push yet.
+        Posts a short line on one of the member's sites. Every member whose menu lists the site gets it on their bell, and the poster's `push` flag is kept with it. The line is trimmed, then must be 1 to 240 characters. With `push`, each member it reaches also gets a push. A site takes at most 10 updates an hour.
 
         Bearer only: a request on the cookie mount is refused with `403`, so a site's own page code can never post to the members who read it. It answers `404` until member sites are enabled for the member's company, and for a site the member does not own.
       operationId: member_sites_updates_create
@@ -5733,7 +5849,7 @@ paths:
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
-          description: The credential is read-only, or belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never posts an update, with or without the `X-Fluid-Member-Site` header.
+          description: The credential is read-only or a shopper's email-link credential, or belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never posts an update, with or without the `X-Fluid-Member-Site` header.
           content:
             application/json:
               schema:
@@ -6381,6 +6497,8 @@ paths:
                   home_site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
                   landing_site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
                   shared_sites_omitted: 0
+                  unread_updates:
+                    '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01': 2
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-09-30T15:08:21Z'
