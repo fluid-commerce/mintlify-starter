@@ -1,0 +1,114 @@
+---
+title: "Cowork tasks"
+sidebarTitle: "Cowork tasks"
+description: "Create, list and change the tickets on your company's Cowork board with the Cowork API, from your own code or a Site's server function."
+---
+
+Cowork is your company's shared board of work. Each ticket on it is a task: people file it, plan it, assign it and finish it, Mist can work on it, and your company can send it to an agency. The Mist task board and Cowork in the Fluid admin are built on the [Cowork API](/api-reference/cowork-tasks/list-the-companys-work), so anything they do with a task, your code can do too.
+
+This guide covers creating a task, reading the board's tasks and changing one. The API reference covers the rest: discussions, attachments, Mist runs and agency requests.
+
+## Before you start
+
+Every Cowork endpoint needs a Bearer token for a person, sent as `Authorization: Bearer <token>`. The token must belong to a company admin. A company API token is refused with `403`, because Cowork records every write against the person who made it.
+
+The person's role needs the permission for what you do:
+
+| To | Permission |
+| --- | --- |
+| Create a task | `multiplayer_tasks.create`, or `application_themes.update` |
+| Read tasks | `multiplayer_tasks.view`, or `application_themes.view` |
+| Change a task | `multiplayer_tasks.update`, or `application_themes.update` |
+
+## Create a task
+
+Send the task to [Submit standalone company work](/api-reference/cowork-tasks/submit-standalone-company-work):
+
+```bash
+curl -X POST https://api.fluid.app/api/v202604/multiplayer/tasks \
+  -H "Authorization: Bearer $FLUID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task": {
+      "client_id": "intake-form-4821",
+      "title": "Update the spring launch banner",
+      "description": "The banner still shows last week'\''s dates.",
+      "due_on": "2026-11-20"
+    }
+  }'
+```
+
+- `client_id` is your own identity for this submission, unique within the company. It takes letters, digits, `_` and `-`. Sending the same submission again returns the task already stored, so a retry never makes a second ticket. A different submission with a `client_id` already used answers `409`.
+- `title` is required, up to 255 characters.
+- `description` is optional, up to 10,000 characters.
+- `due_on` is optional: a calendar day, `YYYY-MM-DD`. A day that doesn't exist, such as `2026-02-30`, is refused with `422`.
+
+The answer is `201` with the new task under `task`. Keep its `id` and its `lock_version`: you need both to change it. A new task starts `open`.
+
+## Read the tasks
+
+[List the company's work](/api-reference/cowork-tasks/list-the-companys-work) returns undeleted tasks, the most recently updated first:
+
+```bash
+curl "https://api.fluid.app/api/v202604/multiplayer/tasks?filter[status]=open,needs_info&page[limit]=50" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+- Results use cursor pagination. Ask for up to 100 tasks with `page[limit]` (25 by default), and pass the cursor from `meta.pagination.next_cursor` as `page[cursor]` for the next page.
+- `filter[status]` keeps the statuses you list, comma-separated.
+- `filter[assignee]` keeps tasks assigned to one person by their user id, to nobody (`unassigned`), or to Mist (`agent`).
+- `sort` is `updated` (the default), `board` for the order the board draws a column, or `due`.
+
+## Change a task
+
+Every change to an existing task carries `expected_version`: the `lock_version` you last read. If someone changed the task since, the change is refused with `409`, and the answer includes the current task, so retry against that one.
+
+[Change what the company's work says](/api-reference/cowork-tasks/change-what-the-companys-work-says) changes the title, description, kind, priority or due date. Send only what changes:
+
+```bash
+curl -X PATCH https://api.fluid.app/api/v202604/multiplayer/tasks/$TASK_ID \
+  -H "Authorization: Bearer $FLUID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "task": { "expected_version": 0, "priority": "high" } }'
+```
+
+`priority` is `urgent`, `high`, `medium`, `low`, or `null`. `kind` is `bug`, `change`, `feature`, `design`, `support`, or `null`.
+
+Status and owner have routes of their own:
+
+- [Record a person's verdict on the company's work](/api-reference/cowork-tasks/record-a-persons-verdict-on-the-companys-work) moves the task with `status_change`. Its `status` is `open`, `needs_info`, `in_progress`, `review` or `skipped`. In a company with Cowork on, only the people working a ticket move it, such as its assignee. Anyone else is refused with `403`.
+- [Say who owns the company's work](/api-reference/cowork-tasks/say-who-owns-the-companys-work) assigns the task with `assignment`. Its `assignee` is `{ "kind": "user", "user_id": 42 }` for an admin of the company, or `null` for nobody.
+
+## Create tasks from a Site
+
+A [Site's server function](/sites/functions) can file tickets for the people who use the Site, such as a request form on an internal Site. A function has no Fluid credential of its own that reaches Cowork, so keep an admin's token as a [secret](/sites/env-vars) and call the API with `fetch`:
+
+```ts functions/file-ticket.ts
+export default async function (request: Request, ctx: any): Promise<Response> {
+  if (request.method !== "POST") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405 });
+  }
+  const viewer = ctx.caller.kind === "page" ? ctx.caller.viewer : null;
+  if (viewer === null) return Response.json({ error: "sign_in_required" }, { status: 401 });
+
+  const { title, details } = await request.json();
+  if (typeof title !== "string" || title.length === 0 || title.length > 255) {
+    return Response.json({ error: "invalid" }, { status: 422 });
+  }
+
+  const res = await fetch("https://api.fluid.app/api/v202604/multiplayer/tasks", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ctx.secrets.COWORK_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      task: {
+        client_id: `site-${crypto.randomUUID()}`,
+        title,
+        description: `${details ?? ""}\n\nFiled by ${viewer.name} from ${ctx.site.handle}.`,
+      },
+    }),
+  });
+  return new Response(res.body, { status: res.status, headers: { "Content-Type": "application/json" } });
+}
+```
+
+Give the function `signed_in` access in `config/functions.json`, so only signed-in visitors can file. Every task it makes is created as the admin whose token it holds, so the function names the visitor in the description.
