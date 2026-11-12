@@ -1,30 +1,202 @@
 ---
 title: "Site functions"
 sidebarTitle: "Functions"
-description: "Site functions, light server code that belongs to a site and is called with fluid.fn, aren't available yet. Learn what works today and what to use instead."
-keywords: ["functions", "fluid.fn", "API routes", "webhooks", "serverless", "fn_not_available"]
+description: "Add server code to a Site: functions at /api/<name> on the site's own host, for form handlers, webhooks, small APIs and scheduled jobs, with secrets, API keys and the site's database."
+keywords: ["functions", "fluid.fn", "API routes", "webhooks", "serverless", "cron", "schedule", "API keys", "fsk_", "fluid sites functions new", "fluid sites keys"]
 ---
 
-A site function will be a small piece of server code that belongs to your site, such as a form handler or an API route, called from the page with `fluid.fn`. Functions aren't available yet.
+A site function is a small piece of server code that belongs to your site: a form handler, a webhook, a small API, or a job that runs on a schedule. Each function answers at `/api/<name>` on the site's own host. The page calls it with `fluid.fn`, and anything else calls its URL.
 
-## What happens today
+Use one when the browser can't do the job on its own:
 
-- A publish refuses a site that has a `functions/` folder or a `config/functions.json`, and nothing is published. `fluid sites lint` reports the same thing before you publish.
-- `fluid.fn.fetch(name)` calls `/_fluid/fn/<name>` on the site's own address, and every call answers `404` with the code `fn_not_available`. `fluid.fn.fetch` returns that response as it is, so code you write against it keeps working once functions ship.
-- You can already keep values for functions with [environment variables and secrets](/sites/env-vars). Nothing reads them yet.
+- The code needs a secret, such as an API key for another service.
+- Another system calls in, such as a payment provider's webhook or a Zapier step.
+- A write must get past the table rules that limit what visitors can do.
+- Work runs on a timer, such as a nightly sync.
+
+## Make a function
+
+In the site's folder:
+
+```bash
+fluid sites functions new hello
+```
+
+This writes three files:
+
+- `functions/hello.ts`: the function. Its default export takes a standard Web `Request` and a `ctx`, and returns a `Response`.
+- `config/functions.json`: who may call each function. `functions new` adds the entry, and creates the file if there isn't one.
+- `functions/fluid-env.d.ts`: the types the starter uses (`FluidFunction`, `FluidContext`). Leave it alone; the CLI replaces it when the types change.
+
+```ts functions/hello.ts
+/// <reference path="./fluid-env.d.ts" />
+
+// Anyone may call it: fetch("/api/hello") from the site's page, or a link.
+export default (async (request, ctx) => {
+  const url = new URL(request.url);
+  return Response.json({
+    hello: url.searchParams.get("name") ?? "world",
+    caller: ctx.caller.kind,
+  });
+}) satisfies FluidFunction;
+```
+
+The starter fits the access and schedule you choose. A `key` starter checks `ctx.caller.kind`, and a scheduled one logs each run.
+
+```json config/functions.json
+{
+  "version": 1,
+  "functions": {
+    "hello": { "access": "public" }
+  }
+}
+```
+
+A name is lowercase letters, digits and single hyphens, at most 40 characters, such as `rsvp` or `order-webhook`. A site has at most 20 functions. Every function in `functions/` needs an entry in `config/functions.json`, and every entry needs its file. `fluid sites lint` and publish refuse a mismatch.
+
+Code in `functions/` is bundled with your dependencies, so an npm package that works in a browser bundle works here. Functions run in a Workers-style runtime: there's no `node:fs`, no `process`, and no other Node built-in.
+
+## Who may call it
+
+Each function's `access` in `config/functions.json` decides who may call it:
+
+| `access` | Who may call | Use it for |
+| --- | --- | --- |
+| `public` | Anyone, with no sign-in | Something harmless for anyone to call, such as a public counter |
+| `signed_in` | Only the site's own page, with a signed-in visitor | A member's own action, such as an RSVP |
+| `key` | A caller that sends one of the site's [API keys](#api-keys) | Webhooks, Zapier, your own servers |
+
+Pick the narrowest access that works. Make a function with another access with `--access`:
+
+```bash
+fluid sites functions new rsvp --access signed_in
+fluid sites functions new order-webhook --access key
+```
+
+Each entry can also set:
+
+- `cors`: the origins that may call the function from a browser on another site, such as `["https://shop.example.com"]`. The site's own page needs none.
+- `timeoutMs`: how long a call may run, at most `30000` (30 seconds), which is also the default.
+- `schedule`: a cron line that runs the function on a timer. See [Scheduled functions](#scheduled-functions).
+
+## What a function gets
+
+The second argument, `ctx`, holds:
+
+| Field | What it is |
+| --- | --- |
+| `ctx.caller` | Who called: `{ kind: "page", viewer }` (the site's page; `viewer` is null for a signed-out visitor), `{ kind: "public" }`, `{ kind: "key", keyId, keyName }`, or `{ kind: "schedule", scheduledAt }` |
+| `ctx.secrets` | The site's [environment variables and secrets](/sites/env-vars), by name |
+| `ctx.fluid.db` | [The site's database](/sites/database), with the same query builder as `fluid.db`, acting as the site |
+| `ctx.fluid.api.fetch(path, init)` | The Fluid API (v2026-10) as the signed-in visitor who called. With no visitor it answers `401` `fn_api_needs_viewer` |
+| `ctx.site`, `ctx.fn`, `ctx.requestId` | The site, the function's name, and the call's id, which the [logs](/sites/logs-and-traffic) show |
+
+<Warning>
+`ctx.fluid.db` acts as the site, so the table rules in `db/schema.json` don't apply to it. Check `ctx.caller` before a function writes on a caller's behalf.
+</Warning>
+
+```ts functions/rsvp.ts
+/// <reference path="./fluid-env.d.ts" />
+
+export default (async (request, ctx) => {
+  if (ctx.caller.kind !== "page" || !ctx.caller.viewer) {
+    return Response.json({ error: "sign_in_required" }, { status: 401 });
+  }
+  const { eventId } = await request.json();
+  const { error } = await ctx.fluid.db
+    .from("rsvps")
+    .insert({ event_id: eventId, user_id: ctx.caller.viewer.userId });
+  return error
+    ? Response.json({ error: error.code }, { status: 400 })
+    : new Response(null, { status: 204 });
+}) satisfies FluidFunction;
+```
+
+The request reaches the function without the visitor's cookies or `Authorization` header. A `Set-Cookie` in the response is dropped, and a response is `Cache-Control: private, no-store` unless it sets its own.
+
+## Call it from the page
 
 ```ts
+import { fluid } from "@fluid-app/sites";
+
 const res = await fluid.fn.fetch("rsvp", {
   method: "POST",
   body: JSON.stringify({ eventId: "fall-gala" }),
 });
-if (res.status === 404) {
-  // Functions aren't available yet: save the RSVP with fluid.db instead.
-}
 ```
 
-## What to use instead
+`fluid.fn.fetch("orders/123?full=1")` calls `/api/orders/123?full=1`. The function gets the sub-path and query in `request.url`. `fluid.fn.fetch` returns the response whatever its status. See [the Sites SDK](/sites/sdk).
 
-- To save what visitors send, such as a form, use [the site database](/sites/database) with `fluid.db`. Its tables carry their own access rules.
-- To read Fluid data as the visitor, use `fluid.api`. See [the Sites SDK](/sites/sdk) and [Use the Member API from a Site](/sites/member-api).
-- A project that needs server code now, server rendering or its own Postgres is a [Mist app](/sites/site-or-app).
+## API keys
+
+A `key` function accepts a caller that sends `Authorization: Bearer fsk_…`. Make one key for each caller, so you can see who uses it and revoke one without breaking the others:
+
+```bash
+fluid sites keys create zapier
+fluid sites keys list
+fluid sites keys revoke zapier
+```
+
+- `create` prints the secret once, and the server never shows it again. Store it in the calling system right away. The secret is the only thing printed to standard output, so you can pipe it: `fluid sites keys create zapier | pbcopy`.
+- `list` shows each key's name, its first characters and when it was last used. It never shows a secret.
+- `revoke` takes the key's name, id or secret. It asks first unless you pass `--yes`, and the key stops working at once.
+- A site holds at most 20 keys. A name is 1 to 64 characters.
+
+A function sees which key called as `ctx.caller.keyName`.
+
+## Scheduled functions
+
+Give a function a `schedule`, a five-field cron line in UTC, and Fluid calls it on that schedule:
+
+```bash
+fluid sites functions new nightly --schedule "0 3 * * *"
+```
+
+- A schedule runs at most once every 5 minutes, so `*/5 * * * *` is the most often a function can run.
+- Each run is a `POST` with no body, and `ctx.caller` is `{ kind: "schedule", scheduledAt }`. Fluid runs each scheduled minute at most once, even when it retries.
+- A scheduled function still has an `access`, for anyone who calls its URL directly. Use `key` unless the function is harmless to run on demand.
+
+## Run functions locally
+
+`fluid sites dev` runs your functions with the site. See [Develop a Site locally](/sites/local-development#functions).
+
+## Put them live
+
+Publish the site as usual, with `fluid deploy` or `fluid sites publish`. Publish builds each function and ships it with the site. Then it prints each function's address, `https://<label>.sites.fluid.app/api/<name>`, where `<label>` names the site's own host. `fluid sites publish --json` lists them as `functions`. The site's `functions_url`, in the [member](/api/member-sites) and company APIs, holds the same address up to `/api/`.
+
+Set secrets for the live site with [`fluid sites env set`](/sites/env-vars):
+
+```bash
+fluid sites env set STRIPE_SECRET_KEY --secret --stdin < stripe-key.txt
+```
+
+## Errors
+
+A function's own response comes back as it is. When Fluid answers instead, the body is JSON like `{ "error": "fn_key_required" }`:
+
+| Status | `error` | Why |
+| --- | --- | --- |
+| `401` | `fn_key_required` | A `key` function was called with no key |
+| `401` | `fn_key_invalid` | The key is wrong or revoked |
+| `401` | `fn_api_needs_viewer` | `ctx.fluid.api` was called with no signed-in visitor |
+| `404` | `fn_not_found` | The site has no function by that name |
+| `429` | `rate_limited` | The site is past 600 calls a minute |
+| `502` | `fn_failed` | The function failed to run or to answer, such as when it threw |
+| `504` | `fn_timeout` | The call ran past its `timeoutMs` |
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| CPU time per call | 1 second |
+| Wall time per call | 30 seconds |
+| Memory | 128 MB |
+| Outgoing requests per call | 50 |
+| Request and response body | 10 MB |
+| Calls per minute, for the whole site | 600 |
+| Functions per site | 20 |
+| Module size | 10 MB |
+
+A function's `console.log` lines and each call show in `fluid sites logs`. See [Logs and traffic](/sites/logs-and-traffic).
+
+A project that needs a long job, rendering at request time or its own domain is a [Mist app](/sites/site-or-app).
