@@ -244,17 +244,33 @@ const PER_PAGE_PROSE_PAGES = new Set([
 // only. Prose gets no such licence: its exceptions are PUBLIC_SDK_V2025_06_PROSE_PAGES
 // and the tokens prefix in SANCTIONED_OCCURRENCES.
 //
-// A page is one of them when its own contract line names one of the three specs:
+// A page is one of them when its own contract line in llms-full.txt names one of the
+// three specs:
 //   /api-reference/admin-v2025-06.yaml get /api/v2025-06/admins
-// llms-full.txt prints that line bare and the per-page markdown inside a yaml fence,
-// so both forms match, anchored to a whole line. The sanction is per page and keyed
-// on the spec, never on a tag or a `v2025-06` pattern class: the `carts`, `orders` and
+// v2025GeneratedPages reads those lines once, from the generated (`api-reference/`)
+// sections, into a set of page labels; every surface the checker scans (llms-full.txt,
+// /mcp chunks, per-page markdown) is then judged by its label, since a search chunk
+// rarely carries the contract line itself. The sanction is per page and keyed on the
+// spec, never on a tag or a `v2025-06` pattern class: the `carts`, `orders` and
 // `paypal` tags also hold v2026-04 pages, whose contract lines name their own spec,
-// so a version marker on them still fails. Reading the spec off the page itself
-// means a sync that adds, renames or removes one of these operations needs no edit
-// here, where a hand-kept page list broke CI until a PR caught up with each deploy.
+// so a version marker on them still fails, and a prose page never qualifies however
+// its text reads. Reading the spec off the published page means a sync that adds,
+// renames or removes one of these operations needs no edit here, where a hand-kept
+// page list broke CI until a PR caught up with each deploy.
 const V2025_06_GENERATED_CONTRACT =
-  /^(?:`{3,}yaml )?\/api-reference\/(?:public|admin|members)-v2025-06\.yaml (?:get|post|patch|put|delete) \/\S*$/m;
+  /^(?:`{3,}yaml )?\/api-reference\/(?:public|admin|members)-v2025-06\.yaml [a-z]+ \/\S*$/m;
+
+// The labels (without `api-reference/`) of the generated pages whose contract line
+// names a v2025-06 spec, from llms-full.txt's sections.
+function v2025GeneratedPages(sections) {
+  const pages = new Set();
+  for (const { label, text } of sections || []) {
+    if (label.startsWith("api-reference/") && V2025_06_GENERATED_CONTRACT.test(text)) {
+      pages.add(label.slice("api-reference/".length));
+    }
+  }
+  return pages;
+}
 
 // AGENTS.md also permits the Public SDK surface's version label on these exact
 // hand-written pages. Keep this list narrow: the exception applies to prose that
@@ -755,7 +771,7 @@ function splitLlmsSections(text) {
 //      its Rails action — see OFFSET_PAGINATED_PAGES — plus the exact prose pages in
 //      PER_PAGE_PROSE_PAGES. Exact pages only, never a whole tag.
 //   4. The generated `public-v2025-06` reference pages, whose paths genuinely carry
-//      the version, by their contract line (V2025_06_GENERATED_CONTRACT), plus the
+//      the version, by their contract line (v2025GeneratedPages), plus the
 //      exact prose pages that explain this surface (PUBLIC_SDK_V2025_06_PROSE_PAGES).
 //      That sanction covers only the version marker.
 //      The exact Public SDK Drop Zones page separately permits `per_page` through
@@ -768,7 +784,7 @@ function splitLlmsSections(text) {
 //   7. The tokens path prefix, the two navigation-menus sentences, and the exact
 //      version-comparison phrases on two generated pages, removed
 //      occurrence-by-occurrence like 5 — see SANCTIONED_OCCURRENCES.
-function isSanctionedLegacyHit(marker, label, sectionText = "") {
+function isSanctionedLegacyHit(marker, label, sectionText = "", v2025Pages = new Set()) {
   if (label === BANNER_LABEL) return true;
   const page = label.replace(/^api-reference\//, "");
   if (/\bper_page\b/.test(marker)) {
@@ -780,7 +796,7 @@ function isSanctionedLegacyHit(marker, label, sectionText = "") {
   if (
     V2025_06_MARKER.test(marker) &&
     (PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) ||
-      V2025_06_GENERATED_CONTRACT.test(sectionText))
+      v2025Pages.has(page))
   ) {
     return true;
   }
@@ -790,7 +806,7 @@ function isSanctionedLegacyHit(marker, label, sectionText = "") {
 // Finds every legacy marker in `text`, attributing each to the section that holds
 // it and splitting sanctioned, advisory (v1 markers, reported but not failing),
 // and unsanctioned hits.
-function scanLegacyAttributed(sections) {
+function scanLegacyAttributed(sections, v2025Pages = new Set()) {
   const sanctioned = [];
   const advisory = [];
   const unsanctioned = [];
@@ -803,9 +819,7 @@ function scanLegacyAttributed(sections) {
     for (const marker of occurrences.markers) sanctioned.push({ marker, label: section.label });
     for (const marker of scanLegacy(occurrences.text)) {
       const hit = { marker, label: section.label };
-      // The page's spec is read from its original text: removing a sanctioned
-      // occurrence such as the tokens prefix may cut into its contract line.
-      if (isSanctionedLegacyHit(marker, section.label, section.text)) sanctioned.push(hit);
+      if (isSanctionedLegacyHit(marker, section.label, occurrences.text, v2025Pages)) sanctioned.push(hit);
       else if (ADVISORY_LEGACY.test(marker)) advisory.push(hit);
       else unsanctioned.push(hit);
     }
@@ -972,7 +986,8 @@ async function main() {
 
   // --- Corpus legacy scan ---------------------------------------------------
   const llmsSections = splitLlmsSections(llmsFull.text);
-  const corpusLegacy = scanLegacyAttributed(llmsSections);
+  const v2025Pages = v2025GeneratedPages(llmsSections);
+  const corpusLegacy = scanLegacyAttributed(llmsSections, v2025Pages);
 
   // --- Per-prompt: stage 1 retrieval, then stage 2 contract -----------------
   const perPrompt = await runPool(selected, CONFIG.concurrency, async (p) => {
@@ -1045,7 +1060,7 @@ async function main() {
       const legacy = scanLegacyAttributed([
         ...chunks,
         ...(pageInfo || []).map((pg) => ({ label: pg.label, text: stripAgentBanner(pg.text) })),
-      ]);
+      ], v2025Pages);
 
       return {
         ...base,
@@ -1292,6 +1307,7 @@ export {
   removeCheckoutPublicSdkBoundary,
   removeSanctionedOccurrences,
   splitLlmsSections,
+  v2025GeneratedPages,
   stripAgentBanner,
   isSanctionedLegacyHit,
   scanLegacyAttributed,

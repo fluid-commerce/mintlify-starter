@@ -1400,7 +1400,7 @@ The 42 distinct destinations used by the cart equivalence map, every Public SDK 
 `sdk/cart-api.mdx`, and the redirect destination `/api-reference/carts/creates-a-cart` were verified
 against the archive before publication. The redirect remains temporary per Phase 9.6e.
 
-### The leakage exception is exact by page and marker
+### The leakage exception is per page, by its contract line, and covers the marker only
 
 The generated operation pages are sanctioned by their own contract line: a page whose
 `/api-reference/<spec>.yaml <method> <path>` line names `public-v2025-06` (or, since the
@@ -2753,8 +2753,8 @@ docs. These are now the checker's rules:
   required, so the prompt expects `optional`. The checker used to read any
   `- bearer_auth: []` as required.
 - **`admin-v2025-06` and `members-v2025-06` generated pages** may carry their version
-  markers, as AGENTS.md already said. The checker lists the pages one by one, keyed to their
-  operations, and a unit test matches those operations to docs.json.
+  markers, as AGENTS.md already said. Since 2026-11-12 the checker finds them by each
+  page's contract line in llms-full.txt rather than by a hand-kept page list.
 - **49 more offset lists**, on `company-v0`, `messaging-v1`, `integrations-v0`,
   `themes-v0` and `admin-v2025-06`, plus the Public SDK root themes list, were checked
   against their Rails actions. Every one reads integer `page` / `per_page` and pages by

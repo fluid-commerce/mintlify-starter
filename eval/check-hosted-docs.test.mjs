@@ -12,7 +12,6 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import {
   parseArgs,
@@ -40,6 +39,7 @@ import {
   removeCheckoutPublicSdkBoundary,
   removeSanctionedOccurrences,
   splitLlmsSections,
+  v2025GeneratedPages,
   stripAgentBanner,
   isSanctionedLegacyHit,
   scanLegacyAttributed,
@@ -924,11 +924,13 @@ describe("isSanctionedLegacyHit", () => {
   });
 
   // Each generated reference page carries its operation on one contract line. The
-  // version sanction reads the spec off that line, so these tests pass it as the
-  // section text, in the bare form llms-full.txt prints and the fenced form a
-  // per-page markdown fetch returns.
+  // checker reads the v2025-06 pages off llms-full.txt's sections once
+  // (v2025GeneratedPages) and judges every surface by label, so `hit` builds that set
+  // from one section, in the bare form llms-full.txt prints or the fenced form.
   const contract = (spec, method, path) => `/api-reference/${spec}.yaml ${method} ${path}`;
   const fenced = (spec, method, path) => `\`\`\`\`yaml ${contract(spec, method, path)}`;
+  const hit = (marker, label, text) =>
+    isSanctionedLegacyHit(marker, label, "", v2025GeneratedPages([{ label, text }]));
 
   it("sanctions the version marker on generated public-v2025-06 reference pages", () => {
     // Phase 9.6f. These pages' paths are genuinely /api/public/v2025-06/... and
@@ -939,17 +941,18 @@ describe("isSanctionedLegacyHit", () => {
       ["api-reference/paypal/create-order-in-paypal", contract("public-v2025-06", "post", "/api/v202506/carts/{cart_token}/paypal/create_order")],
       ["api-reference/public/health-health", contract("public-v2025-06", "get", "/api/public/health")],
     ]) {
-      assert.equal(isSanctionedLegacyHit("v2025-06", page, text), true, page);
-      assert.equal(isSanctionedLegacyHit("v202506", page, text), true, page);
-      assert.equal(isSanctionedLegacyHit("company/v1/", page, text), false, page);
+      assert.equal(hit("v2025-06", page, text), true, page);
+      assert.equal(hit("v202506", page, text), true, page);
+      assert.equal(hit("company/v1/", page, text), false, page);
     }
     const session = contract("public-v2025-06", "post", "/api/public/v2025-06/session");
     // Both marker spellings the two legacy patterns can capture, including the
     // case-insensitive underscore form.
-    assert.equal(isSanctionedLegacyHit("V2025_06", "api-reference/session/start-a-new-session", session), true);
+    assert.equal(hit("V2025_06", "api-reference/session/start-a-new-session", session), true);
     // The label is accepted with or without the api-reference/ prefix, matching how
     // llms-full.txt section labels and prompts' target_page labels differ.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "carts/creates-a-cart", session), true);
+    const pages = v2025GeneratedPages([{ label: "api-reference/session/start-a-new-session", text: session }]);
+    assert.equal(isSanctionedLegacyHit("v2025-06", "session/start-a-new-session", "", pages), true);
   });
 
   it("does NOT sanction a v2026-04 page sharing a tag with a public-v2025-06 page", () => {
@@ -962,8 +965,8 @@ describe("isSanctionedLegacyHit", () => {
       ["api-reference/orders/show-order", contract("storefront-v2026-04", "get", "/api/v202604/company/orders/{id}")],
       ["api-reference/paypal/authorize-a-paypal-order", contract("payments-v2026-04", "post", "/api/payment/v2026-04/paypal/authorize")],
     ]) {
-      assert.equal(isSanctionedLegacyHit("v2025-06", page, text), false, page);
-      assert.equal(isSanctionedLegacyHit("v202506", page, text), false, page);
+      assert.equal(hit("v2025-06", page, text), false, page);
+      assert.equal(hit("v202506", page, text), false, page);
     }
   });
 
@@ -971,15 +974,17 @@ describe("isSanctionedLegacyHit", () => {
     const admin = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
     // No contract line at all: prose and pages the corpus doesn't label.
     assert.equal(isSanctionedLegacyHit("v2025-06", "api/authentication"), false);
-    assert.equal(isSanctionedLegacyHit("v202506", "sdk/components", "See GET /api/v202506/orders."), false);
+    assert.equal(hit("v202506", "sdk/components", "See GET /api/v202506/orders."), false);
     // The contract quoted mid-sentence is not the page's own contract line.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "guides/example", `Its contract is ${admin} today.`), false);
+    assert.equal(hit("v2025-06", "api-reference/x/y", `Its contract is ${admin} today.`), false);
+    // A prose page never qualifies, even with a contract-shaped line of its own.
+    assert.equal(hit("v2025-06", "guides/widget-user-information", `Call it.\n${admin}\n`), false);
     // A neighbouring spec name is not one of the three.
     assert.equal(
-      isSanctionedLegacyHit("v2025-06", "api-reference/x/y", contract("partner-v2025-06", "get", "/api/v2025-06/x")),
+      hit("v2025-06", "api-reference/x/y", contract("partner-v2025-06", "get", "/api/v2025-06/x")),
       false,
     );
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/admins/list-admins", `# List admins\n\n${admin}\n`), true);
+    assert.equal(hit("v2025-06", "api-reference/admins/list-admins", `# List admins\n\n${admin}\n`), true);
   });
 
   it("sanctions the version marker on the exact prose pages that explain the Public SDK API", () => {
@@ -997,18 +1002,18 @@ describe("isSanctionedLegacyHit", () => {
     // (Drop Zones and root themes), so per_page still fails on every other one.
     const page = "api-reference/carts/creates-a-cart";
     const text = contract("public-v2025-06", "post", "/api/public/v2025-06/commerce/carts");
-    assert.equal(isSanctionedLegacyHit("v2025-06", page, text), true);
-    assert.equal(isSanctionedLegacyHit("per_page", page, text), false);
-    assert.equal(isSanctionedLegacyHit("/api/v1/", page, text), false);
-    assert.equal(isSanctionedLegacyHit("company/v1/", page, text), false);
+    assert.equal(hit("v2025-06", page, text), true);
+    assert.equal(hit("per_page", page, text), false);
+    assert.equal(hit("/api/v1/", page, text), false);
+    assert.equal(hit("company/v1/", page, text), false);
   });
 
   it("sanctions per_page on the verified Public SDK root themes list, and nothing more", () => {
     const page = "api-reference/root-themes/list-root-themes";
     const text = contract("public-v2025-06", "get", "/api/public/v2025-06/root_themes");
-    assert.equal(isSanctionedLegacyHit("per_page", page, text), true);
-    assert.equal(isSanctionedLegacyHit("v2025-06", page, text), true);
-    assert.equal(isSanctionedLegacyHit("/api/v1/", page, text), false);
+    assert.equal(hit("per_page", page, text), true);
+    assert.equal(hit("v2025-06", page, text), true);
+    assert.equal(hit("/api/v1/", page, text), false);
     assert.equal(isSanctionedLegacyHit("per_page", "api-reference/root-themes/get-root-theme-by-id"), false);
   });
 
@@ -1038,12 +1043,12 @@ describe("isSanctionedLegacyHit", () => {
       ["api-reference/admins/list-admins", contract("admin-v2025-06", "get", "/api/v2025-06/admins")],
       ["api-reference/members/list-members", contract("members-v2025-06", "get", "/api/v2025-06/members")],
     ]) {
-      assert.equal(isSanctionedLegacyHit("v2025-06", label, text), true, label);
-      assert.equal(isSanctionedLegacyHit("v202506", label, text), true, label);
-      assert.equal(isSanctionedLegacyHit("company/v1/", label, text), false, label);
+      assert.equal(hit("v2025-06", label, text), true, label);
+      assert.equal(hit("v202506", label, text), true, label);
+      assert.equal(hit("company/v1/", label, text), false, label);
     }
     const admins = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
-    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/admins/list-admins", admins), false);
+    assert.equal(hit("per_page", "api-reference/admins/list-admins", admins), false);
     // Prose never inherits the generated-page licence.
     assert.equal(isSanctionedLegacyHit("v2025-06", "guides/widget-user-information"), false);
   });
@@ -1127,17 +1132,33 @@ describe("scanLegacyAttributed", () => {
     ]);
   });
 
+  it("sanctions a /mcp chunk of a v2025-06 page by its label, with no contract line in it", () => {
+    // Search chunks rarely carry the contract line, so the page is known from llms-full.txt.
+    const pages = v2025GeneratedPages([
+      { label: "api-reference/carts/updates-a-cart-put", text: "/api-reference/public-v2025-06.yaml put /api/public/v2025-06/commerce/carts/{cart_token}" },
+    ]);
+    const chunk = {
+      label: "api-reference/carts/updates-a-cart-put",
+      text: "REST Endpoint PUT /api/public/v2025-06/commerce/carts/{cart_token}",
+    };
+    assert.deepEqual(scanLegacyAttributed([chunk], pages).unsanctioned, []);
+    assert.deepEqual(scanLegacyAttributed([chunk]).unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/updates-a-cart-put" },
+    ]);
+  });
+
   it("reads a tokens page's spec from its contract line before the tokens prefix is removed", () => {
     // The tokens exception removes `/api/v2025-06/tokens/...` occurrences first, which
-    // cuts into the page's own contract line. Its other version markers are still
-    // sanctioned because the spec is read from the page's original text.
+    // cuts into the page's own contract line. The page set is built from the original
+    // section, so its other version markers are still sanctioned.
     const label = "api-reference/tokens/create-a-public-token";
-    const result = scanLegacyAttributed([
+    const sections = [
       {
         label,
         text: "/api-reference/admin-v2025-06.yaml post /api/v2025-06/tokens/public\nPart of the v2025-06 API.",
       },
-    ]);
+    ];
+    const result = scanLegacyAttributed(sections, v2025GeneratedPages(sections));
     assert.deepEqual(result.unsanctioned, []);
     assert.ok(result.sanctioned.some((hit) => hit.label === label && hit.marker === "v2025-06"));
   });
@@ -1277,7 +1298,8 @@ describe("scanLegacyAttributed", () => {
       "Superseded the old /api/v2025-06/carts endpoint.",
     ].join("\n");
 
-    const { sanctioned, unsanctioned } = scanLegacyAttributed(splitLlmsSections(doc));
+    const sections = splitLlmsSections(doc);
+    const { sanctioned, unsanctioned } = scanLegacyAttributed(sections, v2025GeneratedPages(sections));
     assert.deepEqual(sanctioned, [
       { marker: "company/v1/", label: "(agent-instructions banner)" },
       { marker: "/api/v1/", label: "(agent-instructions banner)" },
