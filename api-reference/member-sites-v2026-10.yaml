@@ -693,8 +693,10 @@ components:
       - state
       - current
       - createdAt
+      - expiresAt
       - publishedAt
       - manifestSha256
+      - startedBy
       properties:
         id:
           type: string
@@ -714,6 +716,12 @@ components:
           type: string
           format: date-time
           description: When the upload started.
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When an `uploading` bundle expires unpublished, 60 minutes after the owner started it or 7 days after an editor did; null once it is published or failed.
         publishedAt:
           type:
           - string
@@ -726,6 +734,20 @@ components:
           - 'null'
           pattern: "^[0-9a-f]{64}$"
           description: The SHA-256 of the manifest the gateway wrote; null until the bundle is published.
+        startedBy:
+          type:
+          - object
+          - 'null'
+          description: Who started the upload, so the owner can tell an editor's draft from their own; null for a bundle started before this was recorded, or whose user is gone, and for every bundle when an editor lists them, since a share holder is told no other member's name.
+          additionalProperties: false
+          required:
+          - name
+          properties:
+            name:
+              type:
+              - string
+              - 'null'
+              description: The name of the user who started it, or null when they have none.
     SiteBundlesEnvelope:
       type: object
       description: One page of the bundles of a site.
@@ -3597,13 +3619,13 @@ components:
           schema:
             "$ref": "#/components/schemas/ErrorEnvelope"
     BundleRefused:
-      description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never serves a site's bundles, with or without the `X-Fluid-Member-Site` header.
+      description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; the request is on the cookie mount, which never serves a site's bundles, with or without the `X-Fluid-Member-Site` header; or an editor's start changes the access declaration, `functions` or `schema` the site serves (`details.error` is `owner_only`).
       content:
         application/json:
           schema:
             "$ref": "#/components/schemas/ErrorEnvelope"
     BundleConflict:
-      description: The site already has 5 uploads in progress (`details.error` is `uploads_in_progress`), so nothing was saved and the gateway was not asked; finish one or wait for one to expire, 60 minutes after it started. Or the bundle was gone when the gateway answered, because its site was deleted (`superseded`), and no upload URLs are returned.
+      description: The member already has 5 uploads of the site in progress (`details.error` is `uploads_in_progress`), so nothing was saved and the gateway was not asked; finish one or wait for one to expire, 60 minutes after it started (7 days for an editor's draft). Or the bundle was gone when the gateway answered, because its site was deleted (`superseded`), and no upload URLs are returned.
       content:
         application/json:
           schema:
@@ -4859,7 +4881,7 @@ paths:
       description: |
         Shares one of the member's sites with an audience: one member, the member's downline, or a segment of the company's members by member type and country. Sharing an audience that is already shared writes nothing and returns the share that exists, with `200` instead of `201`; its permission is not changed, so change it with `PATCH`.
 
-        Sharing is checked against the company's messaging policy when it is made: a member, or an audience, outside the audiences the policy lets the member reach is refused with `403` and its reason. Sharing with oneself, with a member of another company, with an unknown member type or country, or with a target the audience kind does not take is refused with `422`. A request that loses a race with another change to the site's shares, and finds no share for the audience afterwards, is refused with `409`: send it again.
+        Sharing is checked against the company's messaging policy when it is made: a member, or an audience, outside the audiences the policy lets the member reach is refused with `403` and its reason. Sharing with oneself, with a member of another company, with an unknown member type or country, or with a target the audience kind does not take is refused with `422`. A site that is inactive, locked by a company admin or taken down is refused with `422` and `error.details.error` `site_closed`, since no share holder could open it; share it again once it reopens. A request that loses a race with another change to the site's shares, and finds no share for the audience afterwards, is refused with `409`: send it again.
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only.
       operationId: member_site_shares_create
@@ -4961,7 +4983,7 @@ paths:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-09-30T15:08:21Z'
         '422':
-          description: A missing or unknown audience kind or permission, a target the audience kind does not take or lacks, a member, member type or country the company does not hold, a share with oneself, or an unknown field.
+          description: A missing or unknown audience kind or permission, a target the audience kind does not take or lacks, a member, member type or country the company does not hold, a share with oneself, an unknown field, or a site that is inactive, locked or taken down (`error.details.error` is `site_closed`).
           content:
             application/json:
               schema:
@@ -5141,7 +5163,7 @@ paths:
       description: |
         Shares the site with the requester: adds a `view` share for them, closes the request as `approved`, and emails the requester once it commits. Access comes from the share alone; the request grants nothing. Approving an approved request writes and sends nothing and returns the same request with `200`.
 
-        The request is checked again when it is approved. If the site is no longer published and private, the requester has left the company, or the company's messaging policy no longer lets the owner share with them, the request is closed as superseded, no share is written, and the answer is `422` with the reason in `error.details.reason`: `site_not_published`, `site_not_private`, `requester_left`, `outside_messaging_scope` or `not_owner`. Approving it again answers the same.
+        The request is checked again when it is approved. If the site is no longer published and private, the requester has left the company, or the company's messaging policy no longer lets the owner share with them, the request is closed as superseded, no share is written, and the answer is `422` with the reason in `error.details.reason`: `site_not_published`, `site_not_private`, `requester_left`, `outside_messaging_scope` or `not_owner`. Approving it again answers the same. An inactive site answers `422` with `error.details.error` `site_closed`, writes nothing and leaves the request pending, so it can be approved once the site is active again (a locked or taken-down site is not published, so the request is superseded as above).
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` until access requests are enabled for the member's company.
       operationId: member_site_access_requests_approve
@@ -5330,7 +5352,7 @@ paths:
       description: |
         Invites a member of the company to one of the member's sites, offering `view` or `edit`. The invitation grants nothing until the invitee accepts it, which adds a member share; it can be answered for 7 days. A site has one invitation per member: inviting a member who already has one, whatever became of it, sends it again with this role and a new expiry, and answers `200` with it. The first invitation answers `201`.
 
-        The member must be a member of the company and not the caller, and the company's messaging policy must let the caller reach them (`403` `outside_messaging_scope` otherwise). A member the site is already shared with by a member share answers `422` `already_shared`. A branch takes no invitations.
+        The member must be a member of the company and not the caller, and the company's messaging policy must let the caller reach them (`403` `outside_messaging_scope` otherwise). A member the site is already shared with by a member share answers `422` `already_shared`. A site that is inactive, locked by a company admin or taken down answers `422` `site_closed`, since no share holder could open it; invite again once it reopens. A branch takes no invitations.
 
         A bearer only, as sharing is: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT. It answers `404` while member sites are not enabled for the member's company. A portal JWT minted read-only is refused with `403`.
       operationId: member_site_invitations_sent_create
@@ -5408,7 +5430,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
-          description: The body is invalid, the member is not a member of the company or is the caller, or the site is already shared with them (`error.details.error` is `already_shared`).
+          description: The body is invalid, the member is not a member of the company or is the caller, the site is already shared with them (`error.details.error` is `already_shared`), or the site is inactive, locked or taken down (`error.details.error` is `site_closed`).
           content:
             application/json:
               schema:
@@ -5456,9 +5478,9 @@ paths:
     get:
       summary: List a site's bundles
       description: |
-        The bundles of one of the member's sites, newest first, in every state: an upload in progress, a failed one, and each published one, with the one the site serves marked `current`. A bundle is its id, state, times and the SHA-256 of its manifest, never the manifest. Roll back to an earlier published bundle with its `current` route. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every bundle. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+        The bundles of one of the member's sites, or of a site they edit, newest first, in every state: an upload in progress, a failed one, and each published one, with the one the site serves marked `current`. A bundle is its id, state, times, who started it and the SHA-256 of its manifest, never the manifest, so the owner sees an editor's draft waiting to be published. Roll back to an earlier published bundle with its `current` route. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every bundle. It is not cached (`max-age=0`) and can be revalidated with an ETag.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change. An email-link credential lists only the member's own sites.
       operationId: member_sites_bundles_index
       tags:
       - site-bundles
@@ -5497,18 +5519,32 @@ paths:
               example:
                 status: 200
                 data:
+                - id: 0199537f-0000-7000-8000-000000000006
+                  state: uploading
+                  current: false
+                  createdAt: '2026-11-06T09:00:00.000Z'
+                  expiresAt: '2026-11-13T09:00:00.000Z'
+                  publishedAt:
+                  manifestSha256:
+                  startedBy:
+                    name: Casey Brooks
                 - id: 0199537f-0000-7000-8000-000000000005
                   state: published
                   current: true
                   createdAt: '2026-11-05T10:00:00.000Z'
+                  expiresAt:
                   publishedAt: '2026-11-05T10:02:00.000Z'
                   manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                  startedBy:
+                    name: Riley Kim
                 - id: 0199537f-0000-7000-8000-000000000004
                   state: published
                   current: false
                   createdAt: '2026-11-04T10:00:00.000Z'
+                  expiresAt:
                   publishedAt: '2026-11-04T10:02:00.000Z'
                   manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                  startedBy:
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:05:00Z'
@@ -5546,9 +5582,11 @@ paths:
     post:
       summary: Start a bundle upload
       description: |
-        Starts publishing one of the member's sites as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A site may have 5 uploads in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with `409` until one finishes or expires. Published bundles are kept and do not count.
+        Starts publishing one of the member's sites as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A member may have 5 uploads of a site in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with `409` until one finishes or expires. Published bundles are kept and do not count.
 
-        Bearer only: a request on the cookie mount is refused with `403`, so a site's own code cannot publish. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change. A gateway that cannot prepare the uploads is a `502`; the bundle is then failed, and starting again makes a new one. A `409` also answers a site already at its 5 uploads in progress.
+        An editor of the site (a member who accepted an invitation to edit) starts a draft: it lasts 7 days, counts toward the editor's own 5, and only the owner publishes it. Its access declaration, `functions` and `schema` must be the ones the site serves (none when it serves none), or the start is refused with `403` (`details.error` is `owner_only`, `details.path` names the part): those stay the owner's to change.
+
+        Bearer only: a request on the cookie mount is refused with `403`, so a site's own code cannot publish. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change. A gateway that cannot prepare the uploads is a `502`; the bundle is then failed, and starting again makes a new one. A `409` also answers a member already at their 5 uploads of the site in progress.
       operationId: member_sites_bundles_create
       tags:
       - site-bundles
@@ -5754,7 +5792,7 @@ paths:
 
         A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, and for a bundle that is not the site's.
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
       operationId: member_sites_bundles_publish
       tags:
       - site-bundles
@@ -5792,7 +5830,7 @@ paths:
         '404':
           "$ref": "#/components/responses/BundleNotFound"
         '409':
-          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it, or another publish of the site changed its database after this one planned its schema change or before it switched; the bundle stays uploading, so send the same publish again and it is planned anew), `schema_change_pending` (another upload's change to the site's database may have run and is not recorded yet; `details.pendingBundle` is that upload's id, and the message says to send it again to finish it, after which this publish can be sent again; nothing was applied and the bundle stays uploading), `copy_in_progress` (the copied bundle's background file transfer or the branch's database copy has not completed; it stays uploading and the same publish may be retried), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), or `frame_label_taken` (another site took the frame label at the same moment; send the publish again).
+          description: The bundle can no longer be published and nothing changed. `details.error` is `superseded` (a newer start deleted it, or another publish of the site changed its database after this one planned its schema change or before it switched; the bundle stays uploading, so send the same publish again and it is planned anew), `schema_change_pending` (another upload's change to the site's database may have run and is not recorded yet; `details.pendingBundle` is that upload's id, and the message says to send it again to finish it, after which this publish can be sent again; nothing was applied and the bundle stays uploading), `copy_in_progress` (the copied bundle's background file transfer or the branch's database copy has not completed; it stays uploading and the same publish may be retried), `not_uploading` (it failed, or is published and no longer the site's current version, as after a rollback), `frame_label_taken` (another site took the frame label at the same moment; send the publish again), or `stale_draft` (an editor's draft whose access declaration, functions or schema, named in `details.path`, differ from the ones the site serves now, because the owner published since the editor started it; publishing it would undo that, so the editor uploads the draft again).
           content:
             application/json:
               schema:
@@ -5844,7 +5882,7 @@ paths:
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site a company admin took down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, and for a bundle that is not the site's.
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
       operationId: member_sites_bundles_make_current
       tags:
       - site-bundles
@@ -7165,7 +7203,7 @@ paths:
       description: |
         Shares the site with the member: adds a share with the invitation's role for them, as the member who sent the invitation, and closes the invitation as `accepted`. A `view` invitation adds a `view` share; an `edit` invitation makes the member an editor, turning a share they already hold into an `edit` share. Access comes from the share alone. Accepting an accepted invitation writes nothing and returns the same invitation with `200` while its share stands; once the owner has removed the share it answers `422` `revoked`.
 
-        The invitation is checked again when it is accepted. If its sender no longer owns the site, or the company's messaging policy no longer lets them share with the member, it is closed as superseded, no share is written, and the answer is `422` with `error.details.error` `superseded` and the reason in `error.details.reason`: `not_owner`, `outside_messaging_scope` or `site_unavailable` (the share could not be written for the site as it is now). Past `expires_at` it answers `422` `expired`, whether or not it was declined, and after the owner withdrew it `422` `revoked`. Declined before its expiry it answers `409` with `error.details.error` `declined`: undo the decline first, since sending it again answers the same. A change to the invitation or its site at the same moment answers `409` with `error.details.error` `conflict` and nothing written; send the request again.
+        The invitation is checked again when it is accepted. If its sender no longer owns the site, or the company's messaging policy no longer lets them share with the member, it is closed as superseded, no share is written, and the answer is `422` with `error.details.error` `superseded` and the reason in `error.details.reason`: `not_owner`, `outside_messaging_scope` or `site_unavailable` (the share could not be written for the site as it is now). Past `expires_at` it answers `422` `expired`, whether or not it was declined, and after the owner withdrew it `422` `revoked`. While the site is not open (inactive, locked or taken down) it answers `422` `site_closed`, writes nothing and stays pending, so accepting again once the site reopens adds the share. Declined before its expiry it answers `409` with `error.details.error` `declined`: undo the decline first, since sending it again answers the same. A change to the invitation or its site at the same moment answers `409` with `error.details.error` `conflict` and nothing written; send the request again.
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` while member sites are not enabled for the member's company.
       operationId: member_site_invitations_accept
@@ -7220,7 +7258,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
-          description: The invitation has expired, was withdrawn or was superseded; `error.details.error` says which, and for `superseded` `error.details.reason` says why.
+          description: The invitation has expired, was withdrawn or was superseded, or the site is not open (`site_closed`, and the invitation stays pending); `error.details.error` says which, and for `superseded` `error.details.reason` says why.
           content:
             application/json:
               schema:
