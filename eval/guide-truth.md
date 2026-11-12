@@ -3120,3 +3120,9 @@ Durable decisions:
   both shells (gateway or not).
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
+- `/account` lists the menu's sites, then **Recently visited** (fluid#33468): up
+  to 10 sites the member opened while signed in that no share gives them, newest
+  first, counted for the one-site redirect. Verified against fluid `v2.10.0`, the
+  production release, on 2026-11-12. An inactive site refuses other members with
+  the same answer as a missing site: not found on the older shell, the access page
+  on the gateway shell, so the page names neither.
