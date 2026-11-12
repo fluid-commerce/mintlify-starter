@@ -247,26 +247,19 @@ const PER_PAGE_PROSE_PAGES = new Set([
 // A page is one of them when its own contract line in llms-full.txt names one of the
 // three specs:
 //   /api-reference/admin-v2025-06.yaml get /api/v2025-06/admins
-// v2025GeneratedPages reads those lines once, from the generated (`api-reference/`)
-// sections, into a set of page labels; every surface the checker scans (llms-full.txt,
-// /mcp chunks, per-page markdown) is then judged by its label, since a search chunk
-// rarely carries the contract line itself. The sanction is per page and keyed on the
-// spec, never on a tag or a `v2025-06` pattern class: the `carts`, `orders` and
-// `paypal` tags also hold v2026-04 pages, whose contract lines name their own spec,
-// so a version marker on them still fails, and a prose page never qualifies however
-// its text reads. Reading the spec off the published page means a sync that adds,
-// renames or removes one of these operations needs no edit here, where a hand-kept
-// page list broke CI until a PR caught up with each deploy.
+// v2025GeneratedPages reads those pages once from llms-full.txt's generated
+// (`api-reference/`) sections, and every surface the checker scans is judged by
+// label, since a /mcp chunk rarely carries the contract line. Per page and keyed on the
+// spec, never on a tag: the shared `carts`, `orders` and `paypal` tags hold v2026-04
+// pages whose contract lines name their own spec, and prose never qualifies.
 const V2025_06_GENERATED_CONTRACT =
   /^(?:`{3,}yaml )?\/api-reference\/(?:public|admin|members)-v2025-06\.yaml [a-z]+ \/\S*$/m;
 
-// The labels (without `api-reference/`) of the generated pages whose contract line
-// names a v2025-06 spec, from llms-full.txt's sections.
 function v2025GeneratedPages(sections) {
   const pages = new Set();
-  for (const { label, text } of sections || []) {
+  for (const { label, text } of sections) {
     if (label.startsWith("api-reference/") && V2025_06_GENERATED_CONTRACT.test(text)) {
-      pages.add(label.slice("api-reference/".length));
+      pages.add(label.replace(/^api-reference\//, ""));
     }
   }
   return pages;
@@ -770,18 +763,16 @@ function splitLlmsSections(text) {
 //   3. The named generated pages whose offset pagination is real, each verified against
 //      its Rails action — see OFFSET_PAGINATED_PAGES — plus the exact prose pages in
 //      PER_PAGE_PROSE_PAGES. Exact pages only, never a whole tag.
-//   4. The generated `public-v2025-06` reference pages, whose paths genuinely carry
-//      the version, by their contract line (v2025GeneratedPages), plus the
-//      exact prose pages that explain this surface (PUBLIC_SDK_V2025_06_PROSE_PAGES).
-//      That sanction covers only the version marker.
+//   4. The generated `public-v2025-06`, `admin-v2025-06` and `members-v2025-06`
+//      reference pages, whose paths genuinely carry the version, found by their
+//      contract line (v2025GeneratedPages), plus the exact prose pages that explain the
+//      Public SDK surface (PUBLIC_SDK_V2025_06_PROSE_PAGES). The version marker only.
 //      The exact Public SDK Drop Zones page separately permits `per_page` through
 //      OFFSET_PAGINATED_PAGES; the v1 markers still fail there.
 //   5. The exact reciprocal Public SDK sentence in `checkout-v2026-04`'s
 //      info.description, removed occurrence-by-occurrence before this page-level
 //      sanction function runs. A generated Checkout contract line is required.
-//   6. The generated `admin-v2025-06` and `members-v2025-06` pages, by their contract
-//      line like 4. The version marker only.
-//   7. The tokens path prefix, the two navigation-menus sentences, and the exact
+//   6. The tokens path prefix, the two navigation-menus sentences, and the exact
 //      version-comparison phrases on two generated pages, removed
 //      occurrence-by-occurrence like 5 — see SANCTIONED_OCCURRENCES.
 function isSanctionedLegacyHit(marker, label, sectionText = "", v2025Pages = new Set()) {
@@ -793,14 +784,7 @@ function isSanctionedLegacyHit(marker, label, sectionText = "", v2025Pages = new
     if (PER_PAGE_PROSE_PAGES.has(page)) return true;
     if (sectionText.includes("webhooks-v0.yaml")) return true;
   }
-  if (
-    V2025_06_MARKER.test(marker) &&
-    (PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) ||
-      v2025Pages.has(page))
-  ) {
-    return true;
-  }
-  return false;
+  return V2025_06_MARKER.test(marker) && (PUBLIC_SDK_V2025_06_PROSE_PAGES.has(page) || v2025Pages.has(page));
 }
 
 // Finds every legacy marker in `text`, attributing each to the section that holds

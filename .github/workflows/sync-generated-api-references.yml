@@ -24,8 +24,6 @@ env:
   CLAIMS_OUTPUT: /tmp/claims-output.txt
   LINKS_LABEL: broken-docs-link
   LINKS_OUTPUT: /tmp/links-output.txt
-  EVAL_TESTS_LABEL: eval-tests-failing
-  EVAL_TESTS_OUTPUT: /tmp/eval-tests-output.txt
 
 jobs:
   sync:
@@ -232,66 +230,6 @@ jobs:
             gh issue close "$existing" --comment "The internal link check passed after this sync. Run: ${RUN_URL}"
           fi
 
-      # FLAG (non-gating): run validate.yml's eval harness unit tests on the synced
-      # tree, so a test that reads a synced file and breaks shows up on the sync instead
-      # of on the next unrelated PR. None reads docs.json or a spec since the hosted
-      # checker stopped keeping v2025-06 page maps (2026-11-12); this stays as a cheap
-      # guard. A failure is captured for the issue below; it does NOT fail the run.
-      - name: Run eval harness unit tests against synced references
-        id: eval_tests
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success'
-        continue-on-error: true
-        working-directory: eval
-        run: |
-          set -o pipefail
-          node --test --test-reporter=spec 2>&1 | tee "$EVAL_TESTS_OUTPUT"
-
-      - name: Open/update eval unit test issue
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success' && steps.eval_tests.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh label create "$EVAL_TESTS_LABEL" \
-            --description "Eval harness unit tests fail on main" --color D93F0B || true
-
-          body="/tmp/eval-tests-issue-body.md"
-          {
-            echo "The hourly API reference sync pushed to \`main\`, and the eval harness unit tests now fail there. \`validate.yml\` stays **red** on \`main\` and on every PR until a PR fixes them."
-            echo
-            echo "Sync run: ${RUN_URL}"
-            echo
-            echo "Failing tests (truncated to 300 lines):"
-            echo
-            echo '```'
-            sed -n '/failing tests:/,$p' "$EVAL_TESTS_OUTPUT" | head -300
-            echo '```'
-          } > "$body"
-
-          existing="$(gh issue list --label "$EVAL_TESTS_LABEL" --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file "$body"
-            echo "Commented on existing eval unit test issue #${existing}."
-          else
-            gh issue create --title "Eval harness unit tests fail after API reference sync" \
-              --label "$EVAL_TESTS_LABEL" --body-file "$body"
-          fi
-
-      # Like the link check, the tests only run when a sync changes something, so the
-      # issue closes on the first such sync after they pass again.
-      - name: Close eval unit test issue once tests pass
-        if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'success' && steps.eval_tests.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          existing="$(gh issue list --label "$EVAL_TESTS_LABEL" --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$existing" ]; then
-            gh issue close "$existing" --comment "The eval harness unit tests passed after this sync. Run: ${RUN_URL}"
-          fi
-
-      # QUARANTINE: validation failures never reach main. Park invalid references
-      # on a blocked branch with a PR for a human; the run exits 1.
       - name: Quarantine invalid references on a blocked PR
         if: steps.diff.outputs.changed == 'true' && steps.validate.outcome == 'failure'
         env:

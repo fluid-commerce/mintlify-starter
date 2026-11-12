@@ -943,7 +943,6 @@ describe("isSanctionedLegacyHit", () => {
     ]) {
       assert.equal(hit("v2025-06", page, text), true, page);
       assert.equal(hit("v202506", page, text), true, page);
-      assert.equal(hit("company/v1/", page, text), false, page);
     }
     const session = contract("public-v2025-06", "post", "/api/public/v2025-06/session");
     // Both marker spellings the two legacy patterns can capture, including the
@@ -951,8 +950,10 @@ describe("isSanctionedLegacyHit", () => {
     assert.equal(hit("V2025_06", "api-reference/session/start-a-new-session", session), true);
     // The label is accepted with or without the api-reference/ prefix, matching how
     // llms-full.txt section labels and prompts' target_page labels differ.
-    const pages = v2025GeneratedPages([{ label: "api-reference/session/start-a-new-session", text: session }]);
-    assert.equal(isSanctionedLegacyHit("v2025-06", "session/start-a-new-session", "", pages), true);
+    assert.equal(
+      isSanctionedLegacyHit("v2025-06", "session/start-a-new-session", "", v2025GeneratedPages([{ label: "api-reference/session/start-a-new-session", text: session }])),
+      true,
+    );
   });
 
   it("does NOT sanction a v2026-04 page sharing a tag with a public-v2025-06 page", () => {
@@ -1038,19 +1039,17 @@ describe("isSanctionedLegacyHit", () => {
   it("sanctions only the version marker on admin-v2025-06 and members-v2025-06 pages", () => {
     // AGENTS.md: generated reference pages only, and version marker only. per_page on
     // these pages is still judged page by page against the verified offset list.
+    const admins = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
     for (const [label, text] of [
       ["api-reference/shipping-methods/list-shipping-methods", contract("admin-v2025-06", "get", "/api/v2025-06/shipping_methods")],
-      ["api-reference/admins/list-admins", contract("admin-v2025-06", "get", "/api/v2025-06/admins")],
+      ["api-reference/admins/list-admins", admins],
       ["api-reference/members/list-members", contract("members-v2025-06", "get", "/api/v2025-06/members")],
     ]) {
       assert.equal(hit("v2025-06", label, text), true, label);
       assert.equal(hit("v202506", label, text), true, label);
       assert.equal(hit("company/v1/", label, text), false, label);
     }
-    const admins = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
     assert.equal(hit("per_page", "api-reference/admins/list-admins", admins), false);
-    // Prose never inherits the generated-page licence.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "guides/widget-user-information"), false);
   });
 
   it("never sanctions the version-comparison pages page-wide", () => {

@@ -221,12 +221,7 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`broken-docs-link`) carrying the `FAIL` lines. `validate.yml` stays red on `main`
   until a PR fixes the link or adds a redirect. The next sync whose link check passes
   closes the issue; the check runs only when a sync changes something, so the PR that
-  fixes the links can close it sooner. The run also runs `validate.yml`'s eval harness
-  unit tests (`node --test` in `eval/`) the same way, with the `eval-tests-failing`
-  label. The hosted checker sanctions the version marker on generated `admin-v2025-06`,
-  `members-v2025-06` and `public-v2025-06` pages by each page's own contract line, so
-  a synced operation on those specs needs no change to the checker (until 2026-11-12,
-  hand-kept page maps did, and each such sync failed these tests until a PR caught up).
+  fixes the links can close it sooner.
 - **`external-links.yml`** — weekly (Mondays) and on demand. Runs
   `node eval/check-broken-links.mjs --external` twice, 15 minutes apart, and keeps only
   the external links broken on both passes, because the CLI also counts a timeout or
