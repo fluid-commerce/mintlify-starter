@@ -226,7 +226,6 @@ test("member and company copies are visible while Liquid publication stays hidde
   }
 });
 
-
 test("v2027-01 member activities get their own directory, apart from the v2026-10 pages", () => {
   // The two specs share the activities tag and its summaries, so without the
   // directory both would publish at /api-reference/activities/..., and the generator

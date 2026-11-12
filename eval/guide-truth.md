@@ -3123,16 +3123,13 @@ Durable decisions:
 
 ## Member droplets and v2027-01 member activities synced (2026-11-12)
 
-Both specs were on the public mirror (fluid's docs job uploads all of
-`apps/rails/docs/openapi`) but not in `.github/synced-api-references.json`, so neither had a
-reference page. Durable decisions:
+Both specs were on the public mirror but missing from `.github/synced-api-references.json`, so
+neither had a reference page. Durable decisions:
 
 - `member-activities-v2027-01` shares the `activities` tag and its four summaries with the
-  `v2026-10` activity pages in `member-people-v2026-10`. It is configured with its own output
-  directory, `api-reference/member-v2027-01`, so its pages don't take the same URLs; a unit test
-  in `generate-api-nav.test.mjs` pins that. In the sidebar it nests under **Member API >
-  Activities** as a `v2027-01` child group. Hand-written pages link the `v2027-01` pages, the
-  newer version, and say `v2026-10` keeps the earlier shape.
+  `v2026-10` activity pages. Like `company-v0`, it gets its own output directory,
+  `api-reference/member-v2027-01`, so its pages keep their own URLs (tested). It nests under
+  **Member API > Activities** as a `v2027-01` child group. Hand-written pages link the
+  `v2027-01` pages.
 - `member-droplets-v2026-10` (one operation, a member-credentialed Droplet backend query) sits
   under **Member API > Droplet queries**, named apart from the company **Droplets** section.
-
