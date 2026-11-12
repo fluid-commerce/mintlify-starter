@@ -225,3 +225,13 @@ test("member and company copies are visible while Liquid publication stays hidde
     assert.equal(countRefs(sections), 2);
   }
 });
+
+test("v2027-01 member activities get their own directory, apart from the v2026-10 pages", () => {
+  // The two specs share the activities tag and its summaries, so without the
+  // directory both would publish at /api-reference/activities/..., and the generator
+  // would drop the v2027-01 pages with only a warning.
+  const real = JSON.parse(readFileSync(join(ROOT, ".github/api-reference-nav.json"), "utf8"));
+  const op = (spec) => ({ spec, tag: "activities", summary: "List the member's activity feed", method: "get", path: "/x" });
+  assert.equal(pageSlug(op("member-activities-v2027-01"), real), "member-v2027-01/activities/list-the-members-activity-feed");
+  assert.equal(pageSlug(op("member-people-v2026-10"), real), "activities/list-the-members-activity-feed");
+});
