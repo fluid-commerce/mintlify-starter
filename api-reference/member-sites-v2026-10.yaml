@@ -591,7 +591,7 @@ components:
             "$ref": "#/components/schemas/SiteBundleAccessEntry"
     SiteBundleStart:
       type: object
-      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access` and `meta` and never in `files`.
+      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access`, `meta` and `shell` and never in `files`.
       additionalProperties: false
       required:
       - files
@@ -633,6 +633,16 @@ components:
               type: object
             pages:
               type: object
+        shell:
+          type: object
+          description: "The site's `config/shell.json`, how the storefront shell draws its own parts around the site. `fairshare` is `visible` (the default) or `hidden`: `hidden` hides FairShare's floating bubbles from view while FairShare still loads, so the cart, checkout and the sharer's credit keep working. No other key is allowed. Checked when the bundle starts."
+          additionalProperties: false
+          properties:
+            fairshare:
+              type: string
+              enum:
+              - visible
+              - hidden
         functions:
           type: object
           description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
@@ -2069,6 +2079,9 @@ components:
           type: string
           format: date-time
           description: When the site was shared with the audience.
+        pinned:
+          type: boolean
+          description: Whether the share pins the site in the menu of every member it matches. Such a member reads `pinned_by_share` on the site's menu entry, unless they removed the site.
       required:
       - id
       - audience_kind
@@ -2077,6 +2090,7 @@ components:
       - country
       - label
       - permission
+      - pinned
       - created_at
     SiteShareCreate:
       type: object
@@ -2110,12 +2124,17 @@ components:
           - copy
           default: view
           description: What the audience may do with the site. Ignored for an audience that is already shared; change it with `PATCH`.
+        pinned:
+          type: boolean
+          default: false
+          description: Whether the share pins the site in the menu of every member it matches. Ignored for an audience that is already shared; change it with `PATCH`.
       required:
       - audience_kind
     SiteShareUpdate:
       type: object
-      description: The change to a share. Only the permission changes; to change who a share names, delete it and add another.
+      description: The change to a share. Only the permission and whether it pins its site change, and one of them is required; to change who a share names, delete it and add another.
       additionalProperties: false
+      minProperties: 1
       properties:
         permission:
           type: string
@@ -2123,8 +2142,9 @@ components:
           - view
           - copy
           description: What the audience may do with the site.
-      required:
-      - permission
+        pinned:
+          type: boolean
+          description: Whether the share pins the site in the menu of every member it matches.
     SiteShareEnvelope:
       type: object
       description: One share.
@@ -2633,6 +2653,8 @@ components:
           description: Display title.
         position:
           type: integer
+          minimum: -2147483648
+          maximum: 2147483647
           description: Order of the page among the site's pages. Defaults to 0.
         published:
           type: boolean
@@ -2690,6 +2712,8 @@ components:
           description: Display title.
         position:
           type: integer
+          minimum: -2147483648
+          maximum: 2147483647
           description: Order of the page among the site's pages.
         published:
           type: boolean
@@ -2806,6 +2830,9 @@ components:
         pinned:
           type: boolean
           description: Whether the member pinned this listed site. Always false in removed_sites.
+        pinned_by_share:
+          type: boolean
+          description: Whether a share that matches the member pins this listed site, for everyone it matches. Independent of `pinned`, which stays the member's own pin. Always false in removed_sites and for the member's own sites.
         pinned_for_everyone:
           type: boolean
           description: Whether the company featured this listed site. Always false in removed_sites; featuring never grants access.
@@ -2825,6 +2852,7 @@ components:
           description: The link to share the site, on the company's storefront, with the caller's username as its credit so a visit through it credits them, for example `https://shop.example.com/riley-kim/sites/riley-shop`. A caller whose username cannot be a storefront credit gets the `https://<storefront>/home/sites/<handle>` link, whose `home` credit credits the site's owner. Null while the company is not on the sites gateway, and for a site the gateway cannot serve yet, such as a draft, a taken-down site, or one not yet published under the gateway; show a share button only when it is set, and build no link of your own.
       required:
       - pinned
+      - pinned_by_share
       - pinned_for_everyone
       - role
       - id
@@ -2878,6 +2906,13 @@ components:
         pin_order:
           type: array
           description: Public ids of listed pins in the member's order, by stored position then pin id. Excludes removed or inaccessible sites.
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        share_pin_order:
+          type: array
+          description: Public ids of listed sites a share that matches the member pins and the member has not pinned, the oldest share first (`pinned_by_share` is true on their entries). Excludes removed or inaccessible sites. Holds the company sites a share pins and at most 50 shared sites, the ones whose share was written first.
           uniqueItems: true
           items:
             type: string
@@ -4817,6 +4852,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d02'
                   audience_kind: downline
@@ -4825,6 +4861,7 @@ paths:
                   country:
                   label: Downline of Riley Kim
                   permission: copy
+                  pinned: false
                   created_at: '2026-09-01T10:05:00.000000Z'
                 - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d03'
                   audience_kind: segment
@@ -4837,6 +4874,7 @@ paths:
                     name: United States
                   label: Customer in United States
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:10:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -4917,6 +4955,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -4939,6 +4978,7 @@ paths:
                   country:
                   label: Customer
                   permission: view
+                  pinned: false
                   created_at: '2026-09-30T15:08:21.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -5026,6 +5066,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: copy
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -6904,6 +6945,7 @@ paths:
                     owner_name: Acme
                     pinned: false
                     pinned_for_everyone: true
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: false
@@ -6922,6 +6964,7 @@ paths:
                     owner_name: Sam Lee
                     pinned: false
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: edit
                     company_lock: none
                     removable: false
@@ -6940,6 +6983,7 @@ paths:
                     owner_name: Riley Kim
                     pinned: true
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: true
@@ -6961,6 +7005,7 @@ paths:
                     owner_name: Jo Park
                     pinned: false
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: true
@@ -6971,6 +7016,7 @@ paths:
                       uses: []
                   pin_order:
                   - '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  share_pin_order: []
                   company_pin_order:
                   - '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01'
                   home_site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
