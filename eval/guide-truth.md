@@ -3121,8 +3121,11 @@ Durable decisions:
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
 - `/account` lists the menu's sites, then **Recently visited** (fluid#33468): up
-  to 10 sites the member opened while signed in that no share gives them, newest
-  first, counted for the one-site redirect. Verified against fluid `v2.10.0`, the
-  production release, on 2026-11-12. An inactive site refuses other members with
-  the same answer as a missing site: not found on the older shell, the access page
-  on the gateway shell, so the page names neither.
+  to 10 company or other members' sites from the member's newest stored visits that
+  the menu doesn't list and the member didn't remove, newest first, counted for the
+  one-site redirect. Visits don't expire; only the newest 50 are kept. The **Your
+  sites** heading shows only when both groups have tiles. Verified against fluid
+  `v2.10.0`, the production release, on 2026-11-12. An inactive site refuses other
+  members with the same answer as a missing site: not found on the older shell; on
+  the gateway shell, the access page while the company has it on (every company on
+  2026-11-12), else Fluid's 403 page. The page names neither.
