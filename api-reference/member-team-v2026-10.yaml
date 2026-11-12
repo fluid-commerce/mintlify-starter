@@ -304,6 +304,173 @@ components:
           "$ref": "#/components/schemas/TeamSummary"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
+    TeamGrowth:
+      type: object
+      description: >-
+        The signed-in member's Team members who joined within the period, counted over the same members and
+        five levels as the Team list and summary. Counts only: no Team member is named.
+      additionalProperties: false
+      required:
+      - period
+      - since
+      - direct_count
+      - total_count
+      - by_level
+      - team_count
+      properties:
+        period:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - 1y
+          - all
+          description: The period counted.
+        since:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: >-
+            The UTC start of the period: midnight UTC on the first of its trailing days, today included.
+            Null for `all`, which counts every member of the Team.
+        direct_count:
+          type: integer
+          minimum: 0
+          description: Members directly below the signed-in member who joined in the period. It equals the count at level 1.
+        total_count:
+          type: integer
+          minimum: 0
+          description: Members at all five levels who joined in the period.
+        by_level:
+          type: array
+          description: Members who joined in the period at each of the five levels, nearest first. Always five entries.
+          minItems: 5
+          maxItems: 5
+          items:
+            "$ref": "#/components/schemas/TeamLevelCount"
+        team_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Every member of the current Team, whenever they joined: the `total_count` of
+            `GET /api/member/v2026-10/team/summary`.
+    TeamGrowthEnvelope:
+      type: object
+      description: The signed-in member's Team growth.
+      required:
+      - status
+      - data
+      - meta
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/TeamGrowth"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+    TeamComposition:
+      type: object
+      description: >-
+        The signed-in member's Team, over the same members and five levels as the Team list and summary,
+        counted by member type, rank and activity status. Counts only: no Team member is named.
+      additionalProperties: false
+      required:
+      - total_count
+      - by_member_type
+      - by_rank
+      - by_activity_status
+      properties:
+        total_count:
+          type: integer
+          minimum: 0
+          description: Team members counted. Each list below sums to it.
+        by_member_type:
+          type: array
+          description: Team members per member type, largest count first, then by name. Types with no members are left out.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - slug
+            - name
+            - count
+            properties:
+              slug:
+                type:
+                - string
+                - 'null'
+                description: The member type's slug, as the Team list's `member_type.slug`.
+              name:
+                type:
+                - string
+                - 'null'
+                description: The member type's name, as the Team list's `member_type.name`.
+              count:
+                type: integer
+                minimum: 1
+                description: Team members of this member type.
+        by_rank:
+          type: array
+          description: >-
+            Team members per rank, largest count first, then by name. Members with no rank count under a
+            null name. Ranks with no members are left out.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - name
+            - count
+            properties:
+              name:
+                type:
+                - string
+                - 'null'
+                description: The rank's name, as the Team list's `rank.name`, or null for members with no rank.
+              count:
+                type: integer
+                minimum: 1
+                description: Team members at this rank.
+        by_activity_status:
+          type: array
+          description: Team members per activity status. Always three entries, in this order, zeros included.
+          minItems: 3
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - status
+            - count
+            properties:
+              status:
+                type: string
+                enum:
+                - active
+                - grace_period
+                - inactive
+                description: >-
+                  The member's activity status. The Team list reports `active: true` for `active` and
+                  `active: false` for the other two.
+              count:
+                type: integer
+                minimum: 0
+                description: Team members in this activity status.
+    TeamCompositionEnvelope:
+      type: object
+      description: The signed-in member's Team composition.
+      required:
+      - status
+      - data
+      - meta
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/TeamComposition"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
 paths:
   "/api/member/v2026-10/team":
     get:
@@ -548,6 +715,220 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: The request carries a query parameter; the summary takes none.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/team/growth":
+    get:
+      operationId: member_team_growth
+      tags:
+      - team
+      summary: Count the Team members who joined in a period
+      description: |
+        How many members of the signed-in member's current Team joined within the period, at each of the
+        five levels below the member, with the direct and total counts and the size of the whole Team for
+        context. The Team is the one `GET /api/member/v2026-10/team` lists, found the same way; a member
+        joined when their membership was created, the list's `joined_at`. A period is the trailing number
+        of UTC days, today included, as the statistics dashboard counts them; `all` counts every member.
+
+        A member with no downline gets zeros. In a company on tree reads, a member with no seat in the
+        enrollment tree gets 404, as in the list.
+
+        The same members may read it as may read the summary, the legacy My Team `authorize_rep_tier`:
+        reps, company admins and root admins, on a member token or portal JWT. A customer or
+        preferred-customer membership is refused with 403, even with a valid credential, as is a member
+        session JWT. No parameter selects another member: the Team is always the credential's own.
+
+        Current Team membership is rechecked on every request, so the response is private and must be
+        revalidated before reuse.
+      x-fluid-audience: member
+      parameters:
+      - name: period
+        in: query
+        required: false
+        description: The trailing period to count. Defaults to `30d`.
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - 1y
+          - all
+          default: 30d
+      - name: If-None-Match
+        in: header
+        required: false
+        description: A previously returned ETag. Authentication and the current Team read run before a
+          304 is considered.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The member's Team growth for the period.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TeamGrowthEnvelope"
+              example:
+                status: 200
+                data:
+                  period: 30d
+                  since: '2026-10-13T00:00:00.000Z'
+                  direct_count: 2
+                  total_count: 5
+                  by_level:
+                  - level: 1
+                    count: 2
+                  - level: 2
+                    count: 3
+                  - level: 3
+                    count: 0
+                  - level: 4
+                    count: 0
+                  - level: 5
+                    count: 0
+                  team_count: 27
+                meta:
+                  request_uuid: '01a0f4fe-de00-75b3-8d8a-b74b0cde8b07'
+                  timestamp: '2026-11-11T15:04:05Z'
+        '304':
+          description: The counts have not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing credential, or a credential that is not a usable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry,
+            which cannot read the Team, or the membership is a customer or preferred customer, which has no Team.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The company reads its Team from trees and the member has no seat.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The period is not one of the supported values, or the request carries another query parameter.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/team/composition":
+    get:
+      operationId: member_team_composition
+      tags:
+      - team
+      summary: Count the Team by member type, rank and activity
+      description: |
+        The signed-in member's current Team counted by member type, by rank and by activity status. The
+        Team is the one `GET /api/member/v2026-10/team` lists, found the same way, over the same five
+        levels, so `total_count` equals the summary's. The labels are the ones the list already shows for
+        each Team member; no Team member is named.
+
+        A member with no downline gets zeros. In a company on tree reads, a member with no seat in the
+        enrollment tree gets 404, as in the list.
+
+        The same members may read it as may read the summary, the legacy My Team `authorize_rep_tier`:
+        reps, company admins and root admins, on a member token or portal JWT. A customer or
+        preferred-customer membership is refused with 403, even with a valid credential, as is a member
+        session JWT. No parameter selects another member: the Team is always the credential's own.
+
+        Current Team membership is rechecked on every request, so the response is private and must be
+        revalidated before reuse.
+      x-fluid-audience: member
+      parameters:
+      - name: If-None-Match
+        in: header
+        required: false
+        description: A previously returned ETag. Authentication and the current Team read run before a
+          304 is considered.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The member's Team composition.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TeamCompositionEnvelope"
+              example:
+                status: 200
+                data:
+                  total_count: 27
+                  by_member_type:
+                  - slug: customer
+                    name: Customer
+                    count: 18
+                  - slug: rep
+                    name: Brand Partner
+                    count: 9
+                  by_rank:
+                  - name:
+                    count: 20
+                  - name: Associate
+                    count: 6
+                  - name: Leader
+                    count: 1
+                  by_activity_status:
+                  - status: active
+                    count: 21
+                  - status: grace_period
+                    count: 2
+                  - status: inactive
+                    count: 4
+                meta:
+                  request_uuid: '01a0f4fe-de00-75b3-8d8a-b74b0cde8b07'
+                  timestamp: '2026-11-11T15:04:05Z'
+        '304':
+          description: The counts have not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing credential, or a credential that is not a usable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry,
+            which cannot read the Team, or the membership is a customer or preferred customer, which has no Team.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The company reads its Team from trees and the member has no seat.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The request carries a query parameter; the composition takes none.
           content:
             application/json:
               schema:

@@ -41,6 +41,9 @@ tags:
 - name: site-bundles
   x-fluid-section: Members
   description: Publishing one of the member's sites as a built static bundle, uploaded straight to Cloud Storage with signed URLs and made the site's current version by a pointer switch.
+- name: site-api-keys
+  x-fluid-section: Members
+  description: 'The API keys of one of the member''s sites (`fsk_`), which a server or another site sends as `Authorization: Bearer` to call the site''s `access: "key"` server functions. A key''s secret is shown once, when it is added.'
 - name: site-env-vars
   x-fluid-section: Members
   description: The environment variables of one of the member's sites, which its server functions read as `ctx.secrets`. A secret's value is never read back.
@@ -626,7 +629,7 @@ components:
               type: object
         functions:
           type: object
-          description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. A browser calls one at `/_fluid/fn/<name>` on the site (`fluid.fn.fetch`).
+          description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
     SiteBundleUpload:
       type: object
       description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers. They pin the length and refuse a replacement, and `x-goog-hash` pins the CRC32C when the file declared one, so Cloud Storage refuses different bytes.
@@ -897,6 +900,117 @@ components:
           description: HTTP status code (mirrors the response status line).
         data:
           "$ref": "#/components/schemas/SiteBundleCurrent"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteApiKey:
+      type: object
+      description: One live API key of a site. Its secret is never here; the answer that added it carried it once.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The key's id, which a function sees as `ctx.caller.keyId`.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The name the owner knows the key by, which a function sees as `ctx.caller.keyName`.
+        prefix:
+          type: string
+          pattern: '^fsk_[A-Za-z0-9_-]{8}$'
+          description: The first 12 characters of the secret, to recognise it by.
+        last_used_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When a call last carried the key, to the hour, or null when none has.
+        created_at:
+          type: string
+          format: date-time
+          description: When the key was added.
+      required:
+      - id
+      - name
+      - prefix
+      - last_used_at
+      - created_at
+    SiteApiKeyCreated:
+      type: object
+      description: A key just added, with its secret. The secret is never shown again.
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The key's id.
+        name:
+          type: string
+          description: The key's name.
+        prefix:
+          type: string
+          description: The first 12 characters of the secret.
+        last_used_at:
+          type: 'null'
+          description: Always null for a new key.
+        created_at:
+          type: string
+          format: date-time
+          description: When the key was added.
+        secret:
+          type: string
+          pattern: '^fsk_[A-Za-z0-9_-]{43}$'
+          description: 'The key. Store it now; it cannot be read back. Send it as `Authorization: Bearer <secret>`.'
+      required:
+      - id
+      - name
+      - prefix
+      - last_used_at
+      - created_at
+      - secret
+    SiteApiKeyWrite:
+      type: object
+      description: The new key's name. Any other field is refused.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: The name, 1 to 64 characters after trimming.
+      required:
+      - name
+    SiteApiKeyCreatedEnvelope:
+      type: object
+      description: The key just added, with its secret.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteApiKeyCreated"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteApiKeysEnvelope:
+      type: object
+      description: A site's live API keys.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: array
+          description: The site's live keys, oldest first. A site has at most 20, so the list is not paged.
+          items:
+            "$ref": "#/components/schemas/SiteApiKey"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -1202,7 +1316,7 @@ components:
           - build
           - function
           - gateway
-          description: What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site.
+          description: "What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines are the calls of the site's server functions, one each, as the sites gateway ran them: the function, the status, the time it took, who called (`page`, `public`, `key` or `schedule`) and the request id, never a body or the viewer; they are kept 7 days, the newest 1,000. `gateway` lines start when the sites gateway records them per site."
         message:
           type: string
           description: The line, in plain words.
@@ -1292,6 +1406,29 @@ components:
           required:
           - 4xx
           - 5xx
+        series:
+          type: array
+          description: "The period charted oldest first: one point per hour for `24h`, and one per UTC day for `7d` and `30d`. A day's point counts only the period's hours, so the first and last days are partial. A point's unique visitors are estimated over its own hours, so the points need not add up to the period's."
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              at:
+                type: string
+                format: date-time
+                description: The start of the point's hour or UTC day.
+              visits:
+                type: integer
+                minimum: 0
+              unique_visitors:
+                type: integer
+                minimum: 0
+            required:
+            - at
+            - visits
+            - unique_visitors
+        functions:
+          "$ref": "#/components/schemas/SiteFunctionUsage"
       required:
       - period
       - visits
@@ -1299,6 +1436,142 @@ components:
       - top_pages
       - referrers
       - errors
+      - series
+      - functions
+    SiteFunctionCounts:
+      type: object
+      description: What a site's server functions did over a period, as the sites gateway counted it.
+      additionalProperties: false
+      properties:
+        calls:
+          type: integer
+          minimum: 0
+          description: "Calls the function runtime was asked to run. A call refused for the site's calls a minute is not one."
+        errors:
+          type: integer
+          minimum: 0
+          description: "Calls answered with a server error (5xx): the function's own, a function that threw (`fn_failed`), or one not deployed (`fn_not_deployed`). A timeout is not also an error."
+        timeouts:
+          type: integer
+          minimum: 0
+          description: "Calls stopped at the function's `timeoutMs` (`fn_timeout`)."
+        rate_limited:
+          type: integer
+          minimum: 0
+          description: "Calls refused because the site passed 600 calls a minute (`rate_limited`)."
+        wall_ms:
+          type: integer
+          minimum: 0
+          description: "The calls' wall time, summed, in milliseconds: from the call to the end of its answer."
+        egress_bytes:
+          type: integer
+          minimum: 0
+          description: "The bytes of the calls' answers, summed."
+      required:
+      - calls
+      - errors
+      - timeouts
+      - rate_limited
+      - wall_ms
+      - egress_bytes
+    SiteFunctionUsage:
+      type: object
+      description: "A site's server function calls over the period, counted by the sites gateway as it runs them. Zero until the site's functions run. CPU time is not counted."
+      additionalProperties: false
+      properties:
+        calls:
+          type: integer
+          minimum: 0
+          description: "Calls the function runtime was asked to run. A call refused for the site's calls a minute is not one."
+        errors:
+          type: integer
+          minimum: 0
+          description: "Calls answered with a server error (5xx): the function's own, a function that threw (`fn_failed`), or one not deployed (`fn_not_deployed`). A timeout is not also an error."
+        timeouts:
+          type: integer
+          minimum: 0
+          description: "Calls stopped at the function's `timeoutMs` (`fn_timeout`)."
+        rate_limited:
+          type: integer
+          minimum: 0
+          description: "Calls refused because the site passed 600 calls a minute (`rate_limited`)."
+        wall_ms:
+          type: integer
+          minimum: 0
+          description: "The calls' wall time, summed, in milliseconds: from the call to the end of its answer."
+        egress_bytes:
+          type: integer
+          minimum: 0
+          description: "The bytes of the calls' answers, summed."
+        by_function:
+          type: array
+          description: Each function called in the period, the most called (calls plus rate_limited) first, at most 20.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                description: The function's name.
+              calls:
+                type: integer
+                minimum: 0
+                description: "Calls the function runtime was asked to run. A call refused for the site's calls a minute is not one."
+              errors:
+                type: integer
+                minimum: 0
+                description: "Calls answered with a server error (5xx): the function's own, a function that threw (`fn_failed`), or one not deployed (`fn_not_deployed`). A timeout is not also an error."
+              timeouts:
+                type: integer
+                minimum: 0
+                description: "Calls stopped at the function's `timeoutMs` (`fn_timeout`)."
+              rate_limited:
+                type: integer
+                minimum: 0
+                description: "Calls refused because the site passed 600 calls a minute (`rate_limited`)."
+              wall_ms:
+                type: integer
+                minimum: 0
+                description: "The calls' wall time, summed, in milliseconds: from the call to the end of its answer."
+              egress_bytes:
+                type: integer
+                minimum: 0
+                description: "The bytes of the calls' answers, summed."
+            required:
+            - name
+            - calls
+            - errors
+            - timeouts
+            - rate_limited
+            - wall_ms
+            - egress_bytes
+        by_caller:
+          type: object
+          description: "The calls by who made them: `page` (the site's own page, with or without a signed-in viewer), `public` (no page token), `key` (a site API key) and `schedule` (the function's cron schedule)."
+          additionalProperties: false
+          properties:
+            page:
+              "$ref": "#/components/schemas/SiteFunctionCounts"
+            public:
+              "$ref": "#/components/schemas/SiteFunctionCounts"
+            key:
+              "$ref": "#/components/schemas/SiteFunctionCounts"
+            schedule:
+              "$ref": "#/components/schemas/SiteFunctionCounts"
+          required:
+          - page
+          - public
+          - key
+          - schedule
+      required:
+      - calls
+      - errors
+      - timeouts
+      - rate_limited
+      - wall_ms
+      - egress_bytes
+      - by_function
+      - by_caller
     SiteTrafficEnvelope:
       type: object
       description: A site's traffic.
@@ -3522,6 +3795,13 @@ components:
       schema:
         type: string
         pattern: '^.+$'
+    ApiKeyId:
+      name: key_id
+      in: path
+      required: true
+      description: The key's id.
+      schema:
+        type: string
     EnvVarName:
       name: name
       in: path
@@ -5587,6 +5867,146 @@ paths:
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
+  "/api/member/v2026-10/sites/{site_id}/api-keys":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    get:
+      summary: List a site's API keys
+      description: |
+        The live API keys of one of the member's sites, oldest first. A revoked key is not listed. No secret is listed: a key shows its first 12 characters (`prefix`). The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+
+        Bearer only: a request on the cookie mount is refused with `403`, so a site's own page code can never read them. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_api_keys_index
+      tags:
+      - site-api-keys
+      x-fluid-audience: member
+      parameters:
+      - "$ref": "#/components/parameters/IfNoneMatch"
+      responses:
+        '200':
+          description: The site's live keys.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteApiKeysEnvelope"
+              example:
+                status: 200
+                data:
+                - id: 0199d1a2-0000-7000-8000-00000000a001
+                  name: Partner backend
+                  prefix: fsk_AbCd1234
+                  last_used_at: '2026-11-11T09:00:00.000Z'
+                  created_at: '2026-11-10T09:00:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-11T09:05:00Z'
+        '304':
+          description: The representation is unchanged; authentication and ownership are checked before this response.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, or the request is on the cookie mount, which never serves a site's API keys, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+    post:
+      summary: Add an API key to a site
+      description: |
+        Adds a key to one of the member's sites and answers its secret, this once: only its SHA-256 is stored. A server or another site sends it as `Authorization: Bearer <secret>` to call the site's `access: "key"` server functions at `/api/<name>`; the function never sees it, and gets `ctx.caller` `{kind: "key", keyId, keyName}`. A key opens the site's functions whoever may open the site, a private site included. A site holds at most 20 live keys.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
+      operationId: member_sites_api_keys_create
+      tags:
+      - site-api-keys
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteApiKeyWrite"
+            example:
+              name: Partner backend
+      responses:
+        '201':
+          description: The key was added. Store `secret` now.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteApiKeyCreatedEnvelope"
+              example:
+                status: 201
+                data:
+                  id: 0199d1a2-0000-7000-8000-00000000a001
+                  name: Partner backend
+                  prefix: fsk_AbCd1234
+                  last_used_at:
+                  created_at: '2026-11-10T09:00:00.000Z'
+                  secret: fsk_AbCd1234efGHijKLmnOPqrSTuvWXyz0123456789-_A
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T09:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          description: The site already holds 20 live keys (`details.error` is `api_key_limit`). Revoke one first.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The name is missing, blank or longer than 64 characters, or the body holds another field.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/api-keys/{key_id}":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/ApiKeyId"
+    delete:
+      summary: Revoke a site's API key
+      description: Revokes the key the path names. The sites gateway checks a key on every call, so it opens nothing from the next call on. Bearer only.
+      operationId: member_sites_api_keys_destroy
+      tags:
+      - site-api-keys
+      x-fluid-audience: member
+      responses:
+        '204':
+          description: The key was revoked.
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/ReadOnlyCredential"
+        '404':
+          description: The site, or a live key with that id, is not found, or the member may not change the site.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: The key changed while it was being revoked. Retry.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/env-vars":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
@@ -8081,7 +8501,7 @@ paths:
     get:
       summary: Read a site's log
       description: |
-        The log of one of the member's sites, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log (`fluid sites logs --tail`), ask again with the last line's `at` as `since`. Only publishing writes lines today: each upload's start, its publish and who published it, and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. `function` lines start when server functions run, and `gateway` lines when the sites gateway records them per site; the traffic operation counts the gateway's errors meanwhile. Never stored (`no-store`).
+        The log of one of the member's sites, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log (`fluid sites logs --tail`), ask again with the last line's `at` as `since`. Publishing writes a line for each upload's start, its publish and who published it, and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. Each call of the site's server functions is a `function` line (`error` for a timeout or a server error, `warn` for a refusal such as the rate limit, which writes one line a minute); the gateway writes them within about a second, so a line can arrive just after a later line of another source. `gateway` lines start when the sites gateway records them per site; the traffic operation counts the gateway's errors meanwhile. Never stored (`no-store`).
 
         Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
       operationId: member_sites_logs_index
@@ -8148,7 +8568,8 @@ paths:
     get:
       summary: Read a site's traffic
       description: |
-        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, and the requests answered with an error. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
 
         Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
       operationId: member_sites_traffic_show
@@ -8191,6 +8612,57 @@ paths:
                   errors:
                     4xx: 3
                     5xx: 0
+                  series:
+                  - at: '2026-11-04T00:00:00Z'
+                    visits: 12
+                    unique_visitors: 5
+                  - at: '2026-11-05T00:00:00Z'
+                    visits: 9
+                    unique_visitors: 4
+                  functions:
+                    calls: 14
+                    errors: 1
+                    timeouts: 0
+                    rate_limited: 0
+                    wall_ms: 1260
+                    egress_bytes: 5320
+                    by_function:
+                    - name: rsvp
+                      calls: 14
+                      errors: 1
+                      timeouts: 0
+                      rate_limited: 0
+                      wall_ms: 1260
+                      egress_bytes: 5320
+                    by_caller:
+                      page:
+                        calls: 12
+                        errors: 1
+                        timeouts: 0
+                        rate_limited: 0
+                        wall_ms: 1100
+                        egress_bytes: 4560
+                      public:
+                        calls: 2
+                        errors: 0
+                        timeouts: 0
+                        rate_limited: 0
+                        wall_ms: 160
+                        egress_bytes: 760
+                      key:
+                        calls: 0
+                        errors: 0
+                        timeouts: 0
+                        rate_limited: 0
+                        wall_ms: 0
+                        egress_bytes: 0
+                      schedule:
+                        calls: 0
+                        errors: 0
+                        timeouts: 0
+                        rate_limited: 0
+                        wall_ms: 0
+                        egress_bytes: 0
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:05:00Z'
