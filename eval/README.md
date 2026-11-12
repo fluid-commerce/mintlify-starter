@@ -176,22 +176,17 @@ occurrence — never to a whole tag or marker:
 | `webhooks-v0` reference sections | `per_page` | That surface's list endpoints are genuinely offset-paginated. Prose pages get no such licence. |
 | The generated list pages whose offset pagination was verified against their Rails actions: the seven `checkout-v2026-04` pages, Public SDK Drop Zones and root themes, the four `forms-v0` lists, the website and mobile app navigation lists, and 49 list operations of `company-v0`, `messaging-v1`, `integrations-v0`, `themes-v0`, and `admin-v2025-06` (ENG-2784). Plus `customer-orders/list-customer-orders` for its response metadata | `per_page` | `OFFSET_PAGINATED_PAGES` — exact pages, because the same tags also hold operations that do not paginate that way. |
 | The two theme pages that document the storefront's page URL parameter and Liquid `pagination` object | `per_page` | `PER_PAGE_PROSE_PAGES` — exact pages. |
-| The generated `public-v2025-06` reference pages and two framing pages | `v2025-06` / `v202506` only | `PUBLIC_SDK_V2025_06_PAGES` and `PUBLIC_SDK_V2025_06_PROSE_PAGES` — exact pages. The references carry the version in their contracts; the prose pages distinguish the SDK surface from the unrelated admin/partner API. |
-| The generated `admin-v2025-06` and `members-v2025-06` reference pages | `v2025-06` / `v202506` only | `ADMIN_V2025_06_PAGES` and `MEMBERS_V2025_06_PAGES` — exact pages, each keyed to the operation it documents so a unit test can match them to docs.json. Prose that introduces these paths still fails. |
+| The generated `public-v2025-06`, `admin-v2025-06` and `members-v2025-06` reference pages, and two framing pages | `v2025-06` / `v202506` only | A page whose own contract line (`/api-reference/<spec>.yaml <method> <path>`) names one of the three specs (`V2025_06_GENERATED_CONTRACT`), so a sync that adds an operation needs no change here; plus `PUBLIC_SDK_V2025_06_PROSE_PAGES`, the exact prose pages that distinguish the SDK surface from the admin API. Other prose that introduces these paths still fails. |
 | The tokens path prefix `/api/v2025-06/tokens/` on any page; the two `themes/navigation-menus` sentences that document the website menus list's page numbers; and the exact phrases with which two generated pages (the v2026-04 company orders list and the `company-v0` customers list) compare themselves to their published `admin-v2025-06` counterpart | `v2025-06` / `v202506` / `per_page` | `SANCTIONED_OCCURRENCES` — removed occurrence by occurrence, so another marker on the same page still fails. |
 | Checkout's reciprocal Public SDK boundary | `v2025-06` only | The exact `info.description` sentence saying that the FairShare SDK calls the Fluid Public SDK API, and only when the same generated page carries a `checkout-v2026-04.yaml` contract line at an `/api/checkout/v2026-04/*` path. |
 
-Hits on `company/v1/` and `/api/v1/` outside those exceptions are reported as `WARN` and don't fail the run: AGENTS.md prefers the newer version of an operation but allows a v1 path that has none, so a person judges each one. Any other hit fails the run. Two properties of the Public SDK page-list exception are
-load-bearing. It is keyed on the exact page, not a `v2025-06` pattern class, so the
-admin/partner surface
-(`admin-v2025-06`, `/api/v2025-06/*` — a different API) is judged by its own exact page
-list and keeps failing everywhere else, prose included. And three of that
-spec's tags are **shared** with the v2026-04 surfaces — `carts` also holds 12
-`checkout-v2026-04` pages, `orders` one, `paypal` four — so a `carts/` prefix would have
-forgiven a real leak on 17 current pages. The page list maps each published page to the
-operation it documents (the regeneration command is in the source comment), and a unit
-test matches those operations to docs.json. An upstream summary edit renames a page and
-drops it out of the map, which fails loudly rather than silently.
+Hits on `company/v1/` and `/api/v1/` outside those exceptions are reported as `WARN` and don't fail the run: AGENTS.md prefers the newer version of an operation but allows a v1 path that has none, so a person judges each one. Any other hit fails the run. Two properties of the generated-page exception are
+load-bearing. It is keyed on the page's own contract line, read from llms-full.txt, not on a
+`v2025-06` pattern class, so prose that names a v2025-06 path keeps failing everywhere. And
+three of the Public SDK spec's tags are **shared** with the v2026-04 surfaces — `carts` also
+holds 12 `checkout-v2026-04` pages, `orders` one, `paypal` four — whose contract lines name
+their own spec, so a version marker on those 17 current pages still fails. A sync that adds,
+renames or removes a v2025-06 operation needs no change to the checker.
 
 The Checkout boundary is narrower still. The checker removes one exact safe occurrence
 before it scans the rest of the page. Changing the sentence, copying it onto a

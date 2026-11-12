@@ -221,12 +221,7 @@ the authoring-time adversarial semantic pass — the lint does not claim to cove
   (`broken-docs-link`) carrying the `FAIL` lines. `validate.yml` stays red on `main`
   until a PR fixes the link or adds a redirect. The next sync whose link check passes
   closes the issue; the check runs only when a sync changes something, so the PR that
-  fixes the links can close it sooner. The run also runs `validate.yml`'s eval harness
-  unit tests (`node --test` in `eval/`) the same way, with the `eval-tests-failing`
-  label. They read `docs.json`, so a synced `admin-v2025-06`, `members-v2025-06` or
-  `public-v2025-06` operation fails them until a PR adds its page to the hosted
-  checker's page map. The sync can't do that itself: the map is keyed by the page
-  slug Mintlify publishes, which exists only after the deploy.
+  fixes the links can close it sooner.
 - **`external-links.yml`** — weekly (Mondays) and on demand. Runs
   `node eval/check-broken-links.mjs --external` twice, 15 minutes apart, and keeps only
   the external links broken on both passes, because the CLI also counts a timeout or
@@ -1400,17 +1395,20 @@ The 42 distinct destinations used by the cart equivalence map, every Public SDK 
 `sdk/cart-api.mdx`, and the redirect destination `/api-reference/carts/creates-a-cart` were verified
 against the archive before publication. The redirect remains temporary per Phase 9.6e.
 
-### The leakage exception is exact by page and marker
+### The leakage exception is per page, by its contract line, and covers the marker only
 
-`PUBLIC_SDK_V2025_06_PAGES` sanctions the generated operation pages: 69 at adoption and 74 after
-the ENG-1186 refresh (mintlify-starter#151). Since ENG-2784 it maps each page to its operation.
-`PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only `api/choosing-a-cart-surface` and `sdk/cart-api`,
-the hand-written pages that must name the SDK's real version. Both sets forgive only the
-`v2025-06` / `v202506` marker.
+The generated operation pages are sanctioned by their own contract line: a page whose
+`/api-reference/<spec>.yaml <method> <path>` line names `public-v2025-06` (or, since the
+2026-09-30 regroup, `admin-v2025-06` or `members-v2025-06`). Until 2026-11-12 this was
+an exact page list (`PUBLIC_SDK_V2025_06_PAGES`, 69 pages at adoption), which every sync
+that added an operation broke. `PUBLIC_SDK_V2025_06_PROSE_PAGES` sanctions only
+`api/choosing-a-cart-surface` and `sdk/cart-api`, the hand-written pages that must name the
+SDK's real version. Both forgive only the `v2025-06` / `v202506` marker.
 
-The unrelated admin/partner surface remains unsanctioned. So do `per_page`, `company/v1/`, and
-`/api/v1/` on every Public SDK page. Tests pin the shared `carts`, `orders`, and `paypal` tag
-neighbours so the exception cannot leak onto current v2026-04 operations.
+`per_page`, `company/v1/`, and `/api/v1/` stay unsanctioned on every Public SDK page.
+The rule is keyed on the spec, never on a tag: tests pin the shared `carts`, `orders`, and
+`paypal` tag neighbours, whose contract lines name a v2026-04 spec, so the exception
+cannot leak onto current v2026-04 operations.
 
 ### `/api/public/stable/` is live, but it is not a blanket alias
 
@@ -2750,8 +2748,8 @@ docs. These are now the checker's rules:
   required, so the prompt expects `optional`. The checker used to read any
   `- bearer_auth: []` as required.
 - **`admin-v2025-06` and `members-v2025-06` generated pages** may carry their version
-  markers, as AGENTS.md already said. The checker lists the pages one by one, keyed to their
-  operations, and a unit test matches those operations to docs.json.
+  markers, as AGENTS.md already said. Since 2026-11-12 the checker finds them by each
+  page's contract line in llms-full.txt rather than by a hand-kept page list.
 - **49 more offset lists**, on `company-v0`, `messaging-v1`, `integrations-v0`,
   `themes-v0` and `admin-v2025-06`, plus the Public SDK root themes list, were checked
   against their Rails actions. Every one reads integer `page` / `per_page` and pages by

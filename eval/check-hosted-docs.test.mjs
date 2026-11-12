@@ -12,12 +12,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import {
-  PUBLIC_SDK_V2025_06_PAGES,
-  ADMIN_V2025_06_PAGES,
-  MEMBERS_V2025_06_PAGES,
   parseArgs,
   cacheBustedUrl,
   isRetryableStatus,
@@ -43,6 +39,7 @@ import {
   removeCheckoutPublicSdkBoundary,
   removeSanctionedOccurrences,
   splitLlmsSections,
+  v2025GeneratedPages,
   stripAgentBanner,
   isSanctionedLegacyHit,
   scanLegacyAttributed,
@@ -926,46 +923,69 @@ describe("isSanctionedLegacyHit", () => {
     assert.equal(isSanctionedLegacyHit("/api/v1/", "api-reference/directory/list-users"), false);
   });
 
-  it("sanctions the version marker on the adopted public-v2025-06 reference pages", () => {
+  // Each generated reference page carries its operation on one contract line. The
+  // checker reads the v2025-06 pages off llms-full.txt's sections once
+  // (v2025GeneratedPages) and judges every surface by label, so `hit` builds that set
+  // from one section, in the bare form llms-full.txt prints or the fenced form.
+  const contract = (spec, method, path) => `/api-reference/${spec}.yaml ${method} ${path}`;
+  const fenced = (spec, method, path) => `\`\`\`\`yaml ${contract(spec, method, path)}`;
+  const hit = (marker, label, text) =>
+    isSanctionedLegacyHit(marker, label, "", v2025GeneratedPages([{ label, text }]));
+
+  it("sanctions the version marker on generated public-v2025-06 reference pages", () => {
     // Phase 9.6f. These pages' paths are genuinely /api/public/v2025-06/... and
     // /api/v202506/carts/..., so the marker is the contract, not a leak.
-    for (const page of [
-      "api-reference/carts/creates-a-cart",
-      "api-reference/carts/adds-items-to-cart",
-      "api-reference/enrollment-packs/get-enrollment-pack-by-slug",
-      "api-reference/orders/retrieves-an-order-with-points-redemption",
-      "api-reference/paypal/create-order-in-paypal",
-      "api-reference/widgets/retrieve-cart-widget",
-      "api-reference/public/health-health",
+    for (const [page, text] of [
+      ["api-reference/carts/creates-a-cart", contract("public-v2025-06", "post", "/api/public/v2025-06/commerce/carts")],
+      ["api-reference/carts/adds-items-to-cart", fenced("public-v2025-06", "post", "/api/public/v2025-06/commerce/carts/{cart_token}/items")],
+      ["api-reference/paypal/create-order-in-paypal", contract("public-v2025-06", "post", "/api/v202506/carts/{cart_token}/paypal/create_order")],
+      ["api-reference/public/health-health", contract("public-v2025-06", "get", "/api/public/health")],
     ]) {
-      assert.equal(isSanctionedLegacyHit("v2025-06", page), true, page);
-      assert.equal(isSanctionedLegacyHit("v202506", page), true, page);
+      assert.equal(hit("v2025-06", page, text), true, page);
+      assert.equal(hit("v202506", page, text), true, page);
     }
+    const session = contract("public-v2025-06", "post", "/api/public/v2025-06/session");
     // Both marker spellings the two legacy patterns can capture, including the
     // case-insensitive underscore form.
-    assert.equal(isSanctionedLegacyHit("V2025_06", "api-reference/session/start-a-new-session"), true);
+    assert.equal(hit("V2025_06", "api-reference/session/start-a-new-session", session), true);
     // The label is accepted with or without the api-reference/ prefix, matching how
     // llms-full.txt section labels and prompts' target_page labels differ.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "carts/creates-a-cart"), true);
+    assert.equal(
+      isSanctionedLegacyHit("v2025-06", "session/start-a-new-session", "", v2025GeneratedPages([{ label: "api-reference/session/start-a-new-session", text: session }])),
+      true,
+    );
   });
 
   it("does NOT sanction a v2026-04 page sharing a tag with a public-v2025-06 page", () => {
     // The load-bearing negative. `carts` holds 12 checkout-v2026-04 pages, `orders`
-    // one, and `paypal` four; a version marker on any of those is a real leak, so the
-    // carve-out is page-by-page and a `carts/` prefix would have forgiven all 17.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/carts/create-a-cart"), false);
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/carts/complete-checkout"), false);
-    assert.equal(isSanctionedLegacyHit("v202506", "api-reference/orders/show-order"), false);
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/paypal/authorize-a-paypal-order"), false);
+    // one, and `paypal` four; a version marker on any of those is a real leak. Their
+    // contract lines name their own spec, so the sanction never reaches them.
+    for (const [page, text] of [
+      ["api-reference/carts/create-a-cart", contract("checkout-v2026-04", "post", "/api/checkout/v2026-04/carts")],
+      ["api-reference/carts/complete-checkout", fenced("checkout-v2026-04", "post", "/api/checkout/v2026-04/carts/{cart_token}/checkout")],
+      ["api-reference/orders/show-order", contract("storefront-v2026-04", "get", "/api/v202604/company/orders/{id}")],
+      ["api-reference/paypal/authorize-a-paypal-order", contract("payments-v2026-04", "post", "/api/payment/v2026-04/paypal/authorize")],
+    ]) {
+      assert.equal(hit("v2025-06", page, text), false, page);
+      assert.equal(hit("v202506", page, text), false, page);
+    }
   });
 
-  it("does NOT sanction the legacy admin/partner v2025-06 surface", () => {
-    // admin-v2025-06 and /api/v2025-06/* are a different API that earlier phases
-    // removed. A blanket version sanction would have silently re-legitimised it.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/tokens/list-partner-tokens"), false);
-    assert.equal(isSanctionedLegacyHit("v2025-06", "api-reference/companies/list-companies"), false);
+  it("sanctions only a whole contract line naming one of the three v2025-06 specs", () => {
+    const admin = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
+    // No contract line at all: prose and pages the corpus doesn't label.
     assert.equal(isSanctionedLegacyHit("v2025-06", "api/authentication"), false);
-    assert.equal(isSanctionedLegacyHit("v202506", "sdk/components"), false);
+    assert.equal(hit("v202506", "sdk/components", "See GET /api/v202506/orders."), false);
+    // The contract quoted mid-sentence is not the page's own contract line.
+    assert.equal(hit("v2025-06", "api-reference/x/y", `Its contract is ${admin} today.`), false);
+    // A prose page never qualifies, even with a contract-shaped line of its own.
+    assert.equal(hit("v2025-06", "guides/widget-user-information", `Call it.\n${admin}\n`), false);
+    // A neighbouring spec name is not one of the three.
+    assert.equal(
+      hit("v2025-06", "api-reference/x/y", contract("partner-v2025-06", "get", "/api/v2025-06/x")),
+      false,
+    );
+    assert.equal(hit("v2025-06", "api-reference/admins/list-admins", `# List admins\n\n${admin}\n`), true);
   });
 
   it("sanctions the version marker on the exact prose pages that explain the Public SDK API", () => {
@@ -982,17 +1002,19 @@ describe("isSanctionedLegacyHit", () => {
     // sanctioned only on the Public SDK pages verified against their Rails actions
     // (Drop Zones and root themes), so per_page still fails on every other one.
     const page = "api-reference/carts/creates-a-cart";
-    assert.equal(isSanctionedLegacyHit("v2025-06", page), true);
-    assert.equal(isSanctionedLegacyHit("per_page", page), false);
-    assert.equal(isSanctionedLegacyHit("/api/v1/", page), false);
-    assert.equal(isSanctionedLegacyHit("company/v1/", page), false);
+    const text = contract("public-v2025-06", "post", "/api/public/v2025-06/commerce/carts");
+    assert.equal(hit("v2025-06", page, text), true);
+    assert.equal(hit("per_page", page, text), false);
+    assert.equal(hit("/api/v1/", page, text), false);
+    assert.equal(hit("company/v1/", page, text), false);
   });
 
   it("sanctions per_page on the verified Public SDK root themes list, and nothing more", () => {
     const page = "api-reference/root-themes/list-root-themes";
-    assert.equal(isSanctionedLegacyHit("per_page", page), true);
-    assert.equal(isSanctionedLegacyHit("v2025-06", page), true);
-    assert.equal(isSanctionedLegacyHit("/api/v1/", page), false);
+    const text = contract("public-v2025-06", "get", "/api/public/v2025-06/root_themes");
+    assert.equal(hit("per_page", page, text), true);
+    assert.equal(hit("v2025-06", page, text), true);
+    assert.equal(hit("/api/v1/", page, text), false);
     assert.equal(isSanctionedLegacyHit("per_page", "api-reference/root-themes/get-root-theme-by-id"), false);
   });
 
@@ -1017,19 +1039,17 @@ describe("isSanctionedLegacyHit", () => {
   it("sanctions only the version marker on admin-v2025-06 and members-v2025-06 pages", () => {
     // AGENTS.md: generated reference pages only, and version marker only. per_page on
     // these pages is still judged page by page against the verified offset list.
-    for (const page of [
-      "api-reference/shipping-methods/list-shipping-methods",
-      "api-reference/admins/list-admins",
-      [...MEMBERS_V2025_06_PAGES.keys()][0],
+    const admins = contract("admin-v2025-06", "get", "/api/v2025-06/admins");
+    for (const [label, text] of [
+      ["api-reference/shipping-methods/list-shipping-methods", contract("admin-v2025-06", "get", "/api/v2025-06/shipping_methods")],
+      ["api-reference/admins/list-admins", admins],
+      ["api-reference/members/list-members", contract("members-v2025-06", "get", "/api/v2025-06/members")],
     ]) {
-      const label = page.startsWith("api-reference/") ? page : `api-reference/${page}`;
-      assert.equal(isSanctionedLegacyHit("v2025-06", label), true, label);
-      assert.equal(isSanctionedLegacyHit("v202506", label), true, label);
-      assert.equal(isSanctionedLegacyHit("company/v1/", label), false, label);
+      assert.equal(hit("v2025-06", label, text), true, label);
+      assert.equal(hit("v202506", label, text), true, label);
+      assert.equal(hit("company/v1/", label, text), false, label);
     }
-    assert.equal(isSanctionedLegacyHit("per_page", "api-reference/admins/list-admins"), false);
-    // Prose never inherits the generated-page licence.
-    assert.equal(isSanctionedLegacyHit("v2025-06", "guides/widget-user-information"), false);
+    assert.equal(hit("per_page", "api-reference/admins/list-admins", admins), false);
   });
 
   it("never sanctions the version-comparison pages page-wide", () => {
@@ -1091,21 +1111,55 @@ describe("scanLegacyAttributed", () => {
     ]);
   });
 
-  it("does not let a shared carts tag replace Checkout contract proof", () => {
+  it("does not let a public-v2025-06 contract stand in for Checkout contract proof", () => {
+    // The reciprocal sentence is removed only on a page whose contract line is
+    // Checkout's. On a Public SDK page it stays in the text, and its marker is
+    // sanctioned by that page's own public-v2025-06 contract line instead.
+    const stripped = removeCheckoutPublicSdkBoundary(`${publicSdkContract}\n${reciprocalBoundary}`);
+    assert.equal(stripped.sanctioned, false);
+    // A Checkout-labelled page whose only contract line is another spec's still
+    // fails a marker the reciprocal sentence doesn't explain.
     const result = scanLegacyAttributed([
       {
         label: "api-reference/carts/complete-checkout",
-        text: `${publicSdkContract}\n${reciprocalBoundary}`,
+        text: `${checkoutContract.replace("checkout-v2026-04", "storefront-v2026-04")}\n${reciprocalBoundary}`,
       },
     ]);
     assert.deepEqual(result.sanctioned, []);
     assert.deepEqual(result.unsanctioned, [
       { marker: "v2025-06", label: "api-reference/carts/complete-checkout" },
     ]);
-    const stripped = removeCheckoutPublicSdkBoundary(
-      `${publicSdkContract}\n${reciprocalBoundary}`,
-    );
-    assert.equal(stripped.sanctioned, false);
+  });
+
+  it("sanctions a /mcp chunk of a v2025-06 page by its label, with no contract line in it", () => {
+    // Search chunks rarely carry the contract line, so the page is known from llms-full.txt.
+    const pages = v2025GeneratedPages([
+      { label: "api-reference/carts/updates-a-cart-put", text: "/api-reference/public-v2025-06.yaml put /api/public/v2025-06/commerce/carts/{cart_token}" },
+    ]);
+    const chunk = {
+      label: "api-reference/carts/updates-a-cart-put",
+      text: "REST Endpoint PUT /api/public/v2025-06/commerce/carts/{cart_token}",
+    };
+    assert.deepEqual(scanLegacyAttributed([chunk], pages).unsanctioned, []);
+    assert.deepEqual(scanLegacyAttributed([chunk]).unsanctioned, [
+      { marker: "v2025-06", label: "api-reference/carts/updates-a-cart-put" },
+    ]);
+  });
+
+  it("reads a tokens page's spec from its contract line before the tokens prefix is removed", () => {
+    // The tokens exception removes `/api/v2025-06/tokens/...` occurrences first, which
+    // cuts into the page's own contract line. The page set is built from the original
+    // section, so its other version markers are still sanctioned.
+    const label = "api-reference/tokens/create-a-public-token";
+    const sections = [
+      {
+        label,
+        text: "/api-reference/admin-v2025-06.yaml post /api/v2025-06/tokens/public\nPart of the v2025-06 API.",
+      },
+    ];
+    const result = scanLegacyAttributed(sections, v2025GeneratedPages(sections));
+    assert.deepEqual(result.unsanctioned, []);
+    assert.ok(result.sanctioned.some((hit) => hit.label === label && hit.marker === "v2025-06"));
   });
 
   it("still fails an additional marker beside the safe text on the same Checkout page", () => {
@@ -1243,7 +1297,8 @@ describe("scanLegacyAttributed", () => {
       "Superseded the old /api/v2025-06/carts endpoint.",
     ].join("\n");
 
-    const { sanctioned, unsanctioned } = scanLegacyAttributed(splitLlmsSections(doc));
+    const sections = splitLlmsSections(doc);
+    const { sanctioned, unsanctioned } = scanLegacyAttributed(sections, v2025GeneratedPages(sections));
     assert.deepEqual(sanctioned, [
       { marker: "company/v1/", label: "(agent-instructions banner)" },
       { marker: "/api/v1/", label: "(agent-instructions banner)" },
@@ -1272,32 +1327,4 @@ describe("countLlmsEntries", () => {
     assert.equal(countLlmsEntries("# Fluid\n\n> Nothing here yet.\n"), 0);
     assert.equal(countLlmsEntries(null), 0);
   });
-});
-
-describe("PUBLIC_SDK_V2025_06_PAGES, ADMIN_V2025_06_PAGES and MEMBERS_V2025_06_PAGES", () => {
-  // docs.json is rebuilt from the synced specs (generate-api-nav.mjs, gated by
-  // --check in CI) and publishes exactly the generated pages, so each map's operations must be
-  // the operations docs.json lists for that spec. Comparing the operations rather than
-  // the count catches a sync that swaps one operation for another and names it.
-  const docs = readFileSync(new URL("../docs.json", import.meta.url), "utf8");
-  for (const [name, map, spec] of [
-    ["PUBLIC_SDK_V2025_06_PAGES", PUBLIC_SDK_V2025_06_PAGES, "public-v2025-06"],
-    ["ADMIN_V2025_06_PAGES", ADMIN_V2025_06_PAGES, "admin-v2025-06"],
-    ["MEMBERS_V2025_06_PAGES", MEMBERS_V2025_06_PAGES, "members-v2025-06"],
-  ]) {
-    it(`maps one page to each ${spec} operation in docs.json`, () => {
-      const prefix = `"api-reference/${spec}.yaml `;
-      const published = new Set(
-        (docs.match(new RegExp(`"api-reference/${spec}\\.yaml [A-Z]+ [^"]+"`, "g")) ?? []).map((ref) =>
-          ref.slice(prefix.length, -1),
-        ),
-      );
-      assert.ok(published.size > 0, `docs.json has no ${spec} references`);
-      const listed = new Set(map.values());
-      const hint = `regenerate ${name} from llms-full.txt (see check-hosted-docs.mjs)`;
-      assert.equal(listed.size, map.size, `${name} maps two pages to one operation`);
-      assert.deepEqual([...published].filter((op) => !listed.has(op)), [], `unlisted: ${hint}`);
-      assert.deepEqual([...listed].filter((op) => !published.has(op)), [], `no longer published: ${hint}`);
-    });
-  }
 });
