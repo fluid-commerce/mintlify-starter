@@ -3109,6 +3109,10 @@ Durable decisions:
   Member API and are never in the public catalog. Do not document `filter[owner]`.
 - An inactive site (`active: false`) is out of the public show as well as the catalog.
   The synced spec's public-show description now says so too.
+- The guide says an inactive site gives other members "the same answer as for a site
+  that doesn't exist" and names no page, because that answer depends on the shell
+  (not found on the older shell; on the gateway shell, the access page or Fluid's 403
+  page, by a per-company setting).
 - Today any company admin takes a site down and brings it back, a company site
   included. The planned split (a Fluid root admin for company-owned resources) is not
   documented until it ships. The admin's **Take down** asks for the same optional
@@ -3120,3 +3124,9 @@ Durable decisions:
   both shells (gateway or not).
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
+- `/account` lists the account menu's sites, then **Recently visited** (fluid#33468):
+  up to 10 company or other members' sites from the member's newest stored visits
+  that the menu doesn't list and the member didn't remove, newest first, counted for
+  the one-site redirect. Visits don't expire; only the newest 50 are kept, so the
+  page doesn't say "lately". **Your sites** heads the menu's sites only when both
+  groups have tiles.
