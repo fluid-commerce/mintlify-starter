@@ -85,7 +85,7 @@ tags:
   description: The site the member chooses as their home, the one their account opens on. A home changes nothing for the site's owner or for anyone else.
 - name: site-share-targets
   x-fluid-section: Members
-  description: Whom the member may share a site with, inside the reach their company's messaging policy gives them.
+  description: Whom the member may share a site with, which is any kept member of their company, their downline or a segment.
 - name: site-database
   x-fluid-section: Members
   description: >-
@@ -272,7 +272,7 @@ components:
           enum:
           - company
           - member
-          description: Who owns the site. The sites this API returns are owned by the member.
+          description: Who owns the site. Most sites this API returns are owned by the member; a company site appears when an edit share lets the member edit it.
         copied_from_id:
           type:
           - string
@@ -591,7 +591,7 @@ components:
             "$ref": "#/components/schemas/SiteBundleAccessEntry"
     SiteBundleStart:
       type: object
-      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access` and `meta` and never in `files`.
+      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access`, `meta` and `shell` and never in `files`.
       additionalProperties: false
       required:
       - files
@@ -633,6 +633,16 @@ components:
               type: object
             pages:
               type: object
+        shell:
+          type: object
+          description: "The site's `config/shell.json`, how the storefront shell draws its own parts around the site. `fairshare` is `visible` (the default) or `hidden`: `hidden` hides FairShare's floating bubbles from view while FairShare still loads, so the cart, checkout and the sharer's credit keep working. No other key is allowed. Checked when the bundle starts."
+          additionalProperties: false
+          properties:
+            fairshare:
+              type: string
+              enum:
+              - visible
+              - hidden
         functions:
           type: object
           description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
@@ -1274,6 +1284,11 @@ components:
           type: integer
           minimum: 0
           description: The size of the bundle's files together, in bytes.
+        function_names:
+          type: array
+          items:
+            type: string
+          description: The names of the server functions the bundle runs, sorted. Empty for a bundle with none.
         current:
           type: boolean
           description: Whether the site serves this deployment now.
@@ -1293,6 +1308,7 @@ components:
       - published_by
       - file_count
       - total_bytes
+      - function_names
       - current
       - retained
       - url
@@ -1344,7 +1360,7 @@ components:
           - build
           - function
           - gateway
-          description: "What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines are the calls of the site's server functions, one each, as the sites gateway ran them: the function, the status, the time it took, who called (`page`, `public`, `key` or `schedule`) and the request id, never a body or the viewer; they are kept 7 days, the newest 1,000. `gateway` lines start when the sites gateway records them per site."
+          description: "What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines are the calls of the site's server functions, one each, as the sites gateway ran them: the function, the status, the time it took, who called (`page`, `public`, `key` or `schedule`) and the request id, never a body or the viewer; they are kept 7 days, the newest 1,000. Before a call's line come the lines the function printed while it ran (its console output and an uncaught error, `<function> (request <id>): <text>`, with the site's exact secret values blanked), at most 50 a call; they hold whatever the function printed. `gateway` lines start when the sites gateway records them per site."
         message:
           type: string
           description: The line, in plain words.
@@ -2064,11 +2080,14 @@ components:
           - view
           - copy
           - edit
-          description: What the audience may do with the site. `view` opens it; `copy` also lets them copy it into a site of their own; `edit` (a member who accepted an invitation to edit) opens it and lets them edit its drafts and its branches' files, but not copy, publish, share or delete it. A share is made `edit` only by accepting an invitation, never by `POST` or `PATCH`.
+          description: What the audience may do with the site. `view` opens it; `copy` also lets them copy it into a site of their own; `edit` opens it and lets every member the share matches edit its drafts and its branches' files, but not copy, publish, share or delete it. A share is made `edit` by `POST` or `PATCH`, or by a member accepting an invitation to edit.
         created_at:
           type: string
           format: date-time
           description: When the site was shared with the audience.
+        pinned:
+          type: boolean
+          description: Whether the share pins the site in the menu of every member it matches. Such a member reads `pinned_by_share` on the site's menu entry, unless they removed the site.
       required:
       - id
       - audience_kind
@@ -2077,6 +2096,7 @@ components:
       - country
       - label
       - permission
+      - pinned
       - created_at
     SiteShareCreate:
       type: object
@@ -2089,7 +2109,7 @@ components:
           - member
           - downline
           - segment
-          description: Who to share with. A `member` share needs `member_id` and takes no other target. A `downline` share takes none. A `segment` share takes `member_type_id`, `country_code`, both or neither, and neither shares with every member the company's messaging policy lets you reach.
+          description: Who to share with. A `member` share needs `member_id` and takes no other target. A `downline` share takes none. A `segment` share takes `member_type_id`, `country_code`, both or neither, and neither shares with every member of the company.
         member_id:
           type: string
           format: uuid
@@ -2108,23 +2128,31 @@ components:
           enum:
           - view
           - copy
+          - edit
           default: view
           description: What the audience may do with the site. Ignored for an audience that is already shared; change it with `PATCH`.
+        pinned:
+          type: boolean
+          default: false
+          description: Whether the share pins the site in the menu of every member it matches. Ignored for an audience that is already shared; change it with `PATCH`.
       required:
       - audience_kind
     SiteShareUpdate:
       type: object
-      description: The change to a share. Only the permission changes; to change who a share names, delete it and add another.
+      description: The change to a share. Only the permission and whether it pins its site change, and one of them is required; to change who a share names, delete it and add another.
       additionalProperties: false
+      minProperties: 1
       properties:
         permission:
           type: string
           enum:
           - view
           - copy
+          - edit
           description: What the audience may do with the site.
-      required:
-      - permission
+        pinned:
+          type: boolean
+          description: Whether the share pins the site in the menu of every member it matches.
     SiteShareEnvelope:
       type: object
       description: One share.
@@ -2633,6 +2661,8 @@ components:
           description: Display title.
         position:
           type: integer
+          minimum: -2147483648
+          maximum: 2147483647
           description: Order of the page among the site's pages. Defaults to 0.
         published:
           type: boolean
@@ -2690,6 +2720,8 @@ components:
           description: Display title.
         position:
           type: integer
+          minimum: -2147483648
+          maximum: 2147483647
           description: Order of the page among the site's pages.
         published:
           type: boolean
@@ -2806,6 +2838,9 @@ components:
         pinned:
           type: boolean
           description: Whether the member pinned this listed site. Always false in removed_sites.
+        pinned_by_share:
+          type: boolean
+          description: Whether a share that matches the member pins this listed site, for everyone it matches. Independent of `pinned`, which stays the member's own pin. Always false in removed_sites and for the member's own sites.
         pinned_for_everyone:
           type: boolean
           description: Whether the company featured this listed site. Always false in removed_sites; featuring never grants access.
@@ -2825,6 +2860,7 @@ components:
           description: The link to share the site, on the company's storefront, with the caller's username as its credit so a visit through it credits them, for example `https://shop.example.com/riley-kim/sites/riley-shop`. A caller whose username cannot be a storefront credit gets the `https://<storefront>/home/sites/<handle>` link, whose `home` credit credits the site's owner. Null while the company is not on the sites gateway, and for a site the gateway cannot serve yet, such as a draft, a taken-down site, or one not yet published under the gateway; show a share button only when it is set, and build no link of your own.
       required:
       - pinned
+      - pinned_by_share
       - pinned_for_everyone
       - role
       - id
@@ -2874,10 +2910,17 @@ components:
           - string
           - 'null'
           format: uuid
-          description: Id of the site `/sites` opens, which is also the id of one of the entries above. The home when home_site_id is set, else the first company site the member has not removed, else the first company site, else their newest own site. The shell checks which candidate it can serve. Null when there is none.
+          description: Id of the site `/sites` opens, which is also the id of one of the entries above. It is the first of these that the shell serves at its home page, and null when it serves none. The candidates are the home when home_site_id is set, then the company's home site when the company set one, the member's company sites list it and it is published (served by the sites gateway while that is on), then the first company site the member has not removed, else the first company site, then their own sites, newest first. A candidate the shell would not serve (a home page that is not published, with the sites gateway off) is skipped, so the company's home site is named only when `/sites` opens it.
         pin_order:
           type: array
           description: Public ids of listed pins in the member's order, by stored position then pin id. Excludes removed or inaccessible sites.
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        share_pin_order:
+          type: array
+          description: Public ids of listed sites a share that matches the member pins and the member has not pinned, the oldest share first (`pinned_by_share` is true on their entries). Excludes removed or inaccessible sites. Holds the company sites a share pins and at most 50 shared sites, the ones whose share was written first.
           uniqueItems: true
           items:
             type: string
@@ -3140,17 +3183,17 @@ components:
       properties:
         members:
           type: array
-          description: Members matching `q`, by name, or by email address where `emails_visible` is true, sorted by name. At most 20, and never the caller or a member outside their messaging scope. Empty when `member` is not in `allowed`, or when `q` has no part of 3 characters.
+          description: Members matching `q`, by name, or by email address where `emails_visible` is true, sorted by name. At most 20, any kept member of the company but the caller. The company's messaging policy does not limit who is listed. Empty when `q` has no part of 3 characters.
           items:
             "$ref": "#/components/schemas/SiteShareTargetMember"
         member_types:
           type: array
-          description: The company's active member types. Empty unless `segment` is in `allowed`.
+          description: The company's active member types.
           items:
             "$ref": "#/components/schemas/SiteShareTargetMemberType"
         countries:
           type: array
-          description: The countries the company sells in. Empty unless `segment` is in `allowed`.
+          description: The countries the company sells in.
           items:
             "$ref": "#/components/schemas/SiteShareTargetCountry"
         downline_count:
@@ -3158,13 +3201,13 @@ components:
           - integer
           - 'null'
           minimum: 0
-          description: How many members a `downline` share by the caller reaches, at most 1000. These are the kept members below the caller on the enrollment tree, and under `team_graph` only those in the caller's Team Graph, which excludes members without a legacy id. Null unless `downline` is in `allowed`.
+          description: How many members a `downline` share by the caller reaches, at most 1000. These are the kept members below the caller on the enrollment tree. The company's messaging policy does not change it, so it is never null now, under `no_direct_messages` too. The type still allows `null` so the contract stays the same; a client that handles `null` keeps working.
         downline_count_capped:
           type: boolean
           description: Whether the downline is larger than `downline_count`, which is then 1000 ("1,000+").
         allowed:
           type: array
-          description: The audience kinds the caller may share with. All three under `all_members`, `member` and `downline` under `team_graph`, none under `no_direct_messages`.
+          description: The audience kinds the caller may share with. Always `member`, `downline` and `segment`. The company's messaging policy does not limit sharing, so `team_graph` and `no_direct_messages` give all three too.
           items:
             type: string
             enum:
@@ -4817,6 +4860,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d02'
                   audience_kind: downline
@@ -4825,6 +4869,7 @@ paths:
                   country:
                   label: Downline of Riley Kim
                   permission: copy
+                  pinned: false
                   created_at: '2026-09-01T10:05:00.000000Z'
                 - id: '0192f4e5-8a01-7b8c-9d0e-1f2a3b4c5d03'
                   audience_kind: segment
@@ -4837,6 +4882,7 @@ paths:
                     name: United States
                   label: Customer in United States
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:10:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -4881,7 +4927,7 @@ paths:
       description: |
         Shares one of the member's sites with an audience: one member, the member's downline, or a segment of the company's members by member type and country. Sharing an audience that is already shared writes nothing and returns the share that exists, with `200` instead of `201`; its permission is not changed, so change it with `PATCH`.
 
-        Sharing is checked against the company's messaging policy when it is made: a member, or an audience, outside the audiences the policy lets the member reach is refused with `403` and its reason. Sharing with oneself, with a member of another company, with an unknown member type or country, or with a target the audience kind does not take is refused with `422`. A site that is inactive, locked by a company admin or taken down is refused with `422` and `error.details.error` `site_closed`, since no share holder could open it; share it again once it reopens. A request that loses a race with another change to the site's shares, and finds no share for the audience afterwards, is refused with `409`: send it again.
+        Any member may share with any audience, whatever the company's messaging policy says, so with a kept member of the company, the member's downline, or a segment. Sharing with oneself, with a member of another company or a member who is no longer kept, with an unknown member type or country, or with a target the audience kind does not take is refused with `422`. A site that is inactive, locked by a company admin or taken down is refused with `422` and `error.details.error` `site_closed`, since no share holder could open it; share it again once it reopens. A request that loses a race with another change to the site's shares, and finds no share for the audience afterwards, is refused with `409`: send it again.
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only.
       operationId: member_site_shares_create
@@ -4917,6 +4963,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: view
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -4939,6 +4986,7 @@ paths:
                   country:
                   label: Customer
                   permission: view
+                  pinned: false
                   created_at: '2026-09-30T15:08:21.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -4946,22 +4994,11 @@ paths:
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
-          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only, and a member JWT is refused on every verb) or belongs to a sandbox test company that cannot be reached now; the request is on the cookie mount, which never serves sharing; or the company's messaging policy does not let the member share with this audience. A policy refusal names its reason in `error.details.error` as `outside_messaging_scope`.
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only, and a member JWT is refused on every verb) or belongs to a sandbox test company that cannot be reached now; the request is on the cookie mount, which never serves sharing.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
-              example:
-                status: 403
-                error:
-                  message: Your company's messaging policy does not let you share with this audience
-                  details:
-                    error: outside_messaging_scope
-                    audience_kind:
-                    - member
-                meta:
-                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
-                  timestamp: '2026-09-30T15:08:21Z'
         '404':
           description: No site of the member's has this id, the site has no such share, or member sites are not enabled for the member's company.
           content:
@@ -5026,6 +5063,7 @@ paths:
                   country:
                   label: Nathan Cho
                   permission: copy
+                  pinned: false
                   created_at: '2026-09-01T10:00:00.000000Z'
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
@@ -5072,7 +5110,7 @@ paths:
     get:
       summary: List a site's access requests
       description: |
-        The pending requests to see one of the member's private sites, newest first, each with who asked (name and account email address), what they wrote and when. Requests the owner has decided and requests that expired are not listed, and neither are requests from members who have left the company. A pending request is listed as stored: whether it can still be granted is checked when it is approved, so a request whose site has since been made public, taken down or locked, or whose requester the messaging policy no longer lets the owner share with, is still listed, and approving it answers `422` with the reason it was superseded. The list is paged by cursor, 25 to a page; follow `meta.pagination.next_cursor` until it is null to read every request. It is not cached (`max-age=0`) and can be revalidated with an ETag.
+        The pending requests to see one of the member's private sites, newest first, each with who asked (name and account email address), what they wrote and when. Requests the owner has decided and requests that expired are not listed, and neither are requests from members who have left the company. A pending request is listed as stored: whether it can still be granted is checked when it is approved, so a request whose site has since been made public, taken down or locked, is still listed, and approving it answers `422` with the reason it was superseded. The list is paged by cursor, 25 to a page; follow `meta.pagination.next_cursor` until it is null to read every request. It is not cached (`max-age=0`) and can be revalidated with an ETag.
 
         A bearer only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header. A member JWT, which travels in order and subscription email links, is refused with `403` too, so a forwarded email never lists who asked to see a site. A portal JWT can read. It answers `404` until access requests are enabled for the member's company.
       operationId: member_site_access_requests_index
@@ -5163,7 +5201,7 @@ paths:
       description: |
         Shares the site with the requester: adds a `view` share for them, closes the request as `approved`, and emails the requester once it commits. Access comes from the share alone; the request grants nothing. Approving an approved request writes and sends nothing and returns the same request with `200`.
 
-        The request is checked again when it is approved. If the site is no longer published and private, the requester has left the company, or the company's messaging policy no longer lets the owner share with them, the request is closed as superseded, no share is written, and the answer is `422` with the reason in `error.details.reason`: `site_not_published`, `site_not_private`, `requester_left`, `outside_messaging_scope` or `not_owner`. Approving it again answers the same. An inactive site answers `422` with `error.details.error` `site_closed`, writes nothing and leaves the request pending, so it can be approved once the site is active again (a locked or taken-down site is not published, so the request is superseded as above).
+        The request is checked again when it is approved. If the site is no longer published and private, or the requester has left the company, the request is closed as superseded, no share is written, and the answer is `422` with the reason in `error.details.reason`: `site_not_published`, `site_not_private`, `requester_left` or `not_owner`. Approving it again answers the same; a request closed under a messaging-policy rule before sharing ignored it keeps its stored reason, `outside_messaging_scope`. An inactive site answers `422` with `error.details.error` `site_closed`, writes nothing and leaves the request pending, so it can be approved once the site is active again (a locked or taken-down site is not published, so the request is superseded as above).
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` until access requests are enabled for the member's company.
       operationId: member_site_access_requests_approve
@@ -5352,7 +5390,7 @@ paths:
       description: |
         Invites a member of the company to one of the member's sites, offering `view` or `edit`. The invitation grants nothing until the invitee accepts it, which adds a member share; it can be answered for 7 days. A site has one invitation per member: inviting a member who already has one, whatever became of it, sends it again with this role and a new expiry, and answers `200` with it. The first invitation answers `201`.
 
-        The member must be a member of the company and not the caller, and the company's messaging policy must let the caller reach them (`403` `outside_messaging_scope` otherwise). A member the site is already shared with by a member share answers `422` `already_shared`. A site that is inactive, locked by a company admin or taken down answers `422` `site_closed`, since no share holder could open it; invite again once it reopens. A branch takes no invitations.
+        The member must be a kept member of the company and not the caller. The company's messaging policy does not limit who may be invited. A member the site is already shared with by a member share answers `422` `already_shared`. A site that is inactive, locked by a company admin or taken down answers `422` `site_closed`, since no share holder could open it; invite again once it reopens. A branch takes no invitations.
 
         A bearer only, as sharing is: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT. It answers `404` while member sites are not enabled for the member's company. A portal JWT minted read-only is refused with `403`.
       operationId: member_site_invitations_sent_create
@@ -5418,7 +5456,7 @@ paths:
         '401':
           "$ref": "#/components/responses/Unauthorized"
         '403':
-          description: The credential is a member JWT or read-only, the request is on the cookie mount, or the company's messaging policy does not let the caller reach the member (`error.details.error` is `outside_messaging_scope`).
+          description: The credential is a member JWT or read-only, or the request is on the cookie mount.
           content:
             application/json:
               schema:
@@ -5430,7 +5468,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
-          description: The body is invalid, the member is not a member of the company or is the caller, the site is already shared with them (`error.details.error` is `already_shared`), or the site is inactive, locked or taken down (`error.details.error` is `site_closed`).
+          description: The body is invalid, the member is not a kept member of the company or is the caller, the site is already shared with them (`error.details.error` is `already_shared`), or the site is inactive, locked or taken down (`error.details.error` is `site_closed`).
           content:
             application/json:
               schema:
@@ -6904,6 +6942,7 @@ paths:
                     owner_name: Acme
                     pinned: false
                     pinned_for_everyone: true
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: false
@@ -6922,6 +6961,7 @@ paths:
                     owner_name: Sam Lee
                     pinned: false
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: edit
                     company_lock: none
                     removable: false
@@ -6940,6 +6980,7 @@ paths:
                     owner_name: Riley Kim
                     pinned: true
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: true
@@ -6961,6 +7002,7 @@ paths:
                     owner_name: Jo Park
                     pinned: false
                     pinned_for_everyone: false
+                    pinned_by_share: false
                     role: view
                     company_lock: none
                     removable: true
@@ -6971,6 +7013,7 @@ paths:
                       uses: []
                   pin_order:
                   - '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  share_pin_order: []
                   company_pin_order:
                   - '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d01'
                   home_site_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
@@ -7203,7 +7246,7 @@ paths:
       description: |
         Shares the site with the member: adds a share with the invitation's role for them, as the member who sent the invitation, and closes the invitation as `accepted`. A `view` invitation adds a `view` share; an `edit` invitation makes the member an editor, turning a share they already hold into an `edit` share. Access comes from the share alone. Accepting an accepted invitation writes nothing and returns the same invitation with `200` while its share stands; once the owner has removed the share it answers `422` `revoked`.
 
-        The invitation is checked again when it is accepted. If its sender no longer owns the site, or the company's messaging policy no longer lets them share with the member, it is closed as superseded, no share is written, and the answer is `422` with `error.details.error` `superseded` and the reason in `error.details.reason`: `not_owner`, `outside_messaging_scope` or `site_unavailable` (the share could not be written for the site as it is now). Past `expires_at` it answers `422` `expired`, whether or not it was declined, and after the owner withdrew it `422` `revoked`. While the site is not open (inactive, locked or taken down) it answers `422` `site_closed`, writes nothing and stays pending, so accepting again once the site reopens adds the share. Declined before its expiry it answers `409` with `error.details.error` `declined`: undo the decline first, since sending it again answers the same. A change to the invitation or its site at the same moment answers `409` with `error.details.error` `conflict` and nothing written; send the request again.
+        The invitation is checked again when it is accepted. If its sender no longer owns the site, or the member is no longer a kept member, it is closed as superseded, no share is written, and the answer is `422` with `error.details.error` `superseded` and the reason in `error.details.reason`: `not_owner` or `site_unavailable` (the share could not be written for the site as it is now, or the member left). An invitation closed under a messaging-policy rule before sharing ignored it keeps its stored reason, `outside_messaging_scope`. Past `expires_at` it answers `422` `expired`, whether or not it was declined, and after the owner withdrew it `422` `revoked`. While the site is not open (inactive, locked or taken down) it answers `422` `site_closed`, writes nothing and stays pending, so accepting again once the site reopens adds the share. Declined before its expiry it answers `409` with `error.details.error` `declined`: undo the decline first, since sending it again answers the same. A change to the invitation or its site at the same moment answers `409` with `error.details.error` `conflict` and nothing written; send the request again.
 
         A bearer with write access only: a request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header, and so is a member JWT, or a portal JWT minted read-only. It answers `404` while member sites are not enabled for the member's company.
       operationId: member_site_invitations_accept
@@ -7655,7 +7698,7 @@ paths:
     get:
       summary: Search the share targets
       description: |
-        Whom the member may share a site with: the members matching `q`, the member types and countries a segment may name, how many members are below them, and which audiences their company's messaging policy allows. A member the caller could not message is never listed, and under `no_direct_messages` nothing is. The search is not paged; it returns at most 20 members. It is not cached (`max-age=0`) and can be revalidated with an ETag. A credential may make 30 requests a minute to this route and to the messaging recipient search together; more are refused with `429`.
+        Whom the member may share a site with: the members matching `q`, the member types and countries a segment may name, how many members are below them, and the audiences a share may name, which are always all three. Any kept member of the company but the caller may be listed, whatever the company's messaging policy says. The search is not paged; it returns at most 20 members. It is not cached (`max-age=0`) and can be revalidated with an ETag. A credential may make 30 requests a minute to this route and to the messaging recipient search together; more are refused with `429`.
 
         Bearer only. A request on the cookie mount is refused with `403`, with or without an `X-Fluid-Member-Site` header. A member session JWT, the kind order and subscription email links carry, is also refused with `403`: the results are other members' names and emails.
       operationId: member_site_share_targets_index
@@ -8517,6 +8560,8 @@ paths:
                   published_by: Riley Kim
                   file_count: 12
                   total_bytes: 482113
+                  function_names:
+                  - rsvp
                   current: true
                   retained: true
                   url: https://shop.example.com/sites/rileys-shop
@@ -8560,7 +8605,7 @@ paths:
     get:
       summary: Read a site's log
       description: |
-        The log of one of the member's sites, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log (`fluid sites logs --tail`), ask again with the last line's `at` as `since`. Publishing writes a line for each upload's start, its publish and who published it, and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. Each call of the site's server functions is a `function` line (`error` for a timeout or a server error, `warn` for a refusal such as the rate limit, which writes one line a minute); the gateway writes them within about a second, so a line can arrive just after a later line of another source. `gateway` lines start when the sites gateway records them per site; the traffic operation counts the gateway's errors meanwhile. Never stored (`no-store`).
+        The log of one of the member's sites, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log (`fluid sites logs --tail`), ask again with the last line's `at` as `since`. Publishing writes a line for each upload's start, its publish and who published it, and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. Each call of the site's server functions is a `function` line (`error` for a timeout or a server error, `warn` for a refusal such as the rate limit, which writes one line a minute), and what a function printed while it ran comes before its call's line; the gateway writes them within about a second, so a line can arrive just after a later line of another source. `gateway` lines start when the sites gateway records them per site; the traffic operation counts the gateway's errors meanwhile. Never stored (`no-store`).
 
         Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
       operationId: member_sites_logs_index

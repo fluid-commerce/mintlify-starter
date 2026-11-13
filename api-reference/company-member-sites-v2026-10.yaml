@@ -9,17 +9,17 @@ info:
     delete any site with its pages, and copy any site into a new company site.
     An admin also builds a company site as a member builds their own: its files
     and pages are written, and the site is published, through the routes below.
-    The routes for a site's files, pages, publishing and changes serve company
-    sites only: for a member's site every one of them, reads included for files
-    and pages, is refused with 403, because they belong to its owner.
-    An admin oversees a member's site through the site routes: list, read, take
-    down, delete and copy. Changing a member's site is refused with 403 as well.
+    A company admin who holds a kept admin row also changes, publishes and writes
+    the files and pages of a member's site, as its owner does. A root admin who
+    holds no admin row only oversees a member's site: list, read, take down,
+    delete and copy; its files, pages, publishing and changes are refused with
+    403.
 
     An admin also sees and manages who a site is shared with. The shares of any
     site in the company are listed and deleted here, and the shares of a company
-    site are created and changed. Sharing a member's site is the member's to do,
-    and is refused with 404, as a site an admin may not manage; sharing with a
-    member's downline is refused with 422. A
+    site are created and changed, and so are the shares of a member's site, by an
+    admin who holds a kept admin row (a root admin with none is refused with
+    404); sharing with a member's downline is refused with 422. A
     share names its audience by name and never by email address. No route lists
     the sites members removed from their own menus.
 
@@ -52,12 +52,13 @@ info:
 
     An admin also sees and manages a site's branch: a private copy of a
     published site, made to try a change, that only its owner and company
-    admins can open. The branch of any site in the company is listed, read and
-    deleted here, and the branch of a company site is created. Branching a
-    member's site is the member's to do, and is refused with 404, as a site an
-    admin may not edit. A branch is a site of its own, left out of the site
-    list, whose files, pages and publishing are served here for a company
-    site's branch only. A credential with no user, such as a company API token,
+    admins can open. The branch of any site in the company is listed, read,
+    created and deleted here. A company admin who holds a kept admin row
+    branches a member's site as its owner would: the branch is the owner's,
+    and the admin is recorded as its creator. Branching a member's site is
+    refused with 404 to a root admin who holds no kept admin row. A branch is a
+    site of its own, left out of the site list, whose files, pages and
+    publishing are served here as its parent's are. A credential with no user, such as a company API token,
     can read branches but not write them. Once member sites are enabled for
     the company, every branch route answers a droplet token, and an OAuth
     client token whatever its scopes, with 403. While they are not enabled the
@@ -73,7 +74,7 @@ info:
     refusal included, carries the frame's sandbox policy and is `private,
     no-store` and `noindex`. An Identity client token is refused with 403 on
     them, whatever its scopes. A member's site is the same empty 404 as a
-    missing one, because an admin never sees a member's draft or files.
+    missing one for a root admin who holds no kept admin row.
   version: 2026-10
   contact:
     email: support@fluid.app
@@ -125,6 +126,9 @@ tags:
   x-fluid-section: Members
 - name: member-site-features
   description: The sites the company features, so the members they are shared with see them first.
+  x-fluid-section: Members
+- name: member-site-home
+  description: The company site a member with no home of their own lands on.
   x-fluid-section: Members
 - name: member-site-policy
   description: The scopes the company's rep sites may use on a visitor's data, and the caps it has raised on its sites' databases.
@@ -345,6 +349,9 @@ components:
           - $ref: '#/components/schemas/OwnerMember'
           - type: 'null'
           description: The owning member; null on a company site.
+        created_by_me:
+          type: boolean
+          description: Whether the caller created the site, so an admin can list the sites they made. False for a member's site (its owner made it), for a site with no recorded creator, and for a caller with no user. Unlike `creator`, it needs no permission to view members or admins, as it says nothing about anyone else, and it is true for a caller who is neither an admin nor a member of the company.
         creator:
           oneOf:
           - $ref: '#/components/schemas/SiteCreator'
@@ -556,6 +563,8 @@ components:
               description: Whether members must have this site.
             position:
               type: integer
+              minimum: -2147483648
+              maximum: 2147483647
               description: Where the site sits among the company's sites. Without it, the new site gets one past the highest position of the company's own sites, branches aside (0 for the first company site), so a list ordered by position shows it last. When a company site already holds the largest position (2147483647), the new site shares that position.
     MemberSiteUpdateBody:
       type: object
@@ -594,6 +603,8 @@ components:
               description: Whether members must have this site. Only a company site can be required.
             position:
               type: integer
+              minimum: -2147483648
+              maximum: 2147483647
               description: Where the site sits among the company's sites. Only a company site can be moved.
             lock_version:
               type: integer
@@ -906,6 +917,8 @@ components:
               description: Display title.
             position:
               type: integer
+              minimum: -2147483648
+              maximum: 2147483647
               description: Order of the page among the site's pages. Defaults to 0.
             published:
               type: boolean
@@ -966,6 +979,8 @@ components:
               description: Display title.
             position:
               type: integer
+              minimum: -2147483648
+              maximum: 2147483647
               description: Order of the page among the site's pages.
             published:
               type: boolean
@@ -1045,6 +1060,7 @@ components:
       - country
       - label
       - permission
+      - pinned
       - created_at
       properties:
         id:
@@ -1082,11 +1098,14 @@ components:
           - view
           - copy
           - edit
-          description: '`view` opens the site; `copy` lets the member copy it too; `edit` lets the member edit its drafts (a member who accepted an invitation to edit), but not copy it. A share is made `edit` only by accepting an invitation.'
+          description: '`view` opens the site; `copy` lets the member copy it too; `edit` lets every member the share matches edit its drafts, but not copy it. A share is made `edit` directly, or by a member accepting an invitation to edit.'
         created_at:
           type: string
           format: date-time
           description: When the share was made.
+        pinned:
+          type: boolean
+          description: Whether the share pins the site in the menu of every member it matches, unless they removed it.
     MemberSiteShareResponse:
       type: object
       description: One share.
@@ -1158,30 +1177,38 @@ components:
               enum:
               - view
               - copy
+              - edit
               description: What the share grants. Defaults to `view`. An audience that is already shared keeps its permission; change it with the update route.
+            pinned:
+              type: boolean
+              default: false
+              description: Whether the share pins the site in the menu of every member it matches. Defaults to false. An audience that is already shared keeps its setting; change it with the update route.
     MemberSiteShareUpdateBody:
       type: object
-      description: The new permission of a share.
+      description: The new permission of a share, whether it pins its site, or both.
       required:
       - member_site_share
       additionalProperties: false
       properties:
         member_site_share:
           type: object
-          required:
-          - permission
           additionalProperties: false
+          minProperties: 1
           properties:
             permission:
               type: string
               enum:
               - view
               - copy
-              description: What the share grants. Nothing else about a share changes.
+              - edit
+              description: What the share grants.
+            pinned:
+              type: boolean
+              description: Whether the share pins the site in the menu of every member it matches.
     MemberSiteBranch:
       type: object
       description: |
-        The branch of a site: a second site, cloned from the published content of its parent and published at once, so it renders what the parent renders. It is private, owned as the parent is, and has no shares. Only its owner and company admins can open it, in the frame at `frame_path`. It is edited and published through the files, pages and publish operations with `site_id` as the site id, which serve a company site's branch only; the parent never changes.
+        The branch of a site: a second site, cloned from the published content of its parent and published at once, so it renders what the parent renders. It is private, owned as the parent is, and has no shares. Only its owner and company admins can open it, in the frame at `frame_path`. It is edited and published through the files, pages and publish operations with `site_id` as the site id, which serve a member's branch to a company admin who holds a kept admin row as they serve its parent; the parent never changes.
       additionalProperties: false
       required:
       - slug
@@ -1331,7 +1358,7 @@ components:
             $ref: '#/components/schemas/MemberSiteBundleAccessEntry'
     MemberSiteBundleStartBody:
       type: object
-      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access` and `meta` and never in `files`.
+      description: The build output's files and metadata. `db/schema.json` and every `config/*.json` are bundle metadata, never served as files, so they are sent as `schema`, `routes`, `access`, `meta` and `shell` and never in `files`.
       additionalProperties: false
       required:
       - files
@@ -1373,6 +1400,16 @@ components:
               type: object
             pages:
               type: object
+        shell:
+          type: object
+          description: "The site's `config/shell.json`, how the storefront shell draws its own parts around the site. `fairshare` is `visible` (the default) or `hidden`: `hidden` hides FairShare's floating bubbles from view while FairShare still loads, so the cart, checkout and the sharer's credit keep working. No other key is allowed. Checked when the bundle starts."
+          additionalProperties: false
+          properties:
+            fairshare:
+              type: string
+              enum:
+              - visible
+              - hidden
         functions:
           type: object
           description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
@@ -1404,8 +1441,8 @@ components:
             type: string
     MemberSitePolicyScopes:
       type: array
-      description: 'Scopes such as `orders: read`, each once. A scope is `<family>: read` or `<family>: write` for a family of the site mount: addresses, agreements, ai, calendar, carts, contacts, database, media, messages, mysite, notifications, orders, plan, points, profile, search, shares, stats, subscriptions or tasks. An empty list means none.'
-      maxItems: 40
+      description: 'Scopes such as `orders: read`, each once. A scope is `<family>: read` or `<family>: write` for a family of the site mount: addresses, agreements, ai, calendar, carts, contacts, cowork, database, media, messages, mysite, notifications, orders, plan, points, profile, search, shares, stats, subscriptions or tasks. An empty list means none.'
+      maxItems: 42
       items:
         type: string
         pattern: '^[a-z]+: (read|write)$'
@@ -2052,6 +2089,11 @@ components:
           type: integer
           minimum: 0
           description: The size of the bundle's files together, in bytes.
+        function_names:
+          type: array
+          items:
+            type: string
+          description: The names of the server functions the bundle runs, sorted. Empty for a bundle with none.
         current:
           type: boolean
           description: Whether the site serves this deployment now.
@@ -2071,6 +2113,7 @@ components:
       - published_by
       - file_count
       - total_bytes
+      - function_names
       - current
       - retained
       - url
@@ -2097,7 +2140,7 @@ components:
           - build
           - function
           - gateway
-          description: "What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines are the calls of the site's server functions, one each, as the sites gateway ran them: the function, the status, the time it took, who called (`page`, `public`, `key` or `schedule`) and the request id, never a body or the viewer; they are kept 7 days, the newest 1,000. `gateway` lines start when the sites gateway records them per site."
+          description: "What wrote it. `publish` lines come from the site's bundles and `build` lines from its builds on Fluid (queued, what the build printed, and how it ended). `function` lines are the calls of the site's server functions, one each, as the sites gateway ran them: the function, the status, the time it took, who called (`page`, `public`, `key` or `schedule`) and the request id, never a body or the viewer; they are kept 7 days, the newest 1,000. Before a call's line come the lines the function printed while it ran (its console output and an uncaught error, `<function> (request <id>): <text>`, with the site's exact secret values blanked), at most 50 a call; they hold whatever the function printed, so they are read only for a caller with `application_themes.update` and `member_site_data.view`. `gateway` lines start when the sites gateway records them per site."
         message:
           type: string
           description: The line, in plain words.
@@ -3074,6 +3117,66 @@ components:
               items:
                 type: string
                 format: uuid
+    MemberSiteHome:
+      type: object
+      description: The company's home site.
+      required:
+      - id
+      - site_id
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The home's id. It stays the same when the company chooses another site.
+        site_id:
+          type: string
+          format: uuid
+          description: The home site's id (its `uuid_v7`), as the site list gives it.
+        created_at:
+          type: string
+          format: date-time
+          description: When the company first chose a home site.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the company last chose a home site.
+    MemberSiteHomeResponse:
+      type: object
+      description: The company's home, or null when it has none.
+      required:
+      - member_site_home
+      - status
+      - meta
+      properties:
+        member_site_home:
+          description: The company's home site, or null when the company has set none.
+          anyOf:
+          - $ref: '#/components/schemas/MemberSiteHome'
+          - type: 'null'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteHomeUpdateBody:
+      type: object
+      description: The site to make home. Any other field is refused as an unknown field.
+      additionalProperties: false
+      required:
+      - member_site_home
+      properties:
+        member_site_home:
+          type: object
+          additionalProperties: false
+          required:
+          - site_id
+          properties:
+            site_id:
+              type: string
+              format: uuid
+              description: The id of a company-owned site of the company, as the site list gives it.
     ErrorResponse:
       type: object
       description: A refusal in the standard envelope.
@@ -3227,7 +3330,7 @@ components:
           schema:
             $ref: '#/components/schemas/AuthorizationError'
     PermissionDenied:
-      description: The caller lacks the permission, or the site is a member's, whose pages an admin does not reach.
+      description: The caller lacks the permission, or the site is a member's and the caller is a root admin with no kept admin row.
       content:
         application/json:
           schema:
@@ -3235,7 +3338,7 @@ components:
             - $ref: '#/components/schemas/AuthorizationError'
             - $ref: '#/components/schemas/ErrorResponse'
     WriteRefused:
-      description: The caller lacks the permission, has no signed-in admin, or the site is a member's, whose files, pages, publishing and changes an admin does not reach.
+      description: The caller lacks the permission or has no signed-in admin; the site is a member's and the caller is a root admin with no kept admin row, or the site's owner was discarded; or a change sets `required` or `position` on a member's site.
       content:
         application/json:
           schema:
@@ -3243,7 +3346,7 @@ components:
             - $ref: '#/components/schemas/AuthorizationError'
             - $ref: '#/components/schemas/ErrorResponse'
     NeedsAdmin:
-      description: The caller lacks the permission, has no signed-in admin, or the site is a member's, whose files an admin does not reach. A credential with no user, such as a company API token or a droplet token, cannot read files.
+      description: The caller lacks the permission, has no signed-in admin, or the site is a member's and the caller is a root admin with no kept admin row, or the site's owner was discarded. A credential with no user, such as a company API token or a droplet token, cannot read files.
       content:
         application/json:
           schema:
@@ -3274,7 +3377,7 @@ components:
             - $ref: '#/components/schemas/AuthorizationError'
             - $ref: '#/components/schemas/ErrorResponse'
     PreviewNotFound:
-      description: The same empty answer, typed `text/plain`, for every reason. No site of the company has this id, the site is a member's, the site has no such page or file, or member sites are not enabled for the company. It never says which.
+      description: The same empty answer, typed `text/plain`, for every reason. No site of the company has this id, the site is a member's and the caller is a root admin who holds no kept admin row, the site has no such page or file, or member sites are not enabled for the company. It never says which.
       headers:
         Content-Security-Policy:
           $ref: '#/components/headers/PreviewContentSecurityPolicy'
@@ -3445,6 +3548,15 @@ paths:
           - taken_down
         example: made_private
         description: Only sites whose `company_lock` is this value. A taken-down site reads `taken_down` whether or not it is locked.
+      - name: filter[created_by]
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - me
+        example: me
+        description: Only the company sites the caller created, those whose `created_by_me` is true. None for a caller with no user.
       responses:
         '200':
           description: A page of sites.
@@ -3720,8 +3832,8 @@ paths:
       operationId: companyMemberSitesUpdate
       x-fluid-audience: company
       summary: Change a member site
-      description: Changes a company site; only the fields sent change. An admin may set `required` and `position` on it.
-        A member's site is refused with 403, because its owner changes it. Needs `application_themes.update` and a signed-in admin.
+      description: Changes a site; only the fields sent change. An admin may set `required` and `position` on a company site.
+        A member's site is changed by a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none and when its owner was discarded; `required` or `position` sent for a member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-sites
       parameters:
@@ -4365,7 +4477,7 @@ paths:
       operationId: companyMemberSitesPublish
       x-fluid-audience: company
       summary: Publish a company site
-      description: Publishes every template of the site and its settings, marks the site published and replaces its `content_version`. Publishing a site that is already published publishes its current content again. The request has no body. Only a company site can be published here; a member publishes their own. A site that was taken down cannot be published. Needs `application_themes.update` and a signed-in admin.
+      description: Publishes every template of the site and its settings, marks the site published and replaces its `content_version`. Publishing a site that is already published publishes its current content again. The request has no body. A member's site is published by a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none and when its owner was discarded. A site that was taken down cannot be published. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-sites
       parameters:
@@ -4535,7 +4647,7 @@ paths:
       operationId: companyMemberSiteFilesList
       x-fluid-audience: company
       summary: List a site's files
-      description: The files of one company-owned site, as metadata (path, kind, content type, size, version and time), sorted by path, without their content. It lists each layout, section and snippet, each page whose template the site owns, each asset, `config/menus.json`, `config/pages.json` and `config/settings.json`, and `config/access.json` once the site has a draft access declaration. Each entry's `version` is the one to send back when writing or removing the file. Read a file's content with `GET /member-sites/{id}/files/{path}`. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every file. A member's site is refused with 403. Needs `application_themes.view` and a signed-in admin.
+      description: The files of one site of the company, as metadata (path, kind, content type, size, version and time), sorted by path, without their content. It lists each layout, section and snippet, each page whose template the site owns, each asset, `config/menus.json`, `config/pages.json` and `config/settings.json`, and `config/access.json` once the site has a draft access declaration. Each entry's `version` is the one to send back when writing or removing the file. Read a file's content with `GET /member-sites/{id}/files/{path}`. The list is paged by cursor; follow `meta.pagination.next_cursor` until it is null to read every file. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.view` and a signed-in admin.
       tags:
       - member-site-files
       parameters:
@@ -4615,7 +4727,7 @@ paths:
       operationId: companyMemberSiteFilesShow
       x-fluid-audience: company
       summary: Show a site file
-      description: One file of a company-owned site. A file that does not exist is 404, and a path that is none of the supported ones is 422. A page's content is a file only when the site owns the page's template. A member's site is refused with 403. Needs `application_themes.view` and a signed-in admin.
+      description: One file of a site. A file that does not exist is 404, and a path that is none of the supported ones is 422. A page's content is a file only when the site owns the page's template. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.view` and a signed-in admin.
       tags:
       - member-site-files
       parameters:
@@ -4654,7 +4766,7 @@ paths:
       operationId: companyMemberSiteFilesUpdate
       x-fluid-audience: company
       summary: Write a site file
-      description: Creates the file, or replaces its content, on a company site. Send the `version` of the file you read to refuse the write with 409 if the file changed or was removed since, or `must_not_exist` to create a file only if the path is free; without either the write replaces whatever is there, so the last write wins, except that a write of `config/menus.json` without `version` is refused with 409 while the site's menus hold a translated item title. The check and the write are one step, so a write that loses a race changes nothing. A page's file must already exist; add the page first. Writing `config/menus.json` replaces all of the site's menus, writing `config/pages.json` adds, changes and removes pages to match it and sets the site's default layout (a page added this way starts with an empty file), and writing `config/settings.json` replaces its settings. Writing `config/access.json` sets the site's draft access declaration and is refused with 422 when the declaration is not valid. Layouts, sections, snippets and pages are saved as drafts until the site is published. Assets must be css, js, json, txt or html text files. A member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
+      description: Creates the file, or replaces its content, on a company site. Send the `version` of the file you read to refuse the write with 409 if the file changed or was removed since, or `must_not_exist` to create a file only if the path is free; without either the write replaces whatever is there, so the last write wins, except that a write of `config/menus.json` without `version` is refused with 409 while the site's menus hold a translated item title. The check and the write are one step, so a write that loses a race changes nothing. A page's file must already exist; add the page first. Writing `config/menus.json` replaces all of the site's menus, writing `config/pages.json` adds, changes and removes pages to match it and sets the site's default layout (a page added this way starts with an empty file), and writing `config/settings.json` replaces its settings. Writing `config/access.json` sets the site's draft access declaration and is refused with 422 when the declaration is not valid. Layouts, sections, snippets and pages are saved as drafts until the site is published. Assets must be css, js, json, txt or html text files. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-files
       parameters:
@@ -4704,7 +4816,7 @@ paths:
       operationId: companyMemberSiteFilesDelete
       x-fluid-audience: company
       summary: Remove a site file
-      description: Removes a layout, section, snippet or asset of a company site. Send the `version` of the file you read to refuse the removal with 409 if the file changed since; without it the file is removed as it is. A file that does not exist is 404 whatever the version. A page is removed with the pages API, and the settings and menus cannot be removed (write an empty menus document to clear the menus). A member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
+      description: Removes a layout, section, snippet or asset of a company site. Send the `version` of the file you read to refuse the removal with 409 if the file changed since; without it the file is removed as it is. A file that does not exist is 404 whatever the version. A page is removed with the pages API, and the settings and menus cannot be removed (write an empty menus document to clear the menus). A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-files
       parameters:
@@ -4733,7 +4845,7 @@ paths:
       operationId: companyMemberSitePagesList
       x-fluid-audience: company
       summary: List a site's pages
-      description: Every page of one company-owned site, in order by position. A site holds at most 50 pages, so the list is not paged. A member's site is refused with 403. Needs `application_themes.view`, or a droplet token with the `website` scope.
+      description: Every page of one site of the company, in order by position. A site holds at most 50 pages, so the list is not paged. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.view`, or a droplet token with the `website` scope.
       tags:
       - member-site-pages
       parameters:
@@ -4771,7 +4883,7 @@ paths:
       operationId: companyMemberSitePagesCreate
       x-fluid-audience: company
       summary: Add a page
-      description: Adds a page and the template that holds its content to a company site, in one step. A site holds at most 50 pages. The page can use one of the site's own menus, named by its slug. A member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
+      description: Adds a page and the template that holds its content to a company site, in one step. A site holds at most 50 pages. The page can use one of the site's own menus, named by its slug. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-pages
       parameters:
@@ -4828,7 +4940,7 @@ paths:
       operationId: companyMemberSitePagesUpdate
       x-fluid-audience: company
       summary: Change a page
-      description: Changes the supplied fields of a page of a company site, and the page's content when given. A new slug renames the page's template with it. Send the `lock_version` you last read to refuse the change if the page changed since; without it the change is applied to the current page. A member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
+      description: Changes the supplied fields of a page of a company site, and the page's content when given. A new slug renames the page's template with it. Send the `lock_version` you last read to refuse the change if the page changed since; without it the change is applied to the current page. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-pages
       parameters:
@@ -4870,7 +4982,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: The caller lacks the permission, has no signed-in admin, the site is a member's, which an admin does not build, or `content` was sent for a page that uses a template the site does not own, such as a theme's, which is never written here.
+          description: The caller lacks the permission, has no signed-in admin, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or `content` was sent for a page that uses a template the site does not own, such as a theme's, which is never written here.
           content:
             application/json:
               schema:
@@ -4891,7 +5003,7 @@ paths:
       operationId: companyMemberSitePagesDelete
       x-fluid-audience: company
       summary: Remove a page
-      description: Removes the page of a company site and, when the site owns it, the template that holds its content. Send the `lock_version` you last read to refuse the removal with 409 if the page changed since, including by a write or publish of its content; without it the page is removed as it is. A member's site is refused with 403. Needs `application_themes.update` and a signed-in admin.
+      description: Removes the page of a company site and, when the site owns it, the template that holds its content. Send the `lock_version` you last read to refuse the removal with 409 if the page changed since, including by a write or publish of its content; without it the page is removed as it is. A member's site is served to a company admin who holds a kept admin row, and refused with 403 to a root admin who holds none. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-pages
       parameters:
@@ -4963,11 +5075,11 @@ paths:
     post:
       operationId: companyMemberSiteBranchesCreate
       x-fluid-audience: company
-      summary: Branch a company site
+      summary: Branch a site
       description: |
-        For an older Liquid site, makes a branch of a published company site: a second company-owned site, cloned from the parent's published layouts, sections, snippets, pages, settings, text assets and menus, and published at once, so its `frame_path` renders what the parent renders. Nothing the parent holds in draft is copied, and the parent is never changed. The branch is private and cannot be shared or made public, and it is left out of the site list. It has no Git repository.
+        For an older Liquid site, makes a branch of a published site: a second site, owned as its parent is, cloned from the parent's published layouts, sections, snippets, pages, settings, text assets and menus, and published at once, so its `frame_path` renders what the parent renders. Nothing the parent holds in draft is copied, and the parent is never changed. The branch is private and cannot be shared or made public, and it is left out of the site list. It has no Git repository.
 
-        A member's site is refused with 404, as a site an admin may not edit: its owner branches it. A draft site, a taken-down site and a branch cannot be branched, and a site holding a binary asset cannot be branched. A site has one branch at a time. Needs `application_themes.update` and a signed-in admin. The body is optional.
+        A member's site is branched by a company admin who holds a kept admin row as its owner would: the branch is the owner's, counts against the owner's site limit, and records the admin as its creator. It is refused with 404 to a root admin who holds none, when its owner was discarded and while the site is locked. A draft site, a taken-down site and a branch cannot be branched, and a site holding a binary asset cannot be branched. A site has one branch at a time. Needs `application_themes.update` and a signed-in admin. The body is optional.
 
         For a gateway-served V1 parent, the branch starts as a private draft with an independent prepared bundle. Its files and database rows are copied in the background. The normal bundle publisher makes it current only after both copies are ready. Until then the branch's status is draft. If the parent's schema advances incompatibly during copying, the captured bundle is refused and remains unserved; inspect its failed bundle before rebuilding. V1 branches are edited and published through app bundles rather than older Liquid files.
       tags:
@@ -5017,7 +5129,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose branch its owner makes, or member sites are not enabled for this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or member sites are not enabled for this company.
           content:
             application/json:
               schema:
@@ -5042,7 +5154,7 @@ paths:
       description: |
         The bundles of one company site, newest first, in every state: an upload in progress, a failed one, and each published one, with the one the site serves marked `current`. A bundle is its id, state, times and the SHA-256 of its manifest, never the manifest. Roll back to an earlier published bundle with its `current` route.
 
-        Needs `application_themes.view` and a signed-in admin, because the list is read as the admin. A member's site is refused with 404, as a site an admin may not edit: its owner lists its bundles. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin, because the list is read as the admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-bundles
       parameters:
@@ -5108,7 +5220,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose bundles its owner lists, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5126,7 +5238,7 @@ paths:
       description: |
         Starts publishing a company site as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A site may have 5 uploads in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with 409 until one finishes or expires. Published bundles are kept and do not count.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner publishes it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. A gateway that cannot prepare the uploads is a 502; the bundle is then failed, and starting again makes a new one. A 409 also answers a site already at its 5 uploads in progress.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. A gateway that cannot prepare the uploads is a 502; the bundle is then failed, and starting again makes a new one. A 409 also answers a site already at its 5 uploads in progress.
       tags:
       - member-site-bundles
       parameters:
@@ -5183,7 +5295,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose bundles its owner publishes, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5239,7 +5351,7 @@ paths:
 
         A site with no repository yet has one made from the static site template, and the request answers 409 `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers 503 `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not change: its owner builds it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-bundles
       parameters:
@@ -5272,7 +5384,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose source its owner builds, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5311,7 +5423,7 @@ paths:
 
         A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner publishes it. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-bundles
       parameters:
@@ -5359,7 +5471,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, the bundle is not the site's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, the bundle is not the site's, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5416,7 +5528,7 @@ paths:
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site that was taken down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit: its owner rolls it back. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company, and for a bundle that is not the site's. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-bundles
       parameters:
@@ -5455,7 +5567,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, the bundle is not the site's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, the bundle is not the site's, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5485,7 +5597,7 @@ paths:
 
         A box may reach only the npm and Yarn registries, Fluid's API and the storage host uploads go to, and runs for at most 15 minutes. A site has one build going at a time and a company three.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404, as a site an admin may not edit. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. Where builds are not set up yet the answer is 422 with `details.error` `builds_not_configured`: build locally and start a bundle instead.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403. Where builds are not set up yet the answer is 422 with `details.error` `builds_not_configured`: build locally and start a bundle instead.
       tags:
       - member-site-builds
       parameters:
@@ -5542,7 +5654,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5579,7 +5691,7 @@ paths:
       description: |
         One build of a company site: its status, the framework it found, what it printed, and how it ended. Once it `succeeded`, `bundleId` is the bundle it published and `url` the site's address; once it `failed`, `failure` says why. Read it every few seconds while it is `queued` or `running`. The answer is never cached.
 
-        Needs `application_themes.view` and a signed-in admin. A member's site, and a build of another site, are refused with 404. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A build of another site is refused with 404, and so is a member's site for a root admin who holds no kept admin row. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-builds
       parameters:
@@ -5629,7 +5741,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site or build in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site or build in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5642,7 +5754,7 @@ paths:
       description: |
         The live API keys of one company site, oldest first. A revoked key is not listed, and no secret is: a key shows its first 12 characters (`prefix`).
 
-        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404: its owner manages its keys. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-api-keys
       parameters:
@@ -5676,7 +5788,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose keys its owner manages, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5688,7 +5800,7 @@ paths:
       description: |
         Adds a key to a company site and answers its secret, this once: only its SHA-256 is stored. A server or another site sends it as `Authorization: Bearer <secret>` to call the site's `access: "key"` server functions at `/api/<name>`; the function never sees it, and gets `ctx.caller` `{kind: "key", keyId, keyName}`. A site holds at most 20 live keys.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-api-keys
       parameters:
@@ -5731,7 +5843,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5773,7 +5885,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site or live key, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site or live key, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5792,7 +5904,7 @@ paths:
       description: |
         The environment variables of one company site, by name. The site's server functions receive every one of them in `ctx.secrets`. A secret's `value` is null; its value is never read back.
 
-        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404: its owner sets its variables. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-env-vars
       parameters:
@@ -5831,7 +5943,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose variables its owner sets, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5844,7 +5956,7 @@ paths:
       description: |
         Adds the variable the path names to a company site, or replaces its value and secrecy. Mark API keys and passwords `secret`: the value is stored encrypted and never read back, so the answer's `value` is null. A site holds at most 64 variables, and a value is 1 to 5,120 bytes. When a published version of the site has server functions, the change is passed to them at once.
 
-        Needs `application_themes.update` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.update` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-env-vars
       parameters:
@@ -5905,7 +6017,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, whose variables its owner sets, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -5952,7 +6064,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site or variable, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site or variable, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -6616,6 +6728,125 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-site-home:
+    get:
+      operationId: companyMemberSiteHomeShow
+      x-fluid-audience: company
+      summary: Read the company's home site
+      description: The company site a member with no home of their own lands on, or null when the company has set none. A site that is a draft or was taken down is still reported, so an admin can see and change it. Needs `application_themes.view`, or a droplet token with the `website` scope whose role holds it.
+      tags:
+      - member-site-home
+      responses:
+        '200':
+          description: The company's home site, or null.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteHomeResponse'
+              example:
+                member_site_home:
+                  id: 019a3d4e-9102-7c03-9db4-c5d6e7f80910
+                  site_id: 019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+                  created_at: '2026-10-15T09:30:00.000000Z'
+                  updated_at: '2026-10-15T09:30:00.000000Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks `application_themes.view`, or is a droplet whose attached role lacks it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: companyMemberSiteHomeUpdate
+      x-fluid-audience: company
+      summary: Set the company's home site
+      description: |
+        Makes a company-owned site the company's home, replacing the current one. A member with no home of their own lands on it, and so does a member whose own home cannot be served; a member's own home that can be served still wins. The site opens only for a member whose menu already lists it, so a member who has no share for it, or who removed it from their menu, lands where they did before. The member menu has no field for the company home; only this endpoint reads it. A site that is not live (a draft or taken down) can be set; it counts once it is live. Setting writes nothing to the site. Setting the site that is already home answers 200.
+
+        A member's site is refused with 403, and a site of another company, an unknown site and a branch with 404. Needs `application_themes.update` and a signed-in admin.
+      tags:
+      - member-site-home
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteHomeUpdateBody'
+            example:
+              member_site_home:
+                site_id: 019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+      responses:
+        '200':
+          description: The company's home is the site.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteHomeResponse'
+              example:
+                member_site_home:
+                  id: 019a3d4e-9102-7c03-9db4-c5d6e7f80910
+                  site_id: 019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+                  created_at: '2026-10-15T09:30:00.000000Z'
+                  updated_at: '2026-10-15T09:30:00.000000Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteRefused'
+        '404':
+          description: No such site in this company, a branch, or member sites are not enabled for the company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another request changed the company's home while this one was written. Send it again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body is missing `site_id`, holds something that is not a site id, or holds an unknown field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: companyMemberSiteHomeDelete
+      x-fluid-audience: company
+      summary: Clear the company's home site
+      description: Clears the company's home, so a member with no home of their own lands as they did before one was set. It answers 204 whether or not a home was set, and writes nothing to the site. Needs `application_themes.update` and a signed-in admin.
+      tags:
+      - member-site-home
+      responses:
+        '204':
+          description: The company has no home site.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/WriteRefused'
+        '404':
+          description: Member sites are not enabled for the company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The database refused the delete, so the company's home is unchanged. Send it again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-site-policy:
     get:
       operationId: companyMemberSitePolicyShow
@@ -6953,6 +7184,7 @@ paths:
                   country: null
                   label: Nathan Rivera
                   permission: view
+                  pinned: false
                   created_at: '2026-10-15T09:30:00Z'
                 - id: 019a3d4e-8091-7b92-8ca3-b4c5d6e7f809
                   audience_kind: segment
@@ -6965,6 +7197,7 @@ paths:
                     name: United States
                   label: Customer in United States
                   permission: copy
+                  pinned: false
                   created_at: '2026-10-15T09:31:00Z'
                 status: 200
                 meta:
@@ -6994,8 +7227,8 @@ paths:
     post:
       operationId: companyMemberSiteSharesCreate
       x-fluid-audience: company
-      summary: Share a company site
-      description: Shares a company site with a member, or with a segment of the company's members by member type, country, both or neither. Sharing an audience that is already shared answers 200 with the share that exists and writes nothing. A member's site is refused with 404, as a site an admin may not manage, and a `downline` share is refused with 422, because both are the member's to make. Needs `application_themes.update` and a signed-in admin.
+      summary: Share a site
+      description: Shares a site with a member, or with a segment of the company's members by member type, country, both or neither. Sharing an audience that is already shared answers 200 with the share that exists and writes nothing else. A member's site is shared by a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none and when its owner was discarded; a `downline` share is refused with 422, because it is the sharing member's to make, and so is a `member` share naming the site's owner. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-shares
       parameters:
@@ -7014,7 +7247,7 @@ paths:
                 permission: view
       responses:
         '200':
-          description: The audience was already shared; the share that exists, unchanged.
+          description: The audience was already shared; the share that exists, unchanged, whoever wrote it.
           content:
             application/json:
               schema:
@@ -7032,6 +7265,7 @@ paths:
                     name: United States
                   label: Customer in United States
                   permission: view
+                  pinned: false
                   created_at: '2026-10-15T09:31:00Z'
                 status: 200
                 meta:
@@ -7056,6 +7290,7 @@ paths:
                     name: United States
                   label: Customer in United States
                   permission: view
+                  pinned: false
                   created_at: '2026-10-15T09:31:00Z'
                 status: 201
                 meta:
@@ -7074,13 +7309,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Another request shared the same audience at the same moment and then removed the share before this one could read it back, so nothing was written. Retry the request.
+          description: Another request shared the same audience at the same moment and then removed the share before this one could read it back, so nothing was written; retry the request.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: A missing or unknown field, a member, member type or country the company does not hold, a target the audience does not take, a share with no member, or a `downline` share.
+          description: A missing or unknown field, a member, member type or country the company does not hold, a target the audience does not take, a share with no member, a `member` share naming the site's owner, or a `downline` share.
           content:
             application/json:
               schema:
@@ -7089,8 +7324,8 @@ paths:
     patch:
       operationId: companyMemberSiteSharesUpdate
       x-fluid-audience: company
-      summary: Change a share's permission
-      description: Changes the permission of a share of a company site, and nothing else. To change who a share names, delete it and add another. A share of a member's site is refused with 404, as a site an admin may not manage. Needs `application_themes.update` and a signed-in admin.
+      summary: Change a share
+      description: Changes the permission of a share of a site, whether it pins the site, or both, and nothing else. To change who a share names, delete it and add another. A share of a member's site is changed by a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none and when the site's owner was discarded. Needs `application_themes.update` and a signed-in admin.
       tags:
       - member-site-shares
       parameters:
@@ -7123,6 +7358,7 @@ paths:
                   country: null
                   label: Nathan Rivera
                   permission: copy
+                  pinned: false
                   created_at: '2026-10-15T09:30:00Z'
                 status: 200
                 meta:
@@ -7176,7 +7412,7 @@ paths:
       operationId: companyMemberSitePreviewHome
       x-fluid-audience: company
       summary: Preview the home page of a company site's draft
-      description: The home page of a company site, rendered from the draft copy of the site's files and settings, with every page of the site listed in its navigation whether it is published or not. It is the one renderer that serves the site's published pages, so the preview shows what the site will serve once published; a layout, section, snippet or setting that was never published renders its draft, and the response never falls back to the published page. The site may be a draft or published. Assets have no draft, as they are live as written. The page links the same asset URL the site's published frame links, which the frame serves only for a published site; read an asset of a draft site with the file operation of this tag. The page holds no handshake nonce and nothing of the admin's, because it renders for no signed-in viewer. Needs `application_themes.view` and a signed-in admin. A member's site, a missing id, a page that does not exist and a company without member sites are the same empty 404. The response is `text/html`, never cached.
+      description: The home page of a company site, rendered from the draft copy of the site's files and settings, with every page of the site listed in its navigation whether it is published or not. It is the one renderer that serves the site's published pages, so the preview shows what the site will serve once published; a layout, section, snippet or setting that was never published renders its draft, and the response never falls back to the published page. The site may be a draft or published. Assets have no draft, as they are live as written. The page links the same asset URL the site's published frame links, which the frame serves only for a published site; read an asset of a draft site with the file operation of this tag. The page holds no handshake nonce and nothing of the admin's, because it renders for no signed-in viewer. Needs `application_themes.view` and a signed-in admin. A member's site is previewed by a company admin who holds a kept admin row, and is the same empty 404 for a root admin who holds none and when its owner was discarded, as are a missing id, a page that does not exist and a company without member sites. The response is `text/html`, never cached.
       tags:
       - member-site-preview
       parameters:
@@ -7208,7 +7444,7 @@ paths:
       operationId: companyMemberSitePreviewPage
       x-fluid-audience: company
       summary: Preview a page of a company site's draft
-      description: The page of a company site with this slug, rendered from the draft copy of the site as the home page operation describes. A page that is not published is shown, so a builder can work on it before publishing it. Needs `application_themes.view` and a signed-in admin. A member's site and every other case are the same empty 404. The response is `text/html`, never cached.
+      description: The page of a company site with this slug, rendered from the draft copy of the site as the home page operation describes. A page that is not published is shown, so a builder can work on it before publishing it. Needs `application_themes.view` and a signed-in admin. A member's site is the same empty 404 for a root admin who holds no kept admin row, as is every other case. The response is `text/html`, never cached.
       tags:
       - member-site-preview
       parameters:
@@ -7241,7 +7477,7 @@ paths:
       operationId: companyMemberSitePreviewFile
       x-fluid-audience: company
       summary: Read a text asset of a company site
-      description: A text asset of a company site, such as `assets/site.css`, as text with the content type of its extension. An asset has no draft, so this is the file as written, the one the site's pages link. Needs `application_themes.view` and a signed-in admin. A member's site and every other case, a path that is not a text asset included, are the same empty 404. The response is never cached and carries an `X-Content-Type-Options` header of `nosniff`.
+      description: A text asset of a company site, such as `assets/site.css`, as text with the content type of its extension. An asset has no draft, so this is the file as written, the one the site's pages link. Needs `application_themes.view` and a signed-in admin. A member's site is the same empty 404 for a root admin who holds no kept admin row, as is every other case, a path that is not a text asset included. The response is never cached and carries an `X-Content-Type-Options` header of `nosniff`.
       tags:
       - member-site-preview
       parameters:
@@ -7289,11 +7525,11 @@ paths:
     get:
       operationId: companyMemberSiteDeploymentsList
       x-fluid-audience: company
-      summary: List a company site's deployments
+      summary: List a site's deployments
       description: |
-        The deployments of one company site, newest first: each bundle that was published, with who published it, how many files it holds, their total size, whether the site serves it now (`current`) and whether a rollback can still reach it (`retained`). An upload that was never published is not a deployment; the bundle list shows those. Roll back with the bundle's `current` operation and the deployment's `bundle_id`.
+        The deployments of one site, newest first: each bundle that was published, with who published it, how many files it holds, their total size, whether the site serves it now (`current`) and whether a rollback can still reach it (`retained`). An upload that was never published is not a deployment; the bundle list shows those. Roll back with the bundle's `current` operation and the deployment's `bundle_id`.
 
-        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404, as on the bundle list: its owner reads its deployments. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none and when its owner was discarded, as on the bundle list. It answers 404 for every caller that passes those checks until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-hosting
       parameters:
@@ -7328,6 +7564,8 @@ paths:
                   published_by: Pat Admin
                   file_count: 12
                   total_bytes: 482113
+                  function_names:
+                  - rsvp
                   current: true
                   retained: true
                   url: https://shop.example.com/sites/primex-launch
@@ -7351,7 +7589,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -7368,9 +7606,9 @@ paths:
       x-fluid-audience: company
       summary: Read a company site's log
       description: |
-        The log of one company site, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log, ask again with the last line's `at` as `since`. Publishing writes a line for each upload's start, its publish and who published it (named only to a caller with `company_admins.view`), and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. Each call of the site's server functions is a `function` line (`error` for a timeout or a server error, `warn` for a refusal such as the rate limit, which writes one line a minute); the gateway writes them within about a second, so a line can arrive just after a later line of another source. `gateway` lines start when the sites gateway records them per site. Never stored (`no-store`).
+        The log of one company site, oldest first: the lines after `since`, at most `limit` of them, plus any more at the same moment as the last one, so reading on from its `at` skips none. To follow the log, ask again with the last line's `at` as `since`. Publishing writes a line for each upload's start, its publish and who published it (named only to a caller with `company_admins.view`), and an upload that failed or expired. An ending is dated when it settled; an expired upload has its line once the expiry cleanup marks it failed. A rollback gives a `Rolled back to <bundle id>` line (the latest rollback to each bundle). A failed or expired upload is cleared when the next upload starts. Each call of the site's server functions is a `function` line (`error` for a timeout or a server error, `warn` for a refusal such as the rate limit, which writes one line a minute), and what a function printed while it ran comes before its call's line, for a caller with `application_themes.update` and `member_site_data.view` only; the gateway writes them within about a second, so a line can arrive just after a later line of another source. `gateway` lines start when the sites gateway records them per site. Never stored (`no-store`).
 
-        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-hosting
       parameters:
@@ -7422,7 +7660,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
@@ -7442,7 +7680,7 @@ paths:
         The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
         The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
 
-        Needs `application_themes.view` and a signed-in admin. A member's site is refused with 404. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-hosting
       parameters:
@@ -7544,7 +7782,7 @@ paths:
                 - $ref: '#/components/schemas/AuthorizationError'
                 - $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No such site in this company, the site is a member's, or the sites gateway is not released to this company.
+          description: No such site in this company, the site is a member's and the caller is a root admin with no kept admin row or its owner was discarded, or the sites gateway is not released to this company.
           content:
             application/json:
               schema:
