@@ -96,6 +96,7 @@ The publish bundles each function with its imports, npm packages included, into 
 | `public` | A call with no sign-in and no key, a signed-out visitor's page included | None |
 | `key` | A server with a Site API key | `keyId`, `keyName` |
 | `schedule` | Fluid, on the function's `schedule` | `scheduledAt`: the UTC minute it runs for |
+| `agent` | A signed-in person's agent, through Fluid's MCP. See [Offer a function to agents](#offer-a-function-to-agents) | `viewer`: the person, as for `page`. `client`: `{ id, name }` of the MCP client |
 
 `fluid sites functions new` (Sites plugin 0.1.360 or later) writes the context's types to `functions/fluid-env.d.ts` as globals, `FluidFunction` and `FluidContext` among them, so a starter reads `export default (async (request, ctx) => …) satisfies FluidFunction`. The CLI replaces that file when the types change, so keep your own types elsewhere. With an older plugin, copy this type into `functions/lib/types.ts`:
 
@@ -108,7 +109,8 @@ export interface FunctionContext {
     | { kind: "page"; viewer: { userId: string; name: string; avatarUrl: string | null; memberId: string | null; relation: string } | null }
     | { kind: "public" }
     | { kind: "key"; keyId: string; keyName: string }
-    | { kind: "schedule"; scheduledAt: string };
+    | { kind: "schedule"; scheduledAt: string }
+    | { kind: "agent"; viewer: { userId: string; name: string; avatarUrl: string | null; memberId: string | null; relation: string }; client: { id: string; name: string } };
   secrets: Readonly<Record<string, string>>;
   fluid: {
     api: { fetch(path: string, init?: RequestInit): Promise<Response> };
@@ -148,10 +150,47 @@ If the handler throws or returns something that isn't a `Response`, the caller g
 | `cors` | Exact origins, such as `https://partners.example.com`, that a browser page on another site may call the function from. None by default. The Site's own page never needs it |
 | `schedule` | A five-field cron line in UTC that runs the function. See [Run a function on a schedule](#run-a-function-on-a-schedule) |
 | `timeoutMs` | How long one call may run, from 1 to 30,000 milliseconds. Without it, a call may run 30,000 |
+| `mcp` | Offers the function to agents. See [Offer a function to agents](#offer-a-function-to-agents) |
 
 Access builds on the Site's own visibility. A `public` function on a private Site answers only the people the Site is shared with. A Site API key is the exception: it opens the Site's `key` and `public` functions whoever may open the Site, a private Site included. A key never opens a `signed_in` function.
 
 The publish checks that the folder and the file match one for one, and refuses a function the file doesn't name, a name with no file, and two files for one name.
+
+An older Sites plugin refuses a key it doesn't know with `Unrecognized key`. If a teammate's file uses a newer key, such as `mcp`, update the plugin: `npm install -g @fluid-app/fluid-cli-member-site`.
+
+### Offer a function to agents
+
+A function with an `mcp` block is offered to a signed-in person's agent through Fluid's MCP server. A function without one is never offered. From Sites plugin 0.1.382:
+
+```json config/functions.json
+{
+  "version": 1,
+  "functions": {
+    "rsvp-list": {
+      "access": "signed_in",
+      "mcp": {
+        "description": "Lists the RSVPs for one event.",
+        "input_schema": {
+          "type": "object",
+          "properties": { "event": { "type": "string" } },
+          "required": ["event"]
+        },
+        "effect": "read"
+      }
+    }
+  }
+}
+```
+
+| Key | What it does |
+| --- | --- |
+| `description` | Required. What the function does, for the agent: 1 to 1,000 characters |
+| `input_schema` | Required. The JSON Schema of the function's input: an object schema (`"type": "object"`), at most 8,192 bytes as compact JSON. Every `$ref` points inside the schema (`#` or `#/…`) |
+| `effect` | Required. `read` when a call only reads, `write` when it changes what the Site keeps |
+
+Only a `public` or `signed_in` function can be called by an agent. A `key` function isn't offered, even with an `mcp` block.
+
+The agent lists a Site's functions with the MCP tool `site_functions_list`, and calls one with `site_function_call`. The call reaches the function as a `POST` whose JSON body is the agent's input, already checked against `input_schema`, with `ctx.caller.kind` set to `agent`. The person must be able to open the Site. A `write` function also needs the person to have let the app make changes, and to be a member of the Site's company.
 
 ### Keep `/api/` free
 
