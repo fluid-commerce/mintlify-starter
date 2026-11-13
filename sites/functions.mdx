@@ -261,6 +261,7 @@ Every value, secret or not, reaches every function of the Site in `ctx.secrets`,
 - A function queries **as the Site**, so your tables' row rules don't apply. Check who called with `ctx.caller` before you read or write on their behalf.
 - `or()` isn't supported in a function yet, and `not()` takes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `is`, `like` and `ilike`.
 - A call made with a Site API key has its key checked again on each query, so a key revoked mid-call reaches no data.
+- One read returns at most 1,000 rows. A wider `limit` or `range`, such as `range(0, 4999)`, is refused with `validation`, not cut short. Read in pages instead: `range(0, 999)`, then `range(1000, 1999)`, until a page comes back short. See [the Site's database](/sites/database).
 
 ### The Member API
 
@@ -284,9 +285,12 @@ It needs a signed-in visitor. A call from a guest, a Site API key or a schedule 
 | Memory | 128 MiB |
 | Request body and answer body | 10 MiB each |
 | Calls per Site, every function and schedule together | 600 a minute |
+| Rows in one database read | 1,000 |
 | Shortest schedule | Every 5 minutes |
 | Environment variables per Site | 64, each up to 5 KB |
 | API keys per Site | 20 |
+
+Every `fetch`, `ctx.fluid.db` query and `ctx.fluid.api` call counts toward the 50 outgoing requests, retries included. The 51st throws an error (`Too many subrequests`) inside your function, and if nothing catches it the call answers `500` `fn_error`. A function that loops over many records, such as a sync that calls another service for each client, should cap how many it handles per call, keep retries low, and pick up the rest on its next scheduled run.
 
 ## What the answers mean
 
@@ -306,6 +310,15 @@ Fluid answers these itself, with a body of `{"error": "<code>"}`. Anything else 
 | `502` `fn_failed` | The function couldn't be run | Retry. If it persists, [contact support](/help/getting-help) with the time |
 | `503` `fn_not_deployed`, `503` `unavailable` | The function isn't ready to run, or Fluid can't decide the call right now | Retry shortly |
 | `504` `fn_timeout` | The call ran past its `timeoutMs` | Do less per call, or raise `timeoutMs` up to 30,000 |
+
+### A blank 403
+
+Fluid's edge firewall checks requests to a live Site before they reach your function. It refuses a request with `403` and an empty body, with no JSON and no `requestId`, when the request looks like an attempt to read the server's files:
+
+- A query string or request body with a path-traversal segment: `../` at the start of a value or after a `/`, such as `a/../b`.
+- A query string that names an operating-system file, such as `.bashrc` or `/etc/passwd`.
+
+Your function never runs, so `fluid sites logs` shows nothing for the call. `fluid sites dev` has no firewall, so the same request works on your machine. If your function takes free text that can hold file paths, such as notes, code or search terms, send that text base64-encoded in a JSON body and decode it in the function.
 
 ## Publish functions
 
