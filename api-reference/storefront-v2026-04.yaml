@@ -76,10 +76,16 @@ info:
 
     ## Translating a resource
 
-    Translations are written inline on the resource's own create/update.
-    There is no separate translations endpoint and no `translations`
-    object in the payload — the `lang` query parameter selects the locale
-    a request reads or writes.
+    Translations of a resource's own fields are written inline on its own
+    create/update. There is no separate translations endpoint for them and no
+    `translations` object in the payload — the `lang` query parameter selects
+    the locale a request reads or writes.
+
+    Metafield values are the exception. A metafield whose definition is marked
+    translatable is translated through its own operations,
+    `GET` and `PUT /api/v202604/company/metafield-translations`, which keep each
+    translation apart from the original value. The `lang` parameter on a
+    resource's own update never writes metafields.
 
     **Read** a locale with `lang` on any GET:
 
@@ -168,6 +174,9 @@ tags:
   x-fluid-section: Commerce
 - name: member-sites
   description: The public sites a company's members made, listed by member without a token.
+  x-fluid-section: Storefront
+- name: metafield-translations
+  description: Per-language translations of the values of a record's metafields, kept apart from the original values.
   x-fluid-section: Storefront
 - name: sites
   description: |
@@ -470,6 +479,191 @@ components:
           type: integer
         meta:
           "$ref": "#/components/schemas/Meta"
+    MetafieldTranslationsMeta:
+      type: object
+      description: |
+        Response metadata of the metafield translation operations.
+        `request_uuid` and `timestamp` are always present.
+      required: [request_uuid, timestamp]
+      properties:
+        request_uuid:
+          type: [string, 'null']
+          description: Identifier of this request, for support.
+        timestamp:
+          type: string
+          format: date-time
+    MetafieldTranslationsError:
+      type: object
+      description: Error body of the metafield translation operations.
+      required: [error, status, meta]
+      properties:
+        error:
+          type: object
+          required: [message]
+          properties:
+            message:
+              type: string
+            details:
+              type: object
+              description: |
+                What was refused. `lang` names a language the store does not
+                sell in, or its default language. `translations` holds one
+                entry per refused item, keyed by its position in the request:
+                `field` for a definition that is missing, not translatable or
+                of a type that cannot be translated, `value` for a value the
+                definition's type refuses, `source_digest` for a missing digest.
+              additionalProperties: true
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/MetafieldTranslationsMeta"
+    MetafieldTranslationValue:
+      description: |
+        A translated or original value: a string, or an array of strings for a
+        `list.single_line_text_field` metafield.
+      type: [string, array]
+      items:
+        type: string
+    MetafieldTranslationEntry:
+      type: object
+      description: One translated value of one metafield.
+      required: [namespace, key, value, source_digest]
+      properties:
+        namespace:
+          type: string
+          description: The metafield's namespace.
+          example: custom
+        key:
+          type: string
+          description: The metafield's key.
+          example: how_to_use
+        value:
+          "$ref": "#/components/schemas/MetafieldTranslationValue"
+        source_digest:
+          type: string
+          description: |
+            The `original_digest` the read endpoint issued for the original
+            the translator saw. Stored exactly as sent and never computed from
+            `value`, so a later read can tell when the original has changed.
+          example: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+    MetafieldTranslationsUpdateRequest:
+      type: object
+      description: One record's translations in one language.
+      required: [owner_type, owner_id, lang, translations]
+      properties:
+        owner_type:
+          type: string
+          enum: [Product]
+          description: The kind of record whose metafields are translated. Only `Product` today.
+        owner_id:
+          type: integer
+          description: The record's id. A record of another company is a 404.
+        lang:
+          type: string
+          description: |
+            The language ISO to write (e.g. `es`, `zh-TW`). It must be a language
+            the store sells in and not the store's default language, whose
+            values are the originals.
+        translations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: |
+            The values to save. Each one's definition must be translatable and of
+            type `single_line_text_field`, `multi_line_text_field`,
+            `rich_text_field`, `list.single_line_text_field` or `url`, and the
+            value must be valid for that type. Nothing is saved when any item
+            is refused.
+          items:
+            "$ref": "#/components/schemas/MetafieldTranslationEntry"
+    MetafieldTranslationsUpdateResponse:
+      type: object
+      required: [metafield_translations, status, meta]
+      properties:
+        metafield_translations:
+          type: object
+          required: [owner_type, owner_id, lang, translations]
+          properties:
+            owner_type:
+              type: string
+              enum: [Product]
+            owner_id:
+              type: integer
+            lang:
+              type: string
+              description: The language the values are stored under (`zh-TW` for Traditional Chinese, `zh` for Simplified).
+            translations:
+              type: array
+              description: The values as saved.
+              items:
+                "$ref": "#/components/schemas/MetafieldTranslationEntry"
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/MetafieldTranslationsMeta"
+    MetafieldTranslationField:
+      type: object
+      description: One translatable field of a record.
+      required: [namespace, key, value_type, original_value, original_digest, translation]
+      properties:
+        namespace:
+          type: string
+          example: custom
+        key:
+          type: string
+          example: how_to_use
+        value_type:
+          type: string
+          enum: [single_line_text_field, multi_line_text_field, rich_text_field, list.single_line_text_field, url]
+          description: The metafield definition's type.
+        original_value:
+          "$ref": "#/components/schemas/MetafieldTranslationValue"
+        original_digest:
+          type: string
+          description: |
+            The digest of the original value. Send it back as `source_digest` when
+            saving a translation of this original.
+        translation:
+          type: [object, 'null']
+          description: |
+            The stored translation, or `null` when there is none. A missing
+            translation is never replaced by fallback text. Compare its
+            `source_digest` with `original_digest`: a difference means the
+            original changed after it was translated.
+          required: [value, source_digest]
+          properties:
+            value:
+              "$ref": "#/components/schemas/MetafieldTranslationValue"
+            source_digest:
+              type: string
+    MetafieldTranslationsShowResponse:
+      type: object
+      required: [metafield_translations, status, meta]
+      properties:
+        metafield_translations:
+          type: object
+          required: [owner_type, owner_id, lang, fields]
+          properties:
+            owner_type:
+              type: string
+              enum: [Product]
+            owner_id:
+              type: integer
+            lang:
+              type: string
+              description: The language the translations are stored under (`zh-TW` for Traditional Chinese, `zh` for Simplified).
+            fields:
+              type: array
+              description: |
+                Each translatable metafield the record holds a value for. A field
+                whose definition is not translatable, or whose type is not one of
+                the five translatable types, is not listed.
+              items:
+                "$ref": "#/components/schemas/MetafieldTranslationField"
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/MetafieldTranslationsMeta"
     ResponsiveImageSet:
       type: [object, "null"]
       description: |
@@ -7417,6 +7611,223 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+
+  /api/v202604/company/metafield-translations:
+    get:
+      tags: [metafield-translations]
+      summary: Read a record's metafield translations
+      operationId: companyMetafieldTranslationsShow
+      x-fluid-audience: company
+      description: |
+        Token-authenticated. Returns each translatable metafield the record
+        holds a value for, with its original value, the digest of that original,
+        and the stored translation in `lang`, or `null` when there is none. No
+        fallback text stands in for a missing translation.
+
+        A field is listed when its metafield definition is marked translatable
+        and its type is `single_line_text_field`, `multi_line_text_field`,
+        `rich_text_field`, `list.single_line_text_field` or `url`.
+
+        Answers 404 while the `translatable-metafields` feature is off for the
+        company, and for a record of another company. `lang` must be a language
+        the store sells in and not its default language (422).
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: owner_type
+          in: query
+          required: true
+          description: The kind of record. Only `Product` today.
+          schema:
+            type: string
+            enum: [Product]
+        - name: owner_id
+          in: query
+          required: true
+          description: The record's id.
+          schema:
+            type: integer
+        - name: lang
+          in: query
+          required: true
+          description: |
+            The language ISO to read (e.g. `es`, `zh-TW`). Not the store's default
+            language, whose values are the originals.
+          schema:
+            type: string
+            example: es
+      responses:
+        "200":
+          description: The record's translatable fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsShowResponse"
+              example:
+                metafield_translations:
+                  owner_type: Product
+                  owner_id: 48213
+                  lang: es
+                  fields:
+                    - namespace: custom
+                      key: how_to_use
+                      value_type: multi_line_text_field
+                      original_value: Mix one scoop with water.
+                      original_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                      translation:
+                        value: Mezcla una dosis con agua.
+                        source_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                    - namespace: custom
+                      key: benefits
+                      value_type: list.single_line_text_field
+                      original_value: [Energy, Endurance]
+                      original_digest: 9d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d
+                      translation: null
+                status: 200
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The record is not one of the company's, or the feature is off for the company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "422":
+          description: A parameter is missing or invalid, or `lang` is not a language the store sells in, or is its default language.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Unsupported language
+                  details:
+                    lang: ['unsupported locale "fr"']
+                status: 422
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+    put:
+      tags: [metafield-translations]
+      summary: Save a record's metafield translations
+      operationId: companyMetafieldTranslationsUpdate
+      x-fluid-audience: company
+      description: |
+        Token-authenticated. Saves translated values of one record's metafields
+        in one language. A value is created, or replaces the one already stored
+        for that record, field and language. The record's own metafield values,
+        the originals, are never changed.
+
+        Every item is checked before anything is saved, and all are saved in one
+        transaction: a 422 means nothing was written. An item is refused when its
+        metafield definition is missing, is not marked translatable, or is not
+        of type `single_line_text_field`, `multi_line_text_field`,
+        `rich_text_field`, `list.single_line_text_field` or `url`, or when the
+        value is not valid for that type and the definition's rules. The same
+        field twice in one request is refused. `lang` must be a language the
+        store sells in and not its default language.
+
+        `source_digest` is stored exactly as sent. Send the `original_digest`
+        the read endpoint issued for the original the translator saw.
+
+        A successful save schedules one purge of the company's cached pages about
+        five minutes later. Saves made before it runs share it.
+
+        Answers 404 while the `translatable-metafields` feature is off for the
+        company, and for a record of another company.
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetafieldTranslationsUpdateRequest"
+            examples:
+              spanish:
+                summary: Translate two fields into Spanish
+                value:
+                  owner_type: Product
+                  owner_id: 48213
+                  lang: es
+                  translations:
+                    - namespace: custom
+                      key: how_to_use
+                      value: Mezcla una dosis con agua.
+                      source_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                    - namespace: custom
+                      key: benefits
+                      value: [Energía, Resistencia]
+                      source_digest: 9d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d
+      responses:
+        "200":
+          description: The translations as saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsUpdateResponse"
+              example:
+                metafield_translations:
+                  owner_type: Product
+                  owner_id: 48213
+                  lang: es
+                  translations:
+                    - namespace: custom
+                      key: how_to_use
+                      value: Mezcla una dosis con agua.
+                      source_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                status: 200
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The record is not one of the company's, or the feature is off for the company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "422":
+          description: The request is invalid, `lang` is not a language the store sells in or is its default language, or an item is refused. Nothing was saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Invalid translations
+                  details:
+                    translations:
+                      "0":
+                        field: [is not translatable]
+                status: 422
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
 
   /api/v202604/company/products:
     get:
