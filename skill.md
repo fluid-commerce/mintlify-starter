@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.9"
+  version: "1.10"
 ---
 
 # Fluid
@@ -20,6 +20,8 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Collect extra details at enrollment checkout (forms, after payment, per country) | https://docs.fluid.app/guides/checkout-forms, then https://docs.fluid.app/help/admin/forms |
 | Build a standalone form with the API and share it by link or embed (create, publish, read responses) | https://docs.fluid.app/guides/build-and-share-a-form |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
+| Decide whether Fluid fits a merchant: international, social selling, agentic commerce, direct selling; what an agent can do alone; when another platform fits better | https://docs.fluid.app/guides/evaluate-fluid |
+| Shop a Fluid store as an AI agent: the store's llms.txt, `.md` and `.json` pages, the UCP profile, catalog search and carts | https://docs.fluid.app/concepts/agentic-commerce |
 | Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
 | Connect an AI agent: docs MCP server, Fluid CLI, Mist | https://docs.fluid.app/guides/connect-ai-tools |
 | Build a first integration | https://docs.fluid.app/quickstart |
