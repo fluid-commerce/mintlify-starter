@@ -1601,6 +1601,10 @@ components:
           type: string
           pattern: "^[0-9a-f]{40}$"
           description: The full sha of the branch ref's head the source was made from. A commit from any other head is refused as `stale_source`.
+        merge_parent:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The full sha of the commit of the repository's default branch (live) the source merges, after updating the branch from live. The commit then has two parents, `base_commit` and this one, so promoting the branch finds live's commit contained in it. A commit the default branch does not hold is refused as `merge_parent_not_on_default_branch`. Leave it out for a plain commit.
         message:
           type: string
           minLength: 1
@@ -1633,7 +1637,7 @@ components:
             commit:
               type: string
               pattern: "^[0-9a-f]{40}$"
-              description: The sha of the branch ref's new head; the base itself when the files change nothing. Start the branch's bundle from it.
+              description: The sha of the branch ref's new head; the base itself when the files change nothing and no `merge_parent` was sent. Start the branch's bundle from it.
         status:
           type: integer
           description: The HTTP status.
@@ -2995,6 +2999,65 @@ components:
           items:
             $ref: '#/components/schemas/MemberSiteBranch'
           description: The site's branches.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteBranchPromoteBody:
+      type: object
+      description: The optional confirmation of a promote, sent unwrapped. Send `confirm_migrations`, from a 422 `destructive_change_unconfirmed` refusal, after the admin said yes, with the refusal's `bundle_id` when you have it; omit both otherwise. Any other field is refused.
+      additionalProperties: false
+      properties:
+        confirm_migrations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: The ids of the destructive migrations the admin confirmed, as the refusal's `details.unconfirmed` lists them.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+        bundle_id:
+          type: string
+          format: uuid
+          description: The branch's bundle the refusal named (`details.bundle_id`), taken only with `confirm_migrations`. When the branch has published another since, the promote is refused with 409 `branch_changed`. Without it, the confirmation is for the bundle the branch serves now.
+    MemberSiteBranchBaseBody:
+      type: object
+      description: The body of a base record takes no field; the base is always the parent's live bundle.
+      additionalProperties: false
+    MemberSiteBranchPromotionResponse:
+      type: object
+      description: What a promote put live.
+      additionalProperties: false
+      required:
+      - promotion
+      - status
+      - meta
+      properties:
+        promotion:
+          type: object
+          description: The live version.
+          additionalProperties: false
+          required:
+          - bundle_id
+          - replaced_bundle_id
+          - commit
+          properties:
+            bundle_id:
+              type: string
+              format: uuid
+              description: The parent's bundle now live. When the parent already served the branch's version, the live bundle, with nothing changed.
+            replaced_bundle_id:
+              type:
+              - string
+              - 'null'
+              format: uuid
+              description: The parent's bundle the promote replaced; `POST /member-sites/{id}/bundles/{replaced_bundle_id}/current` on the parent makes it live again. Null when nothing changed.
+            commit:
+              type: string
+              pattern: "^[0-9a-f]{40}$"
+              description: The source commit now live, which the parent repository's default branch is at or contains.
         status:
           type: integer
           description: The HTTP status.
@@ -6633,6 +6696,8 @@ paths:
       description: |
         Commits the folder's whole source tree onto the Git ref the branch owns on its parent's repository, built on `base_commit`, and answers the new `commit`; start the branch's bundle from it. The ref is always the branch's own; the request never names one, so nothing but the branch's ref is written. A commit from a head that is not the ref's head is refused, so a commit never replaces commits it was not made from: pull the branch and publish again.
 
+        After updating the branch from live, send the live commit the local merge brought in as `merge_parent`: the commit is then a merge of it, so promote does not answer `live_changed`. Only a commit the repository's default branch holds is merged.
+
         Needs `application_themes.update` and a signed-in admin who may edit the branch's drafts. It answers 404 for every caller that passes those checks until staging is released to the company. A droplet installation token and an OAuth client token are refused with 403.
       tags:
       - member-site-branches
@@ -6687,13 +6752,174 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: The body breaks the contract, a file is not a plain path inside the folder with Base64 content or the files pass 2,000 or 25 MiB (`details.error` is `invalid_source`, with the `path`), the branch's ref is the repository's default branch (`default_branch_ref`), or the branch or its parent was taken down (`site_taken_down`). Nothing was committed.
+          description: The body breaks the contract, a file is not a plain path inside the folder with Base64 content or the files pass 2,000 or 25 MiB (`details.error` is `invalid_source`, with the `path`), the branch's ref is the repository's default branch (`default_branch_ref`), `merge_parent` is not a commit the repository's default branch holds, unknown commits included (`merge_parent_not_on_default_branch`; update from live again), or the branch or its parent was taken down (`site_taken_down`). Nothing was committed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: GitHub could not take the commit (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/branches/{slug}/promote:
+    post:
+      operationId: companyMemberSiteBranchPromotionsCreate
+      x-fluid-audience: company
+      summary: Promote a site's branch
+      description: |
+        Makes the branch's published version the site's live one. The branch's published bundle records the source commit it was built from, and the site's live bundle the commit it was built from. The promote goes ahead only when the branch's commit contains the live commit and the site repository's default branch: it moves the default branch to the branch's commit (never forced), then publishes the branch's bundle on the site, holding it to every rule of a bundle publish. So a promote never replaces a live version the branch does not have. When the site already serves the branch's version, nothing changes and `replaced_bundle_id` is null. Undo a promote by making `replaced_bundle_id` current again (`POST /member-sites/{id}/bundles/{bundle_id}/current`). When the branch's schema holds destructive migrations, the first promote is refused with 422 naming them; promote again with `confirm_migrations` once the admin said yes.
+
+        Needs `application_themes.update` and a signed-in admin who may edit the branch's drafts. It answers 404 for every caller that passes those checks until staging and the sites gateway are released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-branches
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/BranchSlug'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBranchPromoteBody'
+            example:
+              confirm_migrations:
+              - 2026-11-05-drop-notes
+              bundle_id: 019a4e5f-7f81-7c92-8da3-b4c5d6e7f80a
+      responses:
+        '200':
+          description: The branch's version is live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBranchPromotionResponse'
+              example:
+                promotion:
+                  bundle_id: 019a4e5f-8081-7c92-8da3-b4c5d6e7f80a
+                  replaced_bundle_id: 019a4e5f-7a81-7c92-8da3-b4c5d6e7f80a
+                  commit: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site or branch in this company, the admin may not promote the branch, or staging or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Nothing went live. `details.error` says why and what to do:
+
+            - `nothing_to_promote`: the branch has published nothing; publish to it first.
+            - `staging_unsourced`: the branch's published version records no source commit GitHub knows, or the site's repository is not connected; publish the branch from its source.
+            - `live_unsourced`: the live version was published without its source; publish the site again from source, then update the branch from live.
+            - `live_changed`: the live version has changes the branch does not have; update the branch from live, publish it, and promote again.
+            - `source_changed`: the repository's default branch has commits the branch does not have; update the branch from live, publish it, and promote again.
+            - `branch_changed`: `bundle_id` is not the branch's published bundle, which changed since its migrations were shown; promote again without `confirm_migrations` to see the new ones.
+            - `promote_incomplete`: the default branch is at the branch's commit (`details.commit`) but the publish did not finish (`details.cause`, such as `live_changed` for a publish that landed meanwhile). Live is unchanged; send the same promote again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body breaks the contract, or the branch's schema holds destructive migrations nobody confirmed (`details.error` is `destructive_change_unconfirmed`, `details.unconfirmed` their ids and `details.bundle_id` the branch's bundle). Live is unchanged; promote again with `confirm_migrations` and `bundle_id` once the admin said yes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: GitHub could not compare or move the site's source (`details.error` is `source_unavailable`). Nothing went live; try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/branches/{slug}/base:
+    post:
+      operationId: companyMemberSiteBranchBasesCreate
+      x-fluid-audience: company
+      summary: Record that a site's branch was updated from live
+      description: |
+        After the branch's folder merged the site's live source and was published to the branch, records the site's live bundle as the branch's base, so the branch reads `parent_changed: false`. The base is recorded only when the source commit the branch's published bundle records contains the one the live bundle records; otherwise it is refused with the same `error` a promote would answer. The body is empty. The answer is the branch, as reading it answers.
+
+        Needs `application_themes.update` and a signed-in admin who may edit the branch's drafts. It answers 404 for every caller that passes those checks until staging is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-branches
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/BranchSlug'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBranchBaseBody'
+            example: {}
+      responses:
+        '200':
+          description: The branch, with its new base.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBranchResponse'
+              example:
+                branch:
+                  slug: staging
+                  site_id: 019a4e5f-7081-7c92-8da3-b4c5d6e7f80a
+                  parent_id: 019a2b3c-4d5e-7f6a-8b7c-9d0e1f2a3b4c
+                  handle: primex-launch-staging
+                  status: published
+                  frame_path: "/accounts/_frame/019a4e5f-7081-7c92-8da3-b4c5d6e7f80a"
+                  shell_path: "/sites/primex-launch-staging"
+                  url: https://shop.example.com/sites/primex-launch-staging
+                  parent_changed: false
+                  created_at: '2026-10-16T10:00:00Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site or branch in this company, the admin may not promote the branch, or staging is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Nothing was recorded. `details.error` is `nothing_to_promote` (the branch has published nothing), `staging_unsourced` (the branch's published version records no source commit GitHub knows), `live_unsourced` (the live version was published without its source; publish it again from source) or `live_changed` (the branch does not contain the live version yet; merge live into the branch, publish it, and record again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body holds a field; it takes none.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: GitHub could not compare the site's source (`details.error` is `source_unavailable`). Nothing was recorded; try again.
           content:
             application/json:
               schema:
