@@ -87,6 +87,7 @@ The publish bundles each function with its imports, npm packages included, into 
 | `ctx.secrets` | Every [environment variable](/sites/env-vars) of the Site, secret or not, by name |
 | `ctx.fluid.db` | The Site's own [database](/sites/database), as the Site |
 | `ctx.fluid.api` | The Member API, as the signed-in visitor who made the call |
+| `ctx.fluid.vault` | `fetch(name, { method, path, query, headers, body })`: a request to another service with a company [vault credential](#call-another-service-with-a-vault-credential), which the function never sees |
 
 `ctx.caller.kind` says who called:
 
@@ -304,6 +305,39 @@ It needs a signed-in visitor. A call from a guest, a Site API key, a schedule or
 ### Other services
 
 `fetch` reaches any HTTPS service. Keep its credentials in [secrets](/sites/env-vars). `fetch` is the only way out: a function can't open a TCP socket with `connect()`.
+
+### Call another service with a vault credential
+
+For a credential your company shares between Sites and bots, such as a supplier's API token, keep it in the company [vault](/help/admin/settings/vault) instead of in each Site's secrets. A function asks for the credential by name with `ctx.fluid.vault.fetch`, and Fluid adds it to the request. The function never sees the value, so it can't leak it in a log line or an answer.
+
+An admin adds the credential once, names the API it may be sent to, and lists the Sites whose functions may use it:
+
+```bash
+printf '%s' "$GITHUB_TOKEN" | fluid vault set github --as admin --stdin \
+  --base-url https://api.github.com --prefix "Bearer " \
+  --path-prefix /repos/ --method GET --site 01a1ce7f-bf29-709b-8fa1-be22beed328a
+```
+
+Then the function calls it with a path under that address:
+
+```ts functions/releases.ts
+export default async function (request: Request, ctx: FluidContext) {
+  const response = await ctx.fluid.vault.fetch("github", {
+    method: "GET",
+    path: "/repos/fluid-commerce/fluid/releases",
+    query: { per_page: 5 },
+  });
+  if (response.headers.get("X-Fluid-Vault") === "refused") {
+    return Response.json(await response.json(), { status: 502 });
+  }
+  return Response.json(await response.json());
+}
+```
+
+- **Fluid sends the value only where the credential allows.** The request must start with the credential's base URL and one of its path prefixes, and use one of its methods. Any other request is refused, and so is an answer that repeats the value back.
+- **The answer says who answered.** The other service's answer comes back as it came, whatever its status, with `X-Fluid-Vault: upstream`. A refusal from Fluid, such as a credential the Site may not use, has `X-Fluid-Vault: refused` and a JSON body with `error` and `message`. No answer in time is `503` `unavailable`.
+- **Only company Sites.** A member's own Site can't use the vault. Give it a secret of its own with `fluid sites env set`.
+- **Who manages it.** Adding, changing and removing a credential needs a signed-in admin whose role may change themes. Nobody can read a value back, from the CLI, the API or the admin. See [Vault](/help/admin/settings/vault).
 
 ## Limits
 
