@@ -34,6 +34,9 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Call the Member API from a Site's page as the visitor | https://docs.fluid.app/sites/member-api |
 | Give a Site server code: a form handler, webhook, scheduled job or its own REST API with API keys | https://docs.fluid.app/sites/functions, then https://docs.fluid.app/sites/rest-api |
 | Deploy a Site from Claude with the Fluid MCP server | https://docs.fluid.app/sites/deploy-from-claude |
+| A Site's sign-in, the Passport account menu, hiding the floating cart and lead-capture buttons, opening the Passport from your own button | https://docs.fluid.app/sites/passport |
+| Show a Site to members: pin, require, feature, or make it their home; which link to share | https://docs.fluid.app/sites/overview#show-a-site-to-members |
+| Call a third-party API from a Site's function with a company vault credential | https://docs.fluid.app/sites/functions#call-another-service-with-a-vault-credential |
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
 | Build, host or troubleshoot a Mist app: hosting, database, env vars, integration points, domains, billing | https://docs.fluid.app/mist-apps/overview |
 | Use Fluid's public Mist skills and workflows, in Mist or another agent | https://docs.fluid.app/guides/mist-skills |
