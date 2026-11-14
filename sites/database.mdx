@@ -128,6 +128,7 @@ A table is an object with these keys:
 | `rules` | Optional. Who may `read`, `insert`, `update` and `delete`. See [Choose who reads and writes](#choose-who-reads-and-writes) |
 | `indexes` | Optional. An array of at most 8 indexes. Each is an array of 1 to 3 column names, such as `["event_id"]` |
 | `unique` | Optional. An array of at most 4 unique sets. Each is an array of 1 to 3 column names. No two rows may hold the same non-null values in all the columns of a set |
+| `search` | Optional. An array of 1 to 8 of the table's `text` columns that [full-text search](#search-text) can match, such as `["title", "body"]` |
 
 A column is an object with these keys:
 
@@ -242,6 +243,7 @@ Each method returns the query, so you chain them. These are all of them:
 | `in(column: string, values: Value[])` | Filter to any of the values |
 | `is(column: string, value: null)` | Filter to `null` |
 | `like`, `ilike` `(column: string, pattern: string)` | Filter by a pattern, with `%` and `_` |
+| `textSearch(column: string, words: string)` | Filter to rows whose column holds every word. See [Search text](#search-text) |
 | `not(column: string, op: string, value: Value)` | The opposite of one condition |
 | `or(filters: string)` | Any of the conditions in a string such as `"a.eq.1,b.gt.2"` |
 | `match(values: Row)` | Every column equals its value |
@@ -253,7 +255,7 @@ Each method returns the query, so you chain them. These are all of them:
 
 `Row` is an object of column names and values. `Value` is a string, a number, a boolean, `null` or any JSON value. Pass `uuid`, `date` and `timestamp` values as strings.
 
-The builder throws a `TypeError`, before it sends anything, when the calls can't make a request: `update` or `delete` with no filter, `insert` with a filter, an `order`, `limit` or `range` on a write, or a `select()` that follows a `select()`. `fluid.db` leaves out the Supabase methods this table doesn't list, such as `upsert`, `rpc`, `textSearch` and joins in `select`. They throw a `NotSupportedError` that names the method.
+The builder throws a `TypeError`, before it sends anything, when the calls can't make a request: `update` or `delete` with no filter, `insert` with a filter, an `order`, `limit` or `range` on a write, or a `select()` that follows a `select()`. `fluid.db` leaves out the Supabase methods this table doesn't list, such as `upsert`, `rpc` and joins in `select`. They throw a `NotSupportedError` that names the method.
 
 ### Read rows
 
@@ -339,6 +341,33 @@ await fluid.db.from("events").select().ilike("title", "fall%").not("capacity", "
 | `not(column, op, value)` | The opposite of one condition |
 | `or("capacity.gt.100,ticket_price.eq.0")` | Any of the conditions, in Supabase's filter-string form |
 | `match({ is_public: true, capacity: 50 })` | Every pair |
+| `textSearch(column, words)` | Every word, as a whole word. See [Search text](#search-text) |
+
+### Search text
+
+To search a table's text by words, list the columns in the table's `search` key in `db/schema.json`:
+
+```json db/schema.json
+"announcements": {
+  "columns": {
+    "title": { "type": "text", "required": true },
+    "body": { "type": "text" }
+  },
+  "search": ["title", "body"]
+}
+```
+
+Then filter with `textSearch`, from `@fluid-app/sites` 0.1.113 or later, or with `ctx.fluid.db` in a function:
+
+```ts
+const { data } = await fluid.db.from("announcements").select().textSearch("body", "launch e-mail");
+```
+
+- A row matches when the column holds every word, as a whole word, ignoring case and accents. Punctuation separates words, so `e-mail` matches "E-Mail" and "e mail".
+- The words are plain text. `OR`, `*`, quotes and `:` have no special meaning, and there's no prefix or phrase search.
+- Send 1 to 8 words, at most 200 bytes, each with a letter or a digit. A column the table's `search` doesn't list is refused with `validation`.
+- A row whose column is `null` never matches, and `not` leaves it out too. `not("body", "fts", "draft")` and `or("title.fts.launch,body.fts.launch")` use the same match.
+- Results come back in the query's `order`, not ranked by relevance.
 
 ### Handle errors
 
@@ -391,6 +420,7 @@ if (error) {
 | Values in one filter | 90 |
 | Filter depth | 8 |
 | `like` or `ilike` pattern | 50 bytes |
+| `textSearch` words | 1 to 8 words, 200 bytes |
 | Time for one request | 5 seconds |
 
 What happens at a limit:
@@ -406,7 +436,7 @@ Edit `db/schema.json` and publish again. Each publish compares your new file wit
 
 | Change | On publish |
 | --- | --- |
-| Add a table; add a column that's optional or has a default; add or drop an index; drop a unique set; stop requiring a column; change a rule or a default | Applied |
+| Add a table; add a column that's optional or has a default; add or drop an index; add, change or drop a table's `search`; drop a unique set; stop requiring a column; change a rule or a default | Applied |
 | Add a unique set | Applied, unless existing rows break it: then the publish fails with `unique_violation` |
 | Drop or rename a table or column; change a column's type; make a column required | Applied only when a migration names it and you confirm the migration. With no migration, the publish fails with `validation` |
 | Add a column that's required and has no default | Refused with `validation`. Add it as optional, or give it a default |
@@ -656,7 +686,7 @@ In Mist, the **Databases** view and chat read the local database as the site's l
 
 ## Branches
 
-A branch of a site that has a database gets a database of its own, with a copy of the parent's tables and rows. You make the branch with [Branch a site](/api-reference/site-branches/branch-a-site), or for a company site [Branch a company site](/api-reference/member-site-branches/branch-a-company-site).
+A branch of a site that has a database gets a database of its own, with a copy of the parent's tables and rows. You make the branch with [Branch a site](/api-reference/site-branches/branch-a-site), or for a company site [Branch a company site](/api-reference/member-site-branches/branch-a-site).
 
 - **The copy is separate.** What the branch writes never reaches the parent, and what the parent writes after the copy never reaches the branch.
 - **The copy isn't made at once.** The copy runs in the background when scheduled database processing is enabled for your environment. The branch stays a draft until its files and rows are copied, then it's published on its own. A failed copy can need support to repair it; retrying the publish does not repair the copy.
