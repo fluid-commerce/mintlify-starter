@@ -667,6 +667,143 @@ components:
           type: integer
         meta:
           "$ref": "#/components/schemas/MetafieldTranslationsMeta"
+    MetafieldTranslationCatalogStatus:
+      type: string
+      enum: [translated, outdated, missing, not_showing]
+      description: |
+        `translated`: the stored translation was saved against the original as it
+        is now. `outdated`: the original changed after it was translated (its
+        digest no longer matches `translation.source_digest`); shoppers still see
+        the translation. `missing`: there is no translation, or it is blank.
+        `not_showing`: the translation cannot be shown to shoppers because it has
+        a different number of list items than the original, or is not a list when
+        the original is (or the reverse).
+    MetafieldTranslationCatalogProduct:
+      type: object
+      description: One product's original and translation of the field.
+      required: [product_id, title, original_value, original_digest, translation, status]
+      properties:
+        product_id:
+          type: integer
+        title:
+          type: [string, 'null']
+          description: The product's title.
+        original_value:
+          "$ref": "#/components/schemas/MetafieldTranslationValue"
+        original_digest:
+          type: string
+          description: |
+            The digest of the original value. Send it back as `source_digest` when
+            saving a translation of this original.
+        translation:
+          type: [object, 'null']
+          description: The stored translation, or `null` when there is none.
+          required: [value, source_digest]
+          properties:
+            value:
+              "$ref": "#/components/schemas/MetafieldTranslationValue"
+            source_digest:
+              type: string
+        status:
+          "$ref": "#/components/schemas/MetafieldTranslationCatalogStatus"
+    MetafieldTranslationsCatalogResponse:
+      type: object
+      required: [metafield_translation_catalog, status, meta]
+      properties:
+        metafield_translation_catalog:
+          type: object
+          required: [namespace, key, value_type, lang, products]
+          properties:
+            namespace:
+              type: string
+              example: custom
+            key:
+              type: string
+              example: how_to_use
+            value_type:
+              type: string
+              enum: [single_line_text_field, multi_line_text_field, rich_text_field, list.single_line_text_field, url]
+              description: The metafield definition's type.
+            lang:
+              type: string
+              description: The language the translations are stored under (`zh-TW` for Traditional Chinese, `zh` for Simplified).
+            products:
+              type: array
+              description: |
+                One page of the company's products that hold a value for the field,
+                in ascending id order. A discarded product, and one whose stored
+                value is not text, is not listed.
+              items:
+                "$ref": "#/components/schemas/MetafieldTranslationCatalogProduct"
+        status:
+          type: integer
+        meta:
+          type: object
+          required: [request_uuid, timestamp, pagination]
+          properties:
+            request_uuid:
+              type: [string, 'null']
+            timestamp:
+              type: string
+              format: date-time
+            pagination:
+              type: object
+              required: [limit, cursor, prev_cursor, next_cursor]
+              properties:
+                cursor:
+                  type: [string, 'null']
+                  description: The cursor of this page.
+                limit:
+                  type: integer
+                prev_cursor:
+                  type: [string, 'null']
+                  description: Pass as `page[cursor]` for the previous page; `null` on the first.
+                next_cursor:
+                  type: [string, 'null']
+                  description: Pass as `page[cursor]` for the next page; `null` on the last.
+    MetafieldTranslationsAiTranslateMissingRequest:
+      type: object
+      description: The field and language to fill.
+      required: [namespace, key, lang]
+      properties:
+        namespace:
+          type: string
+          example: custom
+        key:
+          type: string
+          example: how_to_use
+        lang:
+          type: string
+          description: |
+            The language ISO to translate into (e.g. `es`, `zh-TW`). It must be a
+            language the store sells in and not the store's default language.
+          example: es
+    MetafieldTranslationsAiTranslateMissingResponse:
+      type: object
+      required: [metafield_translation_ai_run, status, meta]
+      properties:
+        metafield_translation_ai_run:
+          type: object
+          required: [namespace, key, lang, state]
+          properties:
+            namespace:
+              type: string
+            key:
+              type: string
+            lang:
+              type: string
+              description: The language the translations will be stored under.
+            state:
+              type: string
+              enum: [queued, already_running]
+              description: |
+                `queued` when this request started the run. `already_running` when
+                a run for the same field and language is already queued or
+                running; nothing new was queued.
+        status:
+          type: integer
+        meta:
+          "$ref": "#/components/schemas/MetafieldTranslationsMeta"
     ResponsiveImageSet:
       type: [object, "null"]
       description: |
@@ -7844,6 +7981,307 @@ paths:
                     translations:
                       "0":
                         field: [is not translatable]
+                status: 422
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+
+  /api/v202604/company/metafield-translations/catalog:
+    get:
+      tags: [metafield-translations]
+      summary: List a field's translations across all products
+      operationId: companyMetafieldTranslationsCatalog
+      x-fluid-audience: company
+      description: |
+        Token-authenticated. Lists the company's products that hold a value for
+        one translatable Product metafield, each with the original, the digest of
+        that original, the stored translation in `lang` (or `null`) and a status,
+        so a translator can work one field in one language across every product.
+        Products come in ascending id order, with cursor pagination.
+
+        The field must be a Product metafield definition marked translatable and
+        of type `single_line_text_field`, `multi_line_text_field`,
+        `rich_text_field`, `list.single_line_text_field` or `url`. `lang` must be a
+        language the store sells in and not its default language. Either failing
+        is a 422. Discarded products are not listed.
+
+        Answers 404 while the `translatable-metafields` feature is off for the
+        company.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: namespace
+          in: query
+          required: true
+          description: The metafield's namespace.
+          schema:
+            type: string
+            example: custom
+        - name: key
+          in: query
+          required: true
+          description: The metafield's key.
+          schema:
+            type: string
+            example: how_to_use
+        - name: lang
+          in: query
+          required: true
+          description: |
+            The language ISO (e.g. `es`, `zh-TW`). Not the store's default
+            language, whose values are the originals.
+          schema:
+            type: string
+            example: es
+        - $ref: "#/components/parameters/PageCursor"
+        - $ref: "#/components/parameters/PageLimit"
+      responses:
+        "200":
+          description: One page of products.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsCatalogResponse"
+              example:
+                metafield_translation_catalog:
+                  namespace: custom
+                  key: how_to_use
+                  value_type: multi_line_text_field
+                  lang: es
+                  products:
+                    - product_id: 48213
+                      title: Wellness Kit
+                      original_value: Mix one scoop with water.
+                      original_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                      translation:
+                        value: Mezcla una dosis con agua.
+                        source_digest: 3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a
+                      status: translated
+                    - product_id: 48214
+                      title: Energy Powder
+                      original_value: Stir into a glass of cold water.
+                      original_digest: 9d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d
+                      translation: null
+                      status: missing
+                status: 200
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+                  pagination:
+                    cursor: eyJpZCI6NDgyMTN9
+                    limit: 25
+                    prev_cursor: null
+                    next_cursor: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The `translatable-metafields` feature is off for the company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "422":
+          description: A parameter is missing or invalid, `lang` is not a language the store sells in or is its default language, or the field is not a translatable Product metafield.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Field cannot be translated
+                  details: { key: [custom.config_text is not a translatable Product metafield] }
+                status: 422
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+
+  /api/v202604/company/metafield-translations/export:
+    get:
+      tags: [metafield-translations]
+      summary: Export a field's translations across all products as CSV
+      operationId: companyMetafieldTranslationsExport
+      x-fluid-audience: company
+      description: |
+        Token-authenticated. Returns a CSV file with one row per product that the
+        catalog lists for the field, in ascending id order, with the columns
+        `product_id`, `title`, `original`, `translation` and `status`. `status` is
+        `Translated`, `Outdated`, `Missing` or `Not showing`, as in the catalog. A
+        list value is one cell with an item per line. A cell that starts with
+        `=`, `+`, `-`, `@`, a tab, a carriage return or a line feed is prefixed
+        with an apostrophe so a spreadsheet does not run it as a formula. The
+        file is streamed in batches of products, so a large export is not held
+        in memory.
+
+        The field and `lang` are refused with a 422 as in the catalog. Answers
+        404 while the `translatable-metafields` feature is off for the company.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: namespace
+          in: query
+          required: true
+          description: The metafield's namespace.
+          schema:
+            type: string
+            example: custom
+        - name: key
+          in: query
+          required: true
+          description: The metafield's key.
+          schema:
+            type: string
+            example: how_to_use
+        - name: lang
+          in: query
+          required: true
+          description: |
+            The language ISO (e.g. `es`, `zh-TW`). Not the store's default
+            language, whose values are the originals.
+          schema:
+            type: string
+            example: es
+      responses:
+        "200":
+          description: The CSV file, sent as an attachment.
+          content:
+            text/csv:
+              schema:
+                type: string
+              example: |
+                product_id,title,original,translation,status
+                48213,Wellness Kit,Mix one scoop with water.,Mezcla una dosis con agua.,Translated
+                48214,Energy Powder,Stir into a glass of cold water.,,Missing
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The `translatable-metafields` feature is off for the company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "422":
+          description: A parameter is missing or invalid, `lang` is not a language the store sells in or is its default language, or the field is not a translatable Product metafield.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Field cannot be translated
+                  details: { key: [custom.config_text is not a translatable Product metafield] }
+                status: 422
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+
+  /api/v202604/company/metafield-translations/ai-translate-missing:
+    post:
+      tags: [metafield-translations]
+      summary: Translate every missing value of a field with AI
+      operationId: companyMetafieldTranslationsAiTranslateMissing
+      x-fluid-audience: company
+      description: |
+        Token-authenticated. Queues a background run that translates, with the
+        company's AI translation service, the value of one translatable Product
+        metafield into `lang` for every product whose translation is missing,
+        that is, has none or a blank one (status `missing` in the catalog). A
+        non-blank stored translation is never overwritten, outdated or not. Each
+        translation is saved with the digest of the original it was made from.
+        Products whose original is blank, or whose AI answer is unusable, are
+        left as they are. The run schedules one purge of the company's cached
+        pages when it ends, not one per product.
+
+        Answers 202 as soon as the run is queued. Asking again while a run for
+        the same field and language is queued or running queues nothing and
+        returns `state: already_running`. The field and `lang` are refused with a
+        422 as in the catalog. Answers 404 while the `translatable-metafields`
+        feature is off for the company.
+
+        Uses the company's AI spending allowance. The run stops when the allowance
+        is used up; the products it translated before keep their translations.
+        Because of that, it needs the permission to update products and also the
+        one `POST /api/v202604/ai/translate` needs (`application_themes.update`);
+        without either it answers 403.
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetafieldTranslationsAiTranslateMissingRequest"
+            examples:
+              spanish:
+                summary: Translate every missing Spanish "How to use"
+                value:
+                  namespace: custom
+                  key: how_to_use
+                  lang: es
+      responses:
+        "202":
+          description: The run was queued, or one is already queued or running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsAiTranslateMissingResponse"
+              example:
+                metafield_translation_ai_run:
+                  namespace: custom
+                  key: how_to_use
+                  lang: es
+                  state: queued
+                status: 202
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The `translatable-metafields` feature is off for the company.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Not found
+                  details: {}
+                status: 404
+                meta:
+                  request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381
+                  timestamp: "2026-11-13T18:24:12Z"
+        "422":
+          description: A parameter is missing or invalid, `lang` is not a language the store sells in or is its default language, or the field is not a translatable Product metafield.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetafieldTranslationsError"
+              example:
+                error:
+                  message: Field cannot be translated
+                  details: { key: [custom.config_text is not a translatable Product metafield] }
                 status: 422
                 meta:
                   request_uuid: 4c9fc097-1f78-43b8-b8e0-ef3bb7163381

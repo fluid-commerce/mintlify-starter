@@ -807,12 +807,19 @@ components:
           description: The repository's `owner/name`.
         branch:
           type: string
-          description: The git branch the site's source is on, `main` or a branch site's slug.
+          description: The git branch the site's source is on, `main`; for a branch site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref.
+        access:
+          type: string
+          enum:
+          - read
+          - write
+          description: What the token may do. `write` pushes; `read` (given to an editor of a staging branch) only clones and fetches, so the editor commits through the branch's `source-commits` route instead of pushing.
       required:
       - remote_url
       - expires_at
       - repo
       - branch
+      - access
     SiteSignInHandoffCreate:
       type: object
       description: What a sign-in handoff request carries.
@@ -859,6 +866,58 @@ components:
           description: HTTP status code (mirrors the response status line).
         data:
           "$ref": "#/components/schemas/SiteSignInHandoff"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteBranchSourceCommitCreate:
+      type: object
+      description: The folder's whole source tree, committed onto the branch's own ref from the head it was made from.
+      additionalProperties: false
+      properties:
+        base_commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The full sha of the branch ref's head the source was made from. A commit from any other head is refused as `stale_source`.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: The commit message.
+        files:
+          type: object
+          minProperties: 1
+          maxProperties: 2000
+          description: Each file of the folder, its path relative to the folder's root (no leading slash, no `.` or `..` segment, nothing under `.git`) to its content in Base64. A path the base commit holds that is not here is deleted, except dotfiles. The files hold at most 25 MiB decoded.
+          additionalProperties:
+            type: string
+            format: byte
+      required:
+      - base_commit
+      - message
+      - files
+    SiteBranchSourceCommit:
+      type: object
+      description: The commit a source commit made.
+      additionalProperties: false
+      properties:
+        commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The sha of the branch ref's new head; the base itself when the files change nothing. Start the branch's bundle from it.
+      required:
+      - commit
+    SiteBranchSourceCommitEnvelope:
+      type: object
+      description: The commit made on the branch's ref.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteBranchSourceCommit"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -5658,7 +5717,7 @@ paths:
       description: |
         Starts publishing one of the member's sites as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A member may have 5 uploads of a site in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with `409` until one finishes or expires. Published bundles are kept and do not count.
 
-        An editor of the site (a member who accepted an invitation to edit) starts a draft: it lasts 7 days, counts toward the editor's own 5, and only the owner publishes it. Its access declaration, `functions` and `schema` must be the ones the site serves (none when it serves none), or the start is refused with `403` (`details.error` is `owner_only`, `details.path` names the part): those stay the owner's to change.
+        An editor of the site (a member who accepted an invitation to edit) starts a draft: it lasts 7 days, counts toward the editor's own 5, and only the owner publishes it. Its access declaration, `functions` and `schema` must be the ones the site serves (none when it serves none), or the start is refused with `403` (`details.error` is `owner_only`, `details.path` names the part): those stay the owner's to change. While staging is released to the company, an editor of a site's branch starts and publishes there as its owner does, with none of these rules.
 
         Bearer only: a request on the cookie mount is refused with `403`, so a site's own code cannot publish. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change. A gateway that cannot prepare the uploads is a `502`; the bundle is then failed, and starting again makes a new one. A `409` also answers a member already at their 5 uploads of the site in progress.
       operationId: member_sites_bundles_create
@@ -5791,7 +5850,7 @@ paths:
     post:
       summary: Get a Git credential for a site's source
       description: |
-        A short-lived credential for the GitHub repository one of the member's sites keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents; it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site its slug, on its parent's repository. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
+        A short-lived credential for the GitHub repository one of the member's sites keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents (`access` is `write`); it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref. While staging is released to the company, an editor of a site's branch gets a credential for the branch too, with read access only (`access` is `read`): they clone and fetch with it and commit through the branch's `source-commits` route. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
 
         A site with no repository yet has one made from the static site template, and the request answers `409` `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers `503` `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
 
@@ -5814,6 +5873,7 @@ paths:
                   expires_at: '2026-11-10T11:00:00Z'
                   repo: Fluid-WeCommerce/site-42
                   branch: main
+                  access: write
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-10T10:00:00Z'
@@ -5826,7 +5886,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '404':
-          description: No site of the member's company has this id, the member may not change it, or the sites gateway is not released to the member's company.
+          description: No site of the member's company has this id, the member may not change it (an editor may only for a branch, while staging is released), or the sites gateway is not released to the member's company.
           content:
             application/json:
               schema:
@@ -5866,7 +5926,7 @@ paths:
 
         A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's. While staging is released to the company, an editor publishes to a site's branch as its owner does.
       operationId: member_sites_bundles_publish
       tags:
       - site-bundles
@@ -5956,7 +6016,9 @@ paths:
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site a company admin took down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
+        An editor of the site (a member who accepted an invitation to edit) rolls back a site's branch as its owner does while staging is released to the company; on any other site an editor is refused with `404`, as on a publish.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included anywhere but a branch while staging is released, and for a bundle that is not the site's.
       operationId: member_sites_bundles_make_current
       tags:
       - site-bundles
@@ -6626,6 +6688,86 @@ paths:
           "$ref": "#/components/responses/NotFound"
         '409':
           "$ref": "#/components/responses/Conflict"
+  "/api/member/v2026-10/sites/{site_id}/branches/{slug}/source-commits":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/BranchSlug"
+    post:
+      summary: Commit source to a site's branch
+      description: |
+        Commits the folder's whole source tree onto the Git ref the branch owns on its parent's repository, built on `base_commit`, and answers the new `commit`. An editor's Git credential only reads the repository, so a builder such as the Fluid CLI sends an editor's source here instead of pushing it, then starts the branch's bundle from the commit. The ref is always the branch's own; the request never names one, so nothing but the branch's ref is written. A commit from a head that is not the ref's head is refused, so a commit never replaces commits it was not made from: pull the branch and publish again.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` unless staging is released to the member's company, and for a site or branch whose drafts the member may not edit.
+      operationId: member_site_branches_source_commits_create
+      tags:
+      - site-branches
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteBranchSourceCommitCreate"
+            example:
+              base_commit: 4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+              message: Edit the home page
+              files:
+                index.html: PGgxPkhpPC9oMT4=
+      responses:
+        '201':
+          description: The commit was made on the branch's ref.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteBranchSourceCommitEnvelope"
+              example:
+                status: 201
+                data:
+                  commit: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never commits a site's source, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id or no branch this slug, the member may not edit the branch's drafts, or staging is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Nothing was committed. `details.error` is `stale_source` when `base_commit` is not the branch ref's head (pull the branch and publish again), `repo_not_ready` while the parent's repository or the branch's ref is still being made (ask again shortly), or `legacy_ref` for a branch made before branches owned a ref (make the branch again).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: The branch has commits this source was not made from; pull the branch and publish again
+                  details:
+                    error: stale_source
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '422':
+          description: The body breaks the contract, a file is not a plain path inside the folder with Base64 content or the files pass 2,000 or 25 MiB (`details.error` is `invalid_source`, with the `path`), the branch's ref is the repository's default branch (`default_branch_ref`), or the branch or its parent was taken down (`site_taken_down`). Nothing was committed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: GitHub could not take the commit (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/pages":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"

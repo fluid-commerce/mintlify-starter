@@ -1562,6 +1562,7 @@ components:
           - expires_at
           - repo
           - branch
+          - access
           properties:
             remote_url:
               type: string
@@ -1575,7 +1576,64 @@ components:
               description: The repository's `owner/name`.
             branch:
               type: string
-              description: The git branch the site's source is on, `main` or a branch site's slug.
+              description: The git branch the site's source is on, `main`; for a branch site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref.
+            access:
+              type: string
+              enum:
+              - read
+              - write
+              description: What the token may do. An admin's token is always `write`, which pushes; `read` only clones and fetches.
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteBranchSourceCommitCreate:
+      type: object
+      description: The folder's whole source tree, committed onto the branch's own ref from the head it was made from.
+      additionalProperties: false
+      required:
+      - base_commit
+      - message
+      - files
+      properties:
+        base_commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The full sha of the branch ref's head the source was made from. A commit from any other head is refused as `stale_source`.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: The commit message.
+        files:
+          type: object
+          minProperties: 1
+          maxProperties: 2000
+          description: Each file of the folder, its path relative to the folder's root (no leading slash, no `.` or `..` segment, nothing under `.git`) to its content in Base64. A path the base commit holds that is not here is deleted, except dotfiles. The files hold at most 25 MiB decoded.
+          additionalProperties:
+            type: string
+            format: byte
+    MemberSiteBranchSourceCommitResponse:
+      type: object
+      description: The commit a source commit made on the branch's ref.
+      additionalProperties: false
+      required:
+      - source_commit
+      - status
+      - meta
+      properties:
+        source_commit:
+          type: object
+          description: The commit.
+          additionalProperties: false
+          required:
+          - commit
+          properties:
+            commit:
+              type: string
+              pattern: "^[0-9a-f]{40}$"
+              description: The sha of the branch ref's new head; the base itself when the files change nothing. Start the branch's bundle from it.
         status:
           type: integer
           description: The HTTP status.
@@ -5389,7 +5447,7 @@ paths:
       x-fluid-audience: company
       summary: Get a Git credential for a company site's source
       description: |
-        A short-lived credential for the GitHub repository a company site keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents; it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site its slug, on its parent's repository. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
+        A short-lived credential for the GitHub repository a company site keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents (`access` is `write`); it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
 
         A site with no repository yet has one made from the static site template, and the request answers 409 `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers 503 `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
 
@@ -5411,6 +5469,7 @@ paths:
                   expires_at: '2026-11-10T11:00:00Z'
                   repo: Fluid-WeCommerce/site-42
                   branch: main
+                  access: write
                 status: 200
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
@@ -6566,6 +6625,79 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           $ref: '#/components/responses/Conflict'
+  /api/company/v2026-10/member-sites/{id}/branches/{slug}/source-commits:
+    post:
+      operationId: companyMemberSiteBranchSourceCommitsCreate
+      x-fluid-audience: company
+      summary: Commit source to a site's branch
+      description: |
+        Commits the folder's whole source tree onto the Git ref the branch owns on its parent's repository, built on `base_commit`, and answers the new `commit`; start the branch's bundle from it. The ref is always the branch's own; the request never names one, so nothing but the branch's ref is written. A commit from a head that is not the ref's head is refused, so a commit never replaces commits it was not made from: pull the branch and publish again.
+
+        Needs `application_themes.update` and a signed-in admin who may edit the branch's drafts. It answers 404 for every caller that passes those checks until staging is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+      tags:
+      - member-site-branches
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/BranchSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteBranchSourceCommitCreate'
+            example:
+              base_commit: 4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+              message: Edit the home page
+              files:
+                index.html: PGgxPkhpPC9oMT4=
+      responses:
+        '201':
+          description: The commit was made on the branch's ref.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteBranchSourceCommitResponse'
+              example:
+                source_commit:
+                  commit: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b
+                status: 201
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the permission, has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site or branch in this company, the admin may not edit the branch's drafts, or staging is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Nothing was committed. `details.error` is `stale_source` when `base_commit` is not the branch ref's head (pull the branch and publish again), `repo_not_ready` while the parent's repository or the branch's ref is still being made (ask again shortly), or `legacy_ref` for a branch made before branches owned a ref (make the branch again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The body breaks the contract, a file is not a plain path inside the folder with Base64 content or the files pass 2,000 or 25 MiB (`details.error` is `invalid_source`, with the `path`), the branch's ref is the repository's default branch (`default_branch_ref`), or the branch or its parent was taken down (`site_taken_down`). Nothing was committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: GitHub could not take the commit (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-site-features:
     get:
       operationId: companyMemberSiteFeaturesList
