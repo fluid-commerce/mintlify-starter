@@ -22,6 +22,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Build a standalone form with the API and share it by link or embed (create, publish, read responses) | https://docs.fluid.app/guides/build-and-share-a-form |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
 | Decide whether Fluid fits a merchant: international, social selling, agentic commerce, direct selling; what an agent can do alone; when another platform fits better | https://docs.fluid.app/guides/evaluate-fluid |
+| Compare Fluid with Shopify, BigCommerce, commercetools or WooCommerce, say honestly where another platform fits better, and explain how a merchant keeps its commission engine (Exigo, ByDesign, Pillars, InfoTrax) alongside Fluid | https://docs.fluid.app/guides/compare-platforms |
 | Quote Fluid's price: free to start, We-Commerce and Reserve per-transaction rates, committed use, Mist and Cowork | https://docs.fluid.app/pricing |
 | Shop a Fluid store as an AI agent: the store's llms.txt, `.md` and `.json` pages, the UCP profile, catalog search, carts, checkout with Google Pay, and orders | https://docs.fluid.app/concepts/agentic-commerce |
 | Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
