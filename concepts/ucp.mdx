@@ -1,0 +1,112 @@
+---
+title: "Universal Commerce Protocol (UCP) on Fluid stores"
+sidebarTitle: "UCP"
+description: "Every live Fluid storefront serves the Universal Commerce Protocol: a discovery profile, catalog search and lookup, Ask for questions about the store, carts, checkout with Google Pay or a hosted-checkout handoff, and orders."
+keywords: ["Universal Commerce Protocol", "UCP", "agent checkout", "UCP Ask", "dev.ucp.common.ask", "AI shopping agent", "Google Pay", "agentic commerce"]
+---
+
+[UCP](https://ucp.dev) is an open standard for agent catalog, cart and checkout. Each live Fluid store serves it on its own host, with no setup. Replace `https://<store>` below with the storefront's host, such as `https://<subdomain>.fluid.app` or the store's custom domain.
+
+## Discover the store
+
+Each store publishes its profile at `/.well-known/ucp`. Read it first. It names the versions the store serves, the endpoint for each at `/api/ucp/{version}`, and the capabilities and payment handlers on offer. The request and response shapes are UCP's own, in the specification the profile links to.
+
+`/.well-known/ucp` answers the current version. Each older version that the store still serves has its own path, such as `/.well-known/ucp/2026-04-08`.
+
+## Capabilities
+
+| Capability | Endpoint | Notes |
+| --- | --- | --- |
+| Catalog search (`dev.ucp.shopping.catalog.search`) | `POST /api/ucp/{version}/catalog/search` | No agent header needed. |
+| Catalog lookup (`dev.ucp.shopping.catalog.lookup`) | `POST /api/ucp/{version}/catalog/lookup` and `POST /api/ucp/{version}/catalog/product` | Look up products by ID. |
+| Ask (`dev.ucp.common.ask`) | `POST /api/ucp/{version}/ask` | Current version only. No agent header needed. See [Ask the store a question](#ask-the-store-a-question). |
+| Cart (`dev.ucp.shopping.cart`) | `POST /api/ucp/{version}/carts`, then `GET`, `PUT` and `POST .../cancel` on `/api/ucp/{version}/carts/{id}` | Needs a `UCP-Agent` header naming the agent's platform profile, and an `Idempotency-Key` header on every create, update and cancel. |
+| Checkout (`dev.ucp.shopping.checkout`, with the fulfillment and discount extensions) | `POST /api/ucp/{version}/checkout-sessions`, then `GET`, `PUT`, `POST .../complete` and `POST .../cancel` on `/api/ucp/{version}/checkout-sessions/{id}` | Same headers as carts. Pass a UCP cart's `cart_id` to turn it into a checkout. Complete takes a Google Pay instrument. |
+| Order (`dev.ucp.shopping.order`) | `GET /api/ucp/{version}/orders/{id}` | Needs the `UCP-Agent` header. A platform reads only the orders its own checkouts made. |
+
+Search for products:
+
+```bash
+curl -X POST "https://<store>/api/ucp/2026-08-25/catalog/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "wallet"}'
+```
+
+Use the version the store's profile lists. `2026-08-25` is the current version at the time of writing.
+
+## Ask the store a question
+
+Ask answers a question about the store in plain language, such as "What is your return policy?" or "Is this serum fragrance-free?". The answer comes only from what the store publishes:
+
+- products, collections, categories and enrollment packs;
+- blog posts, media and pages;
+- the company's sites;
+- the store's active policies and agreements.
+
+Ask reads these as a signed-out shopper does, so it never quotes member-only content.
+
+```bash
+curl -X POST "https://<store>/api/ucp/2026-08-25/ask" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Can I return an opened product?"}'
+```
+
+```json
+{
+  "ucp": {
+    "version": "2026-08-25",
+    "capabilities": { "dev.ucp.common.ask": [ { "version": "2026-08-25" } ] }
+  },
+  "answer": {
+    "plain": "Unopened products can be returned within 30 days of delivery for a full refund. Opened products can't be returned unless they arrived damaged."
+  },
+  "links": [
+    {
+      "type": "refund_policy",
+      "url": "https://<store>/legal-agreements/48213",
+      "title": "Returns and refunds"
+    }
+  ]
+}
+```
+
+- **`answer.plain`** is plain text of 120 words or fewer, in the language of the question.
+- **`links`** are the store pages the answer is based on. Each one's `type` names what it points to: `product`, `collection`, `category`, `enrollment_pack`, `post`, `media`, `page`, `site`, `policy` or a policy kind such as `refund_policy`, or `storefront` for the store itself. Show the shopper the link rather than restating the page.
+- **Ground a question in products.** Send up to 10 `ids` with the query: product IDs or slugs, or variant IDs or SKUs. The answer then treats "this" as those products. An ID that names nothing the shopper can see comes back as a `not_found` message, as catalog lookup reports misses.
+- **When the store hasn't published an answer**, Ask says so and links the store, rather than guessing. It never invents prices, stock, ingredients, health claims or policy terms. For prices and stock, use catalog lookup.
+- **New content takes up to an hour to appear.** The store's index refreshes in the background after questions arrive.
+
+### Limits
+
+Every question costs the merchant a model call, so Ask is rate-limited:
+
+| Limit | Scope |
+| --- | --- |
+| 10 a minute and 60 an hour | Each client address, across all stores |
+| 120 an hour | Each store host and `UCP-Agent` profile |
+| 600 an hour | Each store host |
+| A daily cap | Each store, across all its hosts |
+
+A query can be at most 1,000 characters. A request over a rate limit gets a 429 with a `Retry-After` header. Ask's own errors use UCP's `{ "code", "content" }` body:
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_request` | The query is missing or too long, or `ids` isn't an array of at most 10 strings. |
+| 429 | `rate_limited` | The store has used its daily allowance. Try again tomorrow (UTC). |
+| 503 | `service_unavailable` | Answers are temporarily unavailable. Retry after the `Retry-After` header, 60 seconds. |
+
+Ask is only on the current version. An older version's `/ask` path answers 404.
+
+## Finish the purchase
+
+A UCP cart or checkout session is a real Fluid cart. There are two ways to finish the purchase:
+
+- **Pay inside the agent with Google Pay.** When one of the company's card accounts in Fluid Payments takes Google Pay through its payment provider, the store's profile lists the `com.google.pay` payment handler, and each checkout session returns the Google Pay configuration for its country. The agent completes the checkout session with the Google Pay token, and reads the order afterwards.
+- **Hand off to hosted checkout.** Every cart and checkout session has a `continue_url` that opens Fluid's hosted checkout at checkout.fluid.app with that cart. The shopper finishes the purchase there, with agreements, enrollment, subscriptions and card entry included. Use it when the store offers no Google Pay handler, and whenever a checkout session asks for something only the hosted checkout can collect.
+
+## What isn't available through UCP yet
+
+- **Payment methods other than Google Pay.** Inside the agent, a checkout session completes only with Google Pay, and only on stores whose payment provider takes it. For any other payment method, hand the shopper the `continue_url`.
+- **Signed-in buyers.** An agent can't link a shopper's Fluid account through UCP, so UCP carts don't carry member pricing, saved addresses or saved payment methods.
+
+Check the store's `/.well-known/ucp` profile for what it serves today.
