@@ -1403,6 +1403,69 @@ components:
                     description: Subscriptions in this status.
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
+    OrderSummaryCounts:
+      type: object
+      description: One group of the member's orders in the period.
+      required: [order_count, order_total, by_status]
+      additionalProperties: false
+      properties:
+        order_count:
+          type: integer
+          minimum: 0
+          description: Orders in the group that are not cancelled.
+        order_total:
+          type: string
+          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: The amount of the orders in `order_count`, in the platform base currency, as a decimal string.
+        by_status:
+          type: array
+          description: Orders per status, cancelled included. Always six entries, in this order, zeros included; drafts are never counted.
+          minItems: 6
+          maxItems: 6
+          items:
+            type: object
+            required: [status, count]
+            additionalProperties: false
+            properties:
+              status:
+                type: string
+                enum: [pending, pending_review, processing, completed, cancelled, archived]
+                description: An order status.
+              count:
+                type: integer
+                minimum: 0
+                description: Orders in this status.
+    OrderSummaryEnvelope:
+      type: object
+      description: The authenticated member's own orders in a period, counted and totalled.
+      required: [status, data, meta]
+      additionalProperties: false
+      properties:
+        status:
+          type: integer
+          const: 200
+        data:
+          type: object
+          required: [period, since, placed, credited]
+          additionalProperties: false
+          properties:
+            period:
+              type: string
+              enum: [7d, 30d, 90d, 1y, all]
+              description: The period counted.
+            since:
+              type: [string, 'null']
+              format: date-time
+              description: The UTC start of the period, midnight UTC of its first day, or null for `all`.
+            placed:
+              "$ref": "#/components/schemas/OrderSummaryCounts"
+            credited:
+              description: The orders credited to the member that they did not buy, or null when the request reads own purchases only.
+              oneOf:
+              - "$ref": "#/components/schemas/OrderSummaryCounts"
+              - type: 'null'
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
     SubscriptionEnvelope:
       type: object
       description: One accessible subscription.
@@ -2191,6 +2254,116 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: Unsupported parameter, invalid page value, disabled company bundling or unsafe related reference.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/orders/summary":
+    get:
+      operationId: member_orders_summary
+      tags:
+      - orders
+      x-fluid-audience: member
+      summary: Count and total the member's orders over a period
+      description: >-
+        Count and total the authenticated member's own orders in their company over a trailing period, for a
+        dashboard card that would otherwise page the whole order list to sum it. `placed` is the member's own
+        purchases and `credited` the orders whose volume is credited to them, found as
+        `GET /api/member/v2026-10/orders` finds them; an order that is both counts once, under `placed`. Each
+        group counts its orders by status; its `order_count` and `order_total` leave cancelled orders out.
+        Drafts are never counted. Totals are in the platform base currency, as the member's statistics report
+        them. Orders are dated by their sale date, or their creation when they have none. No parameter selects
+        another owner. A site's script acting for a share holder reads own purchases only, and `credited` is
+        null. Responses are private and reauthorized before 304.
+      parameters:
+      - name: period
+        in: query
+        required: false
+        description: >-
+          The trailing period to count: that many UTC days, today included, through now. `all` counts every
+          order. Defaults to `30d`.
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - 1y
+          - all
+          default: 30d
+      responses:
+        '200':
+          description: The member's orders in the period, counted and totalled.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OrderSummaryEnvelope"
+              example:
+                status: 200
+                data:
+                  period: 30d
+                  since: '2026-10-13T00:00:00.000Z'
+                  placed:
+                    order_count: 2
+                    order_total: '125.00'
+                    by_status:
+                    - status: pending
+                      count: 0
+                    - status: pending_review
+                      count: 0
+                    - status: processing
+                      count: 1
+                    - status: completed
+                      count: 1
+                    - status: cancelled
+                      count: 0
+                    - status: archived
+                      count: 0
+                  credited:
+                    order_count: 6
+                    order_total: '412.80'
+                    by_status:
+                    - status: pending
+                      count: 0
+                    - status: pending_review
+                      count: 0
+                    - status: processing
+                      count: 0
+                    - status: completed
+                      count: 6
+                    - status: cancelled
+                      count: 1
+                    - status: archived
+                      count: 0
+                meta:
+                  request_uuid: '019a23a4-9211-71bf-8fa5-a5f31a82a0df'
+                  timestamp: '2026-11-11T12:00:00Z'
+        '304':
+          description: The authenticated member's counts are unchanged.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing or unusable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential belongs to a sandbox test company that cannot be reached now, because sandbox access is turned off for its live company or the live company was deleted.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The period is not one of the supported values, or the request carries another query parameter.
           content:
             application/json:
               schema:

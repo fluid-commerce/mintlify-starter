@@ -742,6 +742,184 @@ components:
           "$ref": "#/components/schemas/TeamCreditedSubscriptions"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
+    TeamOrderStatusCount:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - count
+      properties:
+        status:
+          type: string
+          enum:
+          - pending
+          - pending_review
+          - processing
+          - completed
+          - cancelled
+          - archived
+          description: The order status.
+        count:
+          type: integer
+          minimum: 0
+          description: Orders in this status.
+    TeamOrderLevel:
+      type: object
+      description: The orders the Team members at one level placed, cancelled ones left out.
+      additionalProperties: false
+      required:
+      - level
+      - order_count
+      - order_total
+      properties:
+        level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Levels below the signed-in member; 1 is a direct report.
+        order_count:
+          type: integer
+          minimum: 0
+          description: Orders the members at this level placed in the period that are not cancelled.
+        order_total:
+          type: string
+          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: Their amount, in the platform base currency, as a decimal string.
+    TeamOrders:
+      type: object
+      description: >-
+        The orders the signed-in member's Team members placed in a period, counted by status, and counted
+        and totalled per level. Counts and sums only: no Team member, order or buyer is named.
+      additionalProperties: false
+      required:
+      - period
+      - since
+      - order_count
+      - order_total
+      - by_status
+      - by_level
+      - team_count
+      properties:
+        period:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - 1y
+          - all
+          description: The period counted.
+        since:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: >-
+            The UTC start of the period: midnight UTC on the first of its trailing days, today included.
+            Null for `all`.
+        order_count:
+          type: integer
+          minimum: 0
+          description: The Team's orders in the period that are not cancelled. `by_level` sums to it.
+        order_total:
+          type: string
+          pattern: '^-?[0-9]+\.[0-9]{2}$'
+          description: Their amount, in the platform base currency, as a decimal string.
+        by_status:
+          type: array
+          description: The Team's orders per status, cancelled included. Always six entries, in this order, zeros included; drafts are never counted.
+          minItems: 6
+          maxItems: 6
+          items:
+            "$ref": "#/components/schemas/TeamOrderStatusCount"
+        by_level:
+          type: array
+          description: The orders at each of the five levels, nearest first.
+          minItems: 5
+          maxItems: 5
+          items:
+            "$ref": "#/components/schemas/TeamOrderLevel"
+        team_count:
+          type: integer
+          minimum: 0
+          description: Every member of the current Team, the `total_count` of `GET /api/member/v2026-10/team/summary`.
+    TeamOrdersEnvelope:
+      type: object
+      description: The orders the signed-in member's Team placed.
+      required:
+      - status
+      - data
+      - meta
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/TeamOrders"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+    TeamRenewals:
+      type: object
+      description: >-
+        The signed-in member's Team's active subscriptions due to bill within a window, per level. Counts
+        only: no Team member or subscription is named.
+      additionalProperties: false
+      required:
+      - window
+      - from
+      - through
+      - total_count
+      - by_level
+      - member_count
+      - team_count
+      properties:
+        window:
+          type: string
+          enum:
+          - 7d
+          - 14d
+          - 30d
+          description: The window counted.
+        from:
+          type: string
+          format: date
+          description: The first UTC date of the window, today.
+        through:
+          type: string
+          format: date
+          description: The last UTC date of the window, counted through its end.
+        total_count:
+          type: integer
+          minimum: 0
+          description: Every renewal due in the window. `by_level` sums to it.
+        by_level:
+          type: array
+          description: Renewals due at each of the five levels, nearest first.
+          minItems: 5
+          maxItems: 5
+          items:
+            "$ref": "#/components/schemas/TeamLevelCount"
+        member_count:
+          type: integer
+          minimum: 0
+          description: Team members with at least one renewal due in the window.
+        team_count:
+          type: integer
+          minimum: 0
+          description: Every member of the current Team, the `total_count` of `GET /api/member/v2026-10/team/summary`.
+    TeamRenewalsEnvelope:
+      type: object
+      description: The signed-in member's Team renewals due in a window.
+      required:
+      - status
+      - data
+      - meta
+      properties:
+        status:
+          type: integer
+        data:
+          "$ref": "#/components/schemas/TeamRenewals"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
 paths:
   "/api/member/v2026-10/team":
     get:
@@ -1578,6 +1756,253 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: The request carries a query parameter; the summary takes none.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/team/subscriptions/upcoming":
+    get:
+      operationId: member_team_subscriptions_upcoming
+      tags:
+      - team
+      summary: Count the Team's subscriptions due to renew soon
+      description: |
+        The active subscriptions the signed-in member's current Team members hold that are due to bill
+        within the window: from the start of today, UTC, through the end of the window's last UTC day,
+        counted at each of the five levels below the member, with how many Team members hold one. The
+        Team is the one `GET /api/member/v2026-10/team` lists, found the same way; a subscription is a
+        member's when they own it, as in `GET /api/member/v2026-10/team/subscriptions/summary`. Paused,
+        past-due, pending and cancelled subscriptions, and those the platform has stopped billing, do not
+        count. Only subscriptions of the member's company count. Counts only: no Team member or
+        subscription is named.
+
+        A member with no downline gets zeros. In a company on tree reads, a member with no seat in the
+        enrollment tree gets 404, as in the list.
+
+        The same members may read it as may read the summary, the legacy My Team `authorize_rep_tier`:
+        reps, company admins and root admins, on a member token or portal JWT. A customer or
+        preferred-customer membership is refused with 403, even with a valid credential, as is a member
+        session JWT. No parameter selects another member: the Team is always the credential's own.
+
+        Current Team membership is rechecked on every request, so the response is private and must be
+        revalidated before reuse.
+      x-fluid-audience: member
+      parameters:
+      - name: window
+        in: query
+        required: false
+        description: How many UTC days after today the window reaches. Defaults to `30d`.
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 14d
+          - 30d
+          default: 30d
+      - name: If-None-Match
+        in: header
+        required: false
+        description: A previously returned ETag. Authentication and the current Team read run before a
+          304 is considered.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The Team's renewals due in the window, per level.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TeamRenewalsEnvelope"
+              example:
+                status: 200
+                data:
+                  window: 30d
+                  from: '2026-11-11'
+                  through: '2026-12-11'
+                  total_count: 13
+                  by_level:
+                  - level: 1
+                    count: 8
+                  - level: 2
+                    count: 4
+                  - level: 3
+                    count: 1
+                  - level: 4
+                    count: 0
+                  - level: 5
+                    count: 0
+                  member_count: 11
+                  team_count: 27
+                meta:
+                  request_uuid: '01a0f4fe-de00-75b3-8d8a-b74b0cde8b07'
+                  timestamp: '2026-11-11T15:04:05Z'
+        '304':
+          description: The counts have not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing credential, or a credential that is not a usable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry,
+            which cannot read the Team, or the membership is a customer or preferred customer, which has no Team.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The company reads its Team from trees and the member has no seat.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The window is not one of the supported values, or the request carries another query parameter.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/team/orders/summary":
+    get:
+      operationId: member_team_orders_summary
+      tags:
+      - team
+      summary: Count and total the orders the Team placed
+      description: |
+        The orders the signed-in member's current Team members placed over a trailing period, counted by
+        status, and counted and totalled at each of the five levels below the member. The Team is the one
+        `GET /api/member/v2026-10/team` lists, found the same way. An order is a Team member's when it is
+        their own purchase (it names them as its member); an order placed for them by someone else does
+        not count, and neither does a draft or an order of another company. `order_count`, `order_total`
+        and `by_level` leave cancelled orders out; `by_status` counts them. Totals are in the platform base
+        currency, as `GET /api/member/v2026-10/team/performance` reports them. Orders are dated by their
+        sale date, or their creation when they have none. Unlike Team performance, which sums the orders
+        credited to the Team from the daily rollups, this reads the orders themselves and needs no rollups.
+        Counts and sums only: no Team member, order or buyer is named.
+
+        A member with no downline gets zeros. In a company on tree reads, a member with no seat in the
+        enrollment tree gets 404, as in the list.
+
+        The same members may read it as may read the summary, the legacy My Team `authorize_rep_tier`:
+        reps, company admins and root admins, on a member token or portal JWT. A customer or
+        preferred-customer membership is refused with 403, even with a valid credential, as is a member
+        session JWT. No parameter selects another member: the Team is always the credential's own.
+
+        Current Team membership is rechecked on every request, so the response is private and must be
+        revalidated before reuse.
+      x-fluid-audience: member
+      parameters:
+      - name: period
+        in: query
+        required: false
+        description: The trailing period to count. Defaults to `30d`.
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - 1y
+          - all
+          default: 30d
+      - name: If-None-Match
+        in: header
+        required: false
+        description: A previously returned ETag. Authentication and the current Team read run before a
+          304 is considered.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The Team's orders in the period, counted and totalled.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/TeamOrdersEnvelope"
+              example:
+                status: 200
+                data:
+                  period: 30d
+                  since: '2026-10-13T00:00:00.000Z'
+                  order_count: 19
+                  order_total: '1840.25'
+                  by_status:
+                  - status: pending
+                    count: 0
+                  - status: pending_review
+                    count: 0
+                  - status: processing
+                    count: 2
+                  - status: completed
+                    count: 17
+                  - status: cancelled
+                    count: 1
+                  - status: archived
+                    count: 0
+                  by_level:
+                  - level: 1
+                    order_count: 12
+                    order_total: '1210.00'
+                  - level: 2
+                    order_count: 7
+                    order_total: '630.25'
+                  - level: 3
+                    order_count: 0
+                    order_total: '0.00'
+                  - level: 4
+                    order_count: 0
+                    order_total: '0.00'
+                  - level: 5
+                    order_count: 0
+                    order_total: '0.00'
+                  team_count: 27
+                meta:
+                  request_uuid: '01a0f4fe-de00-75b3-8d8a-b74b0cde8b07'
+                  timestamp: '2026-11-11T15:04:05Z'
+        '304':
+          description: The counts have not changed since the supplied ETag.
+          headers:
+            ETag:
+              "$ref": "#/components/headers/ETag"
+            Cache-Control:
+              "$ref": "#/components/headers/CacheControl"
+        '401':
+          description: Missing credential, or a credential that is not a usable member credential.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '403':
+          description: The credential is a member session JWT, the kind order and subscription email links carry,
+            which cannot read the Team, or the membership is a customer or preferred customer, which has no Team.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The company reads its Team from trees and the member has no seat.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The period is not one of the supported values, or the request carries another query parameter.
           content:
             application/json:
               schema:
