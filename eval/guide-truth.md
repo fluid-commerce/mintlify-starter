@@ -2405,6 +2405,15 @@ run the second.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
+**2026-11-15 update:** `help/admin/url_redirects.mdx` was removed, and `/help/admin/url_redirects` redirects to
+`/help/admin/sitemap#redirect-a-url`. Redirects are documented only as custom routes whose override is
+**URL Redirect** on the Sitemap screen (`302`, set in `Middleware::ThemeRegionRouter#redirect_response_for_rule`).
+The legacy URL Redirects screen (`/url_redirects`, `Middleware::Redirects`, `301`) still exists in fluid and
+still answers first, but don't document or recommend it. Mention it only as "an older redirect saved on the
+same path may answer first" for troubleshooting. The drawer's **Redirect Type** 301/302 select renders only for
+a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice. The
+bullets below that recommend the URL Redirects screen are superseded.
+
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
 were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
 (`b26e25102b`). They aren't in the registry. One bullet in `storefront/fairshare-sdk.mdx`
