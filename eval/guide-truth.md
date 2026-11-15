@@ -2163,7 +2163,7 @@ monorepo and of `fluid-fairshare`. Durable decisions:
   contract on v2026-04: collection writes fail, and product writes can only add. The guide
   states this as a current limitation. Don't document `id`-based metafield updates —
   stored metafields have no `id`.
-- **A product translation PATCH is not text-only.** It applies every field sent. The
+- **A product translation PATCH is not text-only.** It applies every field sent except `metafields_attributes` and `images_attributes`, which it ignores on the product and on its variants (fluid PR #33870). The
   other seven resources are text-only. The translations guide and the upstream spec now
   say so.
 - **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
