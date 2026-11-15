@@ -17,6 +17,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Task | Start here |
 | --- | --- |
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
+| Redirect a storefront URL, or add a custom or country route. Redirects are custom routes on the Sitemap screen; there is no separate redirects screen | https://docs.fluid.app/help/admin/sitemap#redirect-a-url, then https://docs.fluid.app/themes/custom-routes for the theme region rules API |
 | Collect extra details at enrollment checkout (forms, after payment, per country) | https://docs.fluid.app/guides/checkout-forms, then https://docs.fluid.app/help/admin/forms |
 | Build a standalone form with the API and share it by link or embed (create, publish, read responses) | https://docs.fluid.app/guides/build-and-share-a-form |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
