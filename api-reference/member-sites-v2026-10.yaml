@@ -520,7 +520,7 @@ components:
         contentType:
           type: string
           minLength: 1
-          description: The type the file's extension maps to in the allowlist (HTML, CSS, JavaScript, JSON, source maps, SVG, PNG, JPEG, GIF, WebP, AVIF, ICO, WOFF, WOFF2, TTF, OTF, glTF (`.glb` and `.gltf`), TXT, XML, PDF, MP4, WebM and MP3). A file outside the allowlist, or with another type than its extension's, is refused.
+          description: The type the file's extension maps to in the allowlist (HTML, CSS, JavaScript, JSON, source maps, SVG, PNG, JPEG, GIF, WebP, AVIF, ICO, WOFF, WOFF2, TTF, OTF, glTF (`.glb` and `.gltf`), TXT, Markdown (`.md`), XML, PDF, MP4, WebM and MP3). A file outside the allowlist, or with another type than its extension's, is refused.
         immutable:
           type: boolean
           description: True when the file name carries a content hash, so a public site's visitors keep it for a year.
@@ -646,6 +646,13 @@ components:
         functions:
           type: object
           description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
+        sourceCommit:
+          type:
+          - string
+          - 'null'
+          pattern: "^[0-9a-f]{40}$"
+          description: "The Git commit the bundle's source is at, a full lowercase SHA-1; the builder sends it after saving the source. Omit it for a bundle published without its source."
+          example: 3f2a9c1e5b7d8a0f4c6e2b9d1a3f5c7e9b0d2a4c
     SiteBundleUpload:
       type: object
       description: One signed PUT for a blob the site does not store yet. Send the blob's bytes to `url` with exactly these headers. They pin the length and refuse a replacement, and `x-goog-hash` pins the CRC32C when the file declared one, so Cloud Storage refuses different bytes.
@@ -800,12 +807,19 @@ components:
           description: The repository's `owner/name`.
         branch:
           type: string
-          description: The git branch the site's source is on, `main` or a branch site's slug.
+          description: The git branch the site's source is on, `main`; for a branch site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref.
+        access:
+          type: string
+          enum:
+          - read
+          - write
+          description: What the token may do. `write` pushes; `read` (given to an editor of a staging branch) only clones and fetches, so the editor commits through the branch's `source-commits` route instead of pushing.
       required:
       - remote_url
       - expires_at
       - repo
       - branch
+      - access
     SiteSignInHandoffCreate:
       type: object
       description: What a sign-in handoff request carries.
@@ -852,6 +866,62 @@ components:
           description: HTTP status code (mirrors the response status line).
         data:
           "$ref": "#/components/schemas/SiteSignInHandoff"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
+    SiteBranchSourceCommitCreate:
+      type: object
+      description: The folder's whole source tree, committed onto the branch's own ref from the head it was made from.
+      additionalProperties: false
+      properties:
+        base_commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The full sha of the branch ref's head the source was made from. A commit from any other head is refused as `stale_source`.
+        merge_parent:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The full sha of the commit of the repository's default branch (live) the source merges, after updating the branch from live. The commit then has two parents, `base_commit` and this one, so promoting the branch finds live's commit contained in it. A commit the default branch does not hold is refused as `merge_parent_not_on_default_branch`. Leave it out for a plain commit.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: The commit message.
+        files:
+          type: object
+          minProperties: 1
+          maxProperties: 2000
+          description: Each file of the folder, its path relative to the folder's root (no leading slash, no `.` or `..` segment, nothing under `.git`) to its content in Base64. A path the base commit holds that is not here is deleted, except dotfiles. The files hold at most 25 MiB decoded.
+          additionalProperties:
+            type: string
+            format: byte
+      required:
+      - base_commit
+      - message
+      - files
+    SiteBranchSourceCommit:
+      type: object
+      description: The commit a source commit made.
+      additionalProperties: false
+      properties:
+        commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The sha of the branch ref's new head; the base itself when the files change nothing and no `merge_parent` was sent. Start the branch's bundle from it.
+      required:
+      - commit
+    SiteBranchSourceCommitEnvelope:
+      type: object
+      description: The commit made on the branch's ref.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteBranchSourceCommit"
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
@@ -907,6 +977,7 @@ components:
       required:
       - bundle
       - url
+      - share_url
       properties:
         bundle:
           type: object
@@ -928,7 +999,13 @@ components:
           - string
           - 'null'
           format: uri
-          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, where the bundle is now served; print it after a deploy. Null when the company's storefront serves no member sites.
+          description: The site's absolute public address, `https://<storefront>/sites/<handle>`, where the bundle is now served. Null when the company's storefront serves no member sites. Print `share_url` after a deploy rather than this.
+        share_url:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The link to hand out after a deploy, `https://<storefront>/<username>/sites/<handle>`, which credits the caller (the owner, or an editor who publishes) for what visitors buy (`/home/sites/<handle>` when their username can't be a credit path). The same value as the site's `share_url`. Null while the sites gateway can't serve the site, and for a preview branch.
     SiteBundleCurrentEnvelope:
       type: object
       description: The site's current version after a publish.
@@ -1289,6 +1366,34 @@ components:
           items:
             type: string
           description: The names of the server functions the bundle runs, sorted. Empty for a bundle with none.
+        functions:
+          type: array
+          description: The server functions this bundle declares, sorted by name, each with the access and schedule its manifest declares. They run only while this bundle is the site's live one (`current`). The same functions as `function_names`. Empty for a bundle with none.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                maxLength: 40
+                pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+                description: The function's name, as it answers at `/api/<name>` on the site's host.
+              access:
+                type: string
+                enum:
+                - public
+                - signed_in
+                - key
+                description: Who may call the function, `public`, `signed_in` or `key`.
+              schedule:
+                type:
+                - string
+                - 'null'
+                description: The bundle's five-field UTC cron line, or null.
+            required:
+            - name
+            - access
+            - schedule
         current:
           type: boolean
           description: Whether the site serves this deployment now.
@@ -1309,6 +1414,7 @@ components:
       - file_count
       - total_bytes
       - function_names
+      - functions
       - current
       - retained
       - url
@@ -1714,6 +1820,66 @@ components:
       - status
       - data
       - meta
+    SiteBranchPromote:
+      type: object
+      description: The optional confirmation of a promote. Send `confirm_migrations`, from a `422` `destructive_change_unconfirmed` refusal, after the person said yes, with the refusal's `bundle_id` when you have it; omit both otherwise. Any other field is refused as an unknown field.
+      additionalProperties: false
+      properties:
+        confirm_migrations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: The ids of the destructive migrations the person confirmed, as the refusal's `details.unconfirmed` lists them.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+        bundle_id:
+          type: string
+          format: uuid
+          description: The branch's bundle the refusal named (`details.bundle_id`), taken only with `confirm_migrations`. When the branch has published another since, the promote is refused with `409` `branch_changed`. Without it, the confirmation is for the bundle the branch serves now.
+    SiteBranchBase:
+      type: object
+      description: The body of a base record takes no field; the base is always the parent's live bundle.
+      additionalProperties: false
+    SiteBranchPromotion:
+      type: object
+      description: What a promote put live.
+      additionalProperties: false
+      properties:
+        bundle_id:
+          type: string
+          format: uuid
+          description: The parent's bundle now live. When the parent already served the branch's version, the live bundle, with nothing changed.
+        replaced_bundle_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The parent's bundle the promote replaced; `POST /sites/{site_id}/bundles/{replaced_bundle_id}/current` on the parent makes it live again. Null when nothing changed.
+        commit:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+          description: The source commit now live, which the parent repository's default branch is at or contains.
+      required:
+      - bundle_id
+      - replaced_bundle_id
+      - commit
+    SiteBranchPromotionEnvelope:
+      type: object
+      description: What a promote put live.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          "$ref": "#/components/schemas/SiteBranchPromotion"
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
     SiteBranchesEnvelope:
       type: object
       description: All of a site's branches.
@@ -1726,11 +1892,15 @@ components:
           description: The site's branches, oldest first.
           items:
             "$ref": "#/components/schemas/SiteBranch"
+        staging_enabled:
+          type: boolean
+          description: Whether shared staging (SITE_STAGING) is released for the company. While it is false, promoting a branch and reading its base answer 404.
         meta:
           "$ref": "#/components/schemas/ResponseMeta"
       required:
       - status
       - data
+      - staging_enabled
       - meta
     SiteVersion:
       type: object
@@ -1755,7 +1925,7 @@ components:
           description: When the commit was made.
         current:
           type: boolean
-          description: Whether this is the version the site's history was last synced to.
+          description: Whether this is the version the site's live bundle was published from (its `sourceCommit`), or, when that bundle names no commit, the one its history was last synced to.
       required:
       - sha
       - short_sha
@@ -1783,7 +1953,7 @@ components:
               type:
               - string
               - 'null'
-              description: The sha the site's history was last synced to, or null before its first push.
+              description: The sha of the version the site's live bundle was published from (its `sourceCommit`), or, when that bundle names no commit, the sha its history was last synced to; null when neither is known. It can be older than every listed version (a live bundle rolled back past the page), and then no listed version is current.
             syncing:
               type: boolean
               description: Whether a change to the site is being saved to its history now.
@@ -5622,7 +5792,7 @@ paths:
       description: |
         Starts publishing one of the member's sites as a built static bundle. Rails assigns the bundle id, checks the files against the limits and the content-type allowlist (each route against the files), the access declaration, `schema` and `meta`, records the bundle as uploading for 60 minutes, and asks the sites gateway for signed PUT URLs for the blobs the site does not store yet. Upload each blob to its URL, then publish the bundle. Nothing is served until it is published, and the site's current version keeps serving. A member may have 5 uploads of a site in progress at once, each lasting 60 minutes, so an older upload on another device keeps working; a start finds failed and expired uploads deleted, and a sixth is refused with `409` until one finishes or expires. Published bundles are kept and do not count.
 
-        An editor of the site (a member who accepted an invitation to edit) starts a draft: it lasts 7 days, counts toward the editor's own 5, and only the owner publishes it. Its access declaration, `functions` and `schema` must be the ones the site serves (none when it serves none), or the start is refused with `403` (`details.error` is `owner_only`, `details.path` names the part): those stay the owner's to change.
+        An editor of the site (a member who accepted an invitation to edit) starts a draft: it lasts 7 days, counts toward the editor's own 5, and only the owner publishes it. Its access declaration, `functions` and `schema` must be the ones the site serves (none when it serves none), or the start is refused with `403` (`details.error` is `owner_only`, `details.path` names the part): those stay the owner's to change. While staging is released to the company, an editor of a site's branch starts and publishes there as its owner does, with none of these rules.
 
         Bearer only: a request on the cookie mount is refused with `403`, so a site's own code cannot publish. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change. A gateway that cannot prepare the uploads is a `502`; the bundle is then failed, and starting again makes a new one. A `409` also answers a member already at their 5 uploads of the site in progress.
       operationId: member_sites_bundles_create
@@ -5755,7 +5925,7 @@ paths:
     post:
       summary: Get a Git credential for a site's source
       description: |
-        A short-lived credential for the GitHub repository one of the member's sites keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents; it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site its slug, on its parent's repository. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
+        A short-lived credential for the GitHub repository one of the member's sites keeps its source in, so a builder such as the Fluid CLI can clone, pull and push it with plain git. `remote_url` is an HTTPS remote that carries a token limited to that one repository, with read and write access to its contents (`access` is `write`); it expires at `expires_at`, about an hour later, so ask again for each command rather than storing it. `repo` is the repository's `owner/name`, and `branch` is the git branch the site's source is on: `main`, or for a branch of a site the ref it owns on its parent's repository (`fluid/branches/<id>`), or its slug for a branch made before branches owned a ref. While staging is released to the company, an editor of a site's branch gets a credential for the branch too, with read access only (`access` is `read`): they clone and fetch with it and commit through the branch's `source-commits` route. To publish an earlier version of a site, check out its commit, build it and publish the bundle. The response is never cached (`Cache-Control: private, no-store`).
 
         A site with no repository yet has one made from the static site template, and the request answers `409` `repo_not_ready` until GitHub has made it; ask again shortly. When the repository could not be made (no GitHub organization has room for it, or GitHub refused to create it), the request answers `503` `repo_unavailable` instead: stop asking and publish again later. Each request asks for the repository again without waiting for GitHub, so a later one succeeds once it can be made. The first bundle upload of a site makes its repository too.
 
@@ -5778,6 +5948,7 @@ paths:
                   expires_at: '2026-11-10T11:00:00Z'
                   repo: Fluid-WeCommerce/site-42
                   branch: main
+                  access: write
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-10T10:00:00Z'
@@ -5790,7 +5961,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '404':
-          description: No site of the member's company has this id, the member may not change it, or the sites gateway is not released to the member's company.
+          description: No site of the member's company has this id, the member may not change it (an editor may only for a branch, while staging is released), or the sites gateway is not released to the member's company.
           content:
             application/json:
               schema:
@@ -5830,7 +6001,7 @@ paths:
 
         A failed step marks the bundle failed and publishes nothing, and the current version keeps serving; start a new bundle to try again. A step that runs out of time (the whole publish has 27 seconds) is a `504` with `publish_timeout`: the bundle stays uploading, the current version keeps serving, and sending the same publish again is safe and finishes what was started. Sending a publish again after it finished, because its answer was lost, is also safe: a bundle that is published and is the site's current version answers the same `200`, with no gateway call and no change.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's. While staging is released to the company, an editor publishes to a site's branch as its owner does.
       operationId: member_sites_bundles_publish
       tags:
       - site-bundles
@@ -5858,6 +6029,7 @@ paths:
                     id: 0199537f-0000-7000-8000-000000000004
                     manifestSha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
                   url: https://shop.example.com/sites/rileys-shop
+                  share_url: https://shop.example.com/riley-kim/sites/rileys-shop
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
@@ -5920,7 +6092,9 @@ paths:
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site a company admin took down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
-        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included (only the owner publishes, an editor's draft too), and for a bundle that is not the site's.
+        An editor of the site (a member who accepted an invitation to edit) rolls back a site's branch as its owner does while staging is released to the company; on any other site an editor is refused with `404`, as on a publish.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, for a site the member may not change, an editor's included anywhere but a branch while staging is released, and for a bundle that is not the site's.
       operationId: member_sites_bundles_make_current
       tags:
       - site-bundles
@@ -5939,6 +6113,7 @@ paths:
                     id: 0199537f-0000-7000-8000-000000000004
                     manifestSha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
                   url: https://shop.example.com/sites/rileys-shop
+                  share_url: https://shop.example.com/riley-kim/sites/rileys-shop
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:00:00Z'
@@ -6408,7 +6583,7 @@ paths:
     - "$ref": "#/components/parameters/SiteIdPath"
     get:
       summary: List a site's branches
-      description: The branches of one of the member's sites, or of a site the member is an editor of, oldest first. An editor edits a branch's drafts through `/sites/{site_id}/files` with the branch's `site_id`, and cannot make or delete a branch. A site has at most one branch, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
+      description: The branches of one of the member's sites, or of a site the member is an editor of, oldest first. An editor is not shown a branch closed to share holders (inactive, locked by a company admin or taken down), since it could not open it. An editor edits a branch's drafts through `/sites/{site_id}/files` with the branch's `site_id`, and cannot make or delete a branch. A site has at most one branch, so the list is not paged. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
       operationId: member_site_branches_index
       tags:
       - site-branches
@@ -6440,6 +6615,7 @@ paths:
                   url: https://shop.example.com/sites/rileys-shop-staging
                   parent_changed: false
                   created_at: '2026-09-03T10:00:00.000000Z'
+                staging_enabled: true
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-09-30T15:08:21Z'
@@ -6524,7 +6700,7 @@ paths:
     - "$ref": "#/components/parameters/BranchSlug"
     get:
       summary: Read a site's branch
-      description: One branch of one of the member's sites, or of a site the member is an editor of, with whether the parent has changed since the branch was made. The response is not cached (`max-age=0`) and can be revalidated with an ETag.
+      description: One branch of one of the member's sites, or of a site the member is an editor of, with whether the parent has changed since the branch was made. A branch closed to share holders (inactive, locked by a company admin or taken down) is a 404 for an editor. The response is not cached (`max-age=0`) and can be revalidated with an ETag.
       operationId: member_site_branches_show
       tags:
       - site-branches
@@ -6590,6 +6766,289 @@ paths:
           "$ref": "#/components/responses/NotFound"
         '409':
           "$ref": "#/components/responses/Conflict"
+  "/api/member/v2026-10/sites/{site_id}/branches/{slug}/source-commits":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/BranchSlug"
+    post:
+      summary: Commit source to a site's branch
+      description: |
+        Commits the folder's whole source tree onto the Git ref the branch owns on its parent's repository, built on `base_commit`, and answers the new `commit`. An editor's Git credential only reads the repository, so a builder such as the Fluid CLI sends an editor's source here instead of pushing it, then starts the branch's bundle from the commit. The ref is always the branch's own; the request never names one, so nothing but the branch's ref is written. A commit from a head that is not the ref's head is refused, so a commit never replaces commits it was not made from: pull the branch and publish again.
+
+        After updating the branch from live, send the live commit the local merge brought in as `merge_parent`: the commit is then a merge of it, so promote does not answer `live_changed`. Only a commit the repository's default branch holds is merged.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` unless staging is released to the member's company, and for a site or branch whose drafts the member may not edit.
+      operationId: member_site_branches_source_commits_create
+      tags:
+      - site-branches
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteBranchSourceCommitCreate"
+            example:
+              base_commit: 4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+              message: Edit the home page
+              files:
+                index.html: PGgxPkhpPC9oMT4=
+      responses:
+        '201':
+          description: The commit was made on the branch's ref.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteBranchSourceCommitEnvelope"
+              example:
+                status: 201
+                data:
+                  commit: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never commits a site's source, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id or no branch this slug, the member may not edit the branch's drafts, or staging is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Nothing was committed. `details.error` is `stale_source` when `base_commit` is not the branch ref's head (pull the branch and publish again), `repo_not_ready` while the parent's repository or the branch's ref is still being made (ask again shortly), or `legacy_ref` for a branch made before branches owned a ref (make the branch again).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: The branch has commits this source was not made from; pull the branch and publish again
+                  details:
+                    error: stale_source
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '422':
+          description: The body breaks the contract, a file is not a plain path inside the folder with Base64 content or the files pass 2,000 or 25 MiB (`details.error` is `invalid_source`, with the `path`), the branch's ref is the repository's default branch (`default_branch_ref`), `merge_parent` is not a commit the repository's default branch holds, unknown commits included (`merge_parent_not_on_default_branch`; update from live again), or the branch or its parent was taken down (`site_taken_down`). Nothing was committed.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 422
+                error:
+                  message: The merge parent is not a commit of the repo's default branch; update from live again
+                  details:
+                    error: merge_parent_not_on_default_branch
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '502':
+          description: GitHub could not take the commit (`details.error` is `github_unavailable`). Ask again later.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/branches/{slug}/promote":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/BranchSlug"
+    post:
+      summary: Promote a site's branch
+      description: |
+        Makes the branch's published version the site's live one. The branch's published bundle records the source commit it was built from, and the site's live bundle the commit it was built from. The promote goes ahead only when the branch's commit contains the live commit and the site repository's default branch: it moves the default branch to the branch's commit (never forced), then publishes the branch's bundle on the site, holding it to every rule of a bundle publish. So a promote never replaces a live version the branch does not have. When the site already serves the branch's version, nothing changes and the answer has no `replaced_bundle_id`. Undo a promote by making `replaced_bundle_id` current again (`POST /sites/{site_id}/bundles/{bundle_id}/current`).
+
+        Anyone who may edit the site's drafts promotes: its owner, and a member with an edit share, who on the branch has the owner's rights. When the branch's schema holds destructive migrations, the first promote is refused with `422` naming them; promote again with `confirm_migrations` once the person said yes.
+
+        Bearer only: a request on the cookie mount is refused with `403`. It answers `404` unless staging and the sites gateway are released to the member's company, and for a site or branch the member may not promote.
+      operationId: member_site_branches_promotions_create
+      tags:
+      - site-branches
+      x-fluid-audience: member
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteBranchPromote"
+            example:
+              confirm_migrations:
+              - 2026-11-05-drop-notes
+              bundle_id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d01'
+      responses:
+        '200':
+          description: The branch's version is live.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteBranchPromotionEnvelope"
+              example:
+                status: 200
+                data:
+                  bundle_id: '0192f4e5-9d01-7b8c-9d0e-1f2a3b4c5d01'
+                  replaced_bundle_id: '0192f4e5-9a01-7b8c-9d0e-1f2a3b4c5d01'
+                  commit: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never promotes a branch, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id or no branch this slug, the member may not promote the branch, or staging or the sites gateway is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: |
+            Nothing went live. `details.error` says why and what to do:
+
+            - `nothing_to_promote`: the branch has published nothing; publish to it first.
+            - `staging_unsourced`: the branch's published version records no source commit GitHub knows, or the site's repository is not connected; publish the branch from its source.
+            - `live_unsourced`: the live version was published without its source (with `--no-source`, or by an inline deploy); publish the site again from source, then update the branch from live.
+            - `live_changed`: the live version has changes the branch does not have; update the branch from live, publish it, and promote again.
+            - `source_changed`: the repository's default branch has commits the branch does not have; update the branch from live, publish it, and promote again.
+            - `branch_changed`: `bundle_id` is not the branch's published bundle, which changed since its migrations were shown; promote again without `confirm_migrations` to see the new ones.
+            - `promote_incomplete`: the default branch is at the branch's commit (`details.commit`) but the publish did not finish (`details.cause`, such as `live_changed` for a publish that landed meanwhile). Live is unchanged; send the same promote again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: The live site has changes the branch does not have; update the branch from live and publish it, then try again
+                  details:
+                    error: live_changed
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '422':
+          description: The body breaks the contract, or the branch's schema holds destructive migrations nobody confirmed (`details.error` is `destructive_change_unconfirmed`, `details.unconfirmed` their ids and `details.bundle_id` the branch's bundle). The default branch may already be at the branch's commit; live is unchanged. Show the person what would be lost and, if they say yes, promote again with `confirm_migrations` and `bundle_id`.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 422
+                error:
+                  message: 'These destructive migrations need the owner''s confirmation: 2026-11-05-drop-notes'
+                  details:
+                    error: destructive_change_unconfirmed
+                    path:
+                    - schema
+                    - migrations
+                    unconfirmed:
+                    - 2026-11-05-drop-notes
+                    bundle_id: '0192f4e5-9c01-7b8c-9d0e-1f2a3b4c5d01'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '502':
+          description: GitHub could not compare or move the site's source (`details.error` is `source_unavailable`). Nothing went live; try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/sites/{site_id}/branches/{slug}/base":
+    parameters:
+    - "$ref": "#/components/parameters/SiteIdPath"
+    - "$ref": "#/components/parameters/BranchSlug"
+    post:
+      summary: Record that a site's branch was updated from live
+      description: |
+        After the branch's folder merged the site's live source and was published to the branch, records the site's live bundle as the branch's base, so the branch reads `parent_changed: false`. The base is recorded only when the source commit the branch's published bundle records contains the one the live bundle records; otherwise it is refused with the same `error` a promote would answer, and `parent_changed` stays as it was. The body is empty. The answer is the branch, as reading it answers.
+
+        Anyone who may promote the branch records its base. Bearer only: a request on the cookie mount is refused with `403`. It answers `404` unless staging is released to the member's company, and for a site or branch the member may not promote.
+      operationId: member_site_branches_bases_create
+      tags:
+      - site-branches
+      x-fluid-audience: member
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SiteBranchBase"
+            example: {}
+      responses:
+        '200':
+          description: The branch, with its new base.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteBranchEnvelope"
+              example:
+                status: 200
+                data:
+                  slug: staging
+                  site_id: '0192f4e5-8b01-7b8c-9d0e-1f2a3b4c5d01'
+                  parent_id: '0192f4e5-6f7a-7b8c-9d0e-1f2a3b4c5d67'
+                  handle: rileys-shop-staging
+                  status: published
+                  frame_path: "/accounts/_frame/0192f4e5-8b01-7b8c-9d0e-1f2a3b4c5d01"
+                  shell_path: "/sites/rileys-shop-staging"
+                  url: https://shop.example.com/sites/rileys-shop-staging
+                  parent_changed: false
+                  created_at: '2026-09-03T10:00:00.000000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The valid member credential is read-only (a member JWT, or a portal JWT minted read-only); the credential belongs to a sandbox test company that cannot be reached now; or the request is on the cookie mount, which never records a branch's base, with or without the `X-Fluid-Member-Site` header.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: No site of the member's company has this id or no branch this slug, the member may not promote the branch, or staging is not released to the member's company.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '409':
+          description: Nothing was recorded. `details.error` is `nothing_to_promote` (the branch has published nothing), `staging_unsourced` (the branch's published version records no source commit GitHub knows), `live_unsourced` (the live version was published without its source; publish it again from source) or `live_changed` (the branch does not contain the live version yet; merge live into the branch, publish it, and record again).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+              example:
+                status: 409
+                error:
+                  message: The live site was published without its source; publish it again from source, then update the branch from live
+                  details:
+                    error: live_unsourced
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-13T10:00:00Z'
+        '422':
+          description: The body holds a field; it takes none.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '502':
+          description: GitHub could not compare the site's source (`details.error` is `source_unavailable`). Nothing was recorded; try again.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
   "/api/member/v2026-10/sites/{site_id}/pages":
     parameters:
     - "$ref": "#/components/parameters/SiteIdPath"
@@ -8562,6 +9021,10 @@ paths:
                   total_bytes: 482113
                   function_names:
                   - rsvp
+                  functions:
+                  - name: rsvp
+                    access: public
+                    schedule: null
                   current: true
                   retained: true
                   url: https://shop.example.com/sites/rileys-shop

@@ -104,10 +104,15 @@ components:
           description: Response metadata (request id and generation timestamp).
           $ref: '#/components/schemas/Meta'
         sign_in_path:
-          description: Present only on the `send_mfa` answer, and only as `identity`, when the request sent `identity_hint_supported=true` and the address belongs to a staff person who signs in through the identity service, and no code or link was sent. The client hands the person back to the calling app instead of asking for a code. Absent otherwise.
+          description: Present only on the `send_mfa` answer, and only as `identity`, when the request sent `identity_hint_supported=true` and the address belongs to a person who signs in through the identity service, and no code or link was sent. The client hands the person back to the calling app instead of asking for a code. Absent otherwise.
           type: string
           enum:
             - identity
+        sign_in_kind:
+          description: Present with `sign_in_path` only when the request also sent `shopper_hand_back_supported=true` and the company's identity email step is on (`identity_email_step`) and its checkout is identity-only (the checkout identity gate is on). Every address that is not a staff address gets this same answer, so it does not say whether the address belongs to a shopper. The client hands the person to the company's checkout, where the identity service's shopper sign-in sends the code. Absent for staff and otherwise.
+          type: string
+          enum:
+            - shopper
     TokenSignInPath:
       description: How the token's holder signs in. `identity` means the legacy sign-in would no longer issue this token, because the token's company signs in through the identity service or its holder is Fluid staff while the Fluid company does; a client must not forward it and hands the person back to the calling app instead. `legacy` means the token may be used as before.
       type: string
@@ -116,6 +121,12 @@ components:
         - identity
     IdentitySignInCompanyUuid:
       description: The uuid_v7 of the company whose identity sign-in the person is handed back for, which the identity service names it by (`org`), when `sign_in_path` is `identity`. `null` on the `legacy` path, and when the answer is about several companies and the sign-in named none of them. The client carries it into the hand-back so the calling app can start a sign-in for this company.
+      type:
+        - string
+        - 'null'
+      format: uuid
+    TokenCompanyUuid:
+      description: The uuid_v7 of the token's own company when `sign_in_path` is `identity`, `null` on the `legacy` path. Unlike `company_uuid`, it is never the Fluid company named for a root admin's token on another company.
       type:
         - string
         - 'null'
@@ -194,6 +205,7 @@ components:
             - support_email
             - sign_in_path
             - uuid
+            - identity_email_step
           properties:
             name:
               description: Display name of the company, or `null` for a legacy company row without one.
@@ -226,11 +238,14 @@ components:
                 - legacy
                 - identity
             uuid:
-              description: The company's uuid_v7, which the identity service names it by (`org`), when `sign_in_path` is `identity`; `null` on the `legacy` path. fluid-login carries it into the hand-back so the calling app can start a sign-in for this company.
+              description: The company's uuid_v7, which the identity service names it by (`org`), whatever its `sign_in_path`; `null` when the request names no company or names the Fluid platform company. fluid-login carries it into the hand-back so the calling app can start a sign-in for this company.
               type:
                 - string
                 - 'null'
               format: uuid
+            identity_email_step:
+              description: '`true` only when `sign_in_path` is `identity` and the company''s identity email step is on. The client then shows the email step first instead of handing back on load, because the answer to the email decides between the staff and the shopper sign-in. `false` otherwise.'
+              type: boolean
         meta:
           description: Response metadata (request id and generation timestamp).
           $ref: '#/components/schemas/Meta'
@@ -560,7 +575,10 @@ paths:
         the caller's own active, unlocked membership in the target company is used.
         A company on the identity sign-in, an inactive company, a sandbox twin, a
         missing membership and a root admin with no membership all return the same
-        404. Legacy sessions, client and company tokens, tokens that carry an actor
+        404. Once the company is eligible and the caller holds an active, unlocked
+        membership in it, an ended identity session, or a flush of that membership
+        or company since sign-in, returns 401 with `error: reauth_required`;
+        everything else stays the same 404. Legacy sessions, client and company tokens, tokens that carry an actor
         and restricted sessions are refused.
       tags:
         - authentication
@@ -629,11 +647,21 @@ paths:
                   name: Primex
                   fluid_shop: primex
         '401':
-          description: Not an identity person session.
+          description: Not an identity person session, or the caller holds an active membership in an eligible company but the identity session has ended or the membership or company flushed since sign-in, in which case the body has error `reauth_required` and the client starts a fresh sign-in.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UnauthorizedResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/UnauthorizedResponse'
+                  - type: object
+                    additionalProperties: false
+                    required:
+                      - error
+                    properties:
+                      error:
+                        type: string
+                        enum:
+                          - reauth_required
         '403':
           description: A restricted session or a token the endpoint may not reach.
           content:
@@ -982,6 +1010,7 @@ paths:
                   - user_company
                   - sign_in_path
                   - company_uuid
+                  - token_company_uuid
                 properties:
                   user:
                     $ref: '#/components/schemas/UserProfile'
@@ -991,6 +1020,8 @@ paths:
                     $ref: '#/components/schemas/TokenSignInPath'
                   company_uuid:
                     $ref: '#/components/schemas/IdentitySignInCompanyUuid'
+                  token_company_uuid:
+                    $ref: '#/components/schemas/TokenCompanyUuid'
                   admin:
                     description: Whether the token's membership holds an admin role (or the user is a root admin). Present only while the portal-landing-after-sign-in flag is on for the company.
                     type: boolean
@@ -1072,7 +1103,15 @@ paths:
         - name: identity_hint_supported
           in: query
           required: false
-          description: Set to `true` by a client that hands an identity-routed staff person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed; shoppers are always emailed the link.
+          description: Set to `true` by a client that hands an identity-routed person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed.
+          schema:
+            type: string
+            enum:
+              - 'true'
+        - name: shopper_hand_back_supported
+          in: query
+          required: false
+          description: Set to `true` by a client that hands a shopper of an identity-routed company to that company's checkout itself. Needs `fluid_shop` naming the company and its identity email step on.
           schema:
             type: string
             enum:
@@ -1400,6 +1439,7 @@ paths:
                   - user_company
                   - sign_in_path
                   - company_uuid
+                  - token_company_uuid
                 properties:
                   user:
                     $ref: '#/components/schemas/UserProfile'
@@ -1409,6 +1449,8 @@ paths:
                     $ref: '#/components/schemas/TokenSignInPath'
                   company_uuid:
                     $ref: '#/components/schemas/IdentitySignInCompanyUuid'
+                  token_company_uuid:
+                    $ref: '#/components/schemas/TokenCompanyUuid'
                   admin:
                     description: Whether the token's membership holds an admin role (or the user is a root admin). Present only while the portal-landing-after-sign-in flag is on for the company.
                     type: boolean
@@ -1546,7 +1588,15 @@ paths:
         - name: identity_hint_supported
           in: query
           required: false
-          description: Set to `true` by a client that hands an identity-routed staff person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed; shoppers are always emailed the link.
+          description: Set to `true` by a client that hands an identity-routed person to the identity service itself. Only then can the answer carry `sign_in_path` and no link be emailed.
+          schema:
+            type: string
+            enum:
+              - 'true'
+        - name: shopper_hand_back_supported
+          in: query
+          required: false
+          description: Set to `true` by a client that hands a shopper of an identity-routed company to that company's checkout itself. Needs `fluid_shop` naming the company and its identity email step on.
           schema:
             type: string
             enum:

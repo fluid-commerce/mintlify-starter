@@ -2163,9 +2163,7 @@ monorepo and of `fluid-fairshare`. Durable decisions:
   contract on v2026-04: collection writes fail, and product writes can only add. The guide
   states this as a current limitation. Don't document `id`-based metafield updates —
   stored metafields have no `id`.
-- **A product translation PATCH is not text-only.** It applies every field sent except
-  `metafields_attributes` and `images_attributes`, which it ignores on the product and on
-  its variants (fluid PR #33870). The
+- **A product translation PATCH is not text-only.** It applies every field sent except `metafields_attributes` and `images_attributes`, which it ignores on the product and on its variants (fluid PR #33870). The
   other seven resources are text-only. The translations guide and the upstream spec now
   say so.
 - **The SDK is loaded by an auto-created global embed**, not by root themes. A second copy
@@ -2406,6 +2404,15 @@ when the store has required agreements (`test-order.ts` `agreements.length &&
 run the second.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
+
+**2026-11-15 update:** `help/admin/url_redirects.mdx` was removed, and `/help/admin/url_redirects` redirects to
+`/help/admin/sitemap#redirect-a-url`. Redirects are documented only as custom routes whose override is
+**URL Redirect** on the Sitemap screen (`302`, set in `Middleware::ThemeRegionRouter#redirect_response_for_rule`).
+The legacy URL Redirects screen (`/url_redirects`, `Middleware::Redirects`, `301`) still exists in fluid and
+still answers first, but don't document or recommend it. Mention it only as "an older redirect saved on the
+same path may answer first" for troubleshooting. The drawer's **Redirect Type** 301/302 select renders only for
+a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice. The
+bullets below that recommend the URL Redirects screen are superseded.
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
 were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
