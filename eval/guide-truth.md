@@ -2405,6 +2405,16 @@ run the second.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
+**2026-11-16 update (fluid#34333, supersedes the 301 part of the 2026-11-15 update below):** route redirects
+now answer `301` or `302`. `theme_region_rules.redirect_status_code` (`301`/`302`, default `302`, not null) is
+read by `Middleware::ThemeRegionRouter#redirect_status`, which falls back to `302` for any other value. The
+Sitemap drawer shows a **Redirect Type** select, **Permanent (301)** / **Temporary (302)**, whenever the default
+override is **URL Redirect**; a new redirect, or a rule switched to URL Redirect, starts at `301`, and a saved
+redirect shows its stored status. Existing rules kept `302`. The country-route editor has no picker, so
+country-route redirects saved from the admin answer `302`, although the API accepts a status for them.
+`help/admin/sitemap.mdx` (**Permanent or temporary**) and `themes/custom-routes.mdx` (**Redirects**) document
+this. The legacy URL Redirects screen guidance below is unchanged: still don't document or recommend it.
+
 **2026-11-15 update:** `help/admin/url_redirects.mdx` was removed, and `/help/admin/url_redirects` redirects to
 `/help/admin/sitemap#redirect-a-url`. Redirects are documented only as custom routes whose override is
 **URL Redirect** on the Sitemap screen (`302`, set in `Middleware::ThemeRegionRouter#redirect_response_for_rule`).
