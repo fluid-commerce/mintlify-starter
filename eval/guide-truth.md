@@ -3147,3 +3147,29 @@ Durable decisions:
   both shells (gateway or not).
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
+
+## Legacy `/api/redirects` unpublished (2026-11-16)
+
+Redirects are custom routes on the Sitemap. In the API, a redirect is a theme region rule
+(`themes-v0`, `POST /api/theme_region_rules`) whose `redirect_type` is `redirect`. The
+older `company-v0` `/api/redirects` endpoints and their CSV import and export are no longer
+used. The admin's Sitemap screen doesn't show what they create, and agents that found them
+created redirects merchants couldn't see. The tag is now in the nav config's `exclude`
+list, its eight generated URLs redirect temporarily to
+`/themes/custom-routes#create-a-redirect-with-the-api`, and `Lists redirects` left
+`OFFSET_PAGINATED_PAGES`, so the offset count in AGENTS.md is now 48 (25 on `company-v0`).
+
+Two facts to keep straight:
+
+- **Status codes.** A region rule redirect answers `301` or `302`. The API saves `302`
+  when `redirect_status_code` is omitted. The admin's **Redirect Type** defaults to
+  **Permanent (301)** on a route's default override, and its country route redirects are
+  `302`. The earlier "route redirects are always 302" wording is retired.
+- **Old rows still answer first.** The legacy redirects middleware still runs, so a
+  saved legacy redirect on the same path beats a route rule. The docs keep that
+  troubleshooting note until the rows and the middleware are removed upstream.
+
+The confusing generated titles ("Create a sitemap country route (theme region rule)")
+come from the upstream `themes-v0` spec. Renaming them changes the generated URLs, so an
+upstream rename needs a follow-up PR here that adds redirects and updates the links in
+`themes/custom-routes`.

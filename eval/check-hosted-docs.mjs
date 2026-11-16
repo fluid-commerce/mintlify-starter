@@ -190,7 +190,6 @@ const OFFSET_PAGINATED_PAGES = new Set([
   "company-v0/media/list-filtered-media",
   "company-v0/pages/list-pages",
   "company-v0/products/list-filtered-products",
-  "company-v0/redirects/lists-redirects",
   "company-v0/reps/list-reps",
   "company-v0/roles/lists-roles-for-a-company",
   "company-v0/search/global-search-across-all-searchable-models",
