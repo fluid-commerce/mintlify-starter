@@ -140,7 +140,12 @@ tags:
   description: Downloading a site's database as a DumpV1 file.
   x-fluid-section: Members
 - name: member-site-data
-  description: An admin's read and delete of the rows of a site's database. Rows are never inserted or changed here.
+  description: >-
+    An admin's read, insert, update and delete of the rows of a site's database, with no table rule applied.
+    Rows are what members wrote, so each operation needs a `member_site_data` permission of its own, besides `application_themes.view`, the permission of the site detail page, and a signed-in admin.
+    An admin who edits themes but was never given the data permission is refused with 403, and a company grants it to the roles that moderate.
+    A site of any owner in the company is served, a member's included, because a company admin oversees a member's site.
+    Rails logs the admin, the site, the table and the page, row count or row ids of every call before it asks the sites gateway, never a value.
   x-fluid-section: Members
 - name: member-site-features
   description: The sites the company features, so the members they are shared with see them first.
@@ -389,7 +394,7 @@ components:
           enum:
           - private
           - public
-          description: Who may see the published site. A public site with `password_protected` true is behind a shared password, and until visitors can type it on the site's page only its owner and company admins open it.
+          description: Who may see the published site. A public site with `password_protected` true opens only for visitors who type its shared password, and for its owner and company admins.
         password_protected:
           type: boolean
           description: Whether the public site opens only with its shared password. Always false for a private site, even one that keeps a password for when it is made public again. The password itself is never returned.
@@ -621,7 +626,14 @@ components:
               enum:
               - private
               - public
-              description: Who may see the published site. `public` on a site that keeps a shared password (one made private while protected) protects it again.
+              description: Who may see the published site. `public` on a site that keeps a password (one made private while protected) protects it again; send `password` null to remove the password.
+            password:
+              type:
+              - string
+              - 'null'
+              writeOnly: true
+              minLength: 6
+              description: The site's shared password, never returned. A string sets or changes it and makes the site public behind it; null removes it. At least 6 characters and at most 72 bytes, with at least one letter, one digit and one symbol. A refusal is 422 with `error.details.error` naming the rule, such as `password_too_short`, `password_needs_letter`, `password_needs_digit`, `password_needs_symbol`, `password_too_long`, `password_requires_public` (the change would leave the site private), `password_not_for_branch` (a staging branch cannot have one) or `password_unavailable` (the sites gateway is not on for the company). On a suspended site, removing the password of a site that stays public is refused with `suspended`. Visitors type it on the site's page; changing or removing it ends every open unlock.
             layout_name:
               type:
               - string
@@ -2374,6 +2386,89 @@ components:
             - unique_visitors
         functions:
           $ref: '#/components/schemas/MemberSiteFunctionUsage'
+        breakdown:
+          type:
+          - object
+          - 'null'
+          description: "Where a site's visitors came from, in which countries and on which devices, counted from the site's human page views in the site rollups over whole UTC days: `24h` counts yesterday and today, `7d` the last 7 days including today and `30d` the last 30. It is a different source and window from `visits`, `unique_visitors`, `top_pages`, `referrers`, `errors` and `series`, which the sites gateway counts over whole hours, so `breakdown.visits` can differ from `visits`: the rollups count no bot and start empty when the site analytics ingest is deployed, so a day before then reads zero. Null when the rollups cannot be read right now; the rest of the report is still returned."
+          additionalProperties: false
+          properties:
+            from:
+              type: string
+              format: date
+              description: The first UTC day counted.
+            to:
+              type: string
+              format: date
+              description: The last UTC day counted, today.
+            visits:
+              type: integer
+              minimum: 0
+              description: The human page views of the days counted.
+            unique_visitors:
+              type: integer
+              minimum: 0
+              description: An estimate of the distinct visitors over the days counted, with a standard error near 2.3%, 0 when there are none. A visitor is a device and browser, not a person, and one who comes on several days counts once.
+            channels:
+              type: array
+              description: "Where the visits came from, most visits first. A channel is one of `reps`, `email`, `paid`, `social`, `organic`, `referral` and `direct`, so at most 7 are listed, and one with no visits is not."
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  channel:
+                    type: string
+                  visits:
+                    type: integer
+                    minimum: 0
+                required:
+                - channel
+                - visits
+            countries:
+              type: array
+              description: The countries the visits came from, by ISO 3166-1 alpha-2 code, most visits first, at most 10. A visit whose country is not known is not listed.
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  country_code:
+                    type: string
+                  visits:
+                    type: integer
+                    minimum: 0
+                required:
+                - country_code
+                - visits
+            devices:
+              type: object
+              description: "The visits by device. A device that is not a desktop, a mobile or a tablet is `unknown`, so the four add up to `breakdown.visits`."
+              additionalProperties: false
+              properties:
+                desktop:
+                  type: integer
+                  minimum: 0
+                mobile:
+                  type: integer
+                  minimum: 0
+                tablet:
+                  type: integer
+                  minimum: 0
+                unknown:
+                  type: integer
+                  minimum: 0
+              required:
+              - desktop
+              - mobile
+              - tablet
+              - unknown
+          required:
+          - from
+          - to
+          - visits
+          - unique_visitors
+          - channels
+          - countries
+          - devices
       required:
       - period
       - visits
@@ -2383,6 +2478,7 @@ components:
       - errors
       - series
       - functions
+      - breakdown
     MemberSiteFunctionCounts:
       type: object
       description: What a site's server functions did over a period, as the sites gateway counted it.
@@ -2636,10 +2732,9 @@ components:
       properties:
         rows:
           type: array
-          description: The rows on this page. Each is an object of the table's columns and its four system columns, with the values the sites gateway answers (`integer` above 2^53 as a string, `json` as JSON).
+          description: The rows on this page.
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/MemberSiteDataRow'
         status:
           type: integer
           description: The HTTP status.
@@ -2678,6 +2773,72 @@ components:
                   type: integer
                   minimum: 0
                   description: The rows the table holds.
+    MemberSiteDataRow:
+      type: object
+      additionalProperties: true
+      description: A row, as an object of the table's columns and its four system columns (`id`, `created_by`, `created_at`, `updated_at`), with the values the sites gateway answers (`integer` above 2^53 as a string, `json` as JSON).
+    MemberSiteDataInsertBody:
+      type: object
+      description: The rows to insert. Any other field is refused.
+      additionalProperties: false
+      required:
+      - rows
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: The rows to insert, 1 to 100, all or none. Each is an object of column name to value. The sites gateway checks the columns and values against the site's schema, and sets the four system columns, so a row that names one is refused.
+          items:
+            type: object
+            additionalProperties: true
+    MemberSiteDataUpdateBody:
+      type: object
+      description: The columns to change. Any other field is refused.
+      additionalProperties: false
+      required:
+      - row
+      properties:
+        row:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: The columns to change, as column name to new value. The sites gateway checks them against the site's schema, refuses a system column, and sets `updated_at`.
+    MemberSiteDataInserted:
+      type: object
+      description: The rows an insert added.
+      additionalProperties: false
+      required:
+      - rows
+      - status
+      - meta
+      properties:
+        rows:
+          type: array
+          description: The inserted rows, in the order sent, with `created_by` set to the admin's user id.
+          items:
+            $ref: '#/components/schemas/MemberSiteDataRow'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
+    MemberSiteDataRowResponse:
+      type: object
+      description: The row an update changed.
+      additionalProperties: false
+      required:
+      - row
+      - status
+      - meta
+      properties:
+        row:
+          $ref: '#/components/schemas/MemberSiteDataRow'
+        status:
+          type: integer
+          description: The HTTP status.
+        meta:
+          $ref: '#/components/schemas/Meta'
     MemberSiteDataDeleted:
       type: object
       description: The rows a delete removed.
@@ -3455,6 +3616,14 @@ components:
       schema:
         type: string
         format: uuid
+    DataTable:
+      name: table
+      in: path
+      required: true
+      description: The table's name, as the tables route lists it.
+      schema:
+        type: string
+        pattern: "^[a-z][a-z0-9_]{0,62}$"
     BranchSlug:
       name: slug
       in: path
@@ -3530,6 +3699,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/AuthorizationError'
+    DataQuotaExceeded:
+      description: The site is at its storage or row limit, so the sites gateway refused the write and nothing was written. `details.error` is `quota_exceeded` and `details.message` is the gateway's reason. It succeeds once the site has room.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    DataWriteGatewayFailed:
+      description: The sites gateway could not complete the call, because Rails is not configured to call it for a write, it was unreachable, it refused the call, it has writes turned off, or it answered with something unexpected. `details.error` names which. A write that timed out may have been applied.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    DataWriteGatewayTimeout:
+      description: The sites gateway did not answer in time. The write may have been applied.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     PermissionDenied:
       description: The caller lacks the permission, or the site is a member's and the caller is a root admin with no kept admin row.
       content:
@@ -4120,7 +4307,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Invalid parameters, or a handle that is taken, reserved or malformed.
+          description: Invalid parameters, a handle that is taken, reserved or malformed, or a refused password, whose `error.details.error` names the rule it broke, such as `password_too_short` or `password_requires_public`.
           content:
             application/json:
               schema:
@@ -6438,7 +6625,7 @@ paths:
       description: |
         The tables the site's current bundle declares, each with its columns and the four system columns every table has. Nothing is read from the database.
 
-        Needs `member_site_data.view`, the permission to read what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.view` is refused with 403; a company grants it to the roles that moderate. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database or no published schema, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `member_site_data.view`.
       tags:
       - member-site-data
       parameters:
@@ -6490,20 +6677,14 @@ paths:
       x-fluid-audience: company
       summary: Read the rows of a table of a site's database
       description: |
-        A page of one table's rows, newest first, with the table's row count. The sites gateway reads them as the admin, with no table rule applied. Every call is logged with the admin, the site and the table, before the gateway is asked.
+        A page of one table's rows, newest first, with the table's row count.
 
-        Needs `member_site_data.view`, the permission to read what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.view` is refused with 403; a company grants it to the roles that moderate. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database, when its schema has no such table, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `member_site_data.view`.
       tags:
       - member-site-data
       parameters:
       - $ref: '#/components/parameters/SiteId'
-      - name: table
-        in: path
-        required: true
-        description: The table's name, as the tables route lists it.
-        schema:
-          type: string
-          pattern: "^[a-z][a-z0-9_]{0,62}$"
+      - $ref: '#/components/parameters/DataTable'
       - name: limit
         in: query
         required: false
@@ -6578,25 +6759,97 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: companyMemberSiteDataInsert
+      x-fluid-audience: company
+      summary: Insert rows into a table of a site's database
+      description: |
+        Inserts 1 to 100 rows, all or none. The sites gateway checks every row against the site's schema, sets the four system columns, with `created_by` the admin's user id, and answers the rows it inserted. A row it refuses, because a column is not in the table, a value has the wrong type, a row is too big or the body names a system column, refuses the whole insert and nothing is written.
+
+        An insert is not idempotent: sending it again inserts the rows again. A 502 or 504 does not say the rows were not written, because the sites gateway may have applied the insert before the call failed, so read the table before you send it again.
+
+        A row that nests more than 95 levels of objects and arrays is refused with 422, below the 100 levels a request body is parsed to. A row the site wrote itself is answered whole however deep its values nest.
+
+        Needs `member_site_data.create` and `member_site_data.view`, because the answer is the rows whole, with the values the gateway filled.
+      tags:
+      - member-site-data
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/DataTable'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteDataInsertBody'
+            example:
+              rows:
+              - title: Hello
+              - title: Welcome
+      responses:
+        '201':
+          description: The rows were inserted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDataInserted'
+              example:
+                rows:
+                - id: 0199537f-0000-7000-8000-0000000000a1
+                  title: Hello
+                  created_by: '42'
+                  created_at: '2026-11-05T10:00:00.000Z'
+                  updated_at: '2026-11-05T10:00:00.000Z'
+                - id: 0199537f-0000-7000-8000-0000000000a2
+                  title: Welcome
+                  created_by: '42'
+                  created_at: '2026-11-05T10:00:00.000Z'
+                  updated_at: '2026-11-05T10:00:00.000Z'
+                status: 201
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks `member_site_data.create` or `member_site_data.view` (or `application_themes.view`), has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database, the schema has no such table, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A body with no `rows`, none or more than 100, a row that is not an object, another field, or a request the sites gateway refused as `validation`. `details.message` is the gateway's reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/DataQuotaExceeded'
+        '502':
+          $ref: '#/components/responses/DataWriteGatewayFailed'
+        '504':
+          $ref: '#/components/responses/DataWriteGatewayTimeout'
     delete:
       operationId: companyMemberSiteDataDelete
       x-fluid-audience: company
       summary: Delete rows of a table of a site's database
       description: |
-        Deletes the rows the `ids[]` query parameters name, as the admin, with no table rule applied. The answer lists the ids of the rows the table had and the call removed; an id with no row is left out, so sending the same delete again is safe. Rows are never inserted or changed through this API. Every call is logged with the admin, the site, the table and the ids, before the gateway is asked.
+        Deletes the rows the `ids[]` query parameters name. The answer lists the ids of the rows the table had and the call removed; an id with no row is left out, so sending the same delete again is safe.
 
-        Needs `member_site_data.delete`, the permission to delete what members wrote, `application_themes.view`, the permission of the site detail page, and a signed-in admin. An admin who edits themes but was never given `member_site_data.delete` is refused with 403, and reading rows does not allow deleting them. A site of any owner in the company is served, a member's included, because a company admin oversees a member's site: reading and deleting what its members wrote is the moderation the member sites contract provides. It answers 404 for every caller that passes those checks when the site has no active database, when its schema has no such table, and until the sites gateway is released to the company. A droplet installation token and an OAuth client token are refused with 403.
+        Needs `member_site_data.delete`.
       tags:
       - member-site-data
       parameters:
       - $ref: '#/components/parameters/SiteId'
-      - name: table
-        in: path
-        required: true
-        description: The table's name, as the tables route lists it.
-        schema:
-          type: string
-          pattern: "^[a-z][a-z0-9_]{0,62}$"
+      - $ref: '#/components/parameters/DataTable'
       - name: ids[]
         in: query
         required: true
@@ -6660,6 +6913,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/data/{table}/{row_id}:
+    patch:
+      operationId: companyMemberSiteDataUpdate
+      x-fluid-audience: company
+      summary: Change a row of a table of a site's database
+      description: |
+        Changes the columns the body names on one row and answers the row after the change. The sites gateway checks the columns against the site's schema, refuses a system column, and sets `updated_at`. Columns the body leaves out keep their value.
+
+        A row that nests more than 95 levels of objects and arrays is refused with 422, below the 100 levels a request body is parsed to. A row the site wrote itself is answered whole however deep its values nest.
+
+        Needs `member_site_data.update` and `member_site_data.view`, because the answer is the whole row.
+      tags:
+      - member-site-data
+      parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/DataTable'
+      - name: row_id
+        in: path
+        required: true
+        description: The id of the row to change, a UUID, in lowercase or capitals.
+        schema:
+          type: string
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberSiteDataUpdateBody'
+            example:
+              row:
+                title: Hello again
+      responses:
+        '200':
+          description: The row after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteDataRowResponse'
+              example:
+                row:
+                  id: 0199537f-0000-7000-8000-0000000000a1
+                  title: Hello again
+                  created_by: '42'
+                  created_at: '2026-11-05T10:00:00.000Z'
+                  updated_at: '2026-11-05T10:06:00.000Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:06:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks `member_site_data.update` or `member_site_data.view` (or `application_themes.view`), has no signed-in admin, or is a droplet installation token or an OAuth client token, which are refused whatever their scopes once member sites are enabled.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, the site has no active database, the schema has no such table, the table has no row with that id, or the sites gateway is not released to this company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: A body with no `row`, an empty `row` or one that is not an object, another field, or a request the sites gateway refused as `validation`. `details.message` is the gateway's reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/DataQuotaExceeded'
+        '502':
+          $ref: '#/components/responses/DataWriteGatewayFailed'
+        '504':
+          $ref: '#/components/responses/DataWriteGatewayTimeout'
   /api/company/v2026-10/member-sites/{id}/branches/{slug}:
     get:
       operationId: companyMemberSiteBranchesShow
@@ -8138,8 +8469,8 @@ paths:
       x-fluid-audience: company
       summary: Read a company site's traffic
       description: |
-        The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
-        The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+        The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
+        The traffic of one company site over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
 
         Needs `application_themes.view` and a signed-in admin. A member's site is served to a company admin who holds a kept admin row, and refused with 404 to a root admin who holds none. It answers 404 until the sites gateway is released to the company. An OAuth client token is refused with 403, and so is a droplet installation token unless the `sites-company-credential-writes` release is on and its attached role holds the permission.
 
@@ -8230,6 +8561,28 @@ paths:
                         rate_limited: 0
                         wall_ms: 0
                         egress_bytes: 0
+                  breakdown:
+                    from: '2026-11-04'
+                    to: '2026-11-10'
+                    visits: 96
+                    unique_visitors: 33
+                    channels:
+                    - channel: direct
+                      visits: 52
+                    - channel: social
+                      visits: 31
+                    - channel: organic
+                      visits: 13
+                    countries:
+                    - country_code: US
+                      visits: 70
+                    - country_code: CA
+                      visits: 18
+                    devices:
+                      desktop: 40
+                      mobile: 52
+                      tablet: 3
+                      unknown: 1
                 status: 200
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64

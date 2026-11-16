@@ -246,7 +246,7 @@ components:
           enum:
           - private
           - public
-          description: Who may open the site once it is published. A public site with `password_protected` true is behind a shared password, and until visitors can type it on the site's page only its owner and company admins open it.
+          description: Who may open the site once it is published. A public site with `password_protected` true opens only for visitors who type its shared password, and for its owner and company admins.
         password_protected:
           type: boolean
           description: Whether the public site opens only with its shared password. Always false for a private site, even one that keeps a password for when it is made public again. The password itself is never returned.
@@ -417,6 +417,8 @@ components:
       - required:
         - visibility
       - required:
+        - password
+      - required:
         - layout_name
       - required:
         - settings
@@ -438,7 +440,14 @@ components:
           enum:
           - private
           - public
-          description: Who may open the site once it is published. `public` on a site that keeps a shared password (one made private while protected) protects it again.
+          description: Who may open the site once it is published. `public` on a site that keeps a password (one made private while protected) protects it again; send `password` null to remove the password.
+        password:
+          type:
+          - string
+          - 'null'
+          writeOnly: true
+          minLength: 6
+          description: The site's shared password, never returned. A string sets or changes it and makes the site public behind it; null removes it. At least 6 characters and at most 72 bytes, with at least one letter, one digit and one symbol. A refusal is 422 with `error.details.error` naming the rule, such as `password_too_short`, `password_needs_letter`, `password_needs_digit`, `password_needs_symbol`, `password_too_long`, `password_requires_public` (the change would leave the site private), `password_not_for_branch` (a staging branch cannot have one) or `password_unavailable` (the sites gateway is not on for the company). On a suspended site, removing the password of a site that stays public is refused with `suspended`. Visitors type it on the site's page; changing or removing it ends every open unlock.
         layout_name:
           type:
           - string
@@ -1588,6 +1597,89 @@ components:
             - unique_visitors
         functions:
           "$ref": "#/components/schemas/SiteFunctionUsage"
+        breakdown:
+          type:
+          - object
+          - 'null'
+          description: "Where a site's visitors came from, in which countries and on which devices, counted from the site's human page views in the site rollups over whole UTC days: `24h` counts yesterday and today, `7d` the last 7 days including today and `30d` the last 30. It is a different source and window from `visits`, `unique_visitors`, `top_pages`, `referrers`, `errors` and `series`, which the sites gateway counts over whole hours, so `breakdown.visits` can differ from `visits`: the rollups count no bot and start empty when the site analytics ingest is deployed, so a day before then reads zero. Null when the rollups cannot be read right now; the rest of the report is still returned."
+          additionalProperties: false
+          properties:
+            from:
+              type: string
+              format: date
+              description: The first UTC day counted.
+            to:
+              type: string
+              format: date
+              description: The last UTC day counted, today.
+            visits:
+              type: integer
+              minimum: 0
+              description: The human page views of the days counted.
+            unique_visitors:
+              type: integer
+              minimum: 0
+              description: An estimate of the distinct visitors over the days counted, with a standard error near 2.3%, 0 when there are none. A visitor is a device and browser, not a person, and one who comes on several days counts once.
+            channels:
+              type: array
+              description: "Where the visits came from, most visits first. A channel is one of `reps`, `email`, `paid`, `social`, `organic`, `referral` and `direct`, so at most 7 are listed, and one with no visits is not."
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  channel:
+                    type: string
+                  visits:
+                    type: integer
+                    minimum: 0
+                required:
+                - channel
+                - visits
+            countries:
+              type: array
+              description: The countries the visits came from, by ISO 3166-1 alpha-2 code, most visits first, at most 10. A visit whose country is not known is not listed.
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  country_code:
+                    type: string
+                  visits:
+                    type: integer
+                    minimum: 0
+                required:
+                - country_code
+                - visits
+            devices:
+              type: object
+              description: "The visits by device. A device that is not a desktop, a mobile or a tablet is `unknown`, so the four add up to `breakdown.visits`."
+              additionalProperties: false
+              properties:
+                desktop:
+                  type: integer
+                  minimum: 0
+                mobile:
+                  type: integer
+                  minimum: 0
+                tablet:
+                  type: integer
+                  minimum: 0
+                unknown:
+                  type: integer
+                  minimum: 0
+              required:
+              - desktop
+              - mobile
+              - tablet
+              - unknown
+          required:
+          - from
+          - to
+          - visits
+          - unique_visitors
+          - channels
+          - countries
+          - devices
       required:
       - period
       - visits
@@ -1597,6 +1689,7 @@ components:
       - errors
       - series
       - functions
+      - breakdown
     SiteFunctionCounts:
       type: object
       description: What a site's server functions did over a period, as the sites gateway counted it.
@@ -4441,9 +4534,21 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/SiteUpdate"
-            example:
-              name: Riley's Fall Shop
-              lock_version: 0
+            examples:
+              rename:
+                summary: Rename the site
+                value:
+                  name: Riley's Fall Shop
+                  lock_version: 0
+              set_password:
+                summary: Make the site public behind a shared password
+                value:
+                  visibility: public
+                  password: fall-2026!
+              remove_password:
+                summary: Remove the password, leaving the site public
+                value:
+                  password: null
       responses:
         '200':
           description: The changed site.
@@ -4487,11 +4592,25 @@ paths:
         '409':
           "$ref": "#/components/responses/Conflict"
         '422':
-          description: An empty body, a blank name, a handle that is malformed, reserved or taken, an invalid visibility, a field a member cannot set, or an unknown field.
+          description: An empty body, a blank name, a handle that is malformed, reserved or taken, an invalid visibility, a field a member cannot set, an unknown field, or a refused password, whose `error.details.error` names the rule it broke.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
+              examples:
+                password_too_short:
+                  summary: A password shorter than 6 characters
+                  value:
+                    status: 422
+                    error:
+                      message: Password must be at least 6 characters
+                      details:
+                        error: password_too_short
+                        password:
+                        - Password must be at least 6 characters
+                    meta:
+                      request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                      timestamp: '2026-09-30T15:08:21Z'
     delete:
       summary: Delete a site
       description: |
@@ -9158,8 +9277,8 @@ paths:
     get:
       summary: Read a site's traffic
       description: |
-        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
-        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. Never stored (`no-store`).
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
 
         Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
       operationId: member_sites_traffic_show
@@ -9253,6 +9372,28 @@ paths:
                         rate_limited: 0
                         wall_ms: 0
                         egress_bytes: 0
+                  breakdown:
+                    from: '2026-11-04'
+                    to: '2026-11-10'
+                    visits: 96
+                    unique_visitors: 33
+                    channels:
+                    - channel: direct
+                      visits: 52
+                    - channel: social
+                      visits: 31
+                    - channel: organic
+                      visits: 13
+                    countries:
+                    - country_code: US
+                      visits: 70
+                    - country_code: CA
+                      visits: 18
+                    devices:
+                      desktop: 40
+                      mobile: 52
+                      tablet: 3
+                      unknown: 1
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-05T10:05:00Z'
