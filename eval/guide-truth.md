@@ -1626,11 +1626,10 @@ Durable authoring boundaries:
 
 ## Member storefront — theme-author contract
 
-The seven pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
-`member-sites`, `manifest`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
+The pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-variables`, `authentication`, and the widget, pricing and system screen pages) describe the member storefront feature: the
 `member_price` filter, the `member_name` and `member` tags, the section marker and SDK
-resolution states, member sites and their rules, member page templates, and the member
-layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
+resolution states, the member Liquid variables, and the account screens. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
 against the Rails theme engine and the two browser packages rather than against an
 OpenAPI document. A green mechanical check proves quote and coverage integrity, not
 runtime behavior.
@@ -1649,16 +1648,20 @@ Durable authoring boundaries:
   SDK being configured for the environment. The Liquid contract, the section marker, and
   the shell fallback are live; the script injection is configuration-dependent and the
   pages never claim it is active. Do not broaden that into "hydration works everywhere".
-- Member pages are served on the account subdomain only. The storefront `/accounts` prefix
+- Theme member sites are retired (product decision 2026-11-13, fluid
+  `features/member-sites/phases/009-retire-theme-member-sites`). The `member-sites`,
+  `manifest` and `member-page-templates` pages were deleted, and their paths redirect to
+  `/sites/overview`. Do not reintroduce `members_sites.json`, theme member sites, custom
+  member pages built in the theme, the builder's member preview, or the `/_members` dev
+  preview. Member-only pages are Sites. Account screens, member-aware sections, member
+  variables and generic `members_page` template mentions for screens and widgets stay.
+- Account screens are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
   `/members/...` storefront paths from older planning documents. V1 member sites open
   at `/sites/<handle>[/<path>]` since fluid#32600; the credited `/<credit>/sites/<handle>`
   form needs the sites gateway. Their old `/accounts/<handle>` addresses were deleted
   with no redirect. Account screens such as `/accounts/profile` are not sites and keep
   their paths.
-- No root theme ships member templates or a member layout. The pages say so and describe
-  the not-found behavior that follows. Do not document shipped defaults until a root
-  theme carries them.
 - The three system screens (Messaging, Contacts, My Site) are documented as Fluid-rendered
   and dependent on the account screens runtime being enabled for the company. The
   provisioning mechanism and its administrative tooling are deliberately omitted.
@@ -1735,37 +1738,12 @@ Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, t
 - The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
 
 
-### Member manifest v2 authoring
+### Member manifest v2 authoring (retired)
 
-The `manifest` page adds the version 2 file contract and the CLI watcher workflow.
-Its claims are semantic theme-file claims, not endpoint schemas. Source evidence
-is `MemberConfigurationValidator`, `MemberConfigurationResolver`,
-`MemberConfigurationWriter`, `MemberConfigurationMenuContext`,
-`MemberConfigurationResource`, and `MemberConfigurationUpload` in Fluid, plus
-`packages/cli/theme-dev/src/theme/member-configuration.ts`, `dev-server/index.ts`,
-`dev-server/hot-reload.ts`, and Mist's `shared/project-kinds.ts`.
-
-Preserve these boundaries when updating the guide:
-
-- The current v2 document requires `version`, `sites`, `menus`, and
-  `menu_references`. New exports omit `templates`; older v2 metadata arrays remain
-  accepted. This update follows Fluid PR #22898 and must ship with that behavior.
-- Member dependencies resolve from page paths, site layouts, and ordinary file
-  contents. Member-page JSON detection requires an object with a `sections` key.
-- Manifest-only edits retain unrelated template metadata and drafts. Fresh file
-  imports use normal defaults; do not promise lossless transfer of database-only
-  flags or translations without the old metadata array.
-- The filename is `members_sites.json`. Sites match by name and pages by slug;
-  document keys connect references inside a snapshot, not persistent identities.
-- Snapshot omission removes sites/pages. Removing the file is rejected; an empty
-  versioned document explicitly clears member configuration, not every menu or file.
-- Navigation travels as full menu trees. Country codes and member-type slugs must
-  resolve in the destination. Unrelated menu handle collisions allocate a new menu.
-- Site country rules can be empty; menu country lists require a destination country.
-- `theme dev` defaults to an isolated development theme. Its preview reloads on
-  acknowledged uploads. A separate admin builder does not receive that reload signal.
-- Verification of the watcher and renderer is source-based here. JSON examples and
-  MDX are checked separately; this guide does not claim a live Mist end-to-end run.
+The `manifest` page and its version 2 `members_sites.json` contract were deleted with
+the rest of theme member sites (see **Member storefront — theme-author contract**).
+Its claims were removed from the registry. Do not restore them; member-only pages are
+Sites.
 
 
 ### Explicit request-field variants
@@ -1858,7 +1836,7 @@ fluid PRs #23196 and #23208 (the rail's Apps / App Embeds panel became
 **Widgets** and lists droplet sections under the embed toggles); the in-canvas
 **Add Section → Apps** tab still exists in `AddSectionsWithPreview`.
 
-Member-page behavior is source-verified, not a live render: member pages render
+Member-page behavior is source-verified, not a live render: `members_page` templates render
 through the same themeable pipeline, `LiquidTags::Section` resolves extension
 URIs for any page type, and `base_environment_for` hands every section the
 page's `member` (a `MemberProfileDrop`) and `member_content`. `PageBuilder.fetch_global_embeds`
