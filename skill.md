@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.14"
+  version: "1.15"
 ---
 
 # Fluid
@@ -140,7 +140,7 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 
 ## Fluid CLI
 
-Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
+Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist. If a listed command, option or config key isn't found, the CLI or a plugin is out of date: run `fluid version --json` and run each `update.command` it gives (https://docs.fluid.app/guides/connect-ai-tools#keep-the-cli-current).
 
 - **Sign up** (https://docs.fluid.app/api/agent-launch#step-1-sign-up-confirm-the-email-and-sign-in): `fluid signup --email <email> --first-name <first> --last-name <last> --company-name <name> --subdomain <subdomain> --yes --json`. With the merchant's consent only; it creates a real company.
 - **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.
