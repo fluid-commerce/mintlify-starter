@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.12"
+  version: "1.13"
 ---
 
 # Fluid
@@ -31,6 +31,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Connect an AI agent: docs MCP server, Fluid CLI, Mist | https://docs.fluid.app/guides/connect-ai-tools |
 | Build a first integration | https://docs.fluid.app/quickstart |
 | Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
+| Translate metafield values (product, variant and enrollment pack text fields) in the admin, or read and save translations through the API. It may not be on for every company yet | https://docs.fluid.app/help/admin/settings/metadata-definitions/translate, then https://docs.fluid.app/storefront/metafields#translate-metafields |
 | Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
