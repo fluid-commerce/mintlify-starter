@@ -3175,6 +3175,7 @@ Two facts to keep straight:
   troubleshooting note until the rows and the middleware are removed upstream.
 
 The confusing generated titles ("Create a sitemap country route (theme region rule)")
-come from the upstream `themes-v0` spec. Renaming them changes the generated URLs, so an
-upstream rename needs a follow-up PR here that adds redirects and updates the links in
-`themes/custom-routes`.
+come from the upstream `themes-v0` spec. fluid#34720 renames them to "sitemap route(s)",
+which changes the generated URLs. This PR already points the links in
+`themes/custom-routes` and `themes/why-fluid-themes` at the new slugs and adds redirects
+from the old ones, so it merges after the API reference sync brings in that rename.
