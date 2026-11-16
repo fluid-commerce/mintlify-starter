@@ -1,0 +1,269 @@
+---
+title: "Company sign-in"
+sidebarTitle: "Company sign-in"
+description: "Let your customers and reps sign in to your own apps with 'Sign in with your company', using your company's OpenID Connect provider: register an app, run the Authorization Code flow with PKCE, and read the ID token and userinfo claims."
+keywords: ["company sign-in", "Sign in with Fluid", "OpenID Connect", "OIDC", "OAuth", "PKCE", "Authorization Code", "ID token", "userinfo", "discovery", "single sign-on", "SSO", "login"]
+---
+
+**Company sign-in lets people sign in to your own app with their Fluid account, under your company's name.** Your app talks to your company's OpenID Connect provider. People see your company, and Fluid stays out of sight.
+
+<Warning>**TBD:** how this feature is made available (for example, private beta). It's turned on per company, so you can't use it until Fluid turns it on for yours. Until then, discovery answers 404 and your app is refused as an unknown client.</Warning>
+
+## Choose a sign-in
+
+| | Sign in with Fluid | Sign in with your company |
+| --- | --- | --- |
+| What people see | Fluid | Your company's name |
+| Your app talks to | Fluid's own sign-in | Your company's own OpenID Connect provider |
+| Who can sign in | Anyone with a Fluid account | People of your company: its reps, its customers, or both |
+| Best for | Apps that act on Fluid on a person's behalf | Your own apps, sites, and tools that need to know who the person is |
+
+Use company sign-in when you want your own branded sign-in and only need to identify the person. The access token you get is good for [userinfo](#call-userinfo) only. It doesn't call the Fluid API.
+
+## Register an app
+
+Each app you register is a client of your company's provider. A registration has these parts:
+
+| Field | Rules |
+| --- | --- |
+| Client type | `public`: no secret, and the app proves itself with PKCE. |
+| Sign-in audience | `reps`, `customers`, or `both`. See [who can sign in](#who-can-sign-in). |
+| Redirect URIs | 1 to 10, each unique and at most 2,000 bytes. |
+| Issuer slug | A lowercase DNS label of 1 to 63 characters. It's set when you register your company's first app and never renamed. |
+
+Fluid gives each app a client ID that starts with `fca_`.
+
+Each redirect URI:
+
+- Is absolute, with no fragment, no user information, and no `*`.
+- Uses `https`. It can use `http` only when the host is exactly `localhost` or `127.0.0.1` and the URI has an explicit port.
+- Matches exactly, byte for byte, at both the authorize and token steps. There's no wildcard and no loopback port leniency.
+
+<Warning>**TBD:** confidential apps. A confidential app holds a secret sent with HTTP Basic, but registering one isn't available yet, so register a public app for now.</Warning>
+
+<Warning>**TBD:** how you register an app (API, MCP, CLI, or the admin), and which base URL and credentials you need. This page will link to the API reference for it.</Warning>
+
+### Who can sign in
+
+- **`reps`**: your company's reps. An administrator signs in as the rep they also are. Sending `login_kind=shopper` is refused.
+- **`customers`**: your company's customers. The app always uses the customer sign-in.
+- **`both`**: reps and customers. The app asks for the customer sign-in by sending `login_kind=shopper`, and otherwise gets the rep sign-in.
+
+## Find your issuer
+
+Your company's issuer is the host that serves your provider, followed by `/c/` and your issuer slug. Its discovery document lists every endpoint your app needs:
+
+```text
+https://<issuer host>/c/<slug>/.well-known/openid-configuration
+```
+
+<Warning>**TBD:** the exact production issuer host to put in `<issuer host>`. Use the `issuer` value Fluid gives you when you register.</Warning>
+
+A standard OpenID Connect library needs only the issuer. It reads the authorize, token, userinfo, and JWKS endpoints from the discovery document. The document advertises:
+
+- The authorization code flow with PKCE `S256`.
+- Pairwise subjects.
+- ES256-signed ID tokens.
+- No refresh grant, no revocation endpoint, and no sign-out endpoint.
+
+Discovery answers 404 for an unknown issuer, and for a company that doesn't have company sign-in turned on. The document is cached for 5 minutes. The issuer is matched exactly, so a slug in a different case isn't found.
+
+## Sign in with Authorization Code and PKCE
+
+<Steps>
+  <Step title="Send the person to authorize">
+    Generate a random `state`, a `code_verifier`, and its `S256` `code_challenge`. Then redirect the person's browser to the `authorization_endpoint` from discovery.
+
+    | Parameter | Required | Value |
+    | --- | --- | --- |
+    | `response_type` | Yes | `code` |
+    | `client_id` | Yes | Your app's client ID. |
+    | `redirect_uri` | Yes | One of the app's registered redirect URIs, exactly. |
+    | `state` | Yes | An opaque value. Check it when the person returns. |
+    | `code_challenge` | Yes | The `S256` challenge for your `code_verifier`. |
+    | `code_challenge_method` | Yes | `S256` |
+    | `scope` | Yes | A space-separated list that includes `openid`. |
+    | `nonce` | No | At most 255 printable ASCII characters. It's returned in the ID token. |
+    | `login_kind` | No | `shopper` to use the customer sign-in. Follows the [sign-in audience](#who-can-sign-in). |
+    | `prompt` | No | `none` returns `login_required` instead of showing a sign-in. `login` forces a new sign-in. |
+  </Step>
+  <Step title="Receive the code">
+    After the person signs in, Fluid redirects to your `redirect_uri` with `code` and your `state`. Check that `state` matches.
+  </Step>
+  <Step title="Exchange the code">
+    Call the `token_endpoint` from your server. See [get tokens](#get-tokens).
+  </Step>
+</Steps>
+
+Whatever other scopes you list, the app is given `openid profile email`.
+
+### Authorize errors
+
+A request for an app that is unknown, revoked, or belongs to a company without company sign-in answers 400 `unregistered client` and never redirects. Other refusals redirect to your `redirect_uri` with an `error`:
+
+| `error` | When |
+| --- | --- |
+| `invalid_scope` | `scope` doesn't contain `openid`. |
+| `invalid_request` | `nonce` is longer than 255 bytes or isn't printable ASCII. `login_kind=shopper` is sent to an app for reps. `org` names a different company. |
+| `login_required` | You sent `prompt=none` and the person has no valid session. |
+| `access_denied` | The browser holds a session for another company. |
+
+The redirect URI, PKCE `S256`, `state`, and `response_type` are checked as for any client.
+
+<Warning>**TBD:** whether other `/authorize` and `/token` errors are documented, and whether to say that every refusal looks the same to your app.</Warning>
+
+## Get tokens
+
+Send a `POST` to the `token_endpoint` with `application/x-www-form-urlencoded` fields:
+
+| Field | Value |
+| --- | --- |
+| `grant_type` | `authorization_code` |
+| `code` | The code from the redirect. |
+| `redirect_uri` | The same URI you sent to authorize. |
+| `client_id` | Your app's client ID. |
+| `code_verifier` | The verifier for your `code_challenge`. |
+
+The response has `access_token`, `token_type`, `expires_in`, `scope` (`openid profile email`), and `id_token`.
+
+- **Only the code exchange works.** Fluid never issues a refresh token, and a refresh request answers 400 `unauthorized_client`. To renew, send the person back to authorize with `prompt=none`.
+- **The ID token** says who signed in. It's a signed JWT. Check its signature against the JWKS from discovery, and check `iss`, `aud`, `exp`, and your `nonce`.
+- **The access token** is for [userinfo](#call-userinfo) only. The Fluid API refuses it.
+
+<Warning>**TBD:** the lifetime of the ID token and the access token. `exp` is the ID token's `iat` plus the access token lifetime, and `expires_in` reports it. Read `expires_in` rather than assuming a number.</Warning>
+
+Fluid checks the code before it spends it. If the person isn't allowed in this app, the code is burned and the answer is 400 `invalid_grant` with "not permitted for this app". If Fluid can't confirm the person right now, the answer is 503 `temporarily_unavailable` and the same code still works, so retry it. A company without company sign-in answers 401 `invalid_client`.
+
+## Read the claims
+
+The ID token and userinfo carry these claims:
+
+| Claim | Type | Meaning |
+| --- | --- | --- |
+| `iss` | string | Your company's issuer. |
+| `sub` | string | The person's ID at your company: a lowercase UUID, the same across all your company's apps, and different at every other company. It's never the person's Fluid ID. |
+| `aud` | string | Your app's client ID. |
+| `iat`, `exp` | integer | Issued and expiry times, in Unix seconds. |
+| `auth_time` | integer | When the person last signed in interactively, in Unix seconds. |
+| `nonce` | string | Your `nonce`, exactly. Absent when you sent none. |
+| `name` | string | The person's name at your company. Absent when there isn't one. |
+| `email` | string | The person's email address. For a customer, it can differ from the address they signed in with. |
+| `email_verified` | boolean | See [email verification](#email-verification). |
+| `fluid_member_type` | string | `rep` or `customer`. |
+| `fluid_rep_id` | string | The rep's member ID at your company. Present only for a rep. |
+| `fluid_company` | object | The company, with `id` and `name`. |
+
+The ID token has no `sid` claim.
+
+<Warning>**TBD:** whether `sub` is promised stable and safe as your primary key for a person, and whether `fluid_rep_id` and the `fluid_` prefix are permanent public names.</Warning>
+
+### Email verification
+
+`email_verified` is `true` only when the person's sign-in proved their address with an emailed code. It's `false` for sign-ins by password, passkey, Google, or text message. It's also `false` for a customer whose code went to a different address than `email`, and for any session after the person's address changes. Treat `email_verified: false` as an unverified address.
+
+## Call userinfo
+
+Call the `userinfo_endpoint` from your server with the access token:
+
+```bash
+curl https://<issuer host>/userinfo \
+  -H "Authorization: Bearer <access_token>"
+```
+
+The answer has the same claims as the ID token, with the same values and presence rules, and nothing else. It reads them again on every call, so a change shows up here. It answers 401 `invalid_token` when the token or its session has been revoked, when company sign-in is off for your company, or when the person is no longer an active member of that type. It answers 503 when Fluid can't read the person's details, so retry.
+
+Call userinfo from your server. Don't call it from a browser.
+
+## Sign out and revoke
+
+Your provider advertises no sign-out endpoint and no revocation endpoint. Signing a person out of your app means ending your own app's session.
+
+<Warning>**TBD:** whether you can end the person's Fluid session, and whether you can revoke an access token. The token reference describes a revoke call, but discovery doesn't advertise one. Don't rely on either yet.</Warning>
+
+## Minimal example
+
+This example uses placeholders. Replace `<issuer host>`, `<slug>`, and the client ID `fca_EXAMPLE` with your own values.
+
+Read the discovery document:
+
+```bash
+curl https://<issuer host>/c/<slug>/.well-known/openid-configuration
+```
+
+Exchange a code for tokens:
+
+```bash
+curl -X POST https://<issuer host>/token \
+  -d grant_type=authorization_code \
+  -d code=<code> \
+  -d redirect_uri=https://app.example.com/callback \
+  -d client_id=fca_EXAMPLE \
+  -d code_verifier=<code_verifier>
+```
+
+Read the person's details:
+
+```bash
+curl https://<issuer host>/userinfo \
+  -H "Authorization: Bearer <access_token>"
+```
+
+The response looks like this:
+
+```json
+{
+  "sub": "5f0c1d7e-2b8a-4c3d-9e1f-6a7b8c9d0e1f",
+  "name": "Example Person",
+  "email": "person@example.com",
+  "email_verified": true,
+  "fluid_member_type": "customer",
+  "fluid_company": { "id": "<company id>", "name": "Example Co" }
+}
+```
+
+This Node script builds the authorize URL and exchanges the code:
+
+```javascript
+import { randomBytes, createHash } from "node:crypto";
+
+const issuer = "https://<issuer host>/c/<slug>";
+const clientId = "fca_EXAMPLE";
+const redirectUri = "https://app.example.com/callback";
+
+const { authorization_endpoint, token_endpoint } = await (
+  await fetch(`${issuer}/.well-known/openid-configuration`)
+).json();
+
+const verifier = randomBytes(32).toString("base64url");
+const challenge = createHash("sha256").update(verifier).digest("base64url");
+const state = randomBytes(16).toString("base64url");
+const nonce = randomBytes(16).toString("base64url");
+
+const authorizeUrl = new URL(authorization_endpoint);
+authorizeUrl.search = new URLSearchParams({
+  response_type: "code",
+  client_id: clientId,
+  redirect_uri: redirectUri,
+  scope: "openid profile email",
+  state,
+  nonce,
+  code_challenge: challenge,
+  code_challenge_method: "S256",
+}).toString();
+
+// Redirect the person to authorizeUrl, then handle the callback with `code`.
+async function exchange(code) {
+  const response = await fetch(token_endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      code_verifier: verifier,
+    }),
+  });
+  return response.json();
+}
+```
