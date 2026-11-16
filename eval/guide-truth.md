@@ -2184,6 +2184,46 @@ default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.m
 (`/search` is not a page; the playlist and enrollment index routes redirect to `/`, which
 carries no credit segment; product detail is by slug).
 
+### Storefront guides — translatable metafields (2026-11-16)
+
+`storefront/metafields.mdx` gained a **Translate metafields** section, and
+`storefront/translations.mdx` points to it. Behaviour was verified against `main` of the
+Rails monorepo (`51dcf7fdb6a`) and the synced `storefront-v2026-04` spec. Durable decisions:
+
+- **Metafield values are the exception to "no separate translations endpoint".** A text
+  metafield whose definition is translatable has its own five company operations
+  (`/api/v202604/company/metafield-translations`, `/catalog`, `/export`,
+  `/ai-translate-missing`). The generated reference pages sit under the
+  `metafield-translations` tag. A translation PATCH still ignores `metafields_attributes`.
+- **The company endpoints answer `404` while the company's release gate is off.** The
+  guide says "release gate" and never names the flag key. Public reads then return the
+  original values.
+- **Fallback order for a shopper read:** the translation in the requested language, then a
+  usable English translation, then the original. A blank translation, and a list with
+  another item count or a non-list, is unusable. An outdated translation (its stored digest
+  differs from the original's) still shows. The store's default language, and a record with
+  no value for the field, never show a translation. English is a fallback only when it is
+  one of the store's non-default languages, so a store whose default is French falls back to
+  English, then to French.
+- **Which public reads translate:** the public product reads (list and by slug, including
+  each variant's `metafields`), the category and collection product lists, and theme pages
+  for products, variants and enrollment packs. The public enrollment pack endpoints and the
+  company endpoints return stored values. The enrollment pack claim comes from reading
+  the code, not a browser check; recheck it if the enrollment pack serializer changes.
+- **The catalog, export and AI run cover Product fields only.** Variant and enrollment pack
+  fields use the read and save operations. The AI run needs update permission on products
+  and the permission `POST /api/v202604/ai/translate` needs. The guide doesn't name that
+  endpoint or its permission key, because it has no published reference.
+- **A save purges cached pages about five minutes later.** The guide says translations
+  show on cached pages after about five minutes.
+- **The definitions API is not published.** `admin-v2` carries only the `translatable`
+  schema field, so the guide points to the admin switch and never hand-writes a definitions
+  path.
+- **Liquid paths in `themes/theme-variables.mdx`** (not a registered guide) are limited to
+  the two paths verified in a rendered page: `product.metafields.<namespace>.<key>` and
+  `v.metafields.<namespace>.<key>` inside `product.variants`. Enrollment pack and
+  page-builder setting paths are left out until rendered.
+
 ### FairShare credit model — established, then kept (2026-10-04)
 
 The docs owner's model of rep credit is authoritative for every page:
