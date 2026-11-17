@@ -552,7 +552,7 @@ components:
               - $ref: '#/components/schemas/FailureEnvelopeResponse'
               - $ref: '#/components/schemas/ValidationErrorsResponse'
     UpdateCompanyOrderUnprocessableEntity:
-      description: '`contact_id` is not a contact of the company, `user_id` is not a user with a member or admin record in the company, `share_id` is not a share of the company, or `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet. Nothing on the order changes. The body is the errors keyed by field. An ID the order already carries is not checked again.'
+      description: '`contact_id` is not a contact of the company, `user_id` is not a user with a member or admin record in the company, `share_id` is not a share of the company, `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet, `status` reopens a cancelled order that was cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or the order was cancelled or reopened by another request while this update was in progress (send it again). Nothing on the order changes. The body is the errors keyed by field. An ID the order already carries is not checked again.'
       content:
         application/json:
           schema:
@@ -968,7 +968,7 @@ components:
           schema:
             $ref: '#/components/schemas/StandardForbiddenResponse'
     UpdateOrderUnprocessable:
-      description: Invalid order attributes, an attempted internal snapshot write without order read access, a tax_label change (tax_label is set by the tax provider and cannot be changed), or cancelling an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet. The order is unchanged.
+      description: Invalid order attributes, an attempted internal snapshot write without order read access, a tax_label change (tax_label is set by the tax provider and cannot be changed), cancelling an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet, reopening an order that was cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or an order cancelled or reopened by another request while this update was in progress (send it again). The order is unchanged.
       content:
         application/json:
           schema:
@@ -29027,6 +29027,21 @@ components:
         permissions_count:
           type: integer
           description: Number of distinct permission keys. Returned by the list and single-role reads only.
+        full_access_mode:
+          type:
+            - string
+            - 'null'
+          description: '`live` or `snapshot` for a full-access role. Single-role read only, when full-access-live is enabled.'
+        resolved_permission_keys:
+          type: array
+          items:
+            type: string
+          description: Permission keys the role resolves to now. Single-role read only, when full-access-live is enabled.
+        missing_full_access_keys:
+          type: array
+          items:
+            type: string
+          description: Catalog keys a snapshot full-access role lacks. Single-role read only, when full-access-live is enabled.
     CompanyWebhookEvent:
       title: WebhookEvent
       type:
@@ -37757,7 +37772,7 @@ paths:
     patch:
       operationId: company_v0_company_orders_patch
       summary: Update orders
-      description: Updates one of the company's orders, such as its status, contact details, external ID, shipped and delivered dates, or tracking information, and returns the updated order. Only the attributes you send change. Requires a company token with permission to update orders. Order webhooks fire after a successful update. Returns 400 with the validation errors when the update fails, and 422 when `contact_id`, `user_id` or `share_id` names a record outside the company, or when `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization. Refund a paid order in full first, and cancel an order with a card authorization through the cancel endpoint.
+      description: Updates one of the company's orders, such as its status, contact details, external ID, shipped and delivered dates, or tracking information, and returns the updated order. Only the attributes you send change. A `status` also sets the order's `order_status` as `PATCH /api/orders/{id}` does. `cancelled` cancels it, a status such as `shipped` or `awaiting_shipment` gives `completed`, and `archived` and `draft` carry over; an order held for fraud review, or one the order processing pipeline is still completing, keeps its `order_status`. A status that reopens a cancelled order clears its `cancelled_at` and `cancellation_reason`. Requires a company token with permission to update orders. Order webhooks fire after a successful update, and an `order_status_changed` event when a status field changed. Returns 400 with the validation errors when the update fails, and 422 when `contact_id`, `user_id` or `share_id` names a record outside the company, when `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, when `status` reopens an order cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or when another request cancelled, reopened or held the order during the update. Refund a paid order in full first, and cancel an order with a card authorization through the cancel endpoint.
       tags:
         - company
       parameters:
@@ -48866,7 +48881,7 @@ paths:
   /api/orders/{id}:
     patch:
       summary: Update an order
-      description: Update an order. Callers without internal order snapshot read access cannot write tax_and_shipping_settings; such requests return 422 without changing the order. tax_label remains readable but is set by the tax provider; setting, changing or removing it returns 422, while resending its stored value is allowed. Replacing metadata preserves an omitted stored tax_label and the hidden snapshot. A write of status or order_status that cancels an order that cannot be cancelled, such as one holding captured funds or a renewal whose charge the payment provider has not answered yet, returns 422. A paid order must be refunded in full first.
+      description: 'Update an order. Callers without internal order snapshot read access cannot write tax_and_shipping_settings; such requests return 422 without changing the order. tax_label remains readable but is set by the tax provider; setting, changing or removing it returns 422, while resending its stored value is allowed. Replacing metadata preserves an omitted stored tax_label and the hidden snapshot. A write of status or order_status that cancels an order that cannot be cancelled, such as one holding captured funds or a renewal whose charge the payment provider has not answered yet, returns 422. A paid order must be refunded in full first. A status sent without order_status also sets order_status (shipped or awaiting_shipment, for example, give completed), except on an order held for fraud review or one the order processing pipeline is still completing. A write that reopens a cancelled order to pending, processing or completed clears its cancelled_at and cancellation_reason. It returns 422 for an order cancelled in fraud review, for a reopen that leaves status cancelled (send a status with it), and for an order whose payment is voided, refunded or being refunded, or that the write sets to one of those. An imported order is the exception: the same write may settle it by setting financial_status to marked_paid, marked_free, paid or partially_paid. It also returns 422 for an order whose cancel already reversed its sales tax filing. A write returns 422 when another request cancelled, reopened or held the order during it; send it again.'
       tags:
         - orders
       operationId: commerce_v0_update_order
@@ -50169,8 +50184,9 @@ paths:
         - bearer_auth: []
   /api/redirects:
     get:
+      deprecated: true
       summary: Lists redirects
-      description: Lists the company's URL redirects, newest first by default. Search `path` and `target` with `search_query`, limit to one domain with `by_domain_id`, and sort with `sorted_by`. Uses page-number pagination with `page` (default 1) and `per_page` (default 10); `meta` reports `total_count`, `total_pages`, and `current_page`. Requires a company admin token with permission to view pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Lists the company's URL redirects, newest first by default. Search `path` and `target` with `search_query`, limit to one domain with `by_domain_id`, and sort with `sorted_by`. Uses page-number pagination with `page` (default 1) and `per_page` (default 10); `meta` reports `total_count`, `total_pages`, and `current_page`. Requires a company admin token with permission to view pages.
       tags:
         - redirects
       operationId: company_v0_list_redirects
@@ -50248,8 +50264,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     post:
+      deprecated: true
       summary: Create Redirect
-      description: Create a new redirect
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Create a new redirect
       tags:
         - redirects
       operationId: company_v0_create_redirect
@@ -50296,8 +50313,9 @@ paths:
                 domain_id: 6120
   /api/redirects/export_csv:
     post:
+      deprecated: true
       summary: Export redirects data in a CSV file
-      description: Export redirects data in a CSV file
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Export redirects data in a CSV file
       tags:
         - redirects
       operationId: company_v0_export_redirectsin_csv
@@ -50323,8 +50341,9 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
   /api/redirects/import_csv:
     post:
+      deprecated: true
       summary: Import redirects via csv file in the url
-      description: Creates redirects in bulk from a CSV file that was uploaded to the URL returned by the presigned CSV URL endpoint. The file needs `path` and `target` columns. Rows are processed in order, and the response reports how many redirects were created, how many failed to save, and how many rows were invalid. Returns 422 when the file cannot be read or is missing a required column. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Creates redirects in bulk from a CSV file that was uploaded to the URL returned by the presigned CSV URL endpoint. The file needs `path` and `target` columns. Rows are processed in order, and the response reports how many redirects were created, how many failed to save, and how many rows were invalid. Returns 422 when the file cannot be read or is missing a required column. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_import_redirects_via_csv
@@ -50359,8 +50378,9 @@ paths:
               url: https://storage.googleapis.com/fluid-uploads/uploads/20260918/3b9f6c2e-7a41-4d8e-9f25-c1e0a6d4b873/redirects_20260918.csv
   /api/redirects/presigned_csv_url:
     post:
+      deprecated: true
       summary: Generate a signed URL to upload csv for bulk importing redirects
-      description: Generate signed URL to allow users without credentials to perform upload (time-limited access to Cloud Storage)
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Generate signed URL to allow users without credentials to perform upload (time-limited access to Cloud Storage)
       tags:
         - redirects
       operationId: company_v0_get_presigned_csv_url_for_redirects_import
@@ -50386,8 +50406,9 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
   /api/redirects/{id}:
     get:
+      deprecated: true
       summary: Retrieves a redirect
-      description: Retrieves one of the company's redirects, including the domain it is attached to, if any. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to view pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Retrieves one of the company's redirects, including the domain it is attached to, if any. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to view pages.
       tags:
         - redirects
       operationId: company_v0_get_redirect
@@ -50429,8 +50450,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     put:
+      deprecated: true
       summary: Updates a redirect
-      description: Updates a redirect. Send both `path` and `target`; `domain_id` is optional. `path` must start with `/` and must not clash with reserved or application paths or with another redirect of the company. `target` must be a path starting with `/` or an `http`/`https` URL. Returns 404 when the ID does not match a redirect of the company, and 422 when validation fails. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Updates a redirect. Send both `path` and `target`; `domain_id` is optional. `path` must start with `/` and must not clash with reserved or application paths or with another redirect of the company. `target` must be a path starting with `/` or an `http`/`https` URL. Returns 404 when the ID does not match a redirect of the company, and 422 when validation fails. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_update_redirect
@@ -50481,8 +50503,9 @@ paths:
                 path: /mug
                 target: /products/scranton-branch-mug
     delete:
+      deprecated: true
       summary: Deletes a redirect
-      description: Deletes a redirect. The response echoes only the deleted redirect's ID. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Deletes a redirect. The response echoes only the deleted redirect's ID. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_delete_redirect
