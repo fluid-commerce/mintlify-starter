@@ -1655,6 +1655,14 @@ Durable authoring boundaries:
   member pages built in the theme, the builder's member preview, or the `/_members` dev
   preview. Member-only pages are Sites. Account screens, member-aware sections, member
   variables and generic `members_page` template mentions for screens and widgets stay.
+- The account screens are removed (fluid#34667, deployed 2026-11-16). Their eight paths on
+  the account host (Messaging, Contacts, My Site, Profile, Orders, Subscriptions, Media,
+  Playlists), nested paths included, answer the member host's "This page isn't available"
+  404, and nothing provisions the account screens loader any more. Members manage their
+  account in the Passport's rooms (`sites/passport`). The overview and `supported-paths`
+  no longer present them; `system-screen-styling` carries a removal warning until it is
+  retired with its claims. The bullets below that describe account screens record the
+  pre-removal decisions and are superseded where they conflict.
 - Account screens are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
   `/members/...` storefront paths from older planning documents. V1 member sites open
