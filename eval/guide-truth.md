@@ -2425,12 +2425,16 @@ run the second.
 
 **2026-11-15 update:** `help/admin/url_redirects.mdx` was removed, and `/help/admin/url_redirects` redirects to
 `/help/admin/sitemap#redirect-a-url`. Redirects are documented only as custom routes whose override is
-**URL Redirect** on the Sitemap screen (`302`, set in `Middleware::ThemeRegionRouter#redirect_response_for_rule`).
+**URL Redirect** on the Sitemap screen (the status is now `301` or `302`; see the 2026-11-16 entry below).
 The legacy URL Redirects screen (`/url_redirects`, `Middleware::Redirects`, `301`) still exists in fluid and
 still answers first, but don't document or recommend it. Mention it only as "an older redirect saved on the
-same path may answer first" for troubleshooting. The drawer's **Redirect Type** 301/302 select renders only for
-a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice. The
-bullets below that recommend the URL Redirects screen are superseded.
+same path may answer first" for troubleshooting. ~~The drawer's **Redirect Type** 301/302 select renders only for
+a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice.~~
+**Superseded on 2026-11-16:** fluid #34333 (`aeedd6d86a5`, merged 2026-11-15) gates the select on the
+**URL Redirect** override (`overrideType === REDIRECT_OVERRIDE_TYPE`, from `default_resource_type`
+`ExternalUrl`), defaults it to **Permanent (301)**, and the storefront router serves the saved status. Checked on
+fluid `origin/main` `d77346970dc`. Document the 301 or 302 choice; see "Legacy `/api/redirects` unpublished
+(2026-11-16)". The bullets below that recommend the URL Redirects screen are superseded.
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
 were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
@@ -2439,8 +2443,9 @@ was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was 
 2026-10-04 with that clause). Durable decisions:
 
 - **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
-  serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
-  product or page. Members share credited `/<username>/...` paths from the mobile app or
+  serves customers without a rep, so it gets a redirect to the product or page. (Superseded:
+  it's a custom route on the Sitemap, `301` by default, not the URL Redirects screen. See the
+  2026-11-16 entry.) Members share credited `/<username>/...` paths from the mobile app or
   their own links. Don't document adding rep credit to a marketing URL, and don't tie the
   redirect's query-string behavior to that pattern. Non-credited routes are the option only
   when the address must stay in the address bar.
@@ -3147,3 +3152,30 @@ Durable decisions:
   both shells (gateway or not).
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
+
+## Legacy `/api/redirects` unpublished (2026-11-16)
+
+Redirects are custom routes on the Sitemap. In the API, a redirect is a theme region rule
+(`themes-v0`, `POST /api/theme_region_rules`) whose `redirect_type` is `redirect`. The
+older `company-v0` `/api/redirects` endpoints and their CSV import and export are no longer
+used. The admin's Sitemap screen doesn't show what they create, and agents that found them
+created redirects merchants couldn't see. The tag is now in the nav config's `exclude`
+list, its eight generated URLs redirect temporarily to
+`/themes/custom-routes#create-a-redirect-with-the-api`, and `Lists redirects` left
+`OFFSET_PAGINATED_PAGES`, so the offset count in AGENTS.md is now 48 (25 on `company-v0`).
+
+Two facts to keep straight:
+
+- **Status codes.** A region rule redirect answers `301` or `302`. The API saves `302`
+  when `redirect_status_code` is omitted. The admin's **Redirect Type** defaults to
+  **Permanent (301)** on a route's default override, and its country route redirects are
+  `302`. The earlier "route redirects are always 302" wording is retired.
+- **Old rows still answer first.** The legacy redirects middleware still runs, so a
+  saved legacy redirect on the same path beats a route rule. The docs keep that
+  troubleshooting note until the rows and the middleware are removed upstream.
+
+The confusing generated titles ("Create a sitemap country route (theme region rule)")
+come from the upstream `themes-v0` spec. fluid#34720 renames them to "sitemap route(s)",
+which changes the generated URLs. This PR already points the links in
+`themes/custom-routes` and `themes/why-fluid-themes` at the new slugs and adds redirects
+from the old ones, so it merges after the API reference sync brings in that rename.
