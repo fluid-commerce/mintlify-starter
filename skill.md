@@ -42,8 +42,8 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Call the Member API from a Site's page as the visitor | https://docs.fluid.app/sites/member-api |
 | Give a Site server code: a form handler, webhook, scheduled job or its own REST API with API keys | https://docs.fluid.app/sites/functions, then https://docs.fluid.app/sites/rest-api |
 | Deploy a Site from Claude with the Fluid MCP server | https://docs.fluid.app/sites/deploy-from-claude |
-| A Site's sign-in, the Passport account menu, where the Passport sits on a Site, hiding the floating cart and lead-capture buttons, opening the Passport from your own button with `fluid.auth.openPassport()` | https://docs.fluid.app/sites/passport |
-| Place the Passport on a storefront theme page (a corner, the header, or only your own buttons) and open it with `data-fluid-passport-open`, `fluid.passport.open()` or the `fluid-passport:open` event | https://docs.fluid.app/themes/member-storefront/passport |
+| A Site's sign-in, the Passport account menu and where it sits, hiding the floating cart and lead-capture buttons, opening the Passport from your own button | https://docs.fluid.app/sites/passport |
+| Place the Passport on a storefront theme page and open it from your own buttons or scripts (`fluid.passport.open()`) | https://docs.fluid.app/themes/member-storefront/passport |
 | Show a Site to members: pin, require, feature, or make it their home; which link to share | https://docs.fluid.app/sites/overview#show-a-site-to-members |
 | Call a third-party API from a Site's function with a company vault credential | https://docs.fluid.app/sites/functions#call-another-service-with-a-vault-credential |
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
