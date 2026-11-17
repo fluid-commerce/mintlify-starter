@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.15"
+  version: "1.16"
 ---
 
 # Fluid
@@ -39,6 +39,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Host a small project on Fluid (landing page, event page, calculator, dashboard) and get a public URL | https://docs.fluid.app/sites/quickstart, then https://docs.fluid.app/sites/site-or-app and the section "Host a project" below |
 | Build a Site (formerly a member site): a static app, Vite and React by default, on `@fluid-app/sites`, at `/home/sites/<site-handle>` and `/sites/<site-handle>` on the company's storefront. It replaces theme member sites, which are retired | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/sites/sdk and https://docs.fluid.app/sites/publishing |
 | Set a Site's page titles and previews, or get it indexed | https://docs.fluid.app/sites/seo |
+| Put a public Site behind a password, or remove it | https://docs.fluid.app/sites/password |
 | Call the Member API from a Site's page as the visitor | https://docs.fluid.app/sites/member-api |
 | Give a Site server code: a form handler, webhook, scheduled job or its own REST API with API keys | https://docs.fluid.app/sites/functions, then https://docs.fluid.app/sites/rest-api |
 | Deploy a Site from Claude with the Fluid MCP server | https://docs.fluid.app/sites/deploy-from-claude |
