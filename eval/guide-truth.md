@@ -1626,11 +1626,10 @@ Durable authoring boundaries:
 
 ## Member storefront — theme-author contract
 
-The seven pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
-`member-sites`, `manifest`, `member-page-templates`, `member-variables`, `authentication`) describe the member storefront feature: the
+The pages under `themes/member-storefront/` (`overview`, `member-aware-sections`,
+`member-variables`, `authentication`, and the widget, pricing and system screen pages) describe the member storefront feature: the
 `member_price` filter, the `member_name` and `member` tags, the section marker and SDK
-resolution states, member sites and their rules, member page templates, and the member
-layout. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
+resolution states, the member Liquid variables, and the account screens. None of it is an HTTP API, so every claim uses `check: semantic` and is verified
 against the Rails theme engine and the two browser packages rather than against an
 OpenAPI document. A green mechanical check proves quote and coverage integrity, not
 runtime behavior.
@@ -1649,16 +1648,20 @@ Durable authoring boundaries:
   SDK being configured for the environment. The Liquid contract, the section marker, and
   the shell fallback are live; the script injection is configuration-dependent and the
   pages never claim it is active. Do not broaden that into "hydration works everywhere".
-- Member pages are served on the account subdomain only. The storefront `/accounts` prefix
+- Theme member sites are retired (product decision 2026-11-13, fluid
+  `features/member-sites/phases/009-retire-theme-member-sites`). The `member-sites`,
+  `manifest` and `member-page-templates` pages were deleted, and their paths redirect to
+  `/sites/overview`. Do not reintroduce `members_sites.json`, theme member sites, custom
+  member pages built in the theme, the builder's member preview, or the `/_members` dev
+  preview. Member-only pages are Sites. Account screens, member-aware sections, member
+  variables and generic `members_page` template mentions for screens and widgets stay.
+- Account screens are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
   `/members/...` storefront paths from older planning documents. V1 member sites open
   at `/sites/<handle>[/<path>]` since fluid#32600; the credited `/<credit>/sites/<handle>`
   form needs the sites gateway. Their old `/accounts/<handle>` addresses were deleted
   with no redirect. Account screens such as `/accounts/profile` are not sites and keep
   their paths.
-- No root theme ships member templates or a member layout. The pages say so and describe
-  the not-found behavior that follows. Do not document shipped defaults until a root
-  theme carries them.
 - The three system screens (Messaging, Contacts, My Site) are documented as Fluid-rendered
   and dependent on the account screens runtime being enabled for the company. The
   provisioning mechanism and its administrative tooling are deliberately omitted.
@@ -1735,37 +1738,12 @@ Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, t
 - The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
 
 
-### Member manifest v2 authoring
+### Member manifest v2 authoring (retired)
 
-The `manifest` page adds the version 2 file contract and the CLI watcher workflow.
-Its claims are semantic theme-file claims, not endpoint schemas. Source evidence
-is `MemberConfigurationValidator`, `MemberConfigurationResolver`,
-`MemberConfigurationWriter`, `MemberConfigurationMenuContext`,
-`MemberConfigurationResource`, and `MemberConfigurationUpload` in Fluid, plus
-`packages/cli/theme-dev/src/theme/member-configuration.ts`, `dev-server/index.ts`,
-`dev-server/hot-reload.ts`, and Mist's `shared/project-kinds.ts`.
-
-Preserve these boundaries when updating the guide:
-
-- The current v2 document requires `version`, `sites`, `menus`, and
-  `menu_references`. New exports omit `templates`; older v2 metadata arrays remain
-  accepted. This update follows Fluid PR #22898 and must ship with that behavior.
-- Member dependencies resolve from page paths, site layouts, and ordinary file
-  contents. Member-page JSON detection requires an object with a `sections` key.
-- Manifest-only edits retain unrelated template metadata and drafts. Fresh file
-  imports use normal defaults; do not promise lossless transfer of database-only
-  flags or translations without the old metadata array.
-- The filename is `members_sites.json`. Sites match by name and pages by slug;
-  document keys connect references inside a snapshot, not persistent identities.
-- Snapshot omission removes sites/pages. Removing the file is rejected; an empty
-  versioned document explicitly clears member configuration, not every menu or file.
-- Navigation travels as full menu trees. Country codes and member-type slugs must
-  resolve in the destination. Unrelated menu handle collisions allocate a new menu.
-- Site country rules can be empty; menu country lists require a destination country.
-- `theme dev` defaults to an isolated development theme. Its preview reloads on
-  acknowledged uploads. A separate admin builder does not receive that reload signal.
-- Verification of the watcher and renderer is source-based here. JSON examples and
-  MDX are checked separately; this guide does not claim a live Mist end-to-end run.
+The `manifest` page and its version 2 `members_sites.json` contract were deleted with
+the rest of theme member sites (see **Member storefront — theme-author contract**).
+Its claims were removed from the registry. Do not restore them; member-only pages are
+Sites.
 
 
 ### Explicit request-field variants
@@ -1858,7 +1836,7 @@ fluid PRs #23196 and #23208 (the rail's Apps / App Embeds panel became
 **Widgets** and lists droplet sections under the embed toggles); the in-canvas
 **Add Section → Apps** tab still exists in `AddSectionsWithPreview`.
 
-Member-page behavior is source-verified, not a live render: member pages render
+Member-page behavior is source-verified, not a live render: `members_page` templates render
 through the same themeable pipeline, `LiquidTags::Section` resolves extension
 URIs for any page type, and `base_environment_for` hands every section the
 page's `member` (a `MemberProfileDrop`) and `member_content`. `PageBuilder.fetch_global_embeds`
@@ -2184,6 +2162,46 @@ default), `migration/server-side-attribution.mdx`, and `themes/supported-paths.m
 (`/search` is not a page; the playlist and enrollment index routes redirect to `/`, which
 carries no credit segment; product detail is by slug).
 
+### Storefront guides — translatable metafields (2026-11-16)
+
+`storefront/metafields.mdx` gained a **Translate metafields** section, and
+`storefront/translations.mdx` points to it. Behaviour was verified against `main` of the
+Rails monorepo (`51dcf7fdb6a`) and the synced `storefront-v2026-04` spec. Durable decisions:
+
+- **Metafield values are the exception to "no separate translations endpoint".** A text
+  metafield whose definition is translatable has its own five company operations
+  (`/api/v202604/company/metafield-translations`, `/catalog`, `/export`,
+  `/ai-translate-missing`). The generated reference pages sit under the
+  `metafield-translations` tag. A translation PATCH still ignores `metafields_attributes`.
+- **The company endpoints answer `404` while the company's release gate is off.** The
+  guide says "release gate" and never names the flag key. Public reads then return the
+  original values.
+- **Fallback order for a shopper read:** the translation in the requested language, then a
+  usable English translation, then the original. A blank translation, and a list with
+  another item count or a non-list, is unusable. An outdated translation (its stored digest
+  differs from the original's) still shows. The store's default language, and a record with
+  no value for the field, never show a translation. English is a fallback only when it is
+  one of the store's non-default languages, so a store whose default is French falls back to
+  English, then to French.
+- **Which public reads translate:** the public product reads (list and by slug, including
+  each variant's `metafields`), the category and collection product lists, and theme pages
+  for products, variants and enrollment packs. The public enrollment pack endpoints and the
+  company endpoints return stored values. The enrollment pack claim comes from reading
+  the code, not a browser check; recheck it if the enrollment pack serializer changes.
+- **The catalog, export and AI run cover Product fields only.** Variant and enrollment pack
+  fields use the read and save operations. The AI run needs update permission on products
+  and the permission `POST /api/v202604/ai/translate` needs. The guide doesn't name that
+  endpoint or its permission key, because it has no published reference.
+- **A save purges cached pages about five minutes later.** The guide says translations
+  show on cached pages after about five minutes.
+- **The definitions API is not published.** `admin-v2` carries only the `translatable`
+  schema field, so the guide points to the admin switch and never hand-writes a definitions
+  path.
+- **Liquid paths in `themes/theme-variables.mdx`** (not a registered guide) are limited to
+  the two paths verified in a rendered page: `product.metafields.<namespace>.<key>` and
+  `v.metafields.<namespace>.<key>` inside `product.variants`. Enrollment pack and
+  page-builder setting paths are left out until rendered.
+
 ### FairShare credit model — established, then kept (2026-10-04)
 
 The docs owner's model of rep credit is authoritative for every page:
@@ -2405,24 +2423,18 @@ run the second.
 
 ## Sitemap, custom routes, and redirects (2026-10-04)
 
-**2026-11-16 update (fluid#34333, supersedes the 301 part of the 2026-11-15 update below):** route redirects
-now answer `301` or `302`. `theme_region_rules.redirect_status_code` (`301`/`302`, default `302`, not null) is
-read by `Middleware::ThemeRegionRouter#redirect_status`, which falls back to `302` for any other value. The
-Sitemap drawer shows a **Redirect Type** select, **Permanent (301)** / **Temporary (302)**, whenever the default
-override is **URL Redirect**; a new redirect, or a rule switched to URL Redirect, starts at `301`, and a saved
-redirect shows its stored status. Existing rules kept `302`. The country-route editor has no picker, so
-country-route redirects saved from the admin answer `302`, although the API accepts a status for them.
-`help/admin/sitemap.mdx` (**Permanent or temporary**) and `themes/custom-routes.mdx` (**Redirects**) document
-this. The legacy URL Redirects screen guidance below is unchanged: still don't document or recommend it.
-
 **2026-11-15 update:** `help/admin/url_redirects.mdx` was removed, and `/help/admin/url_redirects` redirects to
 `/help/admin/sitemap#redirect-a-url`. Redirects are documented only as custom routes whose override is
-**URL Redirect** on the Sitemap screen (`302`, set in `Middleware::ThemeRegionRouter#redirect_response_for_rule`).
+**URL Redirect** on the Sitemap screen (the status is now `301` or `302`; see the 2026-11-16 entry below).
 The legacy URL Redirects screen (`/url_redirects`, `Middleware::Redirects`, `301`) still exists in fluid and
 still answers first, but don't document or recommend it. Mention it only as "an older redirect saved on the
-same path may answer first" for troubleshooting. The drawer's **Redirect Type** 301/302 select renders only for
-a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice. The
-bullets below that recommend the URL Redirects screen are superseded.
+same path may answer first" for troubleshooting. ~~The drawer's **Redirect Type** 301/302 select renders only for
+a `Redirect` resource type, which the form never sets, so it never appears; don't document a 301 choice.~~
+**Superseded on 2026-11-16:** fluid #34333 (`aeedd6d86a5`, merged 2026-11-15) gates the select on the
+**URL Redirect** override (`overrideType === REDIRECT_OVERRIDE_TYPE`, from `default_resource_type`
+`ExternalUrl`), defaults it to **Permanent (301)**, and the storefront router serves the saved status. Checked on
+fluid `origin/main` `d77346970dc`. Document the 301 or 302 choice; see "Legacy `/api/redirects` unpublished
+(2026-11-16)". The bullets below that recommend the URL Redirects screen are superseded.
 
 `help/admin/sitemap.mdx`, `help/admin/url_redirects.mdx`, and `themes/custom-routes.mdx`
 were added and verified against `origin/main` of the Rails monorepo and `apps/fluid-admin`
@@ -2431,8 +2443,9 @@ was added with claim `sf-fairshare-078` (`-079`, on redirect query strings, was 
 2026-10-04 with that clause). Durable decisions:
 
 - **Recommended pattern: redirect marketing and legacy URLs.** A URL such as `/tv-offer`
-  serves customers without a rep, so it gets a `301` on the URL Redirects screen to the
-  product or page. Members share credited `/<username>/...` paths from the mobile app or
+  serves customers without a rep, so it gets a redirect to the product or page. (Superseded:
+  it's a custom route on the Sitemap, `301` by default, not the URL Redirects screen. See the
+  2026-11-16 entry.) Members share credited `/<username>/...` paths from the mobile app or
   their own links. Don't document adding rep credit to a marketing URL, and don't tie the
   redirect's query-string behavior to that pattern. Non-credited routes are the option only
   when the address must stay in the address bar.
@@ -3139,3 +3152,30 @@ Durable decisions:
   both shells (gateway or not).
 - Standalone hosting on `<label>.sites.fluid.app` (fluid#32630) is behind an
   off-by-default release gate. Don't document it on this page until it's on.
+
+## Legacy `/api/redirects` unpublished (2026-11-16)
+
+Redirects are custom routes on the Sitemap. In the API, a redirect is a theme region rule
+(`themes-v0`, `POST /api/theme_region_rules`) whose `redirect_type` is `redirect`. The
+older `company-v0` `/api/redirects` endpoints and their CSV import and export are no longer
+used. The admin's Sitemap screen doesn't show what they create, and agents that found them
+created redirects merchants couldn't see. The tag is now in the nav config's `exclude`
+list, its eight generated URLs redirect temporarily to
+`/themes/custom-routes#create-a-redirect-with-the-api`, and `Lists redirects` left
+`OFFSET_PAGINATED_PAGES`, so the offset count in AGENTS.md is now 48 (25 on `company-v0`).
+
+Two facts to keep straight:
+
+- **Status codes.** A region rule redirect answers `301` or `302`. The API saves `302`
+  when `redirect_status_code` is omitted. The admin's **Redirect Type** defaults to
+  **Permanent (301)** on a route's default override, and its country route redirects are
+  `302`. The earlier "route redirects are always 302" wording is retired.
+- **Old rows still answer first.** The legacy redirects middleware still runs, so a
+  saved legacy redirect on the same path beats a route rule. The docs keep that
+  troubleshooting note until the rows and the middleware are removed upstream.
+
+The confusing generated titles ("Create a sitemap country route (theme region rule)")
+come from the upstream `themes-v0` spec. fluid#34720 renames them to "sitemap route(s)",
+which changes the generated URLs. This PR already points the links in
+`themes/custom-routes` and `themes/why-fluid-themes` at the new slugs and adds redirects
+from the old ones, so it merges after the API reference sync brings in that rename.

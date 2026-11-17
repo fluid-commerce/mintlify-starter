@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.12"
+  version: "1.15"
 ---
 
 # Fluid
@@ -17,7 +17,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Task | Start here |
 | --- | --- |
 | Use the admin portal: Settings screens, the page editor | https://docs.fluid.app/help/admin |
-| Redirect a storefront URL, or add a custom or country route. Redirects are custom routes on the Sitemap screen; there is no separate redirects screen | https://docs.fluid.app/help/admin/sitemap#redirect-a-url, then https://docs.fluid.app/themes/custom-routes for the theme region rules API |
+| Redirect a storefront URL (301 or 302), or add a custom or country route. Every redirect is a custom route on the Sitemap: in the API, a theme region rule with `redirect_type` `redirect`. Never use `/api/redirects` | https://docs.fluid.app/themes/custom-routes#create-a-redirect-with-the-api, then https://docs.fluid.app/help/admin/sitemap#redirect-a-url for the admin |
 | Collect extra details at enrollment checkout (forms, after payment, per country) | https://docs.fluid.app/guides/checkout-forms, then https://docs.fluid.app/help/admin/forms |
 | Build a standalone form with the API and share it by link or embed (create, publish, read responses) | https://docs.fluid.app/guides/build-and-share-a-form |
 | Contact Fluid support | https://docs.fluid.app/help/getting-help |
@@ -31,12 +31,13 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Connect an AI agent: docs MCP server, Fluid CLI, Mist | https://docs.fluid.app/guides/connect-ai-tools |
 | Build a first integration | https://docs.fluid.app/quickstart |
 | Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
+| Translate metafield values (product, variant and enrollment pack text fields) in the admin, or through the API: create or update a definition with `translatable: true`, then read and save translations. It may not be on for every company yet | https://docs.fluid.app/help/admin/settings/metadata-definitions#translate-field-values, then https://docs.fluid.app/storefront/metafields#translate-metafields |
 | Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
 | Add attribution and a cart to a website (FairShare SDK) | https://docs.fluid.app/sdk/overview |
 | Build or customize a storefront theme (Liquid) | https://docs.fluid.app/themes/overview |
 | Host a small project on Fluid (landing page, event page, calculator, dashboard) and get a public URL | https://docs.fluid.app/sites/quickstart, then https://docs.fluid.app/sites/site-or-app and the section "Host a project" below |
-| Build a Site (formerly a member site): a static app, Vite and React by default, on `@fluid-app/sites`, at `/home/sites/<site-handle>` and `/sites/<site-handle>` on the company's storefront. It replaces theme member sites, which are deprecated | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/sites/sdk and https://docs.fluid.app/sites/publishing |
+| Build a Site (formerly a member site): a static app, Vite and React by default, on `@fluid-app/sites`, at `/home/sites/<site-handle>` and `/sites/<site-handle>` on the company's storefront. It replaces theme member sites, which are retired | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/sites/sdk and https://docs.fluid.app/sites/publishing |
 | Set a Site's page titles and previews, or get it indexed | https://docs.fluid.app/sites/seo |
 | Call the Member API from a Site's page as the visitor | https://docs.fluid.app/sites/member-api |
 | Give a Site server code: a form handler, webhook, scheduled job or its own REST API with API keys | https://docs.fluid.app/sites/functions, then https://docs.fluid.app/sites/rest-api |
@@ -64,7 +65,7 @@ Customers use industry words for things Fluid names differently. Search the docs
 | Distributor, consultant, affiliate, rep | Member. A company can name one of its member types "Rep". | https://docs.fluid.app/api/member-apis |
 | Replicated site | The storefront home page credited to a member: `https://{company}.fluid.app/{username}` | https://docs.fluid.app/themes/supported-paths |
 | Rep site | MySite | https://docs.fluid.app/help/admin/settings/default-mysite |
-| Site, member site, site for my members | A Site: a static app a member or the company owns, at `/home/sites/<site-handle>` (also `/sites/<site-handle>`) on the storefront; a member's share link is `/<username>/sites/<site-handle>`, and its code runs on `<label>.sites.fluid.app`. It is not MySite, and not a theme's member storefront site, which is deprecated. A company's own Sites are also storefront resources, at `/api/v202604/sites`. | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/storefront/sites |
+| Site, member site, site for my members | A Site: a static app a member or the company owns, at `/home/sites/<site-handle>` (also `/sites/<site-handle>`) on the storefront; a member's share link is `/<username>/sites/<site-handle>`, and its code runs on `<label>.sites.fluid.app`. It is not MySite, and not a theme's member storefront site, which is retired. A company's own Sites are also storefront resources, at `/api/v202604/sites`. | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/storefront/sites |
 | Upline, downline | Genealogy | `/api/company/v2026-10/genealogy/...`, or the `fluid genealogy` CLI: https://docs.fluid.app/api/genealogy-cli |
 
 ## Use the current endpoint
@@ -74,7 +75,7 @@ Some areas have more than one generation of endpoints, and search can rank an ol
 - **Members:** use the member APIs. The older `/reps` endpoints are being retired, and only member management returns `member_type`.
 - **Droplets:** find, create, update and install droplets with the company API at `/api/company/v2026-10/droplets` and `/api/company/v2026-10/droplet-installations`. Get or rotate a droplet's webhook secret with `POST /api/company/v2026-10/droplets/{uuid}/webhook-secret-rotations`: it returns the new secret once, and Fluid signs with it from then on. The unversioned `/api/droplets` and `/api/droplet_installations` endpoints will soon be deprecated.
 - **Themes:** list and read themes with `/api/v202604/themes` and `/api/v202604/themes/active`. Use `/api/application_themes/*` and `/api/application_theme_templates/*` only for templates and theme resources, which v2026-04 doesn't cover. `/api/application_theme_templates/mysite_themes` is for MySite themes only. `/api/legacy_themes` is the MySite theme API that `fluid mysite` uses, where a saved change goes live at once; never use it for storefront themes.
-- **Sites (formerly member sites):** a Site is owned by a member or by the company. For a member's own site use the member API, `/api/member/v2026-10/sites`, with the member's own token. For a company site, list, create, read, update and delete it with the v2026-04 storefront API, `/api/v202604/company/sites` (fields `slug`, `title`, `status`; the public catalog is `/api/v202604/sites`), with a signed-in admin; use the company API, `/api/company/v2026-10/member-sites/{id}/...`, only for what v2026-04 doesn't have (keys, env vars, bundles, files, data, hosting, shares, take-down). Neither route changes the other owner's sites, and every route answers `404` until Fluid turns Sites on for the company. Don't use `fluid mysite` or `fluid theme` for a member site. Don't build new theme member sites, whose deprecated API is `/api/company/members_sites` and `/api/company/members_pages`, or `members_sites.json` in a theme: https://docs.fluid.app/sites/overview
+- **Sites (formerly member sites):** a Site is owned by a member or by the company. For a member's own site use the member API, `/api/member/v2026-10/sites`, with the member's own token. For a company site, list, create, read, update and delete it with the v2026-04 storefront API, `/api/v202604/company/sites` (fields `slug`, `title`, `status`; the public catalog is `/api/v202604/sites`), with a signed-in admin; use the company API, `/api/company/v2026-10/member-sites/{id}/...`, only for what v2026-04 doesn't have (keys, env vars, bundles, files, data, hosting, shares, take-down). Neither route changes the other owner's sites, and every route answers `404` until Fluid turns Sites on for the company. Don't use `fluid mysite` or `fluid theme` for a member site. Theme member sites are retired: don't call `/api/company/members_sites` or `/api/company/members_pages`, and don't write `members_sites.json` in a theme. Build a Site instead: https://docs.fluid.app/sites/overview
 - **Cowork tasks:** the tickets on the company's Cowork board. Create one with `POST /api/v202604/multiplayer/tasks` (`task.client_id`, `task.title`), list them with `GET /api/v202604/multiplayer/tasks`, and send `expected_version` (the task's `lock_version`) with every change. Every call needs a company admin's own Bearer token; a company API token answers `403`: https://docs.fluid.app/api/guides/cowork-tasks
 
 ## Host a project
@@ -139,7 +140,7 @@ On a site Fluid doesn't host, install with one script tag. `data-fluid-shop` is 
 
 ## Fluid CLI
 
-Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist.
+Use only commands the CLI reference pages list. If a command isn't on those pages, it doesn't exist. If a listed command, option or config key isn't found, the CLI or a plugin is out of date: run `fluid version --json` and run each `update.command` it gives (https://docs.fluid.app/guides/connect-ai-tools#keep-the-cli-current).
 
 - **Sign up** (https://docs.fluid.app/api/agent-launch#step-1-sign-up-confirm-the-email-and-sign-in): `fluid signup --email <email> --first-name <first> --last-name <last> --company-name <name> --subdomain <subdomain> --yes --json`. With the merchant's consent only; it creates a real company.
 - **Sign in** (https://docs.fluid.app/guides/connect-ai-tools#fluid-cli): `fluid login`. With no terminal, run `fluid login --send-code --email <email> --shop <shop>`, then `FLUID_LOGIN_CODE=<code> fluid login --code --email <email> --yes --json`. `--yes` replaces a CLI profile with the company's name; `--name <profile>` keeps it, as the steps `fluid signup` prints do. Or `FLUID_TOKEN=<token> fluid login`.

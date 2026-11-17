@@ -1,7 +1,7 @@
 ---
 title: "Metafields on storefront resources"
 sidebarTitle: "Metafields"
-description: "Store custom data on storefront resources with metafields: the fields each one has, the value types, how writes merge and delete, and what shoppers can see."
+description: "Store custom data on storefront resources with metafields: the fields each one has, the value types, how writes merge and delete, what shoppers can see, and how to translate text metafields."
 ---
 
 Metafields let you attach your own data to a storefront resource — a product's material, a post's reading time, a page's accent colour. Each metafield is a typed value filed under a `namespace` and a `key`.
@@ -29,7 +29,7 @@ Every storefront response includes a `metafields` array. It's empty when the res
 ]
 ```
 
-The public and company endpoints return the same array. `value` comes back exactly as it was written: a number written as `"42"` reads back as the string `"42"`.
+The public and company endpoints return the same array. On the company endpoints, `value` comes back exactly as it was written: a number written as `"42"` reads back as the string `"42"`. A public product read can return a translation instead; see [Translate metafields](#translate-metafields).
 
 ## Write metafields
 
@@ -120,10 +120,114 @@ A store can define its metafields in Fluid Admin: the type each `namespace` and 
 
 A definition never hides a metafield or makes it required. `locked` in a response shows whether the matching definition is locked in Fluid Admin, or `null` when there is no definition.
 
+## Translate metafields
+
+A text metafield on a product, a variant, or an enrollment pack can carry its own value in each language your store sells in. Fluid keeps each translation apart from the original, so the value you wrote never changes. Shoppers read the translation in their language. The company endpoints return the original.
+
+<Note>
+  Translatable metafields are behind a release gate and may not be available to your company yet. While the feature is off for a company, the company metafield translation endpoints answer `404`, and public reads return the original values.
+</Note>
+
+### What you can translate
+
+A metafield is translatable when all of these hold:
+
+- Its definition is marked translatable with `translatable: true`, through the API or the **Translatable** switch in Fluid Admin. See [Translate with the API](#translate-with-the-api) and [Metadata Definitions](/help/admin/settings/metadata-definitions#make-a-field-translatable).
+- The definition belongs to a product, a variant, or an enrollment pack.
+- Its type is `single_line_text_field`, `multi_line_text_field`, `rich_text_field`, `list.single_line_text_field`, or `url`.
+- The definition has no list of allowed choices.
+
+A record's translations list only the metafields it holds a value for.
+
+### What shoppers get
+
+Pass `lang` on a public product read, as in `GET /api/v202604/products/{slug}?lang=es`. Each translatable metafield comes back in that language, in `metafields` on the product and in `metafields` on each of its variants. The product list and the product lists of a category or a collection translate the same way. Your theme's product, variant, and enrollment pack pages show the shopper's language too. See [Theme variables](/themes/theme-variables#translated-metafields).
+
+For each metafield, Fluid picks the value in this order:
+
+1. The translation in the requested language.
+2. The English translation, if the store has one.
+3. The original value.
+
+The rules behind that order:
+
+- A blank translation doesn't count. Neither does a list translation with a different number of items than the original.
+- The store's default language always returns the original, because the original is in that language. That holds when the default isn't English, too. The English fallback applies only when English is one of the store's other languages.
+- A record with no value for the field returns nothing, even if an old translation exists.
+- An outdated translation keeps showing. That is a translation saved for an original that has since changed.
+- Public reads of anything else, enrollment pack endpoints included, return the stored values.
+- A save shows up on cached storefront pages about five minutes later.
+
+The company endpoints for products, variants, and enrollment packs always return the original value, whatever `lang` says.
+
+A shopper sees a translated metafield only where your theme prints it. Changing a translation changes nothing on a page that doesn't print the field.
+
+### Translate with the API
+
+This is the flow an agent can follow, one step per operation. The permissions are the record's own: you need view access to read and update access to save, on products for a product or a variant and on enrollment packs for an enrollment pack. Without them, the operation answers `403`.
+
+1. **Make the field translatable.** Create the definition with `translatable: true` in one call, or turn it on for an existing definition.
+   - [Create a metafield definition](/api-reference/metafield-definitions/create-a-metafield-definition) takes `translatable` in the same request as the namespace, key, name, and type.
+   - For an existing definition, find its `id` with [List metafield definitions](/api-reference/metafield-definitions/list-metafield-definitions). Then send `{"metafield_definition": {"translatable": true}}` to [Update a metafield definition](/api-reference/metafield-definitions/update-a-metafield-definition).
+
+   ```bash
+   curl -X POST "https://api.fluid.app/api/v2/metafield_definitions" \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "metafield_definition": {
+         "owner_resource": "Product",
+         "namespace": "custom",
+         "key": "tagline",
+         "name": "Tagline",
+         "value_type": "single_line_text_field",
+         "translatable": true
+       }
+     }'
+   ```
+
+   The create or update response already includes `translatable`, so check that it's `true`. You can also read the definition back with [Get a metafield definition](/api-reference/metafield-definitions/get-a-metafield-definition). While the feature is off for the company, `translatable` is ignored: a create still creates the definition, with `translatable` returned as `false`, and an update leaves the stored value as it was. These calls need the Developer permission, view to read and update to change. The store must also sell in the language you translate into, and the language can't be the store's default (`422`).
+2. **Read a record's translations.** [Read a record's metafield translations](/api-reference/metafield-translations/read-a-records-metafield-translations) lists each translatable field the record holds a value for. Each has the original, a digest of that original, and the stored translation, or `null` when there is none.
+
+   ```bash
+   curl "https://api.fluid.app/api/v202604/company/metafield-translations?owner_type=Product&owner_id=48213&lang=es" \
+     -H "Authorization: Bearer <token>"
+   ```
+
+3. **Save the translations.** [Save a record's metafield translations](/api-reference/metafield-translations/save-a-records-metafield-translations) writes the values for one record in one language. Send back the digest the read issued for each field. Fluid stores it exactly as sent, so a later read can tell when the original has changed. If any item is refused, `422` means nothing was saved.
+
+   ```bash
+   curl -X PUT "https://api.fluid.app/api/v202604/company/metafield-translations" \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "owner_type": "Product",
+       "owner_id": 48213,
+       "lang": "es",
+       "translations": [
+         {
+           "namespace": "custom",
+           "key": "how_to_use",
+           "value": "Mezcla una dosis con agua.",
+           "source_digest": "3b1f7c0e5a9d4e2b8c6a1f0d7e3b9a5c2d4f6e8a0b1c3d5e7f9a2b4c6d8e0f1a"
+         }
+       ]
+     }'
+   ```
+
+4. **Find the gaps across products.** [List a field's translations across all products](/api-reference/metafield-translations/list-a-fields-translations-across-all-products) works one product field in one language. Each product comes back with a status: `translated`, `outdated`, `missing`, or `not_showing`. A `not_showing` translation is one shoppers can't see, because its list has a different number of items than the original. The list uses cursor pagination.
+5. **Export them.** [Export a field's translations as CSV](/api-reference/metafield-translations/export-a-fields-translations-across-all-products-as-csv) returns the same rows as a CSV file for review or a translator.
+6. **Translate the missing values with AI.** [Translate every missing value of a field with AI](/api-reference/metafield-translations/translate-every-missing-value-of-a-field-with-ai) queues a background run and answers `202`. It fills only `missing` translations and never overwrites one that has text. If a run for the same field and language is already going, `state` is `already_running`. It needs permission to update products and to use AI translation, or it answers `403`.
+7. **Check what shoppers get.** Read the public product with `lang`, as in [What shoppers get](#what-shoppers-get).
+
+When a read shows an original whose digest differs from the translation's, the translation is outdated. Shoppers still see it. Translate the new original, then save it with the new digest.
+
+Variants and enrollment packs use the read and save operations only. The catalog, the export, and the AI run cover product fields.
+
 ## Search, translation, and themes
 
 - **Search.** A list's `q` search matches metafield values. You can't filter a list by a metafield.
-- **Translation.** Metafields aren't translated. A translation PATCH (a write with a non-default `lang`) ignores `metafields_attributes` on every resource, products included. See [Translations](/storefront/translations).
+- **Translation.** A translation PATCH (a write with a non-default `lang`) ignores `metafields_attributes` on every resource, products included. To translate a metafield, use the metafield translation endpoints. See [Translate metafields](#translate-metafields) and [Translations](/storefront/translations).
 - **Themes.** Liquid templates read product, variant, and enrollment pack metafields as `resource.metafields.<namespace>.<key>`, for example `product.metafields.custom.material`.
 
 ## Current limitations
