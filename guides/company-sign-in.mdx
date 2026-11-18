@@ -7,7 +7,7 @@ keywords: ["company sign-in", "Sign in with Fluid", "OpenID Connect", "OIDC", "O
 
 **Company sign-in lets people sign in to your own app with their Fluid account, under your company's name.** Your app talks to your company's OpenID Connect provider. People see your company, and Fluid stays out of sight.
 
-<Warning>**TBD:** how this feature is made available (for example, private beta). It's turned on per company, so you can't use it until Fluid turns it on for yours. Until then, discovery answers 404 and your app is refused as an unknown client.</Warning>
+<Note>**Private beta:** available for companies Fluid turns it on for. Ask your Fluid contact. Until it's on for your company, discovery answers 404 and your app is refused as an unknown client.</Note>
 
 ## Choose a sign-in
 
@@ -26,10 +26,10 @@ Each app you register is a client of your company's provider. A registration has
 
 | Field | Rules |
 | --- | --- |
-| Client type | `public`: no secret, and the app proves itself with PKCE. |
+| Client type | Public only: no secret, `token_endpoint_auth_method: none`, and the app proves itself with PKCE. |
 | Sign-in audience | `reps`, `customers`, or `both`. See [who can sign in](#who-can-sign-in). |
 | Redirect URIs | 1 to 10, each unique and at most 2,000 bytes. |
-| Issuer slug | A lowercase DNS label of 1 to 63 characters. It's set when you register your company's first app and never renamed. |
+| Issuer | Your company's issuer is `https://identity.fluid.app/c/{slug}`. The slug is set once, when the issuer is created. It defaults to your company's subdomain, is a lowercase DNS label, and never changes. Every app comes back with it as `issuer`. |
 
 Fluid gives each app a client ID that starts with `fca_`.
 
@@ -39,25 +39,45 @@ Each redirect URI:
 - Uses `https`. It can use `http` only when the host is exactly `localhost` or `127.0.0.1` and the URI has an explicit port.
 - Matches exactly, byte for byte, at both the authorize and token steps. There's no wildcard and no loopback port leniency.
 
-<Warning>**TBD:** confidential apps. A confidential app holds a secret sent with HTTP Basic, but registering one isn't available yet, so register a public app for now.</Warning>
+Registration creates public apps only, so there's no client secret to store.
 
-<Warning>**TBD:** how you register an app (API, MCP, CLI, or the admin), and which base URL and credentials you need. This page will link to the API reference for it.</Warning>
+### Register with the company-apps API
+
+A company admin registers the app while signed in as themselves, then gives the developer the `client_id` and the `issuer`. The company-apps API is at `https://api.fluid.app/api/v2025-06/company-apps`:
+
+- `POST /company-apps` registers an app.
+- `GET /company-apps` lists apps.
+- `POST /company-apps/{client_id}/revoke` revokes an app.
+
+Send a Bearer token of a signed-in company admin who has `developer.update` (`developer.view` to list). Company, partner, droplet, and other machine tokens get 403. There's no admin screen for this yet.
+
+The answer to a registration carries `client_id`, `issuer`, and `discovery_url`. That's all your app needs.
+
+<Warning>**TBD:** how an admin gets that token. The steps will be confirmed before this page is published.</Warning>
+
+To register apps from an AI assistant, see the MCP docs.
 
 ### Who can sign in
 
-- **`reps`**: your company's reps. An administrator signs in as the rep they also are. Sending `login_kind=shopper` is refused.
+The audience says which of your company's members may sign in:
+
+- **`reps`**: your company's reps. An administrator gets in as a rep only if they have their own rep membership at your company. A Fluid root admin's platform session is refused. Sending `login_kind=shopper` is refused.
 - **`customers`**: your company's customers. The app always uses the customer sign-in.
-- **`both`**: reps and customers. The app asks for the customer sign-in by sending `login_kind=shopper`, and otherwise gets the rep sign-in.
+- **`both`**: reps and customers. The app asks for the customer sign-in by sending `login_kind=shopper` (may change), and otherwise gets the rep sign-in.
+
+`login_kind` may change: the forced kind goes away when sign-in moves to one page.
 
 ## Find your issuer
 
-Your company's issuer is the host that serves your provider, followed by `/c/` and your issuer slug. Its discovery document lists every endpoint your app needs:
+Your company's issuer is `https://identity.fluid.app/c/{slug}`. Its discovery document lists every endpoint your app needs:
 
 ```text
-https://<issuer host>/c/<slug>/.well-known/openid-configuration
+https://identity.fluid.app/c/{slug}/.well-known/openid-configuration
 ```
 
-<Warning>**TBD:** the exact production issuer host to put in `<issuer host>`. Use the `issuer` value Fluid gives you when you register.</Warning>
+Always read the authorize, token, userinfo, and JWKS endpoints from discovery. Don't build their URLs yourself.
+
+<Warning>**TBD:** some endpoint paths and refusals will change before this page is published. `/authorize`, `/token`, and `/userinfo` move under the issuer path, another company's session answers `login_required` instead of `access_denied`, `login_hint` is ignored for company apps, and claims are given out per scope. Reading endpoints from discovery keeps your app working.</Warning>
 
 A standard OpenID Connect library needs only the issuer. It reads the authorize, token, userinfo, and JWKS endpoints from the discovery document. The document advertises:
 
@@ -84,8 +104,8 @@ Discovery answers 404 for an unknown issuer, and for a company that doesn't have
     | `code_challenge_method` | Yes | `S256` |
     | `scope` | Yes | A space-separated list that includes `openid`. |
     | `nonce` | No | At most 255 printable ASCII characters. It's returned in the ID token. |
-    | `login_kind` | No | `shopper` to use the customer sign-in. Follows the [sign-in audience](#who-can-sign-in). |
-    | `prompt` | No | `none` returns `login_required` instead of showing a sign-in. `login` forces a new sign-in. |
+    | `login_kind` | No | `shopper` to use the customer sign-in, for `both` apps. May change. See [who can sign in](#who-can-sign-in). |
+    | `prompt` | No | `none` returns a code with no screen, or `login_required`. `login` always signs the person in again. |
   </Step>
   <Step title="Receive the code">
     After the person signs in, Fluid redirects to your `redirect_uri` with `code` and your `state`. Check that `state` matches.
@@ -95,16 +115,18 @@ Discovery answers 404 for an unknown issuer, and for a company that doesn't have
   </Step>
 </Steps>
 
-Whatever other scopes you list, the app is given `openid profile email`.
+`openid` is required, or the answer is `invalid_scope`. Request `openid profile email`. Today every app gets those three scopes, you can't decline `profile` or `email`, and other values are ignored, not rejected. Scopes will start to control which claims you get.
+
+<Warning>**TBD:** the scope name for the `fluid_*` claims.</Warning>
 
 ### Authorize errors
 
-A request for an app that is unknown, revoked, or belongs to a company without company sign-in answers 400 `unregistered client` and never redirects. Other refusals redirect to your `redirect_uri` with an `error`:
+A request for an app that is unknown, revoked, or belongs to a company without company sign-in answers 400 and never redirects. Other refusals redirect to your `redirect_uri` with an `error`:
 
 | `error` | When |
 | --- | --- |
 | `invalid_scope` | `scope` doesn't contain `openid`. |
-| `invalid_request` | `nonce` is longer than 255 bytes or isn't printable ASCII. `login_kind=shopper` is sent to an app for reps. `org` names a different company. |
+| `invalid_request` | `nonce` is longer than 255 bytes or isn't printable ASCII. `login_kind=shopper` is sent to an app for reps. |
 | `login_required` | You sent `prompt=none` and the person has no valid session. |
 | `access_denied` | The browser holds a session for another company. |
 
@@ -126,7 +148,7 @@ Send a `POST` to the `token_endpoint` with `application/x-www-form-urlencoded` f
 
 The response has `access_token`, `token_type`, `expires_in`, `scope` (`openid profile email`), and `id_token`.
 
-- **Only the code exchange works.** Fluid never issues a refresh token, and a refresh request answers 400 `unauthorized_client`. To renew, send the person back to authorize with `prompt=none`.
+- **Only the code exchange works.** A refresh token isn't issued today, and a refresh request answers 400 `unauthorized_client`. To renew, send the person back to authorize with `prompt=none`. Renewal works while the person's Fluid session lasts.
 - **The ID token** says who signed in. It's a signed JWT. Check its signature against the JWKS from discovery, and check `iss`, `aud`, `exp`, and your `nonce`.
 - **The access token** is for [userinfo](#call-userinfo) only. The Fluid API refuses it.
 
@@ -141,7 +163,7 @@ The ID token carries all of these claims. Userinfo carries only the profile clai
 | Claim | Type | Meaning |
 | --- | --- | --- |
 | `iss` | string | Your company's issuer. |
-| `sub` | string | The person's ID at your company: a lowercase UUID, the same across all your company's apps, and different at every other company. It's never the person's Fluid ID. |
+| `sub` | string | The person's ID at your company: the same across all your company's apps, and different at every other company. It's stable for that person's account at your company and is never reassigned. Key your users on `iss` plus `sub`, never on email. |
 | `aud` | string | Your app's client ID. |
 | `iat`, `exp` | integer | Issued and expiry times, in Unix seconds. |
 | `auth_time` | integer | When the person last signed in interactively, in Unix seconds. |
@@ -150,23 +172,23 @@ The ID token carries all of these claims. Userinfo carries only the profile clai
 | `email` | string | The person's email address. For a customer, it can differ from the address they signed in with. |
 | `email_verified` | boolean | See [email verification](#email-verification). |
 | `fluid_member_type` | string | `rep` or `customer`. |
-| `fluid_rep_id` | string | The rep's member ID at your company. Present only for a rep. |
+| `fluid_rep_id` | string | The rep's member ID at your company, the same ID the Members API returns. It's an identifier, not a secret. Present only for a rep. |
 | `fluid_company` | object | The company, with `id` and `name`. |
 
 The ID token has no `sid` claim.
 
-<Warning>**TBD:** whether `sub` is promised stable and safe as your primary key for a person, and whether `fluid_rep_id` and the `fluid_` prefix are permanent public names.</Warning>
+`fluid_` is the permanent prefix for Fluid's own claims.
 
 ### Email verification
 
-`email_verified` is `true` only when the person's sign-in proved their address with an emailed code. It's `false` for sign-ins by password, passkey, Google, or text message. It's also `false` for a customer whose code went to a different address than `email`, and for a code sign-in that kept the address its code went to, once the person's address changes. A rep who signed in through the hosted email code can keep reading `true` after their address changes, until they sign in again. Treat `email_verified: false` as an unverified address.
+`email_verified` is `true` only when this sign-in proved this address with an emailed code. Otherwise it's `false`. Treat `false` as unverified.
 
 ## Call userinfo
 
 Call the `userinfo_endpoint` from your server with the access token:
 
 ```bash
-curl https://<issuer host>/userinfo \
+curl <userinfo_endpoint> \
   -H "Authorization: Bearer <access_token>"
 ```
 
@@ -174,29 +196,33 @@ The answer has the profile claims of the ID token (not `iss`, `aud`, `iat`, `exp
 
 Call userinfo from your server. Don't call it from a browser.
 
+Requests may be rate limited. On a 429, wait the `Retry-After` seconds and retry.
+
 ## Sign out and revoke
 
-Your provider advertises no sign-out endpoint and no revocation endpoint. Signing a person out of your app means ending your own app's session.
+There's no sign-out endpoint for company apps yet, and discovery advertises no revocation endpoint. To sign a person out of your app, end your own app's session. To force a fresh sign-in next time, send `prompt=login`.
 
-<Warning>**TBD:** whether you can end the person's Fluid session, and whether you can revoke an access token. The token reference describes a revoke call, but discovery doesn't advertise one. Don't rely on either yet.</Warning>
+Sign-out for apps is planned, first as `end_session_endpoint`, then as back-channel logout. Don't rely on `post_logout_redirect_uri` yet.
+
+<Warning>**TBD:** whether you can revoke an access token. Don't rely on it yet.</Warning>
 
 ## Minimal example
 
-This example uses placeholders. Replace `<issuer host>`, `<slug>`, and the client ID `fca_EXAMPLE` with your own values.
+This example uses placeholders. Replace `<slug>`, the client ID `fca_EXAMPLE`, and the endpoints read from discovery with your own values.
 
 Read the discovery document:
 
 ```bash
-curl https://<issuer host>/c/<slug>/.well-known/openid-configuration
+curl https://identity.fluid.app/c/<slug>/.well-known/openid-configuration
 ```
 
 Exchange a code for tokens:
 
 ```bash
-curl -X POST https://<issuer host>/token \
+curl -X POST <token_endpoint> \
   -d grant_type=authorization_code \
   -d code=<code> \
-  -d redirect_uri=https://app.example.com/callback \
+  --data-urlencode "redirect_uri=https://app.example.com/callback" \
   -d client_id=fca_EXAMPLE \
   -d code_verifier=<code_verifier>
 ```
@@ -204,7 +230,7 @@ curl -X POST https://<issuer host>/token \
 Read the person's details:
 
 ```bash
-curl https://<issuer host>/userinfo \
+curl <userinfo_endpoint> \
   -H "Authorization: Bearer <access_token>"
 ```
 
@@ -226,7 +252,7 @@ This Node script builds the authorize URL and exchanges the code:
 ```javascript
 import { randomBytes, createHash } from "node:crypto";
 
-const issuer = "https://<issuer host>/c/<slug>";
+const issuer = "https://identity.fluid.app/c/<slug>";
 const clientId = "fca_EXAMPLE";
 const redirectUri = "https://app.example.com/callback";
 
@@ -234,6 +260,8 @@ const { authorization_endpoint, token_endpoint } = await (
   await fetch(`${issuer}/.well-known/openid-configuration`)
 ).json();
 
+// Store verifier, state, and nonce per login session (for example, in a server
+// session), never in module scope shared by every person.
 const verifier = randomBytes(32).toString("base64url");
 const challenge = createHash("sha256").update(verifier).digest("base64url");
 const state = randomBytes(16).toString("base64url");
@@ -251,7 +279,8 @@ authorizeUrl.search = new URLSearchParams({
   code_challenge_method: "S256",
 }).toString();
 
-// Redirect the person to authorizeUrl, then handle the callback with `code`.
+// Redirect the person to authorizeUrl. In the callback, check that `state`
+// matches, then exchange `code`.
 async function exchange(code) {
   const response = await fetch(token_endpoint, {
     method: "POST",
@@ -264,6 +293,8 @@ async function exchange(code) {
       code_verifier: verifier,
     }),
   });
+  if (!response.ok) throw new Error(`Token request failed: ${response.status}`);
+  // Verify the ID token (signature, iss, aud, exp, nonce) before trusting it.
   return response.json();
 }
 ```
