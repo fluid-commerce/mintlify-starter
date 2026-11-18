@@ -851,6 +851,24 @@ components:
           description: A random secret the app generates for this handoff and keeps. Only its digest is stored; the app sends it again in the redeem's body. Treat it as a secret.
       required:
       - continuity
+    StorefrontSignInHandoffCreate:
+      type: object
+      description: What a storefront sign-in handoff request carries.
+      additionalProperties: false
+      properties:
+        continuity:
+          type: string
+          minLength: 32
+          maxLength: 128
+          description: A random secret the app generates for this handoff and keeps. Only its digest is stored; the app sends it again in the redeem's body. Treat it as a secret.
+        return_path:
+          type: string
+          maxLength: 2048
+          pattern: '^/(?![/\\])[^\x00-\x1f\x7f]*$'
+          default: "/"
+          description: The page of the storefront to land on, a path on the company's storefront host that starts with a single `/`. The handoff's `site_url` is the storefront URL of this path.
+      required:
+      - continuity
     SiteSignInHandoff:
       type: object
       description: A single-use handoff that signs the member in on their company's storefront.
@@ -1513,7 +1531,7 @@ components:
       - meta
     SiteTraffic:
       type: object
-      description: A site's traffic over a period, counted by the sites gateway.
+      description: "A site's traffic over a period. Visits, unique visitors, referrers and the series are human views counted from the site's page views in the site rollups; the top pages, errors and functions are counted by the sites gateway."
       additionalProperties: false
       properties:
         period:
@@ -1526,14 +1544,14 @@ components:
         visits:
           type: integer
           minimum: 0
-          description: Pages visitors opened. A file a page loads, such as an image or a script, is not a visit.
+          description: "Pages people opened, counted from the site's page views (FairShare's `url.visited`: each load of the site and each move between its pages), bots excluded. Counted since 2026-11-16, so a period that reaches back before then counts only the days since. A file a page loads, such as an image or a script, is not a visit."
         unique_visitors:
           type: integer
           minimum: 0
-          description: An estimate of the distinct visitors, within about 1%. A visitor is a device and browser, not a person.
+          description: An estimate of the distinct visitors over the period's hours, counted from the same page views. It is a HyperLogLog estimate with a standard error of about 2.3%, and a small count is close to exact. Visitors are kept per hour from when the site rollups first kept them, so an hour before then can have visits and no visitors. A visitor is a device and browser, not a person.
         top_pages:
           type: array
-          description: "The most visited pages, most visited first, at most 10. A page is named as the bundle names it: a file's path, a directory with an index, a `path` route, or a `prefix` route as `<prefix>/*`, so the rest of a visitor's path, which can carry a token, is never reported."
+          description: "The most visited pages, most visited first, at most 10. From the sites gateway. A page is named as the bundle names it: a file's path, a directory with an index, a `path` route, or a `prefix` route as `<prefix>/*`, so the rest of a visitor's path, which can carry a token, is never reported."
           items:
             type: object
             additionalProperties: false
@@ -1548,7 +1566,7 @@ components:
             - visits
         referrers:
           type: array
-          description: The sites visitors came from, by host, most first, at most 10. A visit with no referrer is not listed, and the storefront's site page opens a site with none, so most visits have none. Past 100 hosts in an hour, and for a host longer than 100 characters, visits count under the host `other`.
+          description: "The sites visitors came from, by host, most first, at most 10, from the same views as `visits`. They are counted over whole UTC days, the days the period's hours touch, so the first day counts its hours before the period starts. A view with no external referrer, or from the store itself, is not listed. Past 100 hosts in a site's UTC day, the other hosts count under the host `other`."
           items:
             type: object
             additionalProperties: false
@@ -1563,7 +1581,7 @@ components:
             - visits
         errors:
           type: object
-          description: The site's requests answered with a client error (4xx, such as a missing file) or a server error (5xx).
+          description: The site's requests answered with a client error (4xx, such as a missing file) or a server error (5xx), from the sites gateway over the period's hours.
           additionalProperties: false
           properties:
             4xx:
@@ -1577,7 +1595,7 @@ components:
           - 5xx
         series:
           type: array
-          description: "The period charted oldest first: one point per hour for `24h`, and one per UTC day for `7d` and `30d`. A day's point counts only the period's hours, so the first and last days are partial. A point's unique visitors are estimated over its own hours, so the points need not add up to the period's."
+          description: "The period charted oldest first: one point per hour for `24h`, and one per UTC day for `7d` and `30d`. A day's point counts only the period's hours, so the first and last days are partial. A point's visits and unique visitors are counted over its own hours, from the same views as the period's, and its unique visitors are estimated over its own hours, so the points need not add up to the period's."
           items:
             type: object
             additionalProperties: false
@@ -1602,7 +1620,7 @@ components:
           type:
           - object
           - 'null'
-          description: "Where a site's visitors came from, in which countries and on which devices, counted from the site's human page views in the site rollups over whole UTC days: `24h` counts yesterday and today, `7d` the last 7 days including today and `30d` the last 30. It is a different source and window from `visits`, `unique_visitors`, `top_pages`, `referrers`, `errors` and `series`, which the sites gateway counts over whole hours, so `breakdown.visits` can differ from `visits`: the rollups count no bot and start empty when the site analytics ingest is deployed, so a day before then reads zero. Null when the rollups cannot be read right now; the rest of the report is still returned."
+          description: "Where a site's visitors came from, in which countries and on which devices, counted from the site's human page views in the site rollups over whole UTC days: `24h` counts yesterday and today, `7d` the last 7 days including today and `30d` the last 30. It has the source of `visits`, but not its window: `visits` counts whole hours up to the current one and `breakdown` whole UTC days, so `breakdown.visits` can differ from `visits`, in either direction. Both start empty when the site analytics ingest is deployed, so a day before 2026-11-16 reads zero. Null when the rollups cannot be read right now; the rest of the report is still returned."
           additionalProperties: false
           properties:
             from:
@@ -6008,7 +6026,7 @@ paths:
       description: |
         A single-use handoff that signs the member in on their company's storefront, for an app that holds the member's token and opens one of the company's member sites in a browser session of its own, such as Mist's site preview. The app sends a random `continuity` secret it keeps, redeems the handoff once at `redeem_url` (see that field), then opens `site_url`. The handoff expires about a minute after it is made and is never put in a URL. The response is never cached (`Cache-Control: private, no-store`).
 
-        For a company that signs in through the identity service, only with a person's identity access token (a rep or an admin) for this member; anything else answers `403` `identity_session_required`. For a company that does not, only with a token the storefront's own sign-in would accept for this member (the one fluid-login hands back), and not one minted to act for them (a cloud run's login, an on-behalf or read-only token); anything else answers `403` `unauthorized`. Bearer only: the cookie mount is refused with `403`. It answers `404` while member sites or the member storefront are off for the member's company, and for a site the member may not view.
+        For a company that signs in through the identity service, only with a person's identity access token (a rep or an admin) for this member; anything else answers `403` `identity_session_required`. For a company that does not, only with a token the storefront's own sign-in would accept for this member (the one fluid-login hands back), and not one minted to act for them (a cloud run's login, an on-behalf or read-only token); anything else answers `403` `unauthorized`. Bearer only: the cookie mount is refused with `403`. It answers `404` while member sites or the member storefront are off for the member's company, and for a site the member may not view. A root admin's own identity token (the `root_admin` role, for a user with a kept operator row, while the root admin session tier is on) is asked as the storefront session it signs in will be: it may view a private company site no share reaches, though the site menu does not list it.
       operationId: member_sites_sign_in_handoff_create
       tags:
       - sites
@@ -6047,13 +6065,70 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '404':
-          description: No site of the member's company has this id, the member may not view it, or member sites or the member storefront are off for the member's company.
+          description: No site of the member's company has this id, the member may not view it (a root admin's own token views what the storefront opens for a root admin), or member sites or the member storefront are off for the member's company.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
           description: The body is not a continuity secret of 32 to 128 characters, carries another field, or the handoff could not be saved.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/storefront/sign-in-handoffs":
+    post:
+      summary: Get a sign-in handoff for a storefront page
+      description: |
+        The same single-use handoff as the site's, for any page of the company's storefront and with no member site: an app that holds the member's token opens a storefront page in a browser session of its own, such as Mist's storefront preview. The app sends a random `continuity` secret it keeps and optionally the `return_path` to land on (default `/`), redeems the handoff once at `redeem_url`, then opens `site_url`. The handoff expires about a minute after it is made and is never put in a URL. The response is never cached (`Cache-Control: private, no-store`).
+
+        For a company that signs in through the identity service, only with a person's identity access token (a rep or an admin) for this member; anything else answers `403` `identity_session_required`. For a company that does not, only with a token the storefront's own sign-in would accept for this member (the one fluid-login hands back), and not one minted to act for them; anything else answers `403` `unauthorized`. Bearer only: the cookie mount is refused with `403`. It answers `404` while the member storefront is off for the member's company or the `storefront-handoff-endpoint` flag is off for it, and does not depend on member sites being released to it.
+      operationId: member_storefront_sign_in_handoff_create
+      tags:
+      - sites
+      x-fluid-audience: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/StorefrontSignInHandoffCreate"
+            example:
+              continuity: 4b3f0d0e8b2a4c5f9e1d7a6b3c2f1e0d9a8b7c6d5e4f3a2b
+              return_path: "/products"
+      responses:
+        '201':
+          description: The handoff.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SiteSignInHandoffEnvelope"
+              example:
+                status: 201
+                data:
+                  handoff: 9pQe3LkZ2bW7xR4tYc8vN1mH
+                  redeem_url: https://shop.example.com/auth/redeem
+                  site_url: https://shop.example.com/products
+                  expires_at: '2026-11-10T10:01:00.000Z'
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-10T10:00:00Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          description: The company signs in through the identity service and the bearer is not a person's identity access token with a session (`details.error` is `identity_session_required`); the storefront refuses the member, or for a company off identity sign-in would not sign the bearer in as this member (`unauthorized`), or the token's identity session is past its bound (`expired`); the credential is the shopper JWT that email links carry, or is otherwise read-only; or the request is on the cookie mount.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '404':
+          description: The member storefront is off for the member's company, or the `storefront-handoff-endpoint` flag is off for it.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+        '422':
+          description: The body is not a continuity secret of 32 to 128 characters, carries another field, has a `return_path` that is not a path on the storefront host, or the handoff could not be saved.
           content:
             application/json:
               schema:
@@ -9278,8 +9353,7 @@ paths:
     get:
       summary: Read a site's traffic
       description: |
-        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
-        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days, counted by the sites gateway as it serves the site: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, and the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller). Counting starts when the gateway that counts is deployed, so a period before then reads zero. The `breakdown` is not the gateway's: it counts the site's human page views by channel, country and device from the site rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so its `visits` and `unique_visitors` can differ from the gateway's, and it starts at zero when the site analytics ingest is deployed. It is null when the rollups cannot be read, and the rest of the report is still returned. Never stored (`no-store`).
+        The traffic of one of the member's sites over the last 24 hours, 7 days or 30 days: visits (pages opened), an estimate of unique visitors, the top pages and referrers, the requests answered with an error, the calls of the site's server functions (`functions`: calls, errors, timeouts, rate-limited calls, wall time and bytes answered, by function and by caller), and a series of visits and visitors per hour (`24h`) or per UTC day (`7d`, `30d`) to chart. Visits, unique visitors, referrers and the series are human views counted from the site's page views (FairShare's `url.visited`), bots excluded, in the site rollups, and counted since 2026-11-16, so a period that reaches back before then counts only the days since. Unique visitors are a HyperLogLog estimate with a standard error of about 2.3%. Referrers are counted over whole UTC days, the days the period's hours touch, and are the external sites the views came from. The top pages, the 4xx and 5xx errors and the functions are counted by the sites gateway as it serves the site, over the period's hours, and count from when the gateway that counts is deployed. The `breakdown` counts the site's human page views by channel, country and device from the same rollups, over whole UTC days (`24h` is yesterday and today, `7d` the last 7 days and `30d` the last 30, today included), so it shares the source of `visits` but not its window: `visits` counts whole hours up to the current one, so `breakdown.visits` can differ from `visits`, in either direction. It is null when the rollups cannot be read for it, and the rest of the report is still returned. If the rollups or the gateway's counts cannot be read, the answer is a `503`. Never stored (`no-store`).
 
         Bearer only: a request on the cookie mount is refused with `403`. It answers `404` until the sites gateway is released to the member's company, and for a site the member may not change.
       operationId: member_sites_traffic_show
@@ -9415,7 +9489,7 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '503':
-          description: The traffic counts cannot be read right now (`details.error` is `traffic_unavailable`); try again shortly.
+          description: The traffic cannot be read right now, from the site rollups or the gateway's counts (`details.error` is `traffic_unavailable`); try again shortly.
           content:
             application/json:
               schema:

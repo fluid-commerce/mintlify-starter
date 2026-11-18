@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.15"
+  version: "1.16"
 ---
 
 # Fluid
@@ -39,10 +39,12 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Host a small project on Fluid (landing page, event page, calculator, dashboard) and get a public URL | https://docs.fluid.app/sites/quickstart, then https://docs.fluid.app/sites/site-or-app and the section "Host a project" below |
 | Build a Site (formerly a member site): a static app, Vite and React by default, on `@fluid-app/sites`, at `/home/sites/<site-handle>` and `/sites/<site-handle>` on the company's storefront. It replaces theme member sites, which are retired | https://docs.fluid.app/sites/overview, then https://docs.fluid.app/sites/sdk and https://docs.fluid.app/sites/publishing |
 | Set a Site's page titles and previews, or get it indexed | https://docs.fluid.app/sites/seo |
+| Put a public Site behind a password, or remove it | https://docs.fluid.app/sites/password |
 | Call the Member API from a Site's page as the visitor | https://docs.fluid.app/sites/member-api |
 | Give a Site server code: a form handler, webhook, scheduled job or its own REST API with API keys | https://docs.fluid.app/sites/functions, then https://docs.fluid.app/sites/rest-api |
 | Deploy a Site from Claude with the Fluid MCP server | https://docs.fluid.app/sites/deploy-from-claude |
-| A Site's sign-in, the Passport account menu, hiding the floating cart and lead-capture buttons, opening the Passport from your own button | https://docs.fluid.app/sites/passport |
+| A Site's sign-in, the Passport account menu and where it sits, hiding the floating cart and lead-capture buttons, opening the Passport from your own button | https://docs.fluid.app/sites/passport |
+| Place the Passport on a storefront theme page and open it from your own buttons or scripts (`fluid.passport.open()`) | https://docs.fluid.app/themes/member-storefront/passport |
 | Show a Site to members: pin, require, feature, or make it their home; which link to share | https://docs.fluid.app/sites/overview#show-a-site-to-members |
 | Call a third-party API from a Site's function with a company vault credential | https://docs.fluid.app/sites/functions#call-another-service-with-a-vault-credential |
 | Use Mist, Fluid's AI assistant desktop app | https://docs.fluid.app/help/mist |
