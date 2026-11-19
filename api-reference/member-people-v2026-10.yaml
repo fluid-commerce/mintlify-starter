@@ -5772,11 +5772,21 @@ paths:
   "/api/member/v2026-10/contacts/import":
     post:
       summary: Import contacts from a CSV file
-      description: Accepts a CSV file of up to 2 MB and 5,000 rows, uploaded as the multipart field `file`. The header row names the columns; `first_name`, `last_name`, `email`, `phone`, `status` and `source` are read and other columns are ignored. The file must be UTF-8 text; other encodings are refused rather than converted. Rows that fail, such as a malformed email or a value over its length limit, are reported on the import. Returns at once with a pending import that a background job processes. Finished imports keep their counts and rejected-row reasons but not the uploaded rows.
+      description: Accepts a CSV file of up to 2 MB and 5,000 rows, uploaded as the multipart field `file`. The header row names the columns; `first_name`, `last_name`, `email`, `phone`, `status` and `source` are read and other columns are ignored. The file must be UTF-8 text; other encodings are refused rather than converted. Rows that fail, such as a malformed email or a value over its length limit, are reported on the import. Returns at once with a pending import that a background job processes. Finished imports keep their counts and rejected-row reasons but not the uploaded rows. Send an `Idempotency-Key` header to make the upload safe to resend. When a response is lost, send the same file again under the same key and the answer is the import the first request made, as it stands now (202), instead of a second import that adds the contacts again. A key answers with its import for as long as the import exists, however late the resend comes, so use a new key for a deliberate second import of the same file. A key is free again only once its import failed before adding anything. Keys belong to the member, and a key used for a different file answers 422. If the resend finds its import still pending and the job cannot be queued, the answer is 503 and the import and its key are kept, so sending the same file again under the same key queues it.
       operationId: member_contacts_import
       tags:
       - contacts
       x-fluid-audience: member
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        description: Names this upload so it can be resent safely after a lost response, 1 to 255 characters. A resend returns the first import, however late. Send a new key for a new import of the same file. Without it every upload is a new import.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+        example: 0192f4f6-7a8b-7c9d-8e0f-2a3b4c5d6e78
       responses:
         '202':
           description: The accepted import.
@@ -5814,13 +5824,13 @@ paths:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '422':
-          description: No file, a file over 2 MB, text that is not valid UTF-8, a null byte, unreadable CSV, a header with none of the read columns, no rows or more than 5,000.
+          description: No file, a file over 2 MB, text that is not valid UTF-8, a null byte, unreadable CSV, a header with none of the read columns, no rows or more than 5,000, a blank or over-long `Idempotency-Key`, or a key already used for a different file.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '503':
-          description: The import could not be queued. It is recorded as failed and nothing is added; upload the file again.
+          description: The import could not be queued. A new upload is recorded as failed and nothing is added; upload the file again. A resend under a key whose import is still pending leaves that import pending, and sending the file again under the same key queues it.
           content:
             application/json:
               schema:
