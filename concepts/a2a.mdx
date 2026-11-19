@@ -1,0 +1,140 @@
+---
+title: "Agent2Agent (A2A) on Fluid stores"
+sidebarTitle: "A2A"
+description: "Every live Fluid storefront publishes an A2A 1.0 Agent Card and serves a JSON-RPC endpoint, so any A2A agent can ask the store about its products, content and policies."
+keywords: ["Agent2Agent", "A2A", "agent card", "agent-card.json", "JSON-RPC", "SendMessage", "agentic commerce"]
+---
+
+[Agent2Agent](https://a2a-protocol.org) (A2A) is an open protocol for one agent to discover and talk to another. Every live Fluid storefront runs a store agent that speaks A2A 1.0 on the store's own host, with no setup.
+
+The store agent has one skill: answering questions about the store, from what it publishes. It's the same answer as [UCP Ask](/concepts/ucp#ask-the-store-a-question). To build carts and check out, use [UCP](/concepts/ucp).
+
+## The Agent Card
+
+```bash
+curl "https://<store>/.well-known/agent-card.json"
+```
+
+```json
+{
+  "name": "Juniper & Oak",
+  "description": "Juniper & Oak's store agent answers questions about its products, content and policies.",
+  "supportedInterfaces": [
+    {
+      "url": "https://shop.juniperandoak.com/api/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "provider": { "organization": "Juniper & Oak", "url": "https://shop.juniperandoak.com" },
+  "iconUrl": "https://cdn.juniperandoak.com/logo.png",
+  "version": "1.0.0",
+  "capabilities": { "streaming": false, "pushNotifications": false, "extendedAgentCard": false },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "skills": [
+    {
+      "id": "ask",
+      "name": "Ask about the store",
+      "description": "Answers a question about Juniper & Oak's products, content and policies from what the store publishes, with links to the records it cites. Send the question as a text part; a data part with `ids` (product or variant ids, slugs or SKUs) grounds it in those products.",
+      "tags": ["shopping", "products", "policies"],
+      "examples": ["What is your return policy?", "Which products are vegan?"]
+    }
+  ]
+}
+```
+
+The interface URL is always on the host that served the card, so a custom domain's card points to that domain. The card has no security schemes: the store agent answers as a signed-out shopper. It's served with a five-minute public cache and an `ETag`, and any origin can read it. When the storefront is turned off, or the company's account is paused for billing, the card and the endpoint answer 404.
+
+## Ask a question
+
+Send `SendMessage` to the interface URL. Put the question in a text part. To ask about particular products, add a data part with up to 10 `ids`: product IDs or slugs, or variant IDs or SKUs.
+
+```bash
+curl -X POST "https://<store>/api/a2a" \
+  -H "Content-Type: application/json" \
+  -H "A2A-Version: 1.0" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "req-1",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "8d5f0c1e-6b0a-4c55-9a0e-3f1b7d2c9e41",
+        "role": "ROLE_USER",
+        "contextId": "shopper-chat-42",
+        "parts": [
+          { "text": "Is this fragrance-free?" },
+          { "data": { "ids": ["lavender-night-balm"] }, "mediaType": "application/json" }
+        ]
+      }
+    }
+  }'
+```
+
+The store agent replies with one message, never a task:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req-1",
+  "result": {
+    "message": {
+      "messageId": "0f9c7a52-4d8e-4b1f-a6d3-2e5b8c1f7a90",
+      "contextId": "shopper-chat-42",
+      "role": "ROLE_AGENT",
+      "parts": [
+        { "text": "No. Lavender Night Balm is scented with lavender and chamomile essential oils.", "mediaType": "text/plain" },
+        {
+          "data": {
+            "links": [
+              {
+                "type": "product",
+                "url": "https://shop.juniperandoak.com/home/products/lavender-night-balm",
+                "title": "Lavender Night Balm"
+              }
+            ]
+          },
+          "mediaType": "application/json"
+        }
+      ]
+    }
+  }
+}
+```
+
+- The **text part** is the answer: plain text, in the language of the question.
+- The **data part** holds `links` to the store pages the answer is based on, with the same link types as UCP Ask. It also holds a `messages` list with a `not_found` entry for each ID that names nothing the shopper can see. The data part is left out when there's nothing to put in it.
+- The reply keeps your `contextId`, or starts a new one when you send none. The store agent doesn't remember earlier messages: send each question with what it needs.
+- Send `A2A-Version: 1.0`. A request without the header is read as 1.0.
+
+## Methods and errors
+
+| Method | Result |
+| --- | --- |
+| `SendMessage` | One agent message, as above. |
+| `GetTask`, `CancelTask` | `TaskNotFound` (-32001). The store agent keeps no tasks. |
+| `ListTasks` | An empty list. |
+| `SendStreamingMessage`, `SubscribeToTask`, `GetExtendedAgentCard` | `UnsupportedOperation` (-32004). The card doesn't declare these capabilities. |
+| Push notification config methods | `PushNotificationNotSupported` (-32003). |
+
+Other errors:
+
+| Code | When |
+| --- | --- |
+| -32700 | The body isn't JSON. |
+| -32600 | The body isn't a single JSON-RPC 2.0 request. Batches aren't supported. |
+| -32601 | The method doesn't exist. |
+| -32602 | The message isn't a `ROLE_USER` message with a text part, the question is over 1,000 characters, or `ids` isn't a list of at most 10 strings. |
+| -32001 | The message names a `taskId`. |
+| -32005 | `configuration.acceptedOutputModes` doesn't include `text/plain`. |
+| -32009 | `A2A-Version` isn't 1.0. |
+
+A2A errors carry a `google.rpc.ErrorInfo` entry in `error.data`, with a `reason` such as `TASK_NOT_FOUND` and the domain `a2a-protocol.org`. Errors answer HTTP 200, with two exceptions that carry a `Retry-After` header:
+
+- **429** with reason `RATE_LIMITED`: the store has used its daily allowance. `Retry-After` counts the seconds to the next UTC day, when the allowance resets.
+- **503** with reason `SERVICE_UNAVAILABLE`: answers are temporarily unavailable. Retry after 60 seconds.
+
+A request with no `id` is a JSON-RPC notification. The endpoint answers 204 with no body and doesn't act on it, because every A2A method expects a reply.
+
+A2A questions share UCP Ask's [rate limits](/concepts/ucp#limits) and daily allowance.

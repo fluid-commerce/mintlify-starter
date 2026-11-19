@@ -10,7 +10,7 @@ A server function is a small piece of server code that belongs to your Site, suc
 To build a Site whose functions serve a REST API, step by step, see [Serve a REST API from a Site](/sites/rest-api).
 
 <Note>
-  Functions need the sites gateway, which Fluid turns on for each company. Until then, a Site's API keys, environment variables and logs answer `404`, and schedules don't run. To turn it on, [contact support](/help/getting-help). Publish functions with Fluid CLI Sites plugin 0.1.349 or later, or Mist 1.19.0 or later, and call them from the page with `@fluid-app/sites` 0.1.71 or later.
+  Functions need the sites gateway, which Fluid turns on for each company. Until then, a Site's API keys, environment variables and logs answer `404`, and schedules don't run. To turn it on, [contact support](/help/getting-help). Publish functions with Fluid CLI Sites plugin 0.1.349 or later, Mist 1.19.0 or later, or the Fluid MCP server's [inline deploy](/sites/deploy-from-claude#deploy-server-functions-from-a-chat), and call them from the page with `@fluid-app/sites` 0.1.71 or later.
 </Note>
 
 ## Write a function
@@ -74,7 +74,7 @@ The publish bundles each function with its imports, npm packages included, into 
 
 ### The request
 
-`request` is a standard `Request` for the URL the caller used, with its method, query, headers and body. Fluid removes the caller's credentials before the function sees it: there is no `Authorization` or `Cookie` header. `X-Forwarded-For` is the caller's address.
+`request` is a standard `Request` for the URL the caller used, with its method, query, headers and body. Fluid removes the caller's credentials before the function sees it: there is no `Authorization` or `Cookie` header, and no `X-Fluid-*` header except a Fluid webhook's `X-Fluid-Signature-V2` and `X-Fluid-Timestamp`. So a `public` function on a public Site can check that a call is Fluid's: keep the webhook's signing secret as a [secret](/sites/env-vars) and verify the signature as the [Webhooks guide](/api/guides/webhooks) describes. `X-Forwarded-For` is the caller's address.
 
 ### The context
 
@@ -87,6 +87,7 @@ The publish bundles each function with its imports, npm packages included, into 
 | `ctx.secrets` | Every [environment variable](/sites/env-vars) of the Site, secret or not, by name |
 | `ctx.fluid.db` | The Site's own [database](/sites/database), as the Site |
 | `ctx.fluid.api` | The Member API, as the signed-in visitor who made the call |
+| `ctx.fluid.vault` | `fetch(name, { method, path, query, headers, body })`: a request to another service with a company [vault credential](#call-another-service-with-a-vault-credential), which the function never sees |
 
 `ctx.caller.kind` says who called:
 
@@ -96,6 +97,7 @@ The publish bundles each function with its imports, npm packages included, into 
 | `public` | A call with no sign-in and no key, a signed-out visitor's page included | None |
 | `key` | A server with a Site API key | `keyId`, `keyName` |
 | `schedule` | Fluid, on the function's `schedule` | `scheduledAt`: the UTC minute it runs for |
+| `agent` | A person's AI agent, through the Fluid MCP server. See [Offer a function to agents](#offer-a-function-to-agents) | `viewer`: the person, never `null`. `client`: the MCP client's `id` and `name` |
 
 `fluid sites functions new` (Sites plugin 0.1.360 or later) writes the context's types to `functions/fluid-env.d.ts` as globals, `FluidFunction` and `FluidContext` among them, so a starter reads `export default (async (request, ctx) => …) satisfies FluidFunction`. The CLI replaces that file when the types change, so keep your own types elsewhere. With an older plugin, copy this type into `functions/lib/types.ts`:
 
@@ -108,7 +110,8 @@ export interface FunctionContext {
     | { kind: "page"; viewer: { userId: string; name: string; avatarUrl: string | null; memberId: string | null; relation: string } | null }
     | { kind: "public" }
     | { kind: "key"; keyId: string; keyName: string }
-    | { kind: "schedule"; scheduledAt: string };
+    | { kind: "schedule"; scheduledAt: string }
+    | { kind: "agent"; viewer: { userId: string; name: string; avatarUrl: string | null; memberId: string | null; relation: string }; client: { id: string; name: string } };
   secrets: Readonly<Record<string, string>>;
   fluid: {
     api: { fetch(path: string, init?: RequestInit): Promise<Response> };
@@ -148,6 +151,7 @@ If the handler throws or returns something that isn't a `Response`, the caller g
 | `cors` | Exact origins, such as `https://partners.example.com`, that a browser page on another site may call the function from. None by default. The Site's own page never needs it |
 | `schedule` | A five-field cron line in UTC that runs the function. See [Run a function on a schedule](#run-a-function-on-a-schedule) |
 | `timeoutMs` | How long one call may run, from 1 to 30,000 milliseconds. Without it, a call may run 30,000 |
+| `mcp` | Offers the function to people's AI agents through the Fluid MCP server. See [Offer a function to agents](#offer-a-function-to-agents) |
 
 Access builds on the Site's own visibility. A `public` function on a private Site answers only the people the Site is shared with. A Site API key is the exception: it opens the Site's `key` and `public` functions whoever may open the Site, a private Site included. A key never opens a `signed_in` function.
 
@@ -194,6 +198,36 @@ Fluid gives the label when the Site is first published, and it never changes. It
 - After a publish, Sites plugin 0.1.360 or later prints each function's address, and `fluid sites publish --json` lists them as `functions`.
 - The Site's `functions_url`, in the member and company APIs, is `https://<label>.sites.fluid.app/api/` once the Site is published. A server that doesn't send `functions_url` yet still has the label on the Site's page, where `window.location.origin` is the Site's own host.
 
+### Offer a function to agents
+
+A person's AI agent, such as Claude, can call a function through the [Fluid MCP server](/sites/deploy-from-claude#call-a-sites-functions-from-an-agent) when its entry has an `mcp` block and its `access` is `public` or `signed_in`. A `key` function is never offered.
+
+```json config/functions.json
+{
+  "version": 1,
+  "functions": {
+    "rsvp-list": {
+      "access": "signed_in",
+      "mcp": {
+        "description": "Lists the RSVPs for one event.",
+        "input_schema": { "type": "object", "properties": { "event": { "type": "string" } }, "required": ["event"] },
+        "effect": "read"
+      }
+    }
+  }
+}
+```
+
+| Key | What it holds |
+| --- | --- |
+| `description` | What the function does, for the agent. From 1 to 1,000 characters |
+| `input_schema` | The JSON Schema of the function's input: an object schema, at most 8,192 bytes as compact JSON. Every `$ref` must be local, starting with `#` |
+| `effect` | `read`, or `write` when a call changes what the Site keeps |
+
+The publish refuses an `mcp` block that breaks these rules, or holds any other key.
+
+An agent's call reaches the function as `POST /api/<name>`, with the input as its JSON body, and `ctx.caller` is `{ kind: "agent", viewer, client }`. The agent calls as the signed-in person, so the Site must admit them as its pages would. `ctx.fluid.db` works as for any call. `ctx.fluid.api` answers `401` `fn_api_needs_viewer`, as for a schedule. The call counts toward the Site's 600 calls a minute, and the log names its caller `agent`.
+
 ## API keys
 
 A Site API key lets a server call the Site's `key` functions. It starts with `fsk_` and is sent as `Authorization: Bearer <key>`. Each call checks the key, so a revoked key stops working at once.
@@ -204,7 +238,7 @@ A Site API key lets a server call the Site's `key` functions. It starts with `fs
 - The key's secret is shown once, when it's added. Fluid stores only a hash, and a list shows each key's first 12 characters.
 - To rotate a key, add a new one, move your servers to it, then revoke the old one.
 
-From the Site's folder, with Sites plugin 0.1.360 or later:
+From the Site's folder, with Sites plugin 0.1.360 or later. With 0.1.429 or later, pass `--site <handle>` to run them from any folder:
 
 ```bash
 fluid sites keys create partner        # prints the secret once, alone on standard output
@@ -256,21 +290,54 @@ Every value, secret or not, reaches every function of the Site in `ctx.secrets`,
 
 ### The Site's database
 
-`ctx.fluid.db.from(table)` queries the Site's database with the same builder as `fluid.db` in the page: `select`, `insert`, `update`, `delete`, the filters `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `is`, `like`, `ilike`, `not` and `match`, and `order`, `limit`, `range`, `single` and `maybeSingle`. Awaiting a query gives `{ data, error }`.
+`ctx.fluid.db.from(table)` queries the Site's database with the same builder as `fluid.db` in the page: `select`, `insert`, `update`, `delete`, the filters `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `is`, `like`, `ilike`, `textSearch`, `not` and `match`, and `order`, `limit`, `range`, `single` and `maybeSingle`. Awaiting a query gives `{ data, error }`.
 
 - A function queries **as the Site**, so your tables' row rules don't apply. Check who called with `ctx.caller` before you read or write on their behalf.
-- `or()` isn't supported in a function yet, and `not()` takes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `is`, `like` and `ilike`.
+- `or()` isn't supported in a function yet, and `not()` takes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `is`, `like`, `ilike` and `fts`.
 - A call made with a Site API key has its key checked again on each query, so a key revoked mid-call reaches no data.
 
 ### The Member API
 
 `ctx.fluid.api.fetch(path, init)` calls the Member API as the signed-in visitor who called the function, with the same scopes as `fluid.api` in the page: `ctx.fluid.api.fetch("/orders")` is `GET /api/member/v2026-10/orders` for that visitor. Declare each scope it uses in `config/access.json`, as for the page. See [Use the Member API from a Site](/sites/member-api).
 
-It needs a signed-in visitor. A call from a guest, a Site API key or a schedule answers `401` `fn_api_needs_viewer`, because a function has no credential of its own to call Fluid as the Site. For data a function needs without a visitor, keep it in the Site's database, or call another service with a secret from `ctx.secrets`.
+It needs a signed-in visitor. A call from a guest, a Site API key, a schedule or an agent answers `401` `fn_api_needs_viewer`, because a function has no credential of its own to call Fluid as the Site. For data a function needs without a visitor, keep it in the Site's database, or call another service with a secret from `ctx.secrets`.
 
 ### Other services
 
-`fetch` reaches any HTTPS service. Keep its credentials in [secrets](/sites/env-vars).
+`fetch` reaches any HTTPS service. Keep its credentials in [secrets](/sites/env-vars). `fetch` is the only way out: a function can't open a TCP socket with `connect()`.
+
+### Call another service with a vault credential
+
+For a credential your company shares between Sites and bots, such as a supplier's API token, keep it in the company [vault](/help/admin/settings/vault) instead of in each Site's secrets. A function asks for the credential by name with `ctx.fluid.vault.fetch`, and Fluid adds it to the request. The function never sees the value, so it can't leak it in a log line or an answer.
+
+An admin adds the credential once, names the API it may be sent to, and lists the Sites whose functions may use it:
+
+```bash
+printf '%s' "$GITHUB_TOKEN" | fluid vault set github --as admin --stdin --allow-production \
+  --base-url https://api.github.com --prefix "Bearer " \
+  --path-prefix /repos/ --method GET --site 0193b2c4-7e1a-7d3f-9a52-6c8e41f0b7d9
+```
+
+`--allow-production` confirms a change to the vault that live Sites and bots use; the CLI refuses one without it. `--site` takes a Site's id, as `fluid sites list` prints it. Then the function calls the credential with a path under its base URL:
+
+```ts functions/releases.ts
+export default async function (request: Request, ctx: FluidContext) {
+  const response = await ctx.fluid.vault.fetch("github", {
+    method: "GET",
+    path: "/repos/acme-wellness/event-kit/releases",
+    query: { per_page: 5 },
+  });
+  if (response.headers.get("X-Fluid-Vault") === "refused") {
+    return Response.json(await response.json(), { status: 502 });
+  }
+  return Response.json(await response.json(), { status: response.status });
+}
+```
+
+- **Fluid sends the value only where the credential allows.** The request must start with the credential's base URL and one of its path prefixes, and use one of its methods. Any other request is refused, and so is an answer that repeats the value back.
+- **The answer says who answered.** The other service's answer comes back with its status and headers, whatever its status, and `X-Fluid-Vault: upstream`. Its body comes back only when it's plain text of a media type the credential allows, `application/json` and `text/plain` by default. Any other body, such as HTML, an image or compressed data, comes back empty. A refusal from Fluid, such as a credential the Site may not use, has `X-Fluid-Vault: refused` and a JSON body with `error` and `message`. No answer in time is `503` `unavailable`.
+- **Only company Sites.** A member's own Site can't use the vault. Give it a secret of its own with `fluid sites env set`.
+- **Who manages it.** Adding, changing and removing a credential needs a signed-in admin whose role may change themes. Nobody can read a value back, from the CLI, the API or the admin. See [Vault](/help/admin/settings/vault).
 
 ## Limits
 
@@ -304,18 +371,32 @@ Fluid answers these itself, with a body of `{"error": "<code>"}`. Anything else 
 | `429` `rate_limited` | The Site used its 600 calls this minute. `Retry-After` says when to try again | Wait, then retry |
 | `500` `fn_error` | Your handler threw, or didn't return a `Response`. The body has the `requestId` | Fix the handler |
 | `502` `fn_failed` | The function couldn't be run | Retry. If it persists, [contact support](/help/getting-help) with the time |
-| `503` `fn_not_deployed`, `503` `unavailable` | The function isn't ready to run, or Fluid can't decide the call right now | Retry shortly |
+| `503` `fn_not_deployed`, `503` `unavailable` | The function isn't ready to run, or Fluid can't decide the call right now. An `unavailable` body also has a `reason` and a `requestId` | Retry shortly. If it persists, [contact support](/help/getting-help) with the `requestId` |
 | `504` `fn_timeout` | The call ran past its `timeoutMs` | Do less per call, or raise `timeoutMs` up to 30,000 |
 
 ## Publish functions
 
 `fluid deploy` and `fluid sites publish` build and publish functions with the rest of the Site, and `fluid sites lint` checks them first with no request. Mist's **Publish** button runs the same command, from Mist 1.19.0. See [Publish a Site](/sites/publishing).
 
-The Fluid MCP server's `site_deploy` tool publishes a built folder only, with no functions. Publish a Site that has functions with the Fluid CLI.
+A publish replaces the live Site's functions with the folder's. With Sites plugin 0.1.387 or later, both commands refuse a folder with no `config/functions.json` when the live Site runs functions, and name them, before they send anything. This catches a folder pulled before the functions were added. Run `fluid sites pull` to get the functions, or pass `--remove-functions` to remove them on purpose. A `config/functions.json` that names no functions still removes them.
+
+The Fluid MCP server's `site_deploy` and `my_site_deploy` tools publish functions sent inline, when each one imports nothing. A function that imports a package or another file publishes with the Fluid CLI. See [Deploy server functions from a chat](/sites/deploy-from-claude#deploy-server-functions-from-a-chat).
 
 ## Logs and usage
 
-`fluid sites logs` shows one `function` line for each call: the function, who called (`page`, `public`, `key` or `schedule`), the request id, the status and how long it took, such as `rsvp answered 201 in 42 ms (page call, request 0199…)`. A timeout or a `5xx` is an `error` line, and a refusal such as the rate limit is a `warn` line. What your function prints with `console.log` isn't in the log, so return a useful status and body instead.
+`fluid sites logs` shows one `function` line for each call: the function, who called (`page`, `public`, `key`, `schedule` or `agent`), the request id, the status and how long it took, such as `rsvp answered 201 in 42 ms (page call, request 0199…)`. A timeout or a `5xx` is an `error` line, and a refusal such as the rate limit is a `warn` line.
+
+What a function prints with `console.log`, `console.warn` or `console.error`, and an error it throws, appear as `function` lines just before the call's own line:
+
+```text
+info  function  rsvp (request 0199…): loading event fall-gala
+error function  rsvp (request 0199…): Uncaught TypeError: Cannot read properties of undefined (reading 'id')
+error function  rsvp answered 500 in 18 ms (page call, request 0199…)
+```
+
+- A function published before 12 November 2026 logs only its call lines. Publish the Site again to get its printed lines.
+- A call keeps at most 50 printed lines. A thrown error is kept even when that's full. Anything printed after the handler returns, such as in a promise it doesn't await, isn't kept.
+- Fluid replaces each value from `ctx.secrets` with `[secret]` in a printed line. A printed line can still hold a visitor's data, so only the Site's owner, and admins whose role has **Update** on **Application Themes** and **View** on **Member Site Data**, see printed lines. Everyone else who reads the log sees only the call lines, and so does a company API token, whatever its role. To see what a function printed, read the log with such an admin's own login.
 
 `fluid sites traffic` counts each function's calls, errors, timeouts and rate-limited calls, its wall time and the bytes it answered, by function and by caller. See [Logs and traffic](/sites/logs-and-traffic).
 

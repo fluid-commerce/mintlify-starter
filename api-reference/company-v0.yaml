@@ -552,7 +552,7 @@ components:
               - $ref: '#/components/schemas/FailureEnvelopeResponse'
               - $ref: '#/components/schemas/ValidationErrorsResponse'
     UpdateCompanyOrderUnprocessableEntity:
-      description: '`contact_id` is not a contact of the company, `user_id` is not a user with a member or admin record in the company, `share_id` is not a share of the company, or `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet. Nothing on the order changes. The body is the errors keyed by field. An ID the order already carries is not checked again.'
+      description: '`contact_id` is not a contact of the company, `user_id` is not a user with a member or admin record in the company, `share_id` is not a share of the company, `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet, `status` reopens a cancelled order that was cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or the order was cancelled or reopened by another request while this update was in progress (send it again). Nothing on the order changes. The body is the errors keyed by field. An ID the order already carries is not checked again.'
       content:
         application/json:
           schema:
@@ -968,7 +968,7 @@ components:
           schema:
             $ref: '#/components/schemas/StandardForbiddenResponse'
     UpdateOrderUnprocessable:
-      description: Invalid order attributes, an attempted internal snapshot write without order read access, a tax_label change (tax_label is set by the tax provider and cannot be changed), or cancelling an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet. The order is unchanged.
+      description: Invalid order attributes, an attempted internal snapshot write without order read access, a tax_label change (tax_label is set by the tax provider and cannot be changed), cancelling an order that cannot be cancelled, such as one that holds captured funds or a card authorization, or a renewal whose charge the payment provider has not answered yet, reopening an order that was cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or an order cancelled or reopened by another request while this update was in progress (send it again). The order is unchanged.
       content:
         application/json:
           schema:
@@ -2617,6 +2617,7 @@ components:
           type:
             - string
             - 'null'
+          description: Host where the company's rep sites live, the base of each rep's replicated-site URL. Fluid serves nothing on it; the storefront's own domains are managed separately.
         color:
           type:
             - string
@@ -2729,6 +2730,11 @@ components:
               type: string
             domain:
               type: string
+              description: Host where the company's rep sites live, often a site the company runs outside Fluid. Unless the company has a dynamic replicated URL, every rep's replicated-site URL is built on it, in the shape `placement` picks. It does not connect a custom domain, and Fluid serves nothing on it.
+            placement:
+              type: string
+              description: 'Shape of each rep''s replicated-site URL on `domain`: `subdomain` (the default) gives `https://<username>.<domain>`, `none` gives `https://<domain>` for every rep and needs `domain` set. Other values are not validated today and may be rejected later.'
+              example: subdomain
             color:
               type: string
             support_email:
@@ -4172,6 +4178,7 @@ components:
                 - number
                 - integer
                 - 'null'
+              description: Host where the company's rep sites live, the base of each rep's replicated-site URL. Fluid serves nothing on it; the storefront's own domains are managed separately.
             color:
               type:
                 - string
@@ -14406,7 +14413,7 @@ components:
                     - 'null'
                   format: date-time
     CompanyCustomer:
-      description: 'A customer of the company. Every customer response carries the base fields. Some fields appear only on particular endpoints: `active_subscriptions_count`, `inactive_subscriptions_count`, `metafields`, `member_id` and `jwt` are added for company admins; `points` and `attributable_rep` are added by the detail, update and attributable-rep endpoints; the sponsor, rank, identity and agreement fields are added by the detail and update endpoints only.'
+      description: 'A customer of the company. Every customer response carries the base fields. Some fields appear only on particular endpoints: `active_subscriptions_count`, `inactive_subscriptions_count`, `metafields`, `member_id` and `jwt` are added for company admins; `first_order_at` and `first_subscription_order_at` are added for company admins by the detail endpoint; `points` and `attributable_rep` are added by the detail, update and attributable-rep endpoints; the sponsor, rank, identity and agreement fields are added by the detail and update endpoints only.'
       type: object
       properties:
         id:
@@ -14739,6 +14746,18 @@ components:
             - integer
             - 'null'
           description: Id of the address set as the customer's Fluid Pay wallet default. Company admins only.
+        first_order_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the customer placed their first order that was not left pending, authorized or voided, by sale date (or creation time when the order has no sale date), or null when they have none. An order the merchant marked paid or free counts, and so does a checkout order a subscription was created from, in any status, so this is never later than `first_subscription_order_at`. Read from order history, so it covers past orders. Company admins only, on the detail endpoint.
+        first_subscription_order_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the customer placed their first order that started a subscription, or null when they have none. A subscription starts at the checkout order it was created from, in any status; a subscription created without one (by an admin, the API or an autoship profile) starts at its first charge not left pending, authorized or voided. A subscription imported with history from another platform does not start on Fluid. Company admins only, on the detail endpoint.
         agreement_acceptances:
           type:
             - array
@@ -15379,8 +15398,8 @@ components:
             domain:
               type: string
               minLength: 1
-              description: Legacy field. It does not connect a custom domain; omit it.
-              deprecated: true
+              description: Host where the company's rep sites live, often a site the company runs outside Fluid. Every rep's replicated-site URL is built on it, by default `https://<username>.<domain>`. It does not connect a custom domain, and Fluid serves nothing on it; the storefront's own domains are managed separately.
+              example: reps.harborline.com
             onboarding_info:
               type: object
               minProperties: 1
@@ -17344,6 +17363,9 @@ components:
           type: string
         discount:
           type: string
+        embedded_discount:
+          type: string
+          description: Part of the discount still inside the line prices, so the subtotal already excludes it. Non-zero only on legacy subscription renewal orders, and lower after an edit removes units; 0 otherwise.
         cart_token:
           type:
             - string
@@ -18703,6 +18725,32 @@ components:
               - integer
               - 'null'
           description: List of role names assigned to the user
+        source:
+          type:
+            - string
+            - 'null'
+          enum:
+            - access
+          description: Present as "access" when permissions are resolved from Access for every kind of caller; absent on the legacy answer
+        kind:
+          type:
+            - string
+            - 'null'
+          description: Kind of caller the keys were resolved for. Present only when the my-permissions-all-kinds flag is on.
+        grant_limit_enforced:
+          type:
+            - boolean
+            - 'null'
+          description: True when the permission grant limit is enforced for the company, so a caller can only grant permissions it holds.
+        grantable_permissions:
+          type:
+            - array
+            - 'null'
+          items:
+            type:
+              - string
+              - 'null'
+          description: Every permission key the caller can grant, registry fallbacks included. Present only while the grant limit is enforced and the caller is not in the root-admin tier.
         meta:
           type:
             - object
@@ -19634,6 +19682,16 @@ components:
               items:
                 type: string
               description: Dotted permission keys the role grants, such as `orders.view`. Replaces the role's current keys. See Get roles structure for the available keys.
+            full_access_mode:
+              type: string
+              enum:
+                - snapshot
+              description: Set by clients that edited from `resolved_permission_keys`; freezes a live full-access role.
+            loaded_permission_keys:
+              type: array
+              items:
+                type: string
+              description: The `resolved_permission_keys` the editor loaded. With `full_access_mode`, keys added to the catalog since then stay on the frozen role instead of counting as removed.
             permissions:
               type:
                 - object
@@ -19918,6 +19976,7 @@ components:
                   - string
                   - number
                   - 'null'
+                description: On an absolute row, the sent value is ignored and on_hand is recalculated as available + committed + unavailable; a row that sends on_hand without any of those counts is refused. A delta row cannot send on_hand.
               available:
                 type:
                   - integer
@@ -24248,7 +24307,8 @@ components:
                 `align_required`, so the add needs its `confirmation`);
                 `join_refused` (`errors.refusals` lists the reasons: `currency`,
                 `country`, `tax_pricing_mode`, `shipping_pricing_mode`,
-                `digital`, `customer`, `member`, `plan_not_offered`);
+                `digital`, `customer`, `member`, `plan_not_offered`,
+                `points_auto_apply_unavailable`);
                 `item_unavailable`; `item_not_created` (`errors` carry the
                 subscription create errors); `request_key_reused` (the
                 `request_key` added another item); `address_required`;
@@ -25827,6 +25887,10 @@ components:
         scoped_clients_enabled:
           type: boolean
           description: Whether the company's new API credentials are scoped clients rather than partner and public tokens, true for a company on identity sign-in and for every company once scoped client creation is switched on for all.
+        portal_url:
+          type: string
+          nullable: true
+          description: The company's member Portal URL, null when the company has no subdomain.
         agent_access_enabled:
           type: boolean
           description: Whether agents may ask this company's administrators for access, which they answer from the developer tokens screen.
@@ -29015,6 +29079,21 @@ components:
         permissions_count:
           type: integer
           description: Number of distinct permission keys. Returned by the list and single-role reads only.
+        full_access_mode:
+          type:
+            - string
+            - 'null'
+          description: '`live` or `snapshot` for a full-access role. Returned by the single-role read and by the list when full-access-live is enabled and the caller is not a Droplet and holds `roles.view`.'
+        resolved_permission_keys:
+          type: array
+          items:
+            type: string
+          description: Permission keys the role resolves to now. Returned by the single-role read and by the list when full-access-live is enabled and the caller is not a Droplet and holds `roles.view`.
+        missing_full_access_keys:
+          type: array
+          items:
+            type: string
+          description: Catalog keys a snapshot full-access role lacks. Returned by the single-role read and by the list when full-access-live is enabled and the caller is not a Droplet and holds `roles.view`.
     CompanyWebhookEvent:
       title: WebhookEvent
       type:
@@ -36669,6 +36748,14 @@ paths:
                 $ref: '#/components/schemas/StandardForbiddenResponse'
               example:
                 error: You do not have sufficient privileges to perform this action.
+        '409':
+          description: Another request added someone to your empty, not yet started conversation with the requested name while this request removed it, twice. No conversation is created; try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+              example:
+                error: Another request is changing a conversation with this name. Try again.
         '422':
           description: A parameter has the wrong type.
           content:
@@ -37745,7 +37832,7 @@ paths:
     patch:
       operationId: company_v0_company_orders_patch
       summary: Update orders
-      description: Updates one of the company's orders, such as its status, contact details, external ID, shipped and delivered dates, or tracking information, and returns the updated order. Only the attributes you send change. Requires a company token with permission to update orders. Order webhooks fire after a successful update. Returns 400 with the validation errors when the update fails, and 422 when `contact_id`, `user_id` or `share_id` names a record outside the company, or when `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization. Refund a paid order in full first, and cancel an order with a card authorization through the cancel endpoint.
+      description: Updates one of the company's orders, such as its status, contact details, external ID, shipped and delivered dates, or tracking information, and returns the updated order. Only the attributes you send change. A `status` also sets the order's `order_status` as `PATCH /api/orders/{id}` does. `cancelled` cancels it, a status such as `shipped` or `awaiting_shipment` gives `completed`, and `archived` and `draft` carry over; an order held for fraud review, or one the order processing pipeline is still completing, keeps its `order_status`. A status that reopens a cancelled order clears its `cancelled_at` and `cancellation_reason`. Requires a company token with permission to update orders. Order webhooks fire after a successful update, and an `order_status_changed` event when a status field changed. Returns 400 with the validation errors when the update fails, and 422 when `contact_id`, `user_id` or `share_id` names a record outside the company, when `status` is `cancelled` for an order that cannot be cancelled, such as one that holds captured funds or a card authorization, when `status` reopens an order cancelled in fraud review, whose payment is voided, refunded or being refunded, or whose cancel reversed its sales tax filing, or when another request cancelled, reopened or held the order during the update. Refund a paid order in full first, and cancel an order with a card authorization through the cancel endpoint.
       tags:
         - company
       parameters:
@@ -39083,7 +39170,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
         '403':
-          description: The caller is not a company admin, lacks the roles.update permission, adds a permission it does not hold, or removes a permission from a full-access system role.
+          description: The caller is not a company admin, lacks the roles.update permission, adds a permission it does not hold, or removes a permission from a full-access system role. When the grant limit refuses the change, `errors.reason` names why and `errors.ungranted_permissions` lists the permission keys the caller does not hold.
           content:
             application/json:
               schema:
@@ -42646,6 +42733,8 @@ paths:
                       acceptance_method: customer
                       content_snapshot: By placing an order with Dunder Mifflin Paper Company you agree to these terms of service.
                   fluid_pay_default_address_id: null
+                  first_order_at: '2026-09-02T14:21:04Z'
+                  first_subscription_order_at: '2026-09-02T14:21:04Z'
                 meta:
                   request_id: c4b1e8f2-3a7d-4e19-9b62-5d0f7a2c8e41
                   timestamp: '2026-09-30T15:42:07Z'
@@ -46471,7 +46560,7 @@ paths:
   /api/inventory_levels/bulk_update:
     patch:
       summary: Update multiple inventory levels
-      description: Updates quantities on several inventory levels at once, and optionally the variant's `track_quantity` and `keep_selling` flags. A row either sets absolute quantities, or sends `available_delta` and `unavailable_delta`, which apply to the row as it is when the request arrives and never change committed. When `on_hand` is sent with other quantities, `on_hand` is recalculated as available + committed + unavailable. Levels that fail are listed in `errors`; the request returns 400 only when every update fails. Requires the `inventory.update` permission.
+      description: Updates quantities on several inventory levels at once, and optionally the variant's `track_quantity` and `keep_selling` flags. A row either sets absolute quantities, or sends `available_delta` and `unavailable_delta`, which apply to the row as it is when the request arrives and never change committed. An absolute row keeps the counts it does not send and recalculates `on_hand` as available + committed + unavailable, so a sent `on_hand` is replaced and a row that sends only `on_hand` fails. A row that would leave any count negative fails with code `negative_stock` and changes nothing; as on `POST /api/inventory_levels/set`, that includes a count the row does not send, so a level that is already oversold takes absolute quantities only once `available` is brought back to zero or above. A row that re-sends the stored counts changes nothing. Levels that fail are listed in `errors`; the request returns 400 only when every update fails. Requires the `inventory.update` permission.
       tags:
         - inventory-levels
       operationId: commerce_v0_update_multiple_inventory_levels
@@ -48854,7 +48943,7 @@ paths:
   /api/orders/{id}:
     patch:
       summary: Update an order
-      description: Update an order. Callers without internal order snapshot read access cannot write tax_and_shipping_settings; such requests return 422 without changing the order. tax_label remains readable but is set by the tax provider; setting, changing or removing it returns 422, while resending its stored value is allowed. Replacing metadata preserves an omitted stored tax_label and the hidden snapshot. A write of status or order_status that cancels an order that cannot be cancelled, such as one holding captured funds or a renewal whose charge the payment provider has not answered yet, returns 422. A paid order must be refunded in full first.
+      description: 'Update an order. Callers without internal order snapshot read access cannot write tax_and_shipping_settings; such requests return 422 without changing the order. tax_label remains readable but is set by the tax provider; setting, changing or removing it returns 422, while resending its stored value is allowed. Replacing metadata preserves an omitted stored tax_label and the hidden snapshot. A write of status or order_status that cancels an order that cannot be cancelled, such as one holding captured funds or a renewal whose charge the payment provider has not answered yet, returns 422. A paid order must be refunded in full first. A status sent without order_status also sets order_status (shipped or awaiting_shipment, for example, give completed), except on an order held for fraud review or one the order processing pipeline is still completing. A write that reopens a cancelled order to pending, processing or completed clears its cancelled_at and cancellation_reason. It returns 422 for an order cancelled in fraud review, for a reopen that leaves status cancelled (send a status with it), and for an order whose payment is voided, refunded or being refunded, or that the write sets to one of those. An imported order is the exception: the same write may settle it by setting financial_status to marked_paid, marked_free, paid or partially_paid. It also returns 422 for an order whose cancel already reversed its sales tax filing. A write returns 422 when another request cancelled, reopened or held the order during it; send it again.'
       tags:
         - orders
       operationId: commerce_v0_update_order
@@ -49727,7 +49816,7 @@ paths:
     get:
       operationId: commerce_v0_products_contact_share_link_get
       summary: Get a product contact share link
-      description: Return the caller's share link for a product, creating the link if it does not exist yet. Pass `contact_id` to attribute the link to one of the caller's contacts (used by the mobile app when sharing with a contact). Returns 404 when the product does not belong to the authenticated company. Admin users, company API tokens, and partner tokens need the `products` view permission.
+      description: Return the caller's share link for a product, creating the link if it does not exist yet. Pass `contact_id` to attribute the link to one of the caller's own contacts, of the company, of no company, or of another company where the caller is an active rep (used by the mobile app when sharing with a contact); any other `contact_id`, another rep's or another person's contact included, returns 404. Returns 404 when the product does not belong to the authenticated company. Admin users, company API tokens, and partner tokens need the `products` view permission.
       tags:
         - products
       parameters:
@@ -49764,6 +49853,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
+        '404':
+          description: The product is not the company's, or the contact is not one of the caller's own contacts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+              example:
+                error: Not found
       security:
         - bearer_auth: []
   /api/products/{product_id}/leads:
@@ -50144,8 +50246,9 @@ paths:
         - bearer_auth: []
   /api/redirects:
     get:
+      deprecated: true
       summary: Lists redirects
-      description: Lists the company's URL redirects, newest first by default. Search `path` and `target` with `search_query`, limit to one domain with `by_domain_id`, and sort with `sorted_by`. Uses page-number pagination with `page` (default 1) and `per_page` (default 10); `meta` reports `total_count`, `total_pages`, and `current_page`. Requires a company admin token with permission to view pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Lists the company's URL redirects, newest first by default. Search `path` and `target` with `search_query`, limit to one domain with `by_domain_id`, and sort with `sorted_by`. Uses page-number pagination with `page` (default 1) and `per_page` (default 10); `meta` reports `total_count`, `total_pages`, and `current_page`. Requires a company admin token with permission to view pages.
       tags:
         - redirects
       operationId: company_v0_list_redirects
@@ -50223,8 +50326,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     post:
+      deprecated: true
       summary: Create Redirect
-      description: Create a new redirect
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Create a new redirect
       tags:
         - redirects
       operationId: company_v0_create_redirect
@@ -50271,8 +50375,9 @@ paths:
                 domain_id: 6120
   /api/redirects/export_csv:
     post:
+      deprecated: true
       summary: Export redirects data in a CSV file
-      description: Export redirects data in a CSV file
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Export redirects data in a CSV file
       tags:
         - redirects
       operationId: company_v0_export_redirectsin_csv
@@ -50298,8 +50403,9 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
   /api/redirects/import_csv:
     post:
+      deprecated: true
       summary: Import redirects via csv file in the url
-      description: Creates redirects in bulk from a CSV file that was uploaded to the URL returned by the presigned CSV URL endpoint. The file needs `path` and `target` columns. Rows are processed in order, and the response reports how many redirects were created, how many failed to save, and how many rows were invalid. Returns 422 when the file cannot be read or is missing a required column. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Creates redirects in bulk from a CSV file that was uploaded to the URL returned by the presigned CSV URL endpoint. The file needs `path` and `target` columns. Rows are processed in order, and the response reports how many redirects were created, how many failed to save, and how many rows were invalid. Returns 422 when the file cannot be read or is missing a required column. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_import_redirects_via_csv
@@ -50334,8 +50440,9 @@ paths:
               url: https://storage.googleapis.com/fluid-uploads/uploads/20260918/3b9f6c2e-7a41-4d8e-9f25-c1e0a6d4b873/redirects_20260918.csv
   /api/redirects/presigned_csv_url:
     post:
+      deprecated: true
       summary: Generate a signed URL to upload csv for bulk importing redirects
-      description: Generate signed URL to allow users without credentials to perform upload (time-limited access to Cloud Storage)
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Generate signed URL to allow users without credentials to perform upload (time-limited access to Cloud Storage)
       tags:
         - redirects
       operationId: company_v0_get_presigned_csv_url_for_redirects_import
@@ -50361,8 +50468,9 @@ paths:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
   /api/redirects/{id}:
     get:
+      deprecated: true
       summary: Retrieves a redirect
-      description: Retrieves one of the company's redirects, including the domain it is attached to, if any. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to view pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Retrieves one of the company's redirects, including the domain it is attached to, if any. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to view pages.
       tags:
         - redirects
       operationId: company_v0_get_redirect
@@ -50404,8 +50512,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardUnauthorizedResponse'
     put:
+      deprecated: true
       summary: Updates a redirect
-      description: Updates a redirect. Send both `path` and `target`; `domain_id` is optional. `path` must start with `/` and must not clash with reserved or application paths or with another redirect of the company. `target` must be a path starting with `/` or an `http`/`https` URL. Returns 404 when the ID does not match a redirect of the company, and 422 when validation fails. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Updates a redirect. Send both `path` and `target`; `domain_id` is optional. `path` must start with `/` and must not clash with reserved or application paths or with another redirect of the company. `target` must be a path starting with `/` or an `http`/`https` URL. Returns 404 when the ID does not match a redirect of the company, and 422 when validation fails. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_update_redirect
@@ -50456,8 +50565,9 @@ paths:
                 path: /mug
                 target: /products/scranton-branch-mug
     delete:
+      deprecated: true
       summary: Deletes a redirect
-      description: Deletes a redirect. The response echoes only the deleted redirect's ID. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to update pages.
+      description: Deprecated. The admin's Sitemap page doesn't show these redirects. To redirect a URL, create a sitemap route with `POST /api/theme_region_rules` instead. Deletes a redirect. The response echoes only the deleted redirect's ID. Returns 404 when the ID does not match a redirect of the company. Requires a company admin token with permission to update pages.
       tags:
         - redirects
       operationId: company_v0_delete_redirect
@@ -51927,7 +52037,7 @@ paths:
 
         Name the resource with `relateable_type` and `relateable_id`, or with the older `medium_id` or `product_id`. `relateable_type` is one of `medium`, `product`, `page`, `promotion`, `library`, `enrollmentpack`, `mysite` (the rep's own mysite; no id) or `site`.
 
-        Without `contact_id` the link is a general link. With `contact_id` it is a smart link for that contact, and a visit through it is attributed to the contact. A smart link's redirect also carries `fluid_c`, the contact's token, except for a `site`: the site's own code can read its address, so a site link leaves the token out, and its `share_token` attributes the visit. A `site` takes only one of the sharer's own contacts in the company; any other `contact_id`, another rep's contact included, returns 422 `Contact not found`.
+        Without `contact_id` the link is a general link. With `contact_id` it is a smart link for that contact, and a visit through it is attributed to the contact. A smart link's redirect also carries `fluid_c`, the contact's token, except for a `site`: the site's own code can read its address, so a site link leaves the token out, and its `share_token` attributes the visit. The contact must be one of the sharer's own contacts: of the company, of no company, or of another company where the sharer is an active rep (as the contact picker lists them), except that a `site` takes only a contact of the company. Any other `contact_id`, another rep's or another person's contact included, returns 422 `Contact not found`.
 
         A `site` must be public and published on the sites gateway. A private site, a draft, or a company not on the gateway returns 422. Its link redirects to `/<sharer username>/sites/<site>`, or to `/home/sites/<site>` (crediting the site's owner) for a sharer with no member.
 
@@ -51985,7 +52095,7 @@ paths:
               example:
                 message: Invalid credentials.
         '422':
-          description: The resource is not the company's or cannot be shared, or, for a `site`, the contact is not one of the sharer's own contacts in the company.
+          description: The resource is not the company's or cannot be shared, or the contact is not one of the sharer's own contacts (for a `site`, of the company; otherwise, of the company, of no company, or of another company where the sharer is an active rep).
           content:
             application/json:
               schema:
@@ -54123,6 +54233,7 @@ paths:
                   address_id: 73518
                   attempts: 0
                   auto_apply_points: false
+                  auto_apply_points_available: true
                   baked_discounts: []
                   base_recurring_price: 54.99
                   blackout_days: []
@@ -57006,7 +57117,7 @@ paths:
   /api/subscriptions/{token}/reactivate:
     post:
       summary: Reactivate a cancelled subscription
-      description: Reactivate a previously cancelled subscription. Returns 422 when the subscription cannot be reactivated, including when its maximum successful billing-cycle limit is reached or its product variant is no longer available.
+      description: Reactivate a previously cancelled subscription. Without next_bill_date or process_immediately, billing resumes on the plan's next date from today, but never before the end of a cycle the subscription already paid for. Returns 422 when the subscription cannot be reactivated, including when its maximum successful billing-cycle limit is reached, its product variant is no longer available, or the requested date's local day already has billing activity, or a customer's date is earlier than the scheduled one without confirm_early_order (meta.code early_order_confirmation_required).
       tags:
         - subscriptions
       operationId: commerce_v0_reactivate_subscription
@@ -57034,10 +57145,13 @@ paths:
                   type: boolean
                   enum:
                     - true
-                  description: Process reactivation billing immediately. Must be true when provided and cannot be combined with next_bill_date.
+                  description: Bill the reactivated subscription today. The charge is queued and the request does not wait for it. The response is the subscription as committed when it is read, which can already include a charge that renewal processing finished first; read the subscription again for the outcome. Must be true when provided and cannot be combined with next_bill_date.
                 address_id:
                   type: integer
                   description: Saved customer address to use for the reactivated subscription.
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. Required for a customer's next_bill_date or process_immediately earlier than the scheduled date; merchant requests are not judged.
             example:
               next_bill_date: '2026-10-15'
               address_id: 73518

@@ -2875,7 +2875,8 @@ components:
                 `align_required`, so the add needs its `confirmation`);
                 `join_refused` (`errors.refusals` lists the reasons: `currency`,
                 `country`, `tax_pricing_mode`, `shipping_pricing_mode`,
-                `digital`, `customer`, `member`, `plan_not_offered`);
+                `digital`, `customer`, `member`, `plan_not_offered`,
+                `points_auto_apply_unavailable`);
                 `item_unavailable`; `item_not_created` (`errors` carry the
                 subscription create errors); `request_key_reused` (the
                 `request_key` added another item); `address_required`;
@@ -2977,7 +2978,7 @@ components:
             Why the cart's subscriptions cannot ship with this profile. The
             checker's reasons (`currency`, `country`, `tax_pricing_mode`,
             `shipping_pricing_mode`, `digital`, `customer`, `member`,
-            `plan_not_offered`), plus `subscription_plan` (a subscription is on
+            `plan_not_offered`, `points_auto_apply_unavailable`), plus `subscription_plan` (a subscription is on
             another plan than the profile's), `renewal_due` (the profile's
             renewal date has arrived), and `address` or `payment_method` (the
             profile has none to copy). Empty unless `outcome` is `refused`.
@@ -3136,12 +3137,20 @@ components:
             type: object
             required:
             - points_enabled
+            - auto_apply_points_available
+            - max_quantity
             - renewal_bundle
             - profile
             - cancel_flow
             properties:
               points_enabled:
                 type: boolean
+              auto_apply_points_available:
+                type: boolean
+              max_quantity:
+                type:
+                - integer
+                - 'null'
               renewal_bundle:
                 type: object
               profile:
@@ -4559,7 +4568,7 @@ components:
         company:
           type: object
           additionalProperties: false
-          required: [uuid, identity_sign_in_enabled, checkout_identity_enabled, name, subdomain]
+          required: [uuid, identity_sign_in_enabled, checkout_identity_enabled, checkout_identity_probe_fallback_enabled, name, subdomain]
           properties:
             uuid:
               type: string
@@ -4568,6 +4577,8 @@ components:
             identity_sign_in_enabled:
               type: boolean
             checkout_identity_enabled:
+              type: boolean
+            checkout_identity_probe_fallback_enabled:
               type: boolean
             name:
               type: string
@@ -5162,6 +5173,28 @@ components:
                 points-enabled company is a customer who opted out, which is a
                 different thing to render.
               type: boolean
+            auto_apply_points_available:
+              description: |
+                Whether points can be auto-applied to this subscription's
+                product. Show-only. False when the merchant excluded the product:
+                renewals never redeem points for it, whatever `auto_apply_points`
+                says, and a write that sets `auto_apply_points` to `true` is
+                refused with 422.
+              type: boolean
+            max_quantity:
+              description: |
+                The most units the shopper may set on this subscription, or
+                null when the product has no cap. Show-only. Set when the
+                product's "Limit Subscription Quantity" is on with a
+                "Subscription Max Quantity" above 0; an update with a larger
+                `quantity` is refused with 422. Still set when the product
+                variant was discarded (`variant` is null then): the cap keeps
+                applying to a quantity-only update.
+              type:
+              - integer
+              - 'null'
+              minimum: 1
+              example: 1
             renewal_bundle:
               description: |
                 Every subscription that renews together with this one, because the
@@ -5198,6 +5231,7 @@ components:
                     - label
                     - status
                     - auto_apply_points
+                    - auto_apply_points_available
                     properties:
                       subscription_token:
                         type: string
@@ -5209,6 +5243,10 @@ components:
                       status:
                         type: string
                       auto_apply_points:
+                        type: boolean
+                      auto_apply_points_available:
+                        description: Whether points can be auto-applied to this
+                          member's product. False when the merchant excluded it.
                         type: boolean
             milestones:
               description: |
@@ -12293,6 +12331,49 @@ components:
       - meta
       - payment_methods
       additionalProperties: false
+    CheckoutInvoiceGrantPaymentMethodListResponse:
+      description: The saved cards an invoice grant (`cig_` bearer) lists for its
+        cart's owner, masked to a brand and last four.
+      type: object
+      properties:
+        fluid_pay_account:
+          type: 'null'
+        meta:
+          "$ref": "#/components/schemas/CheckoutMeta"
+        payment_methods:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              payment_type:
+                type: string
+              details:
+                type: object
+                properties:
+                  card_brand:
+                    type:
+                    - string
+                    - 'null'
+                  last_four:
+                    type:
+                    - string
+                    - 'null'
+                required:
+                - card_brand
+                - last_four
+                additionalProperties: false
+            required:
+            - id
+            - payment_type
+            - details
+            additionalProperties: false
+      required:
+      - fluid_pay_account
+      - meta
+      - payment_methods
+      additionalProperties: false
     CheckoutCustomerPointsLedgerListResponse:
       type: object
       properties:
@@ -13366,6 +13447,9 @@ components:
         checkout_identity_enabled:
           type: boolean
           description: Whether checkout is identity-only for the company; true only when it signs in through the identity service and its release flag is on.
+        checkout_identity_probe_fallback_enabled:
+          type: boolean
+          description: Whether checkout's silent identity probe falls back to the legacy session when the identity service is unreachable.
         bundle_subscriptions:
           type: boolean
         checkout_primary_button_color:
@@ -20305,6 +20389,10 @@ paths:
         schema:
           type: string
       responses:
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/UpdateCartForbidden"
         '422':
           description: A query parameter failed validation.
           content:
@@ -21320,6 +21408,10 @@ paths:
         schema:
           type: string
       responses:
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/UpdateCartForbidden"
         '404':
           description: Cart not found
           content:
@@ -25672,7 +25764,9 @@ paths:
           content:
             application/json:
               schema:
-                "$ref": "#/components/schemas/CheckoutCustomerPaymentMethodListResponse"
+                anyOf:
+                - "$ref": "#/components/schemas/CheckoutCustomerPaymentMethodListResponse"
+                - "$ref": "#/components/schemas/CheckoutInvoiceGrantPaymentMethodListResponse"
               example:
                 fluid_pay_account:
                   id: 20417
@@ -29566,6 +29660,7 @@ paths:
                   uuid: 0192f0c4-7d3e-7a10-9b52-3f6a1c8e5d20
                   identity_sign_in_enabled: true
                   checkout_identity_enabled: false
+                  checkout_identity_probe_fallback_enabled: false
                   name: Primex
                   subdomain: primex
         '404':
@@ -29607,6 +29702,7 @@ paths:
                   uuid: 0192f0c4-7d3e-7a10-9b52-3f6a1c8e5d20
                   identity_sign_in_enabled: true
                   checkout_identity_enabled: false
+                  checkout_identity_probe_fallback_enabled: false
                   name: Primex
                   subdomain: primex
         '404':
@@ -32455,6 +32551,9 @@ paths:
       description: |
         Reactivates a cancelled or expired subscription `{token}`, optionally
         setting `next_bill_date`, `process_immediately`, or a billing `address_id`.
+        Without either date option, billing resumes on the plan's next date from
+        today, but never before the end of a cycle the subscription already paid
+        for.
         Requires a bearer token. Returns `422` when it cannot be reactivated, `404`
         when not found, and `401` when unauthenticated.
       security:
@@ -32483,12 +32582,20 @@ paths:
                   type: boolean
                   enum:
                   - true
-                  description: Process the reactivation billing immediately. Must be
+                  description: Bill the reactivated subscription today. The charge is
+                    queued and the request does not wait for it. The response is
+                    the subscription as committed when it is read, which can
+                    already include a charge that renewal processing finished
+                    first; read the subscription again for the outcome. Must be
                     true or omitted; sending false is rejected. Mutually exclusive
                     with next_bill_date.
                 address_id:
                   type: integer
                   description: Address to reactivate the subscription with
+                confirm_early_order:
+                  type: boolean
+                  description: The shopper's acknowledgement that a date earlier
+                    than the scheduled one places and charges a new order.
             example:
               next_bill_date: '2026-10-15'
               address_id: 77314
@@ -32785,13 +32892,33 @@ paths:
             country uses a tax mode that cannot calculate tax at renewal
             (Sovos) and the customer is not tax exempt. The ship-to country is
             the country of the `address_id` the request sends, or of the
-            subscription's own address when it sends none. The subscription
-            stays cancelled.
+            subscription's own address when it sends none. `meta.code` is
+            `early_order_confirmation_required` when a shopper's
+            `next_bill_date`, or today for `process_immediately`, is earlier
+            than the subscription's scheduled date and the request does not
+            send `confirm_early_order: true`: it would charge inside the cycle
+            the shopper already paid for. `meta` then carries
+            `scheduled_date`, `last_bill_date` and `requested_date`. The
+            subscription stays cancelled.
           content:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
               examples:
+                early_order_confirmation_required:
+                  summary: The date charges inside the paid cycle
+                  value:
+                    error_message: must be on or after 2026-11-05; an earlier date places a new order, so it needs early-order confirmation
+                    errors:
+                      next_bill_date:
+                      - must be on or after 2026-11-05; an earlier date places a new order, so it needs early-order confirmation
+                    meta:
+                      request_id: 7d1f3a2b-4c5e-4f60-8a9b-0c1d2e3f4a5b
+                      timestamp: '2026-10-22T12:00:00Z'
+                      code: early_order_confirmation_required
+                      scheduled_date: '2026-11-05'
+                      last_bill_date: '2026-10-05'
+                      requested_date: '2026-10-22'
                 tax_quote_unavailable:
                   summary: Tax cannot be calculated at renewal
                   value:
@@ -34210,8 +34337,9 @@ paths:
       description: |
         Reverses a previously skipped cycle on the subscription `{token}`,
         restoring its next scheduled cycle. Requires a bearer token. Returns `422`
-        when there is no skip to undo, `404` when not found, and `401` when
-        unauthenticated.
+        when there is no skip to undo, or under `next_bill_date` when a renewal
+        is being charged right now or the restored day already billed (the skip
+        stays in place), `404` when not found, and `401` when unauthenticated.
       security:
       - bearer_auth: []
       parameters:
