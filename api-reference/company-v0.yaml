@@ -456,7 +456,7 @@ components:
     UpdateSubscriptionUnprocessable:
       description: |-
         Validation failure (including `subscription.metadata` containing platform-reserved keys, which the error names) or subscription activation blocked by the current plan billing-cycle limit. `meta.code` is `tax_quote_unavailable` when the subscription is cancelled, the request sends a `status` other than `cancelled`, the selling country or the ship-to country uses a tax mode that cannot calculate tax at renewal (Sovos), and the customer is not tax exempt. The ship-to country is the country of the `address_id` the request sends, or of the subscription's own address when it sends none. Nothing is written and the subscription stays cancelled.
-        `meta.code` is `early_order_confirmation_required` when a shopper's `next_bill_date` is earlier than the scheduled one and the request does not send `confirm_early_order: true`. `meta` then carries `scheduled_date`, `requested_date` and, when the subscription has billed before, `last_bill_date` as ISO 8601 dates; `last_bill_date` is null for a subscription that has never billed. Nothing is written.
+        `meta.code` is `early_order_confirmation_required` when a shopper's, or a machine credential (a droplet, partner, company API or client token; rolling out per company)'s, `next_bill_date` is earlier than the scheduled one and the request does not send `confirm_early_order: true`. `meta` then carries `scheduled_date`, `requested_date` and, when the subscription has billed before, `last_bill_date` as ISO 8601 dates; `last_bill_date` is null for a subscription that has never billed. Nothing is written.
       content:
         application/json:
           schema:
@@ -5273,7 +5273,7 @@ components:
           format: date-time
         code:
           type: string
-          description: Machine code for the refusal, for example `payment_unconfirmed`, `next_bill_date_blackout` when a merchant caller picks a bill date on a blackout day, or `early_order_confirmation_required` when a shopper's earlier date is not confirmed. A customer JWT is never refused for a blackout day; its date is saved on the next open day.
+          description: Machine code for the refusal, for example `payment_unconfirmed`, `next_bill_date_blackout` when a merchant caller picks a bill date on a blackout day, or `early_order_confirmation_required` when an earlier date from a shopper, or from a machine credential (a droplet, partner, company API or client token; rolling out per company), is not confirmed. A customer JWT is never refused for a blackout day; its date is saved on the next open day.
         blocked_date:
           type: string
           format: date
@@ -20222,7 +20222,7 @@ components:
             confirm_early_order:
               type: boolean
               description: |
-                The shopper's acknowledgement that an earlier next_bill_date places and charges a new order. Required for a shopper write that moves the date earlier than the scheduled one; without it the write is refused with meta.code early_order_confirmation_required.
+                The caller's acknowledgement that an earlier next_bill_date places and charges a new order. Required for a shopper write, or a write from a machine credential (a droplet, partner, company API or client token; rolling out per company), that moves the date earlier than the scheduled one; without it the write is refused with meta.code early_order_confirmation_required. A staff write is not judged.
             volume_rep_id:
               type:
                 - integer
@@ -52341,6 +52341,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not a company member or a customer, such as a droplet, partner, company API or client token, or lacks the subscriptions write capability. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardForbiddenResponse'
+              example:
+                error_message: Not authorized
         '422':
           description: 'The bundle was refused, for example because bundling is not enabled, a subscription cannot be bundled, or `next_bill_date` is in the past, beyond a member plan''s bill-date limit or on a blackout day. A blackout day sets `meta.code` to `next_bill_date_blackout` and adds `meta.blocked_date`, `meta.blocked_day` and `meta.allowed_date`. A customer JWT is never refused for a blackout day: the bundle is saved on the next open day.'
           content:
@@ -55321,7 +55329,7 @@ paths:
                   description: The date every member bills next, in the members' shared timezone.
                 confirm_early_order:
                   type: boolean
-                  description: The shopper's acknowledgement that a next_bill_date earlier than a member's scheduled date places and charges a new order for that member. Required for a shopper write that moves any member earlier; without it the write is refused with meta.code early_order_confirmation_required.
+                  description: The caller's acknowledgement that a next_bill_date earlier than a member's scheduled date places and charges a new order for that member. Required when a machine credential (a droplet, partner, company API or client token; rolling out per company) moves any member earlier; without it the write is refused with meta.code early_order_confirmation_required. An admin editing a profile their own member owns picks dates as its shopper and must confirm too; any other admin is not judged.
       responses:
         '200':
           description: The profile after the change.
@@ -55968,7 +55976,7 @@ paths:
                   description: The date billing resumes for every member.
                 confirm_early_order:
                   type: boolean
-                  description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
+                  description: The caller's acknowledgement that a date earlier than the scheduled one places and charges a new order. An earlier date from a machine credential (a droplet, partner, company API or client token; rolling out per company) without it is refused with 422 and meta.code early_order_confirmation_required; an admin's is not judged. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: The profile after the change.
@@ -56857,7 +56865,7 @@ paths:
           schema:
             type: boolean
           required: false
-          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
+          description: The caller's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's, or a machine credential (a droplet, partner, company API or client token; rolling out per company)'s, earlier date without it is refused with 422 and meta.code early_order_confirmation_required; a staff request is not judged. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: Success
@@ -57117,7 +57125,7 @@ paths:
   /api/subscriptions/{token}/reactivate:
     post:
       summary: Reactivate a cancelled subscription
-      description: Reactivate a previously cancelled subscription. Without next_bill_date or process_immediately, billing resumes on the plan's next date from today, but never before the end of a cycle the subscription already paid for. Returns 422 when the subscription cannot be reactivated, including when its maximum successful billing-cycle limit is reached, its product variant is no longer available, or the requested date's local day already has billing activity, or a customer's date is earlier than the scheduled one without confirm_early_order (meta.code early_order_confirmation_required).
+      description: Reactivate a previously cancelled subscription. Without next_bill_date or process_immediately, billing resumes on the plan's next date from today, but never before the end of a cycle the subscription already paid for. Returns 422 when the subscription cannot be reactivated, including when its maximum successful billing-cycle limit is reached, its product variant is no longer available, or the requested date's local day already has billing activity, or a customer's or a machine credential (a droplet, partner, company API or client token; rolling out per company)'s date is earlier than the scheduled one without confirm_early_order (meta.code early_order_confirmation_required).
       tags:
         - subscriptions
       operationId: commerce_v0_reactivate_subscription
@@ -57151,7 +57159,7 @@ paths:
                   description: Saved customer address to use for the reactivated subscription.
                 confirm_early_order:
                   type: boolean
-                  description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. Required for a customer's next_bill_date or process_immediately earlier than the scheduled date; merchant requests are not judged.
+                  description: The caller's acknowledgement that a date earlier than the scheduled one places and charges a new order. Required for a customer's, or a machine credential (a droplet, partner, company API or client token; rolling out per company)'s, next_bill_date or process_immediately earlier than the scheduled date; staff requests are not judged.
             example:
               next_bill_date: '2026-10-15'
               address_id: 73518
@@ -57455,7 +57463,7 @@ paths:
           schema:
             type: boolean
           required: false
-          description: The shopper's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's earlier date without it is refused with 422 and meta.code early_order_confirmation_required. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
+          description: The caller's acknowledgement that a date earlier than the scheduled one places and charges a new order. A shopper's, or a machine credential (a droplet, partner, company API or client token; rolling out per company)'s, earlier date without it is refused with 422 and meta.code early_order_confirmation_required; a staff request is not judged. For a subscription paused with no date, the comparison date is the last billed date plus one plan interval.
       responses:
         '200':
           description: Subscription billing resumed
@@ -58928,6 +58936,9 @@ paths:
                       description: 'Time of day, "HH:MM" or "HH:MM:SS" (24-hour), read as the subscription''s local wall clock and composed with `date` in the subscription''s timezone. Any valid time is accepted. Changed on 2026-09-16: this value was previously read as UTC, so a client that keeps sending a UTC time now schedules that time in the subscription''s zone. The billing cron''s slots are 00:00/06:00/12:00/18:00 UTC; a local time that composes to one of them is billed exactly at that slot, and every other instant is picked up by the first slot at or after it.'
                       pattern: ^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$
                       example: '06:00'
+                    confirm_early_order:
+                      type: boolean
+                      description: The caller's acknowledgement that a date earlier than the scheduled one places and charges a new order. Required when a machine credential (a droplet, partner, company API or client token; rolling out per company) moves the date earlier; without it the request is refused with 422 and `meta.code` `early_order_confirmation_required`. A staff request is not judged.
             example:
               schedule:
                 date: '2026-10-14'
@@ -59189,7 +59200,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/JsonValue'
         '422':
-          description: Invalid schedule, active local billing date, billing currently in progress, a subscription that has completed its plan's maximum billing cycles, or a date on a blackout day. A blackout day sets `meta.code` to `next_bill_date_blackout` and adds `meta.blocked_date`, `meta.blocked_day` and `meta.allowed_date`.
+          description: Invalid schedule, active local billing date, billing currently in progress, a subscription that has completed its plan's maximum billing cycles, a date on a blackout day, or an earlier date from a machine credential (a droplet, partner, company API or client token; rolling out per company) without `confirm_early_order`. A blackout day sets `meta.code` to `next_bill_date_blackout` and adds `meta.blocked_date`, `meta.blocked_day` and `meta.allowed_date`. An unconfirmed earlier date sets `meta.code` to `early_order_confirmation_required` and adds `meta.scheduled_date`, `meta.requested_date` and `meta.last_bill_date`.
           content:
             application/json:
               schema:
