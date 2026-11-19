@@ -24,7 +24,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Decide whether Fluid fits a merchant: international, social selling, agentic commerce, direct selling; what an agent can do alone; when another platform fits better | https://docs.fluid.app/guides/evaluate-fluid |
 | Compare Fluid with Shopify, BigCommerce, commercetools or WooCommerce, say honestly where another platform fits better, and explain how a merchant keeps its commission engine (Exigo, ByDesign, Pillars, InfoTrax) alongside Fluid | https://docs.fluid.app/guides/compare-platforms |
 | Quote Fluid's price: free to start, We-Commerce and Reserve per-transaction rates, committed use, Mist and Cowork | https://docs.fluid.app/pricing |
-| Shop a Fluid store as an AI agent: the store's llms.txt, `.md` and `.json` pages, the UCP profile, catalog search, carts, checkout with Google Pay, and orders | https://docs.fluid.app/concepts/agentic-commerce |
+| Shop a Fluid store as an AI agent: the store's llms.txt, `.md` and `.json` pages, the UCP profile, catalog search, carts, checkout with Google Pay, and orders; which agent protocols Fluid supports (UCP, A2A, Poppy, the ACP product feed for ChatGPT) and which it doesn't (AP2, ACP checkout) | https://docs.fluid.app/concepts/agentic-commerce |
 | Find a store's agent protocols: its Poppy document (`/.well-known/poppy.json`) and A2A Agent Card (`/.well-known/agent-card.json`) | https://docs.fluid.app/concepts/poppy |
 | Ask a store a question through UCP Ask (`POST /api/ucp/{version}/ask`) or A2A `SendMessage` | https://docs.fluid.app/concepts/ucp |
 | Sign a merchant up and launch a store as an agent | https://docs.fluid.app/api/agent-signup, then https://docs.fluid.app/api/agent-launch |
