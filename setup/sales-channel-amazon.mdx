@@ -1,0 +1,159 @@
+---
+title: "Connect Amazon"
+sidebarTitle: "Amazon"
+description: "Connect an Amazon Seller Central account to Fluid, pick the marketplace, list products as Amazon offers, and see the Amazon orders Fluid imports."
+---
+
+Connecting Amazon lists your Fluid products as offers on Amazon and imports Amazon orders into Fluid. Fluid lists each variant as an offer on the Amazon product page that matches its barcode, in one Amazon marketplace you choose. Setup takes a person in a browser for one step: approving Fluid's access in Seller Central. Every other step is an API call.
+
+## Before you start
+
+- An Amazon Seller Central account, and a person who can sign in to it and approve apps.
+- The seller account isn't connected to another Fluid company. One seller account connects to one company.
+- A Fluid API token for the company with company admin access: **Company settings** permission to connect, choose the marketplace and disconnect, and **Products** permission to list products. The examples use it as `$FLUID_TOKEN`.
+- A live company. A test store can't connect a sales channel.
+
+## Steps
+
+<Steps>
+  <Step title="Start the connection">
+    Pick the Seller Central region your account sells in:
+
+    | `region` | Marketplaces |
+    | --- | --- |
+    | `NA` (the default) | United States, Canada, Mexico and Brazil |
+    | `EU` | United Kingdom, Europe, the Middle East and India |
+    | `FE` | Japan, Australia and Singapore |
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/amazon/connection/authorize_url" \
+      -H "Authorization: Bearer $FLUID_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"region": "NA"}'
+    ```
+
+    The response's `url` is the Seller Central consent link. Nothing changes in Fluid until someone approves it in the next step. Open the link yourself, or send it to the person who will approve it. The link works once and expires after 10 minutes; call `authorize_url` again for a new one.
+  </Step>
+  <Step title="Approve Fluid in Seller Central">
+    Sign in to Seller Central and authorize Fluid.
+
+    Amazon then sends the browser back to Fluid admin. The address ends in `connect=ok` when the connection saved, or `connect=error&reason=...` when it didn't. Whatever the page shows, check the result:
+
+    ```bash
+    curl "https://api.fluid.app/api/v202506/amazon/connection" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    The step is done when `connection.status` is `connected`. `connection.display_name` names the seller account, and `connection.marketplace_id` is the marketplace Fluid picked: the first one the seller sells in.
+  </Step>
+  <Step title="Choose the marketplace">
+    Fluid lists products and imports orders in one marketplace. Skip this step if `marketplace_id` is already the one you want. Otherwise set it, for example to `ATVPDKIKX0DER` for amazon.com:
+
+    ```bash
+    curl -X PATCH "https://api.fluid.app/api/v202506/amazon/connection" \
+      -H "Authorization: Bearer $FLUID_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"marketplace_id": "ATVPDKIKX0DER"}'
+    ```
+
+    Fluid checks the marketplace with Amazon. It fails with `422` if the seller doesn't sell in it.
+  </Step>
+  <Step title="List products">
+    This changes live configuration: it creates offers on Amazon. Start with a few products if you haven't sold on Amazon through Fluid before.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/amazon/product_listings" \
+      -H "Authorization: Bearer $FLUID_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"product_ids": [48213, 48227]}'
+    ```
+
+    Fluid creates one listing per product and publishes it in the background. Products already live on Amazon are skipped, so sending the same IDs again is safe.
+  </Step>
+  <Step title="Check the listings">
+    ```bash
+    curl "https://api.fluid.app/api/v202506/amazon/product_listings" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    Repeat until no listing is `draft`. `pending` means Amazon accepted the offers and is processing them. The list is newest first, 25 per page; pass `meta.pagination.next_cursor` back as `page[cursor]` for the next page, or `filter[product_id]` to check one product.
+  </Step>
+  <Step title="Fix rejected products">
+    A listing with `status` `publish_failed` wasn't listed. `last_error` says why, for example a missing barcode or a product Amazon restricts for your account. Fix it, then retry the listing:
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/amazon/product_listings/5512/retry" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    The step is done when no listing is `publish_failed`.
+  </Step>
+</Steps>
+
+## What each product needs
+
+- A marketplace chosen on the connection.
+- A SKU, a price and a barcode on every variant you list. Fluid uses the barcode to find the matching Amazon product, so the barcode has to match a product already in Amazon's catalog.
+- A SKU that isn't used by another listing on the connection.
+- Permission from Amazon to sell the product. Fluid checks Amazon's listing restrictions before it creates any offer, and a restricted product fails with the restriction named in `last_error`.
+
+## Amazon orders
+
+Fluid checks Amazon for new and updated orders on a schedule and imports each one as a Fluid order. To see what Fluid has imported, including orders it couldn't import:
+
+```bash
+curl "https://api.fluid.app/api/v202506/amazon/orders" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+Filter with `filter[ingestion_state]`, or `filter[commerce_order_id]` to find the Amazon order behind a Fluid order. An order whose SKU doesn't match a listed Fluid variant isn't imported; its row says why.
+
+## What the status means
+
+| Field and value | What it means | What to do |
+| --- | --- | --- |
+| `connection.status`: `pending` | The consent link was created but nobody has approved it yet. | Finish step 2, or start again. |
+| `connection.status`: `connected` | Fluid can reach Amazon. | Continue with the marketplace and products. |
+| `connection.status`: `expired` or `deauthorized` | Amazon no longer accepts Fluid's access, usually because the seller removed the authorization in Seller Central. | Run step 1 again and approve it. |
+| `connection.status`: `disconnected` | Someone disconnected the channel. | Run step 1 again to reconnect. |
+| listing `status`: `draft` | Fluid hasn't sent the product yet. | Check again later. |
+| listing `status`: `pending` | Amazon accepted the offers and is processing them. | Check the offers in Seller Central. |
+| listing `status`: `publish_failed` | A pre-flight check or Amazon rejected the product. | Fix what `last_error` names, then retry. |
+| listing `status`: `platform_deactivated` or `frozen` | Amazon took the offer down. | Check the reason in Seller Central. |
+| listing `status`: `deleted` or `seller_deactivated` | You removed the product. | List it again to bring it back. |
+
+## Troubleshooting
+
+- **`authorize_url` fails with `422`.** Fluid couldn't start the connection. A test store gets this every time. Otherwise contact Fluid support.
+- **The address after approving ends in `connect=error`.** The `reason` says why. `invalid_state` means the link was used twice or expired: start again for a new one.
+- **The reason is `no_marketplaces`.** The seller account doesn't sell in any marketplace yet. Finish setting up the account in Seller Central, then start again.
+- **The reason is `seller_already_connected`.** Another Fluid company already holds this seller account. Disconnect it there first.
+- **Choosing the marketplace fails with `422`.** The seller doesn't sell in that marketplace, or Fluid couldn't reach Amazon to check. Use a marketplace from your Seller Central account.
+- **A call fails with `404`.** The company has never connected Amazon. Run step 1.
+- **A call fails with `403`.** Your token lacks the permission that call needs: **Company settings** for the connection, **Products** for products.
+
+## Remove products and disconnect
+
+To take one product off Amazon, delete its listing. This deletes its offers on Amazon:
+
+```bash
+curl -X DELETE "https://api.fluid.app/api/v202506/amazon/product_listings/5512" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+To disconnect:
+
+```bash
+curl -X DELETE "https://api.fluid.app/api/v202506/amazon/connection" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+Disconnecting leaves your offers on Amazon, but Fluid stops syncing products and importing orders until you connect again. Remove the listings first if you want the offers gone.
+
+## API reference
+
+- [Start the Amazon Seller Central consent flow](/api-reference/amazon/start-the-amazon-seller-central-consent-flow)
+- [Get the company's Amazon connection](/api-reference/amazon/get-the-companys-amazon-connection)
+- [Select the connection's Amazon marketplace](/api-reference/amazon/select-the-connections-amazon-marketplace)
+- [Publish Fluid products as Amazon offers](/api-reference/amazon/publish-fluid-products-as-amazon-offers)
+- [List the company's Amazon orders](/api-reference/amazon/list-the-companys-amazon-orders)
