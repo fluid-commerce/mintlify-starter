@@ -199,18 +199,35 @@ def call(method, url, body=None):
     except urllib.error.HTTPError as error:
         sys.exit(f"{method} {url.split('?')[0]}: {error.code} {error.read().decode()}")
 
+CRC_TABLE = []
+for n in range(256):
+    c = n
+    for _ in range(8):
+        c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+    CRC_TABLE.append(c)
+
 def crc32c(data):  # CRC-32C (Castagnoli), as storage checks it
     crc = 0xFFFFFFFF
     for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+        crc = (crc >> 8) ^ CRC_TABLE[(crc ^ byte) & 0xFF]
     return base64.b64encode((crc ^ 0xFFFFFFFF).to_bytes(4, "big")).decode()
 
+# Declarations are never served, and this script doesn't send them: use fluid deploy.
+for declared in ("config", "db", "functions"):
+    if os.path.exists(os.path.join(folder, declared)):
+        sys.exit(f"{folder} has {declared}/: publish it with fluid deploy, or pass the build folder")
+if not os.path.isfile(os.path.join(folder, "index.html")):
+    sys.exit(f"{folder} has no index.html, which a Site with no config/routes.json needs")
+
 # 1. Find the Site by its handle, or create it. A new Site is private.
-query = urllib.parse.urlencode({"q": handle, "page[limit]": 100})
-sites = call("GET", f"{API}?{query}")["member_sites"]
-site = next((s for s in sites if s["handle"] == handle), None)
+site, cursor = None, None
+while site is None:
+    query = {"q": handle, "page[limit]": 100, **({"page[cursor]": cursor} if cursor else {})}
+    found = call("GET", f"{API}?{urllib.parse.urlencode(query)}")
+    site = next((s for s in found["member_sites"] if s["handle"] == handle), None)
+    cursor = found["meta"].get("pagination", {}).get("next_cursor")
+    if not cursor:
+        break
 if site is None:
     site = call("POST", API, {"member_site": {"name": name, "handle": handle}})["member_site"]
 
@@ -250,7 +267,7 @@ print("Published:", published.get("share_url") or published.get("url"))
 FLUID_TOKEN=<company API token> python3 publish_site.py dist fall-launch "Fall Launch"
 ```
 
-Run it again after each build: it finds the Site by its handle and uploads only the files that changed. It sends each file with the one content type Fluid accepts for its extension, from the table at its top, and leaves out dotfiles and any file whose extension isn't there, such as `.webmanifest`, naming each one. It publishes the folder's files only, so it suits a plain HTML Site or a build with no `db/schema.json`, `config/` or `functions/`. For those, use `fluid deploy`.
+Run it again after each build: it finds the Site by its handle and uploads only the files that changed. It sends each file with the one content type Fluid accepts for its extension, from the table at its top, and leaves out dotfiles and any file whose extension isn't there, such as `.webmanifest`, naming each one. It publishes the folder's files only, and needs an `index.html` at the folder's top. It stops on a folder that holds `config/`, `db/` or `functions/`, which it would otherwise serve as public files: point it at the build's output, such as `dist`, or publish a Site with declarations with `fluid deploy`.
 
 Then check the Site at its link. It's private, so the storefront answers `403` until you make it public:
 
