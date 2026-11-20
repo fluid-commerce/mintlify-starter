@@ -3,7 +3,7 @@ name: fluid
 description: Use when building on or helping someone use Fluid, the We-Commerce platform for direct sales teams. Covers the REST API, the FairShare SDK, storefront themes, portal widgets, Droplets and the Fluid admin portal, and points to the right docs page for each.
 metadata:
   author: fluid-commerce
-  version: "1.16"
+  version: "1.17"
 ---
 
 # Fluid
@@ -31,6 +31,7 @@ The docs at https://docs.fluid.app are the source of truth. When this file and a
 | Connect an AI agent: docs MCP server, Fluid CLI, Mist | https://docs.fluid.app/guides/connect-ai-tools |
 | Build a first integration | https://docs.fluid.app/quickstart |
 | Work with the storefront API: resources, slugs, visibility, SEO, translations | https://docs.fluid.app/storefront/overview |
+| Add a regional language (Canadian French `fr-CA`, Mexican Spanish `es-MX`, Brazilian Portuguese `pt-BR`) to a company: it needs the `regional-languages` release gate, which Fluid support turns on, and its base language on first. `GET /api/settings/languages`, then `POST /api/settings/languages` with the base's `id`, then the regional `id`; or `fluid translations enable fr fr-CA --yes`. Send the tag exactly as `fr-CA`, and translate only the wording that differs | https://docs.fluid.app/storefront/regional-languages, then https://docs.fluid.app/help/admin/settings/languages#regional-languages for the admin |
 | Translate metafield values (product, variant and enrollment pack text fields) in the admin, or through the API: create or update a definition with `translatable: true`, then read and save translations. It may not be on for every company yet | https://docs.fluid.app/help/admin/settings/metadata-definitions#translate-field-values, then https://docs.fluid.app/storefront/metafields#translate-metafields |
 | Act for one signed-in member, or manage a company's members | https://docs.fluid.app/api/member-apis |
 | Understand the platform: We-Commerce, FairShare, Droplets, checkout | https://docs.fluid.app/platform-overview |
