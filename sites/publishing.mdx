@@ -171,11 +171,23 @@ This script does all four, with Python 3 and nothing to install. Give it the com
 ```python publish_site.py
 # Publish a folder of built files as a company Site, with Python 3 and no packages.
 # Usage: FLUID_TOKEN=... python3 publish_site.py <folder> <handle> "<name>"
-import base64, hashlib, json, mimetypes, os, sys, urllib.error, urllib.parse, urllib.request
+import base64, hashlib, json, os, sys, urllib.error, urllib.parse, urllib.request
 
 API = "https://api.fluid.app/api/company/v2026-10/member-sites"
 TOKEN = os.environ["FLUID_TOKEN"]
 folder, handle, name = sys.argv[1], sys.argv[2], sys.argv[3]
+TYPES = {  # the content type Fluid accepts for each extension, exactly
+    ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
+    ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+    ".otf": "font/otf", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json",
+    ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".xml": "application/xml",
+    ".pdf": "application/pdf", ".mp4": "video/mp4", ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+}
 
 def call(method, url, body=None):
     request = urllib.request.Request(
@@ -196,21 +208,25 @@ def crc32c(data):  # CRC-32C (Castagnoli), as storage checks it
     return base64.b64encode((crc ^ 0xFFFFFFFF).to_bytes(4, "big")).decode()
 
 # 1. Find the Site by its handle, or create it. A new Site is private.
-sites = call("GET", f"{API}?q={urllib.parse.quote(handle)}")["member_sites"]
+query = urllib.parse.urlencode({"q": handle, "page[limit]": 100})
+sites = call("GET", f"{API}?{query}")["member_sites"]
 site = next((s for s in sites if s["handle"] == handle), None)
 if site is None:
     site = call("POST", API, {"member_site": {"name": name, "handle": handle}})["member_site"]
 
-# 2. Describe every file, then start a bundle.
+# 2. Describe every file, then start a bundle. Fluid refuses a file whose
+#    extension isn't in TYPES, so leave those and dotfiles out, and say so.
 contents, files = {}, {}
-for root, _, names in os.walk(folder):
+for root, dirs, names in os.walk(folder):
+    dirs[:] = [d for d in dirs if not d.startswith(".")]
     for file_name in names:
         full = os.path.join(root, file_name)
         path = "/" + os.path.relpath(full, folder).replace(os.sep, "/")
+        kind = TYPES.get(os.path.splitext(file_name)[1].lower())
+        if file_name.startswith(".") or kind is None:
+            print("Left out:", path)
+            continue
         data = open(full, "rb").read()
-        kind = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-        if kind.startswith("text/") or kind in ("application/javascript", "application/json"):
-            kind = ("text/javascript" if kind == "application/javascript" else kind) + "; charset=utf-8"
         sha = hashlib.sha256(data).hexdigest()
         contents[sha] = data
         files[path] = {"sha256": sha, "crc32c": crc32c(data), "size": len(data), "contentType": kind}
@@ -220,18 +236,21 @@ started = call("POST", f"{API}/{site['id']}/bundles", {"files": files})
 for upload in started["uploads"]:
     put = urllib.request.Request(upload["url"], method="PUT", data=contents[upload["sha256"]],
                                  headers=upload.get("headers", {}))
-    urllib.request.urlopen(put).close()
+    try:
+        urllib.request.urlopen(put).close()
+    except urllib.error.HTTPError as error:
+        sys.exit(f"Upload of {upload['sha256']}: {error.code} {error.read().decode()[:300]}")
 
 # 4. Publish. The Site's current version keeps serving until this succeeds.
 published = call("POST", f"{API}/{site['id']}/bundles/{started['bundle']}/publish", {})
-print("Published:", published["share_url"])
+print("Published:", published.get("share_url") or published.get("url"))
 ```
 
 ```bash
 FLUID_TOKEN=<company API token> python3 publish_site.py dist fall-launch "Fall Launch"
 ```
 
-Run it again after each build: it finds the Site by its handle and uploads only the files that changed. It publishes the folder's files only, so it suits a plain HTML Site or a build with no `db/schema.json`, `config/` or `functions/`. For those, use `fluid deploy`.
+Run it again after each build: it finds the Site by its handle and uploads only the files that changed. It sends each file with the one content type Fluid accepts for its extension, from the table at its top, and leaves out dotfiles and any file whose extension isn't there, such as `.webmanifest`, naming each one. It publishes the folder's files only, so it suits a plain HTML Site or a build with no `db/schema.json`, `config/` or `functions/`. For those, use `fluid deploy`.
 
 Then check the Site at its link. It's private, so the storefront answers `403` until you make it public:
 
