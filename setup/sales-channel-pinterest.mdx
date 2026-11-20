@@ -1,0 +1,126 @@
+---
+title: "Connect Pinterest"
+sidebarTitle: "Pinterest"
+description: "Connect a Pinterest business account to Fluid, publish products to its catalog as shoppable Pins, and fix the products Pinterest rejects."
+---
+
+Connecting Pinterest sends your Fluid products to the catalog on your Pinterest business account, where they appear as shoppable Pins. Buyers check out on your Fluid storefront, so there are no Pinterest orders to import. Setup takes a person in a browser for one step: approving Fluid's access in Pinterest. Every other step is an API call.
+
+## Before you start
+
+- A Pinterest business account, and a person who can sign in to it.
+- The Pinterest account isn't connected to another Fluid company. One account connects to one company.
+- A Fluid API token for the company with company admin access: **Company settings** permission to connect and disconnect, and **Products** permission to publish products. The examples use it as `$FLUID_TOKEN`.
+- A live company. A test store can't connect a sales channel.
+
+## Steps
+
+<Steps>
+  <Step title="Start the connection">
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/pinterest/connection/authorize_url" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    The response's `url` is the Pinterest sign-in link. Nothing changes in Fluid until someone approves it in the next step. Open the link yourself, or send it to the person who will approve it. The link works once and expires after 10 minutes; call `authorize_url` again for a new one.
+  </Step>
+  <Step title="Approve Fluid in Pinterest">
+    Sign in with the Pinterest business account and approve the access Fluid asks for: reading the account, and reading and writing its catalogs.
+
+    Pinterest then sends the browser back to Fluid admin. The address ends in `connect=ok` when the connection saved, or `connect=error&reason=...` when it didn't. Whatever the page shows, check the result:
+
+    ```bash
+    curl "https://api.fluid.app/api/v202506/pinterest/connection" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    The step is done when `connection.status` is `connected`. `connection.account_name` names the Pinterest account Fluid connected.
+  </Step>
+  <Step title="Publish products">
+    This changes live configuration: it adds products to your Pinterest catalog. Start with a few products if you haven't sold on Pinterest before.
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/pinterest/catalog_listings" \
+      -H "Authorization: Bearer $FLUID_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"product_ids": [91274, 91302]}'
+    ```
+
+    Fluid creates one listing per product and publishes it in the background. Products already on the catalog are skipped, so sending the same IDs again is safe.
+  </Step>
+  <Step title="Check the catalog">
+    ```bash
+    curl "https://api.fluid.app/api/v202506/pinterest/catalog_listings" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    Repeat until no listing is `draft` or `pending` and no `audit_status` is `auditing`. Each listing becomes `active` once Pinterest ingests it, with `audit_status` `approved`. The list is newest first, 25 per page; pass `meta.pagination.next_cursor` back as `page[cursor]` for the next page, or `filter[product_id]` to check one product.
+  </Step>
+  <Step title="Fix rejected products">
+    A listing with `status` `publish_failed` or `audit_status` `audit_failed` didn't make it onto the catalog. `last_error` says why. Fix the product in Fluid, then retry the listing:
+
+    ```bash
+    curl -X POST "https://api.fluid.app/api/v202506/pinterest/catalog_listings/48230/retry" \
+      -H "Authorization: Bearer $FLUID_TOKEN"
+    ```
+
+    The step is done when every listing is `active`.
+  </Step>
+</Steps>
+
+## What each product needs
+
+- A SKU on every active variant, unique across the products you list on Pinterest.
+- A title, description and price. A product with no image of its own is sent with your company's fallback image, which Pinterest may reject.
+
+A product missing one of these fails to publish, and `last_error` names what's missing.
+
+## What the status means
+
+| Field and value | What it means | What to do |
+| --- | --- | --- |
+| `connection.status`: `pending` | The sign-in link was created but nobody has approved it yet. | Finish step 2, or start again. |
+| `connection.status`: `connected` | Fluid can reach Pinterest. | Publish products. |
+| `connection.status`: `expired` or `deauthorized` | Pinterest no longer accepts Fluid's access. | Run step 1 again and approve it. |
+| `connection.status`: `disconnected` | Someone disconnected the channel. | Run step 1 again to reconnect. |
+| listing `status`: `draft` or `pending` | The product is on its way to Pinterest. | Check again later. |
+| listing `status`: `active` | The product is on your Pinterest catalog. | Nothing. |
+| listing `status`: `publish_failed` | Fluid couldn't send the product. | Fix what `last_error` names, then retry. |
+| listing `status`: `platform_deactivated` or `frozen` | Pinterest took the listing down. | Check the reason in Pinterest. |
+| listing `status`: `deleted` or `seller_deactivated` | You removed the product. | Publish it again to bring it back. |
+| listing `audit_status`: `audit_failed` | Pinterest rejected the product. | Fix it, then retry. |
+
+## Troubleshooting
+
+- **`authorize_url` fails with `422`.** Fluid couldn't start the connection. A test store gets this every time. Otherwise contact Fluid support.
+- **The address after approving ends in `connect=error`.** The `reason` says why. `invalid_state` means the link was used twice or expired: start again for a new one.
+- **The reason is `no_account`.** Pinterest didn't return a usable account. Sign in with a Pinterest business account and start again.
+- **The reason is `account_already_connected`.** Another Fluid company already holds this Pinterest account. Disconnect it there first.
+- **A call fails with `404`.** The company has never connected Pinterest. Run step 1.
+- **A call fails with `403`.** Your token lacks the permission that call needs: **Company settings** for the connection, **Products** for products.
+- **Publishing or retrying fails with `422`.** The connection isn't active, or the listing can't be retried. Check `connection.status` and reconnect if it isn't `connected`.
+
+## Remove products and disconnect
+
+To take one product off Pinterest, delete its listing. This removes its items from your Pinterest catalog:
+
+```bash
+curl -X DELETE "https://api.fluid.app/api/v202506/pinterest/catalog_listings/48230" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+To disconnect:
+
+```bash
+curl -X DELETE "https://api.fluid.app/api/v202506/pinterest/connection" \
+  -H "Authorization: Bearer $FLUID_TOKEN"
+```
+
+Disconnecting leaves your catalog Pins on Pinterest, but Fluid stops syncing products until you connect again. Remove the listings first if you want the Pins gone.
+
+## API reference
+
+- [Start the Pinterest connect flow](/api-reference/pinterest/start-the-pinterest-connect-flow)
+- [Get the company's Pinterest connection](/api-reference/pinterest/get-the-companys-pinterest-connection)
+- [Publish Fluid products to the connected Pinterest catalog](/api-reference/pinterest/publish-fluid-products-to-the-connected-pinterest-catalog)
+- [List the company's Pinterest catalog listings](/api-reference/pinterest/list-the-companys-pinterest-catalog-listings)
