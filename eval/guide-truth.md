@@ -1739,7 +1739,7 @@ Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, t
 **Header binding and import additions (navigation-menus-016 to -031, plus edits to -003, -006, -010).** Verified against fluid `8b78b0a`:
 
 - Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
-- ~~`Menu` validates `countries` presence, so an empty `country_ids` fails.~~ **Superseded 2026-11-20:** fluid #35950 (`5d17c23c1`, merged 2026-11-19) drops that validation. `country_ids` is optional and deprecated on create and update, the `country_ids` list filter also returns menus with no countries, and `link_list` still ignores countries. The `-006` example no longer sends `country_ids`, and `-016` says to leave it out. The admin's menu form still requires a country until its follow-up ships; `help/admin/menus.mdx` keeps that wording until then. The schema defaults `active` to false.
+- ~~`Menu` validates `countries` presence, so an empty `country_ids` fails.~~ **Superseded 2026-11-20:** menus have no countries. fluid #36468 (`842a163e033`) drops `country_ids` from create, update, the list filter and responses; a write that still sends it is accepted and the field ignored. fluid #36006 removes the admin's **Available Countries** card and country filter. Per-country menus come from each country's navbar template picking its own menu. The `-006` example sends no countries, and `-011`, `-016` and `-021` were reworded. Since fluid #36544 (`e7e75c9b889`) menu and item responses order items by `order`, then `id` (`-032`). The schema defaults `active` to false.
 - Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
 - Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
 - `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
@@ -3010,6 +3010,11 @@ adoption PR:
 - **`is taken` after an unnormalized first request.** The retry fails under
   `errors.company.base`, because the taken check compares the value as sent
   (`Api::Companies::CreateAction#company_exists?`).
+  **Superseded 2026-11-20:** fluid #35733 (`b355c925ac6`) checks `is taken`
+  against the normalized subdomain, discarded companies included, so any
+  form of a held name answers `errors.company.subdomain` `is taken`
+  (`agent-signup-024`, `-100`, `-105`, `-106`, `-111` reworded). Two signups
+  racing for one name can still get different `422`s.
 - **Opening the confirmation link confirms the signup.** The link waits for a
   **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
 - **Where the discovery documents are served.** `ard.json` and `api-catalog`
