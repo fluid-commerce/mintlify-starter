@@ -122,7 +122,7 @@ With `--json`, a successful publish prints `ok`, `site`, `bundle`, `manifestSha2
 
 A new Site is private until its owner makes it public. Publish it, open it at its address, and check it before you share it.
 
-To go back to an earlier build, see [Deployments and rollback](/sites/deployments). The operations behind publishing are [Start a bundle upload](/api-reference/site-bundles/start-a-bundle-upload) and [Publish a bundle](/api-reference/site-bundles/publish-a-bundle), or for a company Site [Publish a company site's bundle](/api-reference/member-site-bundles/publish-a-company-sites-bundle).
+To go back to an earlier build, see [Deployments and rollback](/sites/deployments). The operations behind publishing are [Start a bundle upload](/api-reference/site-bundles/start-a-bundle-upload) and [Publish a bundle](/api-reference/site-bundles/publish-a-bundle), or for a company Site [Publish a company site's bundle](/api-reference/member-site-bundles/publish-a-company-sites-bundle). To call them yourself, see [Publish through the API](#publish-through-the-api).
 
 ### Make a Site public or private
 
@@ -156,6 +156,130 @@ fluid sites publish --finish-pending
 ```
 
 That run finishes the pending bundle and stops. Run the command again for your own build. If the pending bundle needs destructive migration confirmations, check its schema and pass `--confirm-pending <id>` for each of its migrations. Your build's `--confirm` values are never applied to the pending bundle. See [Finish an interrupted publish](/sites/database#finish-an-interrupted-publish).
+
+## Publish through the API
+
+Where neither the CLI nor the Fluid MCP server fits, such as an agent with a company API token and no Node.js 24, publish a built folder with four calls:
+
+1. **Find or create the Site.** List the company's Sites with `q=<handle>` and keep the one whose `handle` matches exactly, or create it with `POST /api/company/v2026-10/member-sites` and a body of `{"member_site": {"name": "…", "handle": "…"}}`. A new Site is private.
+2. **Start a bundle.** Send every file of the build, by its path, with its SHA-256 in hex, its CRC-32C in base64, its size in bytes and its content type. The answer is the bundle's id, in `bundle`, and an `uploads` list for the files Fluid doesn't hold yet.
+3. **Upload each file.** `PUT` its bytes to the upload's `url`, with exactly the `headers` the upload names. Storage checks the size and the CRC-32C against them, and refuses a file that doesn't match.
+4. **Publish the bundle.** Until this call succeeds, the Site keeps serving its current version. The answer's `share_url` is the Site's `/home/sites/<handle>` link.
+
+This script does all four, with Python 3 and nothing to install. Give it the company API token in `FLUID_TOKEN`, never in the file:
+
+```python publish_site.py
+# Publish a folder of built files as a company Site, with Python 3 and no packages.
+# Usage: FLUID_TOKEN=... python3 publish_site.py <folder> <handle> "<name>"
+import base64, hashlib, json, os, sys, urllib.error, urllib.parse, urllib.request
+
+API = "https://api.fluid.app/api/company/v2026-10/member-sites"
+TOKEN = os.environ["FLUID_TOKEN"]
+folder, handle, name = sys.argv[1], sys.argv[2], sys.argv[3]
+TYPES = {  # the content type Fluid accepts for each extension, exactly
+    ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
+    ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+    ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+    ".otf": "font/otf", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json",
+    ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".xml": "application/xml",
+    ".pdf": "application/pdf", ".mp4": "video/mp4", ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+}
+
+def call(method, url, body=None):
+    request = urllib.request.Request(
+        url, method=method, data=None if body is None else json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        sys.exit(f"{method} {url.split('?')[0]}: {error.code} {error.read().decode()}")
+
+CRC_TABLE = []
+for n in range(256):
+    c = n
+    for _ in range(8):
+        c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+    CRC_TABLE.append(c)
+
+def crc32c(data):  # CRC-32C (Castagnoli), as storage checks it
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc = (crc >> 8) ^ CRC_TABLE[(crc ^ byte) & 0xFF]
+    return base64.b64encode((crc ^ 0xFFFFFFFF).to_bytes(4, "big")).decode()
+
+# Declarations are never served, and this script doesn't send them: use fluid deploy.
+for declared in ("config", "db", "functions"):
+    if os.path.exists(os.path.join(folder, declared)):
+        sys.exit(f"{folder} has {declared}/: publish it with fluid deploy, or pass the build folder")
+if not os.path.isfile(os.path.join(folder, "index.html")):
+    sys.exit(f"{folder} has no index.html, which a Site with no config/routes.json needs")
+
+# 1. Find the Site by its handle, or create it. A new Site is private.
+site, cursor = None, None
+while site is None:
+    query = {"q": handle, "page[limit]": 100, **({"page[cursor]": cursor} if cursor else {})}
+    found = call("GET", f"{API}?{urllib.parse.urlencode(query)}")
+    site = next((s for s in found["member_sites"] if s["handle"] == handle), None)
+    cursor = found["meta"].get("pagination", {}).get("next_cursor")
+    if not cursor:
+        break
+if site is None:
+    site = call("POST", API, {"member_site": {"name": name, "handle": handle}})["member_site"]
+
+# 2. Describe every file, then start a bundle. Fluid refuses a file whose
+#    extension isn't in TYPES, so leave those and dotfiles out, and say so.
+contents, files = {}, {}
+for root, dirs, names in os.walk(folder):
+    dirs[:] = [d for d in dirs if not d.startswith(".")]
+    for file_name in names:
+        full = os.path.join(root, file_name)
+        path = "/" + os.path.relpath(full, folder).replace(os.sep, "/")
+        kind = TYPES.get(os.path.splitext(file_name)[1].lower())
+        if file_name.startswith(".") or kind is None:
+            print("Left out:", path)
+            continue
+        data = open(full, "rb").read()
+        sha = hashlib.sha256(data).hexdigest()
+        contents[sha] = data
+        files[path] = {"sha256": sha, "crc32c": crc32c(data), "size": len(data), "contentType": kind}
+started = call("POST", f"{API}/{site['id']}/bundles", {"files": files})
+
+# 3. Upload each file Fluid doesn't hold yet, with the headers it names.
+for upload in started["uploads"]:
+    put = urllib.request.Request(upload["url"], method="PUT", data=contents[upload["sha256"]],
+                                 headers=upload.get("headers", {}))
+    try:
+        urllib.request.urlopen(put).close()
+    except urllib.error.HTTPError as error:
+        sys.exit(f"Upload of {upload['sha256']}: {error.code} {error.read().decode()[:300]}")
+
+# 4. Publish. The Site's current version keeps serving until this succeeds.
+published = call("POST", f"{API}/{site['id']}/bundles/{started['bundle']}/publish", {})
+print("Published:", published.get("share_url") or published.get("url"))
+```
+
+```bash
+FLUID_TOKEN=<company API token> python3 publish_site.py dist fall-launch "Fall Launch"
+```
+
+Run it again after each build: it finds the Site by its handle and uploads only the files that changed. It sends each file with the one content type Fluid accepts for its extension, from the table at its top, and leaves out dotfiles and any file whose extension isn't there, such as `.webmanifest`, naming each one. It publishes the folder's files only, and needs an `index.html` at the folder's top. It stops on a folder that holds `config/`, `db/` or `functions/`, which it would otherwise serve as public files: point it at the build's output, such as `dist`, or publish a Site with declarations with `fluid deploy`.
+
+Then check the Site at its link. It's private, so the storefront answers `403` until you make it public:
+
+```bash
+curl -X PATCH "https://api.fluid.app/api/company/v2026-10/member-sites/<site id>" \
+  -H "Authorization: Bearer $FLUID_TOKEN" -H "Content-Type: application/json" \
+  -d '{"member_site": {"visibility": "public"}}'
+```
+
+- **A token can't delete a Site.** Publish to the same handle each run, rather than a new Site for each test, and ask a company admin to delete the ones you no longer need.
+- **A file the bundle doesn't list isn't served,** and a page that loads one renders blank. Use paths from the Site's root, such as `/app.js`, in every page, so a page in a folder finds them.
+- **The answers** are the ones in the table below, and each refusal says what to change.
 
 ## What the answers mean
 
