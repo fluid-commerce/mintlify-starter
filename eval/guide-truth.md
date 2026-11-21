@@ -3010,6 +3010,11 @@ adoption PR:
 - **`is taken` after an unnormalized first request.** The retry fails under
   `errors.company.base`, because the taken check compares the value as sent
   (`Api::Companies::CreateAction#company_exists?`).
+  **Superseded 2026-11-20:** fluid #35733 (`b355c925ac6`) checks `is taken`
+  against the normalized subdomain, discarded companies included, so any
+  form of a held name answers `errors.company.subdomain` `is taken`
+  (`agent-signup-024`, `-100`, `-105`, `-106`, `-111` reworded). Two signups
+  racing for one name can still get different `422`s.
 - **Opening the confirmation link confirms the signup.** The link waits for a
   **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
 - **Where the discovery documents are served.** `ard.json` and `api-catalog`
