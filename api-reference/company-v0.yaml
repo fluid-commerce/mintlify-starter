@@ -24132,6 +24132,20 @@ components:
               can_skip:
                 description: Whether this member can skip its next shipment, by the rule the skip writes enforce. It is false when its plan does not allow skipping, its skips are used up, its bill date has passed, or the item would not rejoin its profile after the skip (item_would_not_rejoin). The skip-item write refuses when it is false, so hide the control.
                 type: boolean
+        shipping_method:
+          description: |
+            The shipping method the profile renews with, from the primary
+            member's stored shipping snapshot. `null` when no method is stored.
+          anyOf:
+            - $ref: '#/components/schemas/SubscriptionProfileCurrentShippingMethod'
+            - type: 'null'
+        can_change_shipping_method:
+          description: |
+            Whether the profile's shipping method can change through
+            `change-shipping-method`. False when the profile renews on the
+            sealed renewal lane, ships nothing, or has no address. A client
+            that reads no value shows the action.
+          type: boolean
     SubscriptionProfileWriteResponse:
       description: |
         The autoship profile after a profile write, or `null` when skipping one
@@ -24146,6 +24160,84 @@ components:
           anyOf:
             - $ref: '#/components/schemas/SubscriptionProfile'
             - type: 'null'
+        meta:
+          $ref: '#/components/schemas/Meta'
+    SubscriptionProfileCurrentShippingMethod:
+      description: The shipping method an autoship profile renews with.
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - price
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        price:
+          description: The stored price as a decimal string, or `null` when none is stored.
+          anyOf:
+            - type: string
+            - type: 'null'
+    SubscriptionProfileShippingMethod:
+      description: One shipping method an autoship profile can change to, quoted now.
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - price
+        - delivery_time_estimate
+      properties:
+        id:
+          description: The value to send as `shipping_method_id`.
+          type: string
+        title:
+          type: string
+        price:
+          description: The price quoted now for the whole profile, as a decimal string.
+          type: string
+        delivery_time_estimate:
+          anyOf:
+            - type: string
+            - type: 'null'
+    SubscriptionProfileShippingMethodsResponse:
+      description: The shipping methods an autoship profile can change to.
+      type: object
+      additionalProperties: false
+      required:
+        - shipping_methods
+        - current_shipping_method_id
+        - currency_code
+        - price_basis
+        - free_shipping
+        - meta
+      properties:
+        shipping_methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriptionProfileShippingMethod'
+        current_shipping_method_id:
+          description: The id of the method the profile renews with now, or `null`.
+          anyOf:
+            - type: string
+            - type: 'null'
+        currency_code:
+          description: The currency of every price.
+          type: string
+        price_basis:
+          description: |
+            `estimated` when the renewal quotes shipping again, so the price can
+            move by the renewal date. `charged` when the renewal charges the
+            price shown.
+          type: string
+          enum:
+            - estimated
+            - charged
+        free_shipping:
+          description: True when a free-shipping discount makes the renewal charge no shipping.
+          type: boolean
         meta:
           $ref: '#/components/schemas/Meta'
     SubscriptionProfileItemQuote:
@@ -24461,6 +24553,20 @@ components:
           minItems: 2
           items:
             $ref: '#/components/schemas/SubscriptionProfileGroupMember'
+        shipping_method:
+          description: |
+            The shipping method the profile renews with, from the primary
+            member's stored shipping snapshot. `null` when no method is stored.
+          anyOf:
+            - $ref: '#/components/schemas/SubscriptionProfileCurrentShippingMethod'
+            - type: 'null'
+        can_change_shipping_method:
+          description: |
+            Whether an autoship profile's shipping method can change through
+            `change-shipping-method`. Always false for a shipping-together unit. False when the profile renews on the
+            sealed renewal lane, ships nothing, or has no address. A client
+            that reads no value shows the action.
+          type: boolean
     SubscriptionProfileGroupMember:
       type: object
       additionalProperties: false
@@ -55786,6 +55892,234 @@ paths:
                 subscription_plan_id:
                   type: integer
                   description: A subscription plan every member's product offers.
+      responses:
+        '200':
+          description: The profile after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileWriteResponse'
+              example:
+                profile:
+                  next_bill_date: '2026-10-14'
+                  billing_interval: 2
+                  billing_interval_unit: month
+                  can_skip: true
+                  members:
+                    - subscription_token: sb_7Qm2VxK9pRtL4wNc8HzJdF
+                      label: Dunder Mifflin 20lb Copy Paper
+                      status: active
+                      can_skip: true
+                    - subscription_token: sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+                      label: Dunder Mifflin Toner Cartridge
+                      status: active
+                      can_skip: true
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: 'Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles feature does not work for the company. A closed feature names the failed check in errors.error: subscription_pro_inactive, setting_off or bundle_subscriptions_off.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+        '409':
+          description: The profile changed since the client read it. Nothing was written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+  /api/subscriptions/{token}/profile/shipping-methods:
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8).
+      summary: List an autoship profile's shipping methods
+      tags:
+        - subscriptions
+      operationId: commerce_v0_shipping_methods_subscription_profile
+      description: |
+        Lists the shipping methods the autoship profile can change to, each
+        priced for the whole profile now, to the profile's address and in its
+        currency. Nothing is written. `price_basis` says whether the renewal
+        charges the price shown or quotes it again. Refused with `meta.code`
+        `sealed_lane_unsupported` when the profile renews on the sealed
+        renewal lane.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: A subscription of the customer whose profile changes.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+                - sb_7Qm2VxK9pRtL4wNc8HzJdF
+                - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - subscription_tokens
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: The methods the profile can change to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileShippingMethodsResponse'
+              example:
+                shipping_methods:
+                  - id: '51833'
+                    title: Standard Shipping
+                    price: '7.95'
+                    delivery_time_estimate: 3-5 business days
+                  - id: '51834'
+                    title: Express Shipping
+                    price: '14.95'
+                    delivery_time_estimate: 1-2 business days
+                current_shipping_method_id: '51833'
+                currency_code: USD
+                price_basis: estimated
+                free_shipping: false
+                meta:
+                  request_id: 0d6c3f92-8b1e-4a75-9d2c-4f7e1a5b8c30
+                  timestamp: '2026-09-30T14:05:22Z'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardUnauthorizedResponse'
+        '403':
+          description: 'Not an admin or a droplet, missing the subscriptions update permission, or the autoship_profiles feature does not work for the company. A closed feature names the failed check in errors.error: subscription_pro_inactive, setting_off or bundle_subscriptions_off.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: The subscription is not the company's, or a token is not its customer's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+        '409':
+          description: The profile changed since the client read it. Nothing was written; reload the profile and try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+        '422':
+          description: Invalid parameters, or the change was refused. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionProfileErrorResponse'
+  /api/subscriptions/{token}/profile/change-shipping-method:
+    post:
+      x-fluid-audience: company
+      x-fluid-lint-exempt: Nested under the existing unversioned /api/subscriptions/{token} routes beside /discounts, which the fluid-admin subscription detail page calls; a dated path would need a dated subscriptions controller, a separate change (doc/plans/subscription-pro.md, section 4.8).
+      summary: Change an autoship profile's shipping method
+      tags:
+        - subscriptions
+      operationId: commerce_v0_change_shipping_method_subscription_profile
+      description: |
+        Ships every member of the autoship profile with one of the methods
+        `shipping-methods` lists, at the price quoted for it now. Every
+        member stores the same shipping snapshot, so the profile stays one
+        profile. Refused with `meta.code` `shipping_method_not_offered` when the
+        method is not offered for the profile's address, and
+        `sealed_lane_unsupported` when the profile renews on the sealed renewal
+        lane.
+
+        Requires the `subscriptions` update permission and an admin, and the
+        autoship_profiles feature to work for the company. The profile is the
+        one whose members are exactly `subscription_tokens`, among the
+        subscriptions of the customer who owns `{token}`. An address or card
+        must be that customer's. The lifecycle notes credit the admin. Returns
+        `403` naming the failed check in `errors.error` when the feature is off,
+        `404` when the subscription is not the company's or a token is not the
+        customer's, `409` with `meta.code` `profile_changed` when the profile's
+        members changed since the client read them, `422` when the change is
+        refused (the reason is in `meta.code`), and `401` when unauthenticated.
+        Responses are not cached.
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: A subscription of the customer whose profile changes.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              subscription_tokens:
+                - sb_7Qm2VxK9pRtL4wNc8HzJdF
+                - sb_4Mw9Tc2Kd7Rx5Hb8Lq3Pn
+              shipping_method_id: '51834'
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - subscription_tokens
+                - shipping_method_id
+              properties:
+                subscription_tokens:
+                  description: The member tokens of the profile, as the client last read them.
+                  type: array
+                  minItems: 2
+                  items:
+                    type: string
+                shipping_method_id:
+                  type: string
+                  maxLength: 255
+                  description: The id of a method `shipping-methods` lists.
       responses:
         '200':
           description: The profile after the change.
