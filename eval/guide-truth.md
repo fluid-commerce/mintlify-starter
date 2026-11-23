@@ -356,6 +356,7 @@ Facts the omission sweep surfaced that the guides intentionally do **not** cover
 | Headless (`headless-commerce`): the anonymous cart-token / magic-link customer auth path (`/carts/{cart_token}/auth/*`, the `jwt` from `verify_cart_magic_link`) | The guide documents the **server-side company-token model** — one bearer token drives the whole flow. The customer-facing anonymous auth path is a separate integration model, out of this guide's task scope. |
 | Headless: per-endpoint create-cart error detail — explicit-`null` dry-validation `422`, `400` on missing/blank `fluid_shop`, `404` on an unresolvable `fluid_shop` subdomain | The guide uses the well-defined `country_code`→`422` example for its one validation callout ("for example …", not a universal claim); the full 400/404/422 matrix belongs to the auto-generated reference (AGENTS.md content boundary). See upstream gap #8 for the 400/422 asymmetry. |
 | Headless: `410` second trigger (enrollment carts in an authorized-payment state); `update_cart_country` cascade (clears address/discounts/shipping); points / manual-discount / enrollment ops; `shipping_method_id: null` clears the selection | Outside the linear product→cart→order task flow the guide teaches; reference territory. |
+| Regional languages (`regional-languages`): the shape of `errors` on the settings languages `404`/`422` as a mechanical response-field anchor | `settings-v0`'s `ErrorResponse.errors` is a free-form `ErrorBag`, so no spec field named `language` exists. The mechanical claims (`sf-regional-112`, `-114`) anchor on `errors`. That the `404` keys its message by `language`, that the already-on `422` is a plain list of messages, and the messages themselves are semantic facts checked against the Rails settings languages actions (2026-11-20; the base-first `422`s were removed when regional languages became independent of their base). |
 
 ## Low-confidence claims (survived on a split vote)
 
@@ -1655,6 +1656,14 @@ Durable authoring boundaries:
   member pages built in the theme, the builder's member preview, or the `/_members` dev
   preview. Member-only pages are Sites. Account screens, member-aware sections, member
   variables and generic `members_page` template mentions for screens and widgets stay.
+- The account screens are removed (fluid#34667, deployed 2026-11-16). Their eight paths on
+  the account host (Messaging, Contacts, My Site, Profile, Orders, Subscriptions, Media,
+  Playlists), nested paths included, answer the member host's "This page isn't available"
+  404, and nothing provisions the account screens loader any more. Members manage their
+  account in the Passport's rooms (`sites/passport`). The overview and `supported-paths`
+  no longer present them; `system-screen-styling` carries a removal warning until it is
+  retired with its claims. The bullets below that describe account screens record the
+  pre-removal decisions and are superseded where they conflict.
 - Account screens are served on the account subdomain only. The storefront `/accounts` prefix
   is documented as reserved and page-less. Do not reintroduce `/accounts/...` or
   `/members/...` storefront paths from older planning documents. V1 member sites open
@@ -1730,7 +1739,7 @@ Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, t
 **Header binding and import additions (navigation-menus-016 to -031, plus edits to -003, -006, -010).** Verified against fluid `8b78b0a`:
 
 - Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
-- `Menu` validates `countries` presence, so an empty `country_ids` fails. The schema defaults `active` to false. The `-006` example now sends a country ID.
+- ~~`Menu` validates `countries` presence, so an empty `country_ids` fails.~~ **Superseded 2026-11-20:** menus have no countries. fluid #36468 (`842a163e033`) drops `country_ids` from create, update, the list filter and responses; a write that still sends it is accepted and the field ignored. fluid #36006 removes the admin's **Available Countries** card and country filter. Per-country menus come from each country's navbar template picking its own menu. The `-006` example sends no countries, and `-011`, `-016` and `-021` were reworded. Since fluid #36544 (`e7e75c9b889`) menu and item responses order items by `order`, then `id` (`-032`). The schema defaults `active` to false.
 - Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
 - Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
 - `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
@@ -3001,6 +3010,11 @@ adoption PR:
 - **`is taken` after an unnormalized first request.** The retry fails under
   `errors.company.base`, because the taken check compares the value as sent
   (`Api::Companies::CreateAction#company_exists?`).
+  **Superseded 2026-11-20:** fluid #35733 (`b355c925ac6`) checks `is taken`
+  against the normalized subdomain, discarded companies included, so any
+  form of a held name answers `errors.company.subdomain` `is taken`
+  (`agent-signup-024`, `-100`, `-105`, `-106`, `-111` reworded). Two signups
+  racing for one name can still get different `422`s.
 - **Opening the confirmation link confirms the signup.** The link waits for a
   **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
 - **Where the discovery documents are served.** `ard.json` and `api-catalog`
