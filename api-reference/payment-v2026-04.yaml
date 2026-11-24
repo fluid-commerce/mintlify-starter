@@ -403,6 +403,42 @@ components:
           $ref: '#/components/schemas/Transaction'
         meta:
           $ref: '#/components/schemas/Meta'
+    VerifyTransactionResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          $ref: '#/components/schemas/Transaction'
+        stored_credential:
+          type: object
+          additionalProperties: false
+          description: |
+            Present only when the request sent `transaction.stored_credential`.
+            Says whether the card's credential on file is set up on this
+            gateway; the payment outcome stays in `data.status`.
+          required:
+            - established
+            - hold_outstanding
+          properties:
+            established:
+              type: boolean
+              description: |
+                `true` only when this call stored a nonblank scheme transaction
+                id on the card under this gateway and no authorization is left
+                on the card. `false` for a declined verification, for an
+                approved one that returned no scheme id, and while a refused
+                void is outstanding.
+            hold_outstanding:
+              type: boolean
+              description: |
+                `true` when the fallback authorization (100 minor units of the
+                currency, localized by the currency's exponent) could not be
+                voided and is still on the card; the void is retried in the
+                background. Always `false` for a zero-amount verification.
+        meta:
+          $ref: '#/components/schemas/Meta'
     TransactionListResponse:
       type: object
       required:
@@ -1617,6 +1653,34 @@ paths:
         or a referenced `payment_method_id` is unknown or owned by a different
         merchant, and `422` when the request fails validation.
         Verifications never emit webhooks.
+
+        Send `transaction.stored_credential` to set up the card's credential on
+        file. The call asserts that the cardholder is present: the verification
+        goes out as a cardholder-initiated first charge, and the network
+        transaction id the gateway returns is recorded on the payment method's
+        card under this gateway. Later merchant-initiated charges on the same
+        gateway, such as subscription renewals, chain to it. It needs
+        `payment_method_id` of a vaulted card, and works on Worldpay gateways
+        only; any other gateway answers `422`. A Visa or Mastercard on a gateway
+        with `$0` verification enabled is authorized for zero. Any other card is
+        authorized for 100 minor units of the currency, localized by the
+        currency's exponent (`1.00` for two-decimal currencies, `1` for
+        zero-decimal currencies, `0.1` for three-decimal currencies such as
+        KWD), and the authorization is then voided in a separate request. The
+        transaction returned for that fallback is the authorization (`action`
+        is `authorize`); the void is a child transaction of it. Without
+        `stored_credential` the verification is unchanged.
+
+        The response always carries the transaction, and with
+        `stored_credential` it also carries a `stored_credential` object that
+        says whether the setup holds. `established` is `true` only when this
+        call stored a scheme transaction id on the card for this gateway and no
+        authorization is left on the card. A declined verification stores
+        nothing, and an approved one that returns no scheme id leaves
+        `established` `false` while `data.status` is still `success`. When the
+        void of the fallback authorization is refused, the scheme id is still
+        stored, `hold_outstanding` is `true` and `established` is `false`; the
+        void is retried in the background.
       tags:
         - Gateways
       requestBody:
@@ -1645,7 +1709,34 @@ paths:
                         with `404`.
                     currency_code:
                       type: string
-                      description: ISO 4217 currency code to run the $0 authorization in.
+                      description: |
+                        ISO 4217 currency code to run the $0 authorization in.
+                        With `stored_credential`, it defaults to the currency of
+                        the merchant's company; a request with neither answers
+                        `422`.
+                    stored_credential:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - initiator
+                        - reason_type
+                      description: |
+                        Sets up the card's credential on file. Sending it asserts
+                        that the cardholder is present. Requires
+                        `payment_method_id`; Worldpay gateways only.
+                      properties:
+                        initiator:
+                          type: string
+                          enum:
+                            - cardholder
+                          description: Who starts the charge. Only `cardholder` is accepted.
+                        reason_type:
+                          type: string
+                          enum:
+                            - recurring
+                            - unscheduled
+                            - installment
+                          description: Why the credential is stored.
             examples:
               verify:
                 summary: Zero-dollar verification of a saved payment method
@@ -1653,13 +1744,22 @@ paths:
                   transaction:
                     payment_method_id: pm_9f8e7d6c
                     currency_code: USD
+              verify_and_store_credential:
+                summary: Verification that sets up the card's credential on file
+                value:
+                  transaction:
+                    payment_method_id: pm_9f8e7d6c
+                    currency_code: USD
+                    stored_credential:
+                      initiator: cardholder
+                      reason_type: recurring
       responses:
         '201':
           description: Verification created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransactionDataResponse'
+                $ref: '#/components/schemas/VerifyTransactionResponse'
               example:
                 data:
                   id: fpi_01k5dm9c2v4ntverify
