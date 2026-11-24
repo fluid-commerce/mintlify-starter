@@ -1741,7 +1741,7 @@ Verified against fluid-mono's `apps/fluid-admin/networking/navigation.api.ts`, t
 - Single-item create and delete exist: routes nest `menu_items` with `show create update destroy` and no `index`. `MenuItems::CreateAction` takes a `menu_item` wrapper with `title`, `linkable_type`, optional `linkable_id`, `order`, `parent_id`, and `url`.
 - ~~`Menu` validates `countries` presence, so an empty `country_ids` fails.~~ **Superseded 2026-11-20:** menus have no countries. fluid #36468 (`842a163e033`) drops `country_ids` from create, update, the list filter and responses; a write that still sends it is accepted and the field ignored. fluid #36006 removes the admin's **Available Countries** card and country filter. Per-country menus come from each country's navbar template picking its own menu. The `-006` example sends no countries, and `-011`, `-016` and `-021` were reworded. Since fluid #36544 (`e7e75c9b889`) menu and item responses order items by `order`, then `id` (`-032`). The schema defaults `active` to false.
 - Item URLs come from `LinkableUrlGenerator#linkable_base_url`. Record types resolve the record's slug route, list types map to fixed `/home/...` paths, and any unmatched type (including `Category`) falls through to `/home/shop`. `generate_linkable_url` strips the query string, and `apply_credit_substitution` replaces every `home` with the rendered credit. `MenuItem#url=` stores `url` only for `Link` and `MembersScreen`.
-- Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.
+- ~~Nesting depth is unbounded: both menu actions allow arbitrary `sub_menu_items_attributes` depth, and `menu_json` recurses.~~ **Superseded 2026-11-24:** a menu nests at most 12 levels, and a deeper write answers `422` (fluid #37181, #37269; `-020`). Since fluid #37199 a record link must name a record of the menu's company, else `422` (`-033`). Since #37181 an item's parent must be in the same menu and its menu can't change (`-034`, `-035`). Since #37160 a save applies moves before deletes, and a deleted item still deletes the items left under it (`-036`).
 - `link_list` resolution (`Themes::Templates::Variables::Base#menu_variables`) uses `friendly.find`, so a slug or an ID works. It exposes `title`, `handle`, and `menu_items`, and each item exposes only `title`, `url`, and `sub_menu_items`. Neither `active` nor country filters lookup. A blank or unknown value renders `{}`.
 - Section setting values live in the template's schema `sections` settings. The visual editor saves the template content, and schema defaults apply only when a key is missing or null. Live rendering reads the published template snapshot, and a resource push saves without publishing.
 - The Base theme's `main_navbar` preset adds a `nav` block with `menu: "main-menu"` and the `locale_dropdown` and `mobile_locale` blocks, which back the locale selector additions in `themes/navbar-locale-selector.mdx`. That page isn't in the registry. `countries` and `language_options` are populated from the company's countries and languages regardless of count, and no server logic hides the selector.
@@ -3018,8 +3018,10 @@ adoption PR:
 - **Opening the confirmation link confirms the signup.** The link waits for a
   **Sign in** click (`fluid-login`, so that mail scanners can't spend the code).
 - **Where the discovery documents are served.** `ard.json` and `api-catalog`
-  are served on the `fluid.app` apex only (`Site::PlatformDiscovery`), and
-  `fluid.app/llms.txt` redirects to docs.
+  are served on the `fluid.app` apex only (`Site::PlatformDiscovery`). ~~`fluid.app/llms.txt`
+  redirects to docs.~~ Since fluid #36885 (2026-11-23) the apex serves its storefront's
+  own `llms.txt` and no longer redirects; `agent-signup-018` sends readers to
+  `docs.fluid.app/llms.txt`.
 - **Making a theme live.** `POST …/publish` writes the published version and
   never changes `status`. The storefront serves the `active` theme. The page now
   says to use Update an application theme with `active` (registered
