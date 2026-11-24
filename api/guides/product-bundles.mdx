@@ -1,0 +1,670 @@
+---
+title: "Product bundles API"
+sidebarTitle: "Product bundles"
+description: "Read, create, and manage product bundles. Configure static and dynamic bundle groups with flexible pricing and selection rules."
+---
+
+Bundles let you sell predefined product assortments or allow shoppers to customize their own. The Fluid Commerce API supports two bundle modes: **static bundles** (fixed component variants) and **dynamic bundle groups** (shopper-selectable variants).
+
+## Bundle structure
+
+A bundle product (`is_bundle: true`) is composed of one or more bundle groups. Each group defines which variants are available and how many the shopper must select.
+
+### Bundle groups
+
+A bundle group is a container for selectable or included variants. Each group has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Unique group identifier within the bundle. |
+| `title` | string | Customer-facing name ("Pick Your Beets", "Add-ons"). |
+| `description` | string \| null | Optional explanation of the group's purpose. |
+| `group_type` | string | `included` (static, always added) or `customizable` (shopper picks variants). |
+| `purpose` | string | `default`, `membership`, or `subscription`. Determines pricing tier and renewal behavior. |
+| `min_selections` | integer \| null | Minimum variants the shopper must select (customizable groups only). |
+| `max_selections` | integer \| null | Maximum variants the shopper may select (customizable groups only). |
+| `selection_type` | string \| null | How min/max apply: `exact`, `min_only`, `max_only`, or `min_and_max`. |
+| `bundle_group_items` | array | Available variants in this group. |
+
+### Bundle group items
+
+Each item identifies a variant that may be part of the bundle:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Unique item identifier. |
+| `bundled_variant_id` | integer | Variant ID available for selection or inclusion. |
+| `sort_order` | integer | Display order among group items. |
+
+## Read bundle products from the storefront
+
+Fetch a bundle product using the public product read endpoint. The response includes `is_bundle` and `bundle_groups` only for bundles.
+
+```bash
+GET https://{company}.fluid.app/api/v202604/products/{product_slug}
+```
+
+### Response: bundle product
+
+```json
+{
+  "status": 200,
+  "product": {
+    "id": 4821,
+    "slug": "beet-bundle",
+    "title": "Beet Blend Bundle",
+    "is_bundle": true,
+    "bundle_groups": [
+      {
+        "id": 3301,
+        "title": "Pick Your Beets",
+        "description": "Choose any three jars for your bundle.",
+        "group_type": "customizable",
+        "purpose": "default",
+        "min_selections": 1,
+        "max_selections": 3,
+        "selection_type": "min_and_max",
+        "bundle_group_items": [
+          {
+            "id": 50201,
+            "bundled_variant_id": 880912,
+            "sort_order": 0
+          },
+          {
+            "id": 50202,
+            "bundled_variant_id": 880913,
+            "sort_order": 1
+          }
+        ]
+      },
+      {
+        "id": 3302,
+        "title": "Free Gift",
+        "group_type": "included",
+        "purpose": "default",
+        "bundle_group_items": [
+          {
+            "id": 50301,
+            "bundled_variant_id": 881050,
+            "sort_order": 0
+          }
+        ]
+      }
+    ],
+    "variants": [
+      {
+        "id": 880900,
+        "is_master": true,
+        "title": "Bundle",
+        "pricing": {
+          "retail": {
+            "amount": "4500",
+            "currency": "USD"
+          }
+        }
+      }
+    ]
+  },
+  "meta": {
+    "request_id": "9f1c2d34-5e6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "timestamp": "2026-07-20T18:42:11Z"
+  }
+}
+```
+
+### Filter bundles
+
+List only bundle or non-bundle products using the `filter[bundle]` query parameter.
+
+```bash
+GET https://{company}.fluid.app/api/v202604/products?filter[bundle]=true
+GET https://{company}.fluid.app/api/v202604/products?filter[bundle]=false
+```
+
+## Bundle group types and purposes
+
+### Group types
+
+**`included`** — Static bundle group  
+Fixed variants always included in the bundle. These variants are always added to the cart when the bundle is purchased. The customer does not see a choice interface for included groups.
+
+**`customizable`** — Dynamic bundle group  
+Variants the shopper selects at purchase time. The storefront must render a selection interface and validate the customer's choices against `min_selections`, `max_selections`, and `selection_type`.
+
+### Selection rules (customizable groups only)
+
+The `selection_type` field defines how `min_selections` and `max_selections` are applied:
+
+| Type | Meaning |
+|------|---------|
+| `exact` | Shopper must select exactly `min_selections` variants (and `max_selections` is null). |
+| `min_only` | Shopper must select at least `min_selections` variants (and `max_selections` is null). |
+| `max_only` | Shopper may select up to `max_selections` variants (and `min_selections` is null). |
+| `min_and_max` | Shopper must select between `min_selections` and `max_selections` inclusive. |
+
+Included groups have `selection_type: null` and no selection bounds.
+
+### Group purposes
+
+The `purpose` field determines pricing tier and renewal behavior:
+
+| Purpose | Use Case | Pricing |
+|---------|----------|---------|
+| `default` | Standard product bundles. | Retail pricing. Bundle items are non-subscription unless explicitly marked. |
+| `membership` | Bundles tied to membership tiers. | May use membership-tier pricing and visibility. Used in member commerce flows. |
+| `subscription` | Bundles for subscription boxes. | Subscription pricing. Items in this group renew with the parent subscription. |
+
+## Pricing configuration
+
+Bundle pricing is configured at the **group level** via the `pricing_config` JSONB field. Groups support two pricing modes:
+
+### Fixed group pricing
+
+Each group contributes a fixed amount to the bundle's total price. Configure via the company API using `pricing_config: { "pricing_type": "fixed_price", "fixed_price": 1500 }`.
+
+**Fields:**
+- `pricing_type: "fixed_price"` — Enable fixed pricing for this group.
+- `fixed_price` — Flat price in cents for this group (e.g., `1500` = $15.00).
+- `hidden` — Boolean (optional). When true, the group's items are added to the cart but not shown to the customer. Only valid on `included` groups.
+
+**Country-specific overrides:**
+Fixed prices may be overridden per country and shopper tier (retail/wholesale) via `country_pricing`:
+
+```json
+{
+  "pricing_type": "fixed_price",
+  "fixed_price": 1500,
+  "country_pricing": {
+    "GB": {
+      "retail": 1600,
+      "wholesale": 1400
+    },
+    "CA": {
+      "retail": 1700
+    }
+  }
+}
+```
+
+### Dynamic group pricing
+
+Variants in the group are individually priced; the total depends on what the shopper selects. Enable via `pricing_config: { "pricing_type": "dynamic_price", "min_price": 500 }`.
+
+**Fields:**
+- `pricing_type: "dynamic_price"` — Enable dynamic pricing.
+- `min_price` — Minimum display price in cents (e.g., `500` = $5.00). Used as the "from" price on the storefront when the actual selection is not yet known.
+
+**How it works:**
+- Each `bundle_group_item` references a `bundled_variant_id` with its own variant pricing.
+- When the shopper selects variants, the cart computes the actual total.
+- The storefront displays `min_price` as a price floor ("from $5.00").
+
+### Bundle-level pricing (opt-in)
+
+When enabled on a product, bundle-level pricing overrides all group pricing. The product's `pricing` and `subscription_price_range` become the authority; group prices are ignored. This mode simplifies high-level bundles where you want a single bundle price regardless of internal composition.
+
+Enable on the company API by setting `bundle: { "pricing_enabled": true, ... }` on the product update.
+
+## Add bundles to carts
+
+When adding a bundle to a cart, include the parent bundle variant and a `bundled_items` array specifying the shopper's selections.
+
+### Checkout API: add items
+
+```bash
+POST https://api.fluid.app/api/v202604/carts/{cart_id}/items
+Content-Type: application/json
+Authorization: Bearer {company_token}
+```
+
+### Request: add a bundle
+
+```json
+{
+  "items": [
+    {
+      "variant_id": 880900,
+      "quantity": 1,
+      "bundled_items": [
+        {
+          "variant_id": 880912,
+          "quantity": 1,
+          "product_bundle_group_id": 3301
+        },
+        {
+          "variant_id": 880913,
+          "quantity": 1,
+          "product_bundle_group_id": 3301
+        },
+        {
+          "variant_id": 881050,
+          "quantity": 1,
+          "product_bundle_group_id": 3302
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Fields:**
+- `variant_id` — ID of the bundle's master variant (always the same for a bundle product).
+- `quantity` — Number of bundles to add (usually `1` for each selection set).
+- `bundled_items` — Array of selected child variants.
+  - `variant_id` — ID of the selected variant.
+  - `quantity` — Quantity of this variant in the bundle (usually `1`).
+  - `product_bundle_group_id` — ID of the group this variant belongs to. Used to associate child items with group pricing and renewal.
+  - `subscription` (optional) — Subscription configuration if this item is part of a subscription bundle.
+  - `subscription_plan_id` (optional) — Subscription plan ID for subscription items.
+
+### Response: bundled items in cart
+
+```json
+{
+  "status": 200,
+  "item": {
+    "id": "li-12345",
+    "variant_id": 880900,
+    "quantity": 1,
+    "bundled_items": [
+      {
+        "variant_id": 880912,
+        "quantity": 1,
+        "product_bundle_group_id": 3301,
+        "display_to_customer": true
+      },
+      {
+        "variant_id": 880913,
+        "quantity": 1,
+        "product_bundle_group_id": 3301,
+        "display_to_customer": true
+      },
+      {
+        "variant_id": 881050,
+        "quantity": 1,
+        "product_bundle_group_id": 3302,
+        "display_to_customer": true
+      }
+    ]
+  },
+  "meta": { "request_id": "...", "timestamp": "..." }
+}
+```
+
+**Note:** `display_to_customer: false` indicates a hidden group item. These items are part of the order and fulfillment but not shown in the UI.
+
+## Manage bundles (company API)
+
+The company API (v202506) provides endpoints to create, read, update, and delete bundles.
+
+### Create a bundle
+
+```bash
+POST https://api.fluid.app/api/v202506/bundles
+Content-Type: application/json
+Authorization: Bearer {company_admin_token}
+```
+
+### Request: create a bundle
+
+```json
+{
+  "bundle": {
+    "product_id": 4821,
+    "pricing_enabled": false,
+    "groups": [
+      {
+        "title": "Pick Your Beets",
+        "description": "Choose any three jars for your bundle.",
+        "group_type": "customizable",
+        "purpose": "default",
+        "min_selections": 1,
+        "max_selections": 3,
+        "selection_type": "min_and_max",
+        "pricing_config": {
+          "pricing_type": "dynamic_price",
+          "min_price": 500
+        },
+        "bundle_group_items": [
+          {
+            "bundled_variant_id": 880912,
+            "sort_order": 0
+          },
+          {
+            "bundled_variant_id": 880913,
+            "sort_order": 1
+          }
+        ]
+      },
+      {
+        "title": "Free Gift",
+        "group_type": "included",
+        "purpose": "default",
+        "pricing_config": {
+          "pricing_type": "fixed_price",
+          "fixed_price": 0,
+          "hidden": true
+        },
+        "bundle_group_items": [
+          {
+            "bundled_variant_id": 881050,
+            "sort_order": 0
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Request fields:**
+- `product_id` — ID of the product to bundle (required).
+- `pricing_enabled` — Boolean. When `true`, bundle uses product-level pricing. When `false`, group pricing applies.
+- `groups` — Array of bundle group definitions.
+  - `title` — Display name (required).
+  - `description` — Optional explanation.
+  - `group_type` — `included` or `customizable` (required).
+  - `purpose` — `default`, `membership`, or `subscription` (required).
+  - `min_selections`, `max_selections`, `selection_type` — For customizable groups (required when group_type is `customizable`).
+  - `pricing_config` — JSONB pricing configuration.
+  - `bundle_group_items` — Array of `{ bundled_variant_id, sort_order }`.
+
+### Response: bundle created
+
+```json
+{
+  "status": 201,
+  "bundle": {
+    "id": 1,
+    "product_id": 4821,
+    "pricing_enabled": false,
+    "product_bundle_groups": [
+      {
+        "id": 3301,
+        "title": "Pick Your Beets",
+        "description": "Choose any three jars for your bundle.",
+        "group_type": "customizable",
+        "purpose": "default",
+        "min_selections": 1,
+        "max_selections": 3,
+        "selection_type": "min_and_max",
+        "pricing_config": {
+          "pricing_type": "dynamic_price",
+          "min_price": 500
+        },
+        "bundle_group_items": [
+          {
+            "id": 50201,
+            "bundled_variant_id": 880912,
+            "sort_order": 0
+          },
+          {
+            "id": 50202,
+            "bundled_variant_id": 880913,
+            "sort_order": 1
+          }
+        ]
+      },
+      {
+        "id": 3302,
+        "title": "Free Gift",
+        "group_type": "included",
+        "purpose": "default",
+        "pricing_config": {
+          "pricing_type": "fixed_price",
+          "fixed_price": 0,
+          "hidden": true
+        },
+        "bundle_group_items": [
+          {
+            "id": 50301,
+            "bundled_variant_id": 881050,
+            "sort_order": 0
+          }
+        ]
+      }
+    ]
+  },
+  "meta": { "request_id": "...", "timestamp": "..." }
+}
+```
+
+### List bundles
+
+```bash
+GET https://api.fluid.app/api/v202506/bundles
+Authorization: Bearer {company_admin_token}
+```
+
+Optional query parameters:
+- `mode` — Filter by bundle mode (e.g., `static`, `dynamic`).
+
+### Get a single bundle
+
+```bash
+GET https://api.fluid.app/api/v202506/bundles/{bundle_id}
+Authorization: Bearer {company_admin_token}
+```
+
+### Update a bundle
+
+```bash
+PATCH https://api.fluid.app/api/v202506/bundles/{bundle_id}
+Content-Type: application/json
+Authorization: Bearer {company_admin_token}
+```
+
+### Request: update bundle configuration
+
+```json
+{
+  "bundle": {
+    "pricing_enabled": true,
+    "groups": [
+      {
+        "id": 3301,
+        "title": "Pick Your Beets (Updated)",
+        "max_selections": 4,
+        "pricing_config": {
+          "pricing_type": "dynamic_price",
+          "min_price": 1000
+        },
+        "bundle_group_items": [
+          {
+            "bundled_variant_id": 880912,
+            "sort_order": 0
+          },
+          {
+            "bundled_variant_id": 880913,
+            "sort_order": 1
+          },
+          {
+            "bundled_variant_id": 880914,
+            "sort_order": 2
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Update semantics:**
+- Groups with an `id` are updated in place.
+- Groups without an `id` are created.
+- Groups omitted from the request are deleted.
+- `bundle_group_items` within a group are replaced wholesale (old items are removed, new ones are added).
+
+### Delete a bundle
+
+```bash
+DELETE https://api.fluid.app/api/v202506/bundles/{bundle_id}
+Authorization: Bearer {company_admin_token}
+```
+
+Deleting a bundle removes the bundle configuration but keeps the product itself.
+
+## Pricing and cart validation
+
+### How bundle pricing is calculated
+
+1. **If `bundle.pricing_enabled = true`:**
+   - Use the product's `pricing` and `subscription_price_range` fields.
+   - Group pricing is ignored.
+
+2. **If `bundle.pricing_enabled = false`:**
+   - For `fixed_price` groups: add the group's configured price (or country-specific override) to the total.
+   - For `dynamic_price` groups: sum the retail/wholesale prices of the selected variants.
+   - Hidden groups contribute their price but `display_to_customer: false`.
+
+### Cart validation
+
+The checkout API validates bundled items:
+
+- Customizable groups: validates that the shopper's selections meet `min_selections` and `max_selections`.
+- Included groups: automatically includes all items.
+- Subscription bundles: validates that subscription plans, if present, are compatible with the bundle's renewal settings.
+
+Invalid selections return a `422 Validation failed` response with details.
+
+## Subscription bundles
+
+Subscription bundles are groups with `purpose: "subscription"`. Items in these groups renew with the parent subscription.
+
+When adding a subscription bundle to a cart:
+
+```json
+{
+  "items": [
+    {
+      "variant_id": 880900,
+      "quantity": 1,
+      "subscription": {
+        "plan_id": "quarterly"
+      },
+      "bundled_items": [
+        {
+          "variant_id": 880912,
+          "quantity": 1,
+          "product_bundle_group_id": 3301,
+          "subscription": {
+            "plan_id": "quarterly"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+The parent subscription and all bundled items in subscription groups use the same plan and renewal cycle.
+
+## Common patterns
+
+### Static bundle with hidden free gift
+
+```json
+{
+  "group_type": "included",
+  "purpose": "default",
+  "pricing_config": {
+    "pricing_type": "fixed_price",
+    "fixed_price": 0,
+    "hidden": true
+  },
+  "bundle_group_items": [
+    { "bundled_variant_id": 881050 }
+  ]
+}
+```
+
+### Dynamic pricing by country
+
+```json
+{
+  "group_type": "customizable",
+  "purpose": "default",
+  "pricing_config": {
+    "pricing_type": "fixed_price",
+    "fixed_price": 1500,
+    "country_pricing": {
+      "GB": { "retail": 1200, "wholesale": 1100 },
+      "CA": { "retail": 1800, "wholesale": 1700 }
+    }
+  }
+}
+```
+
+### Exact selection (buy exactly 3)
+
+```json
+{
+  "group_type": "customizable",
+  "purpose": "default",
+  "min_selections": 3,
+  "max_selections": 3,
+  "selection_type": "exact"
+}
+```
+
+Equivalent configurations for `selection_type`:
+- `exact` with `min_selections: 3` → shopper picks exactly 3
+- `min_only` with `min_selections: 3`, `max_selections: null`
+- `max_only` with `min_selections: null`, `max_selections: 3`
+
+### Membership bundle with tier pricing
+
+```json
+{
+  "group_type": "included",
+  "purpose": "membership",
+  "pricing_config": {
+    "pricing_type": "fixed_price",
+    "fixed_price": 5000,
+    "country_pricing": {
+      "US": { "retail": 5000, "wholesale": 4000 }
+    }
+  }
+}
+```
+
+## Error handling
+
+### Validation errors
+
+```json
+{
+  "error": {
+    "message": "Validation failed.",
+    "details": {
+      "bundle.groups[0].min_selections": ["must be less than or equal to max_selections"],
+      "bundle.groups[1].pricing_config": ["pricing_type is required"]
+    }
+  },
+  "status": 422,
+  "meta": { "request_id": "...", "timestamp": "..." }
+}
+```
+
+### Common validation issues
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Customizable group has no selection config | Missing `min_selections`, `max_selections`, `selection_type` | Add selection bounds for all customizable groups |
+| Hidden flag on customizable group | Only included groups may be hidden | Remove `hidden: true` from customizable groups |
+| Pricing config mismatch | Invalid `pricing_type` or missing required fields | Use `fixed_price` or `dynamic_price` with correct fields |
+| Bundled variant not found | Referenced variant ID does not exist | Verify variant IDs belong to your company |
+
+## Best practices
+
+1. **Validate client-side selections** — Before sending to the cart, verify that the shopper's selection meets `min_selections` and `max_selections` constraints.
+
+2. **Display min price for dynamic groups** — When `pricing_type: dynamic_price` and `min_price` is set, show "from $X.XX" on the storefront.
+
+3. **Handle hidden groups carefully** — Hidden groups are added to the cart but not displayed. Use sparingly (e.g., free gifts) and ensure your UI clearly explains why items appear in the final order but not in selection.
+
+4. **Test multi-group bundles** — Bundles with multiple customizable groups increase complexity. Test all combinations of selections in your storefront.
+
+5. **Country-specific pricing** — If you use `country_pricing` overrides, ensure your storefront's country-detection logic matches the ISO-2 codes in your bundle config.
+
+6. **Subscription renewals** — Subscription bundles renew as a unit. If you need individual items to unsubscribe, use separate subscription items or implement custom unsubscribe logic.
