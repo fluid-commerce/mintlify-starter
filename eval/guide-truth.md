@@ -3137,6 +3137,21 @@ sidebar. The navigation generator passes the section's `hidden: true` through to
 Mintlify; its regression test verifies that hiding preserves operation references.
 This applies to Member Sites compatibility only, not storefront theme APIs.
 
+### Member Site search engine indexing
+
+`api/member-sites.mdx` has a **Search engine indexing** section for the owner's
+`indexable` field and the company override (`PUT` and `DELETE` on
+`/api/company/v2026-10/member-sites/{id}/indexing-override`). Its claims are all
+`semantic` for now: the synced `member-sites-v2026-10.yaml` and
+`company-member-sites-v2026-10.yaml` don't carry the fields or the two operations
+until the backend's Rails changes deploy and the spec syncs. After the sync, add
+`mechanical` claims for the `indexable` request field, the `indexing` response
+object and the two override operations, link the override operations from the
+section, and keep the semantic claims for the runtime rules. The product rule is
+that every Site can be indexed, none is until someone turns it on, a Site must be
+public to be indexed, the owner's choice is kept while an override is set, and the
+override wins. It replaces the old "a member's Site is never indexed" wording.
+
 ### Company sites on the storefront
 
 `storefront/sites.mdx` documents company sites as a v2026-04 storefront resource
