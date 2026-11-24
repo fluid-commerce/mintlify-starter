@@ -6,6 +6,35 @@ description: "Read, create, and manage product bundles. Configure static and dyn
 
 Bundles let you sell predefined product assortments or allow shoppers to customize their own. The Fluid Commerce API supports two bundle modes: **static bundles** (fixed component variants) and **dynamic bundle groups** (shopper-selectable variants).
 
+## What are product bundles?
+
+**Product bundles** group multiple product variants into a single purchasable SKU. When a customer buys a bundle, they receive all variants in the bundle's groups.
+
+**Two group-based configurations:**
+
+| Configuration | Group Type | Use Case | Shopper Experience |
+|---|-----------|----------|-------------------|
+| **Static** | All `included` | Fixed assortments (e.g., "Best of Beets Bundle") | Variants automatically included; no choice |
+| **Dynamic** | Has `customizable` | Build-your-own (e.g., "Pick Your Beets") | Shopper selects variants within constraints |
+| **Mixed** | Both | Hybrid (e.g., "Choose 3 items + free gift") | Some fixed, others customizable |
+
+**Bundle modes (separate concept):**
+
+The bundle's `mode` field determines its lifecycle and pricing behavior:
+
+| Mode | Type | Purpose |
+|------|------|---------|
+| `catalog` | Product bundle | Standard catalog product — added to cart, one-time or subscription purchase |
+| `enrollment` | Enrollment pack | Triggers enrollment workflow (sponsor assignment, genealogy, agreements) |
+
+This guide covers **`catalog`-mode bundles** with static and dynamic group configurations. Enrollment packs are a separate feature for membership and genealogy workflows.
+
+**This guide covers:** Creating, managing, and reading catalog-mode product bundles through the Fluid API. This includes static variants, dynamic selection rules, and pricing configuration.
+
+**Not covered here:**
+- Subscription bundles (recurring delivery packages) — see checkout endpoints
+- Member-exclusive bundles (member storefront feature)
+
 ## Bundle structure
 
 A bundle product (`is_bundle: true`) is composed of one or more bundle groups. Each group defines which variants are available and how many the shopper must select.
@@ -35,6 +64,41 @@ Each item identifies a variant that may be part of the bundle:
 | `id` | integer | Unique item identifier. |
 | `bundled_variant_id` | integer | Variant ID available for selection or inclusion. |
 | `sort_order` | integer | Display order among group items. |
+
+## APIs for product bundles
+
+**Complete API surface for product bundle management:**
+
+### Company Management API (v202506)
+
+| Endpoint | Method | Purpose | Auth |
+|----------|--------|---------|------|
+| `/api/v202506/bundles` | GET | List all bundles (optionally filter by `mode`) | Bearer token (company admin) |
+| `/api/v202506/bundles` | POST | Create a new bundle | Bearer token (company admin) |
+| `/api/v202506/bundles/{id}` | GET | Fetch a single bundle with all groups | Bearer token (company admin) |
+| `/api/v202506/bundles/{id}` | PATCH | Update bundle configuration, groups, and items | Bearer token (company admin) |
+| `/api/v202506/bundles/{id}` | DELETE | Delete (soft-delete) a bundle | Bearer token (company admin) |
+
+### Storefront API (v202604)
+
+| Endpoint | Method | Purpose | Auth |
+|----------|--------|---------|------|
+| `/api/v202604/products` | GET | List products (filter with `filter[bundle]=true` for bundles only) | None (public) |
+| `/api/v202604/products/{slug}` | GET | Fetch single bundle product with groups, items, and pricing | None (public) |
+
+### Checkout API (v202604)
+
+| Endpoint | Method | Purpose | Auth |
+|----------|--------|---------|------|
+| `/api/v202604/checkout/carts/{cart_id}/items` | POST | Add bundled items to cart with `bundled_items` array | Cart token or bearer |
+
+---
+
+### How Mist and integrations use these APIs:
+
+1. **Create/manage bundles** — `POST /api/v202506/bundles` and `PATCH /api/v202506/bundles/{id}`
+2. **Read bundle catalog** — `GET /api/v202604/products?filter[bundle]=true` and `GET /api/v202604/products/{slug}`
+3. **Add bundles to carts** — `POST /api/v202604/checkout/carts/{id}/items` with `bundled_items`
 
 ## Read bundle products from the storefront
 
@@ -146,13 +210,15 @@ Included groups have `selection_type: null` and no selection bounds.
 
 ### Group purposes
 
-The `purpose` field determines pricing tier and renewal behavior:
+The `purpose` field determines pricing tier and visibility:
 
-| Purpose | Use Case | Pricing |
-|---------|----------|---------|
-| `default` | Standard product bundles. | Retail pricing. Bundle items are non-subscription unless explicitly marked. |
-| `membership` | Bundles tied to membership tiers. | May use membership-tier pricing and visibility. Used in member commerce flows. |
-| `subscription` | Bundles for subscription boxes. | Subscription pricing. Items in this group renew with the parent subscription. |
+| Purpose | Use Case | Behavior |
+|---------|----------|----------|
+| `default` | Standard product bundles sold on the storefront. | Retail pricing. Bundle items are one-time purchases. |
+| `membership` | Bundle groups specific to member tiers or loyalty programs. | May use member-specific pricing. Rendered only on member storefronts. |
+| `subscription` | Bundle groups that become renewable when added to a subscription. | Items in this group renew with the parent subscription if the bundle is purchased as a subscription. |
+
+**Note:** The `subscription` purpose does NOT create a subscription automatically. It only marks variants that *may* be renewed if the bundle is purchased as part of a subscription order. One-time bundle purchases ignore this flag.
 
 ## Pricing configuration
 
@@ -311,6 +377,8 @@ Authorization: Bearer {company_admin_token}
 {
   "bundle": {
     "product_id": 4821,
+    "title": "Beet Blend Bundle",
+    "mode": "catalog",
     "pricing_enabled": false,
     "groups": [
       {
@@ -359,6 +427,8 @@ Authorization: Bearer {company_admin_token}
 
 **Request fields:**
 - `product_id` — ID of the product to bundle (required).
+- `title` — Display name for the bundle (required).
+- `mode` — `catalog` or `enrollment` (optional, defaults to `catalog`). Use `catalog` for standard product bundles.
 - `pricing_enabled` — Boolean. When `true`, bundle uses product-level pricing. When `false`, group pricing applies.
 - `groups` — Array of bundle group definitions.
   - `title` — Display name (required).
@@ -436,8 +506,14 @@ GET https://api.fluid.app/api/v202506/bundles
 Authorization: Bearer {company_admin_token}
 ```
 
-Optional query parameters:
-- `mode` — Filter by bundle mode (e.g., `static`, `dynamic`).
+**Query parameters:**
+- `mode` — Filter by bundle mode: `catalog` (standard product bundles) or `enrollment` (enrollment packs with sponsor genealogy). Most use cases use `catalog`.
+
+**Example:**
+```bash
+# List all catalog-mode bundles
+GET https://api.fluid.app/api/v202506/bundles?mode=catalog
+```
 
 ### Get a single bundle
 
@@ -527,11 +603,17 @@ The checkout API validates bundled items:
 
 Invalid selections return a `422 Validation failed` response with details.
 
-## Subscription bundles
+## Subscription-ready groups (purpose: "subscription")
 
-Subscription bundles are groups with `purpose: "subscription"`. Items in these groups renew with the parent subscription.
+Groups with `purpose: "subscription"` are **opt-in renewable**. They behave differently depending on how the bundle is purchased:
 
-When adding a subscription bundle to a cart:
+**One-time purchase:** Items are added to the cart as one-time purchases. The `subscription` purpose is ignored.
+
+**Subscription purchase:** If the bundle's parent variant is added with a subscription, items in `subscription`-purpose groups automatically renew with that subscription.
+
+**Use case:** A grocer sells a "Farmers Market Bundle" with standard variants. The bundle can be purchased one-time (retail) or as a recurring subscription (weekly delivery). The same bundle configuration serves both use cases.
+
+### Adding a subscription bundle to a subscription cart:
 
 ```json
 {
