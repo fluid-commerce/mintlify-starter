@@ -1,0 +1,124 @@
+---
+title: "Product bundles"
+sidebarTitle: "Product bundles"
+description: "How a bundle is built from static and dynamic groups, how its selection rules and prices work, and how to create one, read it on the storefront and add it to a cart."
+---
+
+A product bundle sells several variants as one product. The bundle is made of groups, and each group holds items. Each item is one variant of one of your products.
+
+This guide explains the model and the rules the server applies. It doesn't restate request and response schemas; the linked API Reference pages own those. To render a bundle in a theme, see [Product bundles in themes](/themes/product-bundles).
+
+## Groups and items
+
+A group is either static or dynamic, and its `group_type` says which:
+
+| `group_type` | What ships |
+| --- | --- |
+| `included` | Every item in the group. The shopper doesn't choose. |
+| `customizable` | The items the shopper picks, within the group's selection rule. |
+
+A bundle whose groups are all `included` is a static bundle. A bundle with at least one `customizable` group is a dynamic bundle. There is no separate bundle type to set: it follows from the groups.
+
+Each item names a `variant_id` and a `quantity`, which is how many of the variant one pick ships (1 when omitted). An item's `config` holds its in-bundle settings, such as its price, an image, a per-bundle cap in `max_quantity`, and `is_default`, which tells a storefront to pre-select the item.
+
+A group's `purpose` is `default` unless you set `membership` or `subscription`. A bundle's `mode` is `catalog` for a product bundle. `enrollment` is an enrollment pack, which uses the same groups but starts an enrollment at checkout.
+
+## Selection rules
+
+A `customizable` group must have a `selection_type`:
+
+| `selection_type` | The shopper must pick |
+| --- | --- |
+| `exact` | Exactly `min_selections` |
+| `min_only` | At least `min_selections` |
+| `max_only` | At most `max_selections` |
+| `min_and_max` | Between `min_selections` and `max_selections` |
+
+Picks are counted by quantity, not by distinct items: two of one variant count as two picks. A bound that doesn't apply to the type is cleared when the group is saved. `exact` sets `max_selections` to `min_selections`, `min_only` clears `max_selections`, and `max_only` clears `min_selections`. `max_selections` can't be below `min_selections`.
+
+## How a bundle is priced
+
+A bundle's price comes from one of three places. All amounts are decimal currency amounts such as `"24.50"`, not cents.
+
+- **Bundle-level pricing.** When the bundle's `bundle_pricing_enabled` setting is on, the bundle is charged its own per-country price and its groups' prices are not used. It can't be turned on while any group uses `dynamic_price`.
+- **A fixed-price group.** A group's `pricing_type` defaults to `fixed_price`. The group adds its own price, whatever the shopper picks.
+- **A dynamic-price group.** With `dynamic_price`, the group adds the sum of each picked item's price times its quantity.
+
+When bundle-level pricing is off, the bundle's price is the sum of its groups.
+
+A group's `min_price` is the "from" price a storefront shows before anything is picked. It is not enforced on the charged total.
+
+For a retail buyer, an item's price inside a dynamic group is its positive country override, else its positive `config` price, else the variant's own price in the buyer's country. A zero price at either `config` level counts as unset, not free.
+
+### Country prices
+
+Bundle-level pricing and each group carry per-country prices in a `country_pricing` list. An entry names a `country_code`, is read only while `enabled` is `true`, and can carry `price`, `wholesale`, `subscription_price`, `wholesale_subscription_price`, `cv`, `qv`, `wholesale_cv`, `wholesale_qv` and `points`. When a group's country has no enabled entry, its `fixed_price` is the retail price.
+
+A wholesale buyer pays the `wholesale` amount. It never falls back to the retail price: an unset wholesale amount charges 0.
+
+A group with any `country_pricing` entries limits the bundle to the countries those entries enable. A group with none doesn't restrict the bundle. The server stamps each entry's `currency_code` with the currency the company sells that country in; a value you send is replaced.
+
+### Hidden groups
+
+An `included` group can set `hidden` in its `pricing_config`. Its items still ship and stay on the order, so fulfillment and inventory see them, but customer-facing cart and order views leave them out. Their entries carry `display_to_customer` set to `false`.
+
+### Companies on the bundle price grid
+
+Some companies store bundle prices per price type, market and currency on the bundle price grid instead. For those companies the grid owns every price field: a bundle write keeps the stored prices and ignores the ones you send. Set prices with [Show a bundle's per-price-type price grid](/api-reference/products/show-a-bundles-per-price-type-price-grid) and [Write a batch of bundle price cells](/api-reference/products/write-a-batch-of-bundle-price-cells). [Member pricing](/api/guides/member-pricing) explains when a company is on the grid.
+
+## Create and change a bundle
+
+A bundle belongs to a product. Create the product first with [Create a Product](/api-reference/company/create-a-product), then make it a bundle with [Create a bundle](/api-reference/products/create-a-bundle), sending its groups and their items in one request. Every variant must belong to your company. A product holds one bundle at a time.
+
+The order of the groups and items arrays sets their `sort_order`. Read bundles back with [List bundles](/api-reference/products/list-bundles) and [Show a bundle](/api-reference/products/show-a-bundle). Each bundle reports its `product_id`, which is the product shoppers read and add to a cart.
+
+[Update a bundle](/api-reference/products/update-a-bundle) changes only what you send. When you send the groups, send all of them:
+
+- A group or item with an `id` is updated, and one without an `id` is added.
+- A stored group whose `id` is missing from the list is deleted.
+- Inside a group that sends items, a stored item whose `id` is missing is deleted. Leave out a group's items to keep them as they are.
+- For a company on the bundle price grid, a group or item with stored grid prices is deleted only when you send it with `_destroy` set to `true`. Leaving it out is refused, so prices are never dropped by accident.
+
+[Remove a bundle](/api-reference/products/remove-a-bundle) removes the bundle and clears the product's bundle flag. The product itself is kept.
+
+A bundle's settings are replaced as a whole when you send them, so send every setting you want to keep. Pairs of mutually exclusive groups are set in the Fluid admin bundle editor, not through these endpoints.
+
+## Read a bundle on the storefront
+
+The public product read reports whether a product is a bundle in `is_bundle`. [Public Product by slug](/api-reference/storefront/public-product-by-slug) adds the groups and items in `bundle_groups`. To list only bundles, or only other products, pass `filter[bundle]` to [Public Products catalog](/api-reference/storefront/public-products-catalog).
+
+## Add a bundle to a cart
+
+Add the bundle product's variant with [Add items to cart](/api-reference/cart-items/add-items-to-cart), and list the shopper's picks in `bundled_items`. Each pick names a `variant_id`, a `quantity` and the `product_bundle_group_id` of the group it was picked from.
+
+```json
+{
+  "items": [
+    {
+      "variant_id": 88100,
+      "quantity": 1,
+      "bundled_items": [
+        { "variant_id": 88120, "quantity": 1, "product_bundle_group_id": 7741 },
+        { "variant_id": 88121, "quantity": 1, "product_bundle_group_id": 7741 }
+      ]
+    }
+  ]
+}
+```
+
+Send only the picks from `customizable` groups. The server adds every `included` group's items itself, and drops any you send so they are never doubled. The exception is an `included` group in a mutually exclusive pair: send the items of the side the shopper chose. It doesn't add items marked `is_default`: a storefront that pre-selects them must send them.
+
+The server checks the picks before anything is added:
+
+- Each pick's variant must be in the group it names.
+- Each group's pick count must meet its selection rule.
+- A pick's quantity can't exceed the item's `max_quantity`.
+- A pick must be available in the cart's country.
+- An item that must be bought on a subscription needs the bundle line to be on one.
+
+When a check fails, the response is `422` with the first problem's message, and nothing is added to the cart.
+
+## Known limits
+
+- An older kind of static bundle links variants directly to the product through `product_bundles`, without groups. New bundles should use groups.
+- These endpoints don't set pairs of mutually exclusive groups. Use the Fluid admin bundle editor for those.
