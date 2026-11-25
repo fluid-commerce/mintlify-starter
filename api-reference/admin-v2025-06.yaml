@@ -34,7 +34,7 @@ tags:
     description: Answer the requests agents make at signup for a credential to set up the company. Available while agent access is enabled.
     x-fluid-section: Developers
   - name: products
-    description: Products, variants and their prices, including the per-price-type price grid of a bundle product.
+    description: Products, variants and their prices, bundles (including customizable bundles the shopper picks from), and the per-price-type price grid of a bundle product.
     x-fluid-section: Commerce
   - name: tiktok
     description: The company's TikTok Shop connection, its logistics warehouses, category tree, product listings, and orders.
@@ -449,6 +449,7 @@ components:
         - capabilities
         - archivable
         - archived_at
+        - removal
         - pricing_tier
       additionalProperties: false
       properties:
@@ -487,11 +488,77 @@ components:
             - 'null'
           format: date-time
           description: The archival timestamp, or null while the member type is active.
+        removal:
+          description: What DELETE would do to this member type right now. Returned by the index; null on create, update and delete responses.
+          anyOf:
+            - $ref: '#/components/schemas/ManagedMemberTypeRemoval'
+            - type: 'null'
         pricing_tier:
           description: 'The pricing tier this member type prices at, nested so a picker can be rendered without a second round trip. Null is meaningful and distinct from "unpriced": an unlinked member type falls back to the company''s Retail tier.'
           anyOf:
             - $ref: '#/components/schemas/PricingTier'
             - type: 'null'
+    ManagedMemberTypeRemoval:
+      type: object
+      required:
+        - action
+        - reason
+        - usage
+      additionalProperties: false
+      properties:
+        action:
+          type:
+            - string
+            - 'null'
+          enum:
+            - delete
+            - archive
+            - blocked
+            - null
+          description: delete removes the type and its settings; archive keeps it because data references it; blocked refuses until in-flight carts or enrollment packs are detached or the type stops being the default shopper type. Null for an archived type that still has data.
+        reason:
+          type:
+            - string
+            - 'null'
+          description: One human line for archive and blocked; null for delete.
+        usage:
+          type: object
+          required:
+            - members
+            - orders
+            - carts
+            - enrollment_packs
+          additionalProperties: false
+          properties:
+            members:
+              type: integer
+            orders:
+              type: integer
+            carts:
+              type: integer
+            enrollment_packs:
+              type: integer
+    ManagedMemberTypeDeleteResponse:
+      type: object
+      required:
+        - member_type
+        - result
+        - status
+        - meta
+      additionalProperties: false
+      properties:
+        member_type:
+          $ref: '#/components/schemas/ManagedMemberType'
+        result:
+          type: string
+          enum:
+            - deleted
+            - archived
+        status:
+          type: integer
+          const: 200
+        meta:
+          $ref: '#/components/schemas/Meta'
     ManagedMemberTypeResponse:
       type: object
       required:
@@ -1472,6 +1539,511 @@ components:
                   - integer
                   - string
                   - 'null'
+    BundleItemConfig:
+      type: object
+      description: An item's stored settings. Prices and volumes are decimal strings; a value the item does not set falls back to 0, its own quantity, or null.
+      required:
+        - price
+        - cv
+        - qv
+        - quantity
+        - max_quantity
+        - allow_subscription
+        - force_subscription
+        - image_url
+        - subscription_plan_id
+        - available_country_codes
+        - country_prices
+      properties:
+        price:
+          type: string
+          description: The item's price inside the bundle, as a decimal string.
+        cv:
+          type:
+            - string
+            - 'null'
+          description: Commissionable volume, as a decimal string.
+        qv:
+          type:
+            - string
+            - 'null'
+          description: Qualifying volume, as a decimal string.
+        quantity:
+          type: integer
+          description: How many of the variant one pick adds.
+        max_quantity:
+          type:
+            - integer
+            - 'null'
+          description: The most of this variant a shopper may pick; null is no cap.
+        allow_subscription:
+          type: boolean
+        force_subscription:
+          type: boolean
+        image_url:
+          type:
+            - string
+            - 'null'
+        subscription_plan_id:
+          type:
+            - integer
+            - string
+            - 'null'
+        available_country_codes:
+          type: array
+          description: Country codes the item is offered in; empty means every country.
+          items:
+            type: string
+        country_prices:
+          type: object
+          description: Per-country price overrides, keyed by country code.
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+    BundleItem:
+      type: object
+      description: One variant in a bundle group.
+      required:
+        - id
+        - variant_id
+        - quantity
+        - sort_order
+        - is_default
+        - config
+        - variant_title
+        - product_title
+      properties:
+        id:
+          type: integer
+        variant_id:
+          type: integer
+        quantity:
+          type: integer
+        sort_order:
+          type: integer
+        is_default:
+          type: boolean
+          description: Whether the variant starts selected in a customizable group.
+        config:
+          $ref: '#/components/schemas/BundleItemConfig'
+        variant_title:
+          type:
+            - string
+            - 'null'
+        product_title:
+          type:
+            - string
+            - 'null'
+    BundleGroup:
+      type: object
+      description: A group of variants in a bundle. An `included` group is always in the bundle. A `customizable` group is one the shopper picks from, within the limits its `selection_type`, `min_selections` and `max_selections` set.
+      required:
+        - id
+        - title
+        - description
+        - group_type
+        - purpose
+        - selection_type
+        - min_selections
+        - max_selections
+        - pricing_config
+        - allow_subscriptions
+        - force_subscriptions
+        - sort_order
+        - image_urls
+        - items
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type:
+            - string
+            - 'null'
+        group_type:
+          type: string
+          enum:
+            - included
+            - customizable
+        purpose:
+          type: string
+          enum:
+            - default
+            - membership
+            - subscription
+        selection_type:
+          type:
+            - string
+            - 'null'
+          enum:
+            - exact
+            - min_only
+            - max_only
+            - min_and_max
+            - null
+        min_selections:
+          type:
+            - integer
+            - 'null'
+        max_selections:
+          type:
+            - integer
+            - 'null'
+        pricing_config:
+          type: object
+          description: 'How the group is priced, for example `{"pricing_type": "fixed_price", "fixed_price": "9.00"}`. Empty when the group has no pricing of its own.'
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+        allow_subscriptions:
+          type: boolean
+        force_subscriptions:
+          type: boolean
+        sort_order:
+          type: integer
+        image_urls:
+          type: array
+          items:
+            $ref: '#/components/schemas/JsonValue'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleItem'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Bundle:
+      type: object
+      description: 'A bundle attached to a product: what the product contains, as groups of variants. Each product has at most one bundle.'
+      required:
+        - id
+        - title
+        - slug
+        - mode
+        - active
+        - enrollment_fee
+        - enrollment_fee_enabled
+        - membership_optional
+        - membership_after_one_month
+        - additional_volume
+        - settings
+        - metadata
+        - groups
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        slug:
+          type: string
+        mode:
+          type: string
+          enum:
+            - catalog
+            - enrollment
+          description: '`catalog` for a bundle sold like any product, `enrollment` for an enrollment pack.'
+        active:
+          type: boolean
+        enrollment_fee:
+          type: string
+          description: The enrollment fee as a decimal string; used only when `enrollment_fee_enabled`.
+        enrollment_fee_enabled:
+          type: boolean
+        membership_optional:
+          type: boolean
+        membership_after_one_month:
+          type: boolean
+        additional_volume:
+          type:
+            - integer
+            - 'null'
+        settings:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+        metadata:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleGroup'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BundleItemInput:
+      type: object
+      required:
+        - variant_id
+      properties:
+        id:
+          type:
+            - integer
+            - 'null'
+          description: On update, the id of an item to keep. Omit to add a new item.
+        variant_id:
+          type: integer
+          description: A variant of the company's own catalog.
+        quantity:
+          type: integer
+          minimum: 1
+        sort_order:
+          type:
+            - integer
+            - 'null'
+        is_default:
+          type: boolean
+          description: Start this variant selected in a customizable group.
+        config:
+          type:
+            - object
+            - 'null'
+          description: Item settings such as `price`, `cv`, `qv` and `max_quantity`; see BundleItemConfig.
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+        _destroy:
+          type: boolean
+          description: On update, true deletes this item. Required to delete an item that has price-grid prices.
+    BundleGroupInput:
+      type: object
+      required:
+        - title
+        - group_type
+      description: A group of variants. For a customizable group (one the shopper picks from), set `selection_type` and the bounds it uses. `exact` needs `min_selections` (the shopper picks exactly that many). `min_only` needs `min_selections` (at least that many). `max_only` needs `max_selections` (at most that many, none is fine). `min_and_max` needs both. A customizable group without the bounds its `selection_type` uses is refused with a 422.
+      properties:
+        id:
+          type:
+            - integer
+            - 'null'
+          description: On update, the id of a group to keep. Omit to add a new group.
+        title:
+          type: string
+        group_type:
+          type: string
+          enum:
+            - included
+            - customizable
+          description: '`included` is always in the bundle; `customizable` is one the shopper picks from.'
+        purpose:
+          type: string
+          enum:
+            - default
+            - membership
+            - subscription
+        description:
+          type:
+            - string
+            - 'null'
+        selection_type:
+          type:
+            - string
+            - 'null'
+          enum:
+            - exact
+            - min_only
+            - max_only
+            - min_and_max
+            - null
+          description: Required for a customizable group.
+        min_selections:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+        max_selections:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+        pricing_config:
+          type:
+            - object
+            - 'null'
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+        allow_subscriptions:
+          type: boolean
+        force_subscriptions:
+          type: boolean
+        image_urls:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/JsonValue'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleItemInput'
+        _destroy:
+          type: boolean
+          description: On update, true deletes this group. Required to delete a group that has price-grid prices.
+    BundleCreateRequest:
+      type: object
+      required:
+        - bundle
+      properties:
+        bundle:
+          type: object
+          required:
+            - product_id
+            - title
+          properties:
+            product_id:
+              type: integer
+              description: The product the bundle belongs to. It must not have a bundle already.
+            title:
+              type: string
+            mode:
+              type: string
+              enum:
+                - catalog
+                - enrollment
+            description:
+              type:
+                - string
+                - 'null'
+            active:
+              type: boolean
+            enrollment_fee:
+              type:
+                - number
+                - string
+                - 'null'
+            enrollment_fee_enabled:
+              type: boolean
+            membership_optional:
+              type: boolean
+            membership_after_one_month:
+              type: boolean
+            additional_volume:
+              type:
+                - integer
+                - 'null'
+            settings:
+              type:
+                - object
+                - 'null'
+              additionalProperties:
+                $ref: '#/components/schemas/JsonValue'
+            metadata:
+              type:
+                - object
+                - 'null'
+              additionalProperties:
+                $ref: '#/components/schemas/JsonValue'
+            groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/BundleGroupInput'
+    BundleUpdateRequest:
+      type: object
+      required:
+        - bundle
+      properties:
+        bundle:
+          type: object
+          description: 'Send only what changes. When `groups` is sent it is the complete list: a group or item whose id is left out is deleted (a priced one must be deleted with `_destroy: true` instead). Leave `groups` out to keep the groups as they are.'
+          properties:
+            title:
+              type: string
+            description:
+              type:
+                - string
+                - 'null'
+            active:
+              type: boolean
+            enrollment_fee:
+              type:
+                - number
+                - string
+                - 'null'
+            enrollment_fee_enabled:
+              type: boolean
+            membership_optional:
+              type: boolean
+            membership_after_one_month:
+              type: boolean
+            additional_volume:
+              type:
+                - integer
+                - 'null'
+            settings:
+              type:
+                - object
+                - 'null'
+              additionalProperties:
+                $ref: '#/components/schemas/JsonValue'
+            metadata:
+              type:
+                - object
+                - 'null'
+              additionalProperties:
+                $ref: '#/components/schemas/JsonValue'
+            groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/BundleGroupInput'
+    BundleResponse:
+      type: object
+      required:
+        - bundle
+        - status
+        - meta
+      properties:
+        bundle:
+          $ref: '#/components/schemas/Bundle'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BundlesResponse:
+      type: object
+      required:
+        - bundles
+        - status
+        - meta
+      properties:
+        bundles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Bundle'
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
+    BundleDeleteResponse:
+      type: object
+      required:
+        - bundle
+        - status
+        - meta
+      properties:
+        bundle:
+          type: object
+          required:
+            - id
+            - discarded
+          properties:
+            id:
+              type: integer
+            discarded:
+              type: boolean
+              const: true
+        status:
+          type: integer
+        meta:
+          $ref: '#/components/schemas/Meta'
     BundlePricesResponse:
       type: object
       description: A bundle product's per-price-type price grid. The editor builds the full price type x currency matrix from price_types and currency_codes; cells are sparse. bundle is null when the product has no master variant. pricing_enabled is whether bundle-level pricing is on (otherwise the bundle is priced from its groups).
@@ -6804,6 +7376,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/UnauthorizedResponse'
+    UpdateCustomerTooManyRequests:
+      description: 'Email-change approval is on and the account (or the requested address) already had 3 change requests in the last day. Nothing is written. The body has the same shape as the validation error response: `errors.email` and `errors.code` (`rate_limited`) with the limit that held, plus the errors of the other submitted fields.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     UpdateCustomerUnprocessable:
       description: Validation failed
       content:
@@ -13493,6 +14071,8 @@ paths:
           $ref: '#/components/responses/UpdateCustomerUnauthorized'
         '422':
           $ref: '#/components/responses/UpdateCustomerUnprocessable'
+        '429':
+          $ref: '#/components/responses/UpdateCustomerTooManyRequests'
       parameters:
         - name: id
           in: path
@@ -13521,6 +14101,8 @@ paths:
           $ref: '#/components/responses/UpdateCustomerUnauthorized'
         '422':
           $ref: '#/components/responses/UpdateCustomerUnprocessable'
+        '429':
+          $ref: '#/components/responses/UpdateCustomerTooManyRequests'
       parameters:
         - name: id
           in: path
@@ -19049,6 +19631,462 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
         '422':
           description: Invalid parameters, a cell the bundle cannot take (details.cells lists each refused cell by index with an error code such as target_not_found, price_type_invalid, field_invalid, price_required, out_of_sync_requires_full_cell, legacy_json_unmappable -- a Retail or Wholesale figure that has no exact legacy JSON home, market_row_missing -- a market has no one-time price row and the saved mode does not read the price, or legacy_price_unseedable -- the group's legacy fixed_price cannot be stored as the new row's price), the bundle_pricing capability off, or the product is not a bundle. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/bundles:
+    get:
+      operationId: admin_v2025_06_bundles_index
+      summary: List bundles
+      description: 'List the company''s bundles, newest first, each with its groups and items. A bundle is the contents of a bundle product: groups of variants that are either always included or customizable (picked by the shopper). Requires admin tier and products.view.'
+      tags:
+        - products
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          description: Only bundles of this mode.
+          schema:
+            type: string
+            enum:
+              - catalog
+              - enrollment
+      responses:
+        '200':
+          description: The company's bundles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundlesResponse'
+              example:
+                bundles:
+                  - id: 301
+                    title: Pick your flavors
+                    slug: pick-your-flavors
+                    mode: catalog
+                    active: true
+                    enrollment_fee: '0.0'
+                    enrollment_fee_enabled: false
+                    membership_optional: false
+                    membership_after_one_month: false
+                    additional_volume: null
+                    settings: {}
+                    metadata: {}
+                    groups:
+                      - id: 912
+                        title: Flavors
+                        description: null
+                        group_type: customizable
+                        purpose: default
+                        selection_type: min_and_max
+                        min_selections: 1
+                        max_selections: 2
+                        pricing_config: {}
+                        allow_subscriptions: false
+                        force_subscriptions: false
+                        sort_order: 0
+                        image_urls: []
+                        items:
+                          - id: 5501
+                            variant_id: 8812
+                            quantity: 1
+                            sort_order: 0
+                            is_default: true
+                            config:
+                              price: '0.0'
+                              cv: '0.0'
+                              qv: '0.0'
+                              quantity: 1
+                              max_quantity: null
+                              allow_subscription: false
+                              force_subscription: false
+                              image_url: null
+                              subscription_plan_id: null
+                              available_country_codes: []
+                              country_prices: {}
+                            variant_title: Mango
+                            product_title: Energy Drink
+                        created_at: '2026-11-24T18:39:45Z'
+                        updated_at: '2026-11-24T18:39:45Z'
+                    created_at: '2026-11-24T18:39:45Z'
+                    updated_at: '2026-11-24T18:39:45Z'
+                status: 200
+                meta:
+                  request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
+                  timestamp: '2026-11-24T18:39:45Z'
+        '401':
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+        '403':
+          description: The caller is not admin tier or lacks products.view permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    post:
+      operationId: admin_v2025_06_bundles_create
+      summary: Create a bundle, including a customizable (build-your-own) bundle
+      description: 'Turn an existing product into a bundle by giving it groups of variants. An `included` group is always in the bundle. A `customizable` group lets the shopper choose: a "pick any 2 flavors" or "build your own box" bundle is a customizable group whose items are the choices, with `selection_type` and `min_selections`/`max_selections` saying how many the shopper picks. Create the product first, then post its id here. Each product has at most one bundle; change an existing bundle with PATCH. Requires admin tier and products.update.'
+      tags:
+        - products
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BundleCreateRequest'
+            example:
+              bundle:
+                product_id: 4021
+                title: Pick your flavors
+                groups:
+                  - title: Flavors
+                    group_type: customizable
+                    selection_type: min_and_max
+                    min_selections: 1
+                    max_selections: 2
+                    items:
+                      - variant_id: 8812
+                        is_default: true
+                      - variant_id: 8813
+                      - variant_id: 8814
+      responses:
+        '201':
+          description: The bundle was created; the product is now a bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleResponse'
+              example:
+                bundle:
+                  id: 301
+                  title: Pick your flavors
+                  slug: pick-your-flavors
+                  mode: catalog
+                  active: true
+                  enrollment_fee: '0.0'
+                  enrollment_fee_enabled: false
+                  membership_optional: false
+                  membership_after_one_month: false
+                  additional_volume: null
+                  settings: {}
+                  metadata: {}
+                  groups:
+                    - id: 912
+                      title: Flavors
+                      description: null
+                      group_type: customizable
+                      purpose: default
+                      selection_type: min_and_max
+                      min_selections: 1
+                      max_selections: 2
+                      pricing_config: {}
+                      allow_subscriptions: false
+                      force_subscriptions: false
+                      sort_order: 0
+                      image_urls: []
+                      items:
+                        - id: 5501
+                          variant_id: 8812
+                          quantity: 1
+                          sort_order: 0
+                          is_default: true
+                          config:
+                            price: '0.0'
+                            cv: '0.0'
+                            qv: '0.0'
+                            quantity: 1
+                            max_quantity: null
+                            allow_subscription: false
+                            force_subscription: false
+                            image_url: null
+                            subscription_plan_id: null
+                            available_country_codes: []
+                            country_prices: {}
+                          variant_title: Mango
+                          product_title: Energy Drink
+                      created_at: '2026-11-24T18:39:45Z'
+                      updated_at: '2026-11-24T18:39:45Z'
+                  created_at: '2026-11-24T18:39:45Z'
+                  updated_at: '2026-11-24T18:39:45Z'
+                status: 201
+                meta:
+                  request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
+                  timestamp: '2026-11-24T18:39:45Z'
+        '403':
+          description: The caller is not admin tier or lacks products.update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No product with this id belongs to the current company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The product's prices are being written by another request (error details code `bundle_price_busy`). Nothing was written; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: The body is invalid (error details name each field), the product already has a bundle, a variant is not the company's, or a customizable group lacks the count its `selection_type` uses. Nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+  /api/v2025-06/bundles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The bundle's id.
+        schema:
+          type: integer
+    get:
+      operationId: admin_v2025_06_bundles_show
+      summary: Show a bundle
+      description: One bundle with its groups and items. Requires admin tier and products.view.
+      tags:
+        - products
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: The bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleResponse'
+              example:
+                bundle:
+                  id: 301
+                  title: Pick your flavors
+                  slug: pick-your-flavors
+                  mode: catalog
+                  active: true
+                  enrollment_fee: '0.0'
+                  enrollment_fee_enabled: false
+                  membership_optional: false
+                  membership_after_one_month: false
+                  additional_volume: null
+                  settings: {}
+                  metadata: {}
+                  groups:
+                    - id: 912
+                      title: Flavors
+                      description: null
+                      group_type: customizable
+                      purpose: default
+                      selection_type: min_and_max
+                      min_selections: 1
+                      max_selections: 2
+                      pricing_config: {}
+                      allow_subscriptions: false
+                      force_subscriptions: false
+                      sort_order: 0
+                      image_urls: []
+                      items:
+                        - id: 5501
+                          variant_id: 8812
+                          quantity: 1
+                          sort_order: 0
+                          is_default: true
+                          config:
+                            price: '0.0'
+                            cv: '0.0'
+                            qv: '0.0'
+                            quantity: 1
+                            max_quantity: null
+                            allow_subscription: false
+                            force_subscription: false
+                            image_url: null
+                            subscription_plan_id: null
+                            available_country_codes: []
+                            country_prices: {}
+                          variant_title: Mango
+                          product_title: Energy Drink
+                      created_at: '2026-11-24T18:39:45Z'
+                      updated_at: '2026-11-24T18:39:45Z'
+                  created_at: '2026-11-24T18:39:45Z'
+                  updated_at: '2026-11-24T18:39:45Z'
+                status: 200
+                meta:
+                  request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
+                  timestamp: '2026-11-24T18:39:45Z'
+        '403':
+          description: The caller is not admin tier or lacks products.view permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No bundle with this id belongs to the current company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    patch:
+      operationId: admin_v2025_06_bundles_update
+      summary: Update a bundle
+      description: Change a bundle's settings or groups; the request body says how `groups` replaces the current groups. Requires admin tier and products.update.
+      tags:
+        - products
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BundleUpdateRequest'
+            example:
+              bundle:
+                title: Pick exactly two
+                groups:
+                  - id: 912
+                    title: Flavors
+                    group_type: customizable
+                    selection_type: exact
+                    min_selections: 2
+                    items:
+                      - id: 5501
+                        variant_id: 8812
+                      - id: 5502
+                        variant_id: 8813
+      responses:
+        '200':
+          description: The updated bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleResponse'
+              example:
+                bundle:
+                  id: 301
+                  title: Pick exactly two
+                  slug: pick-your-flavors
+                  mode: catalog
+                  active: true
+                  enrollment_fee: '0.0'
+                  enrollment_fee_enabled: false
+                  membership_optional: false
+                  membership_after_one_month: false
+                  additional_volume: null
+                  settings: {}
+                  metadata: {}
+                  groups:
+                    - id: 912
+                      title: Flavors
+                      description: null
+                      group_type: customizable
+                      purpose: default
+                      selection_type: exact
+                      min_selections: 2
+                      max_selections: 2
+                      pricing_config: {}
+                      allow_subscriptions: false
+                      force_subscriptions: false
+                      sort_order: 0
+                      image_urls: []
+                      items:
+                        - id: 5501
+                          variant_id: 8812
+                          quantity: 1
+                          sort_order: 0
+                          is_default: true
+                          config:
+                            price: '0.0'
+                            cv: '0.0'
+                            qv: '0.0'
+                            quantity: 1
+                            max_quantity: null
+                            allow_subscription: false
+                            force_subscription: false
+                            image_url: null
+                            subscription_plan_id: null
+                            available_country_codes: []
+                            country_prices: {}
+                          variant_title: Mango
+                          product_title: Energy Drink
+                      created_at: '2026-11-24T18:39:45Z'
+                      updated_at: '2026-11-24T18:39:45Z'
+                  created_at: '2026-11-24T18:39:45Z'
+                  updated_at: '2026-11-24T18:39:45Z'
+                status: 200
+                meta:
+                  request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
+                  timestamp: '2026-11-24T18:39:45Z'
+        '403':
+          description: The caller is not admin tier or lacks products.update permission, or is a droplet whose attached role lacks products.update and the change would delete a group or item that has price-grid prices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No bundle with this id belongs to the current company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '409':
+          description: The product's prices are being written by another request (error details code `bundle_price_busy`). Nothing was written; retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '422':
+          description: 'The body is invalid (error details name each field), a variant is not the company''s, a customizable group lacks the count its `selection_type` uses, or a priced group or item was left out instead of deleted with `_destroy: true`. Nothing was written.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+    delete:
+      operationId: admin_v2025_06_bundles_destroy
+      summary: Delete a bundle
+      description: Delete the bundle. The product stays; it is no longer a bundle and can be given a new one. Requires admin tier and products.update.
+      tags:
+        - products
+      x-fluid-audience: company
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: The bundle was deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleDeleteResponse'
+              example:
+                bundle:
+                  id: 301
+                  discarded: true
+                status: 200
+                meta:
+                  request_id: 3f1c6a52-8d07-4b9e-a1c4-7e2d90b5f6a3
+                  timestamp: '2026-11-24T18:39:45Z'
+        '403':
+          description: The caller is not admin tier or lacks products.update permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: No bundle with this id belongs to the current company.
           content:
             application/json:
               schema:
@@ -52648,8 +53686,16 @@ paths:
                     rep_eligible: false
                     capabilities:
                       rep_style: false
-                    archivable: false
+                    archivable: true
                     archived_at: null
+                    removal:
+                      action: archive
+                      reason: 12 members use this type, so it will be archived, not deleted
+                      usage:
+                        members: 12
+                        orders: 0
+                        carts: 0
+                        enrollment_packs: 0
                     pricing_tier:
                       id: 0192a4c1-7e2b-7c31-9f0a-5d8e3b6a1c42
                       name: Retail
@@ -52664,8 +53710,16 @@ paths:
                     rep_eligible: false
                     capabilities:
                       rep_style: true
-                    archivable: false
+                    archivable: true
                     archived_at: null
+                    removal:
+                      action: archive
+                      reason: 3 members use this type, so it will be archived, not deleted
+                      usage:
+                        members: 3
+                        orders: 0
+                        carts: 0
+                        enrollment_packs: 0
                     pricing_tier:
                       id: 0192a4c1-7e2b-7d05-8b14-2f6c9a0e7d13
                       name: Preferred
@@ -52680,8 +53734,16 @@ paths:
                     rep_eligible: true
                     capabilities:
                       rep_style: true
-                    archivable: false
+                    archivable: true
                     archived_at: null
+                    removal:
+                      action: archive
+                      reason: 5 members use this type, so it will be archived, not deleted
+                      usage:
+                        members: 5
+                        orders: 0
+                        carts: 0
+                        enrollment_packs: 0
                     pricing_tier:
                       id: 0192a4c1-7e2b-7e9a-a3c7-81d4f5b2e069
                       name: Wholesale
@@ -52698,6 +53760,14 @@ paths:
                       rep_style: true
                     archivable: true
                     archived_at: null
+                    removal:
+                      action: delete
+                      reason: null
+                      usage:
+                        members: 0
+                        orders: 0
+                        carts: 0
+                        enrollment_packs: 0
                     pricing_tier:
                       id: 0192a4c1-7e2b-7e9a-a3c7-81d4f5b2e069
                       name: Wholesale
@@ -52799,6 +53869,7 @@ paths:
                     rep_style: true
                   archivable: true
                   archived_at: null
+                  removal: null
                   pricing_tier:
                     id: 0192a4c1-7e2b-7e9a-a3c7-81d4f5b2e069
                     name: Wholesale
@@ -53087,6 +54158,7 @@ paths:
                     rep_style: true
                   archivable: true
                   archived_at: null
+                  removal: null
                   pricing_tier:
                     id: 0192a4c1-7e2b-7e9a-a3c7-81d4f5b2e069
                     name: Wholesale
@@ -53132,8 +54204,8 @@ paths:
                 $ref: '#/components/schemas/ManagedMemberTypeErrorResponse'
     delete:
       operationId: admin_v2025_06_member_types_destroy
-      summary: Archive a custom member type
-      description: Sets the first archival timestamp without deleting the member type or its historical references. Repeated requests succeed and preserve that timestamp. Requires admin tier followed by member_types.manage permission; root admins bypass the permission check. System-defined types cannot be archived. This storage/removal foundation does not enforce active selection filtering.
+      summary: Delete a member type, or archive it when it has data
+      description: Deletes the member type and its settings (availabilities, form audiences, displayables, site shares) when nothing else references it. When members, orders, processed carts, enrollment packs, discount rules or theme audiences do, archives it instead and keeps every row. Seeded system types (customer, preferred, rep) are always archived, never deleted; a type that is the only audience of a form, or shares a mobile page or navigation with other rules, is archived too; repeated requests preserve the first archival timestamp. The server decides under a lock, and the result field says which happened. Refused with 422 (error.details.type in_use, default_shopper_required or system_defined) for the default shopper type, the last active shopper type, open carts or kept enrollment packs that target it, and system types other than customer, preferred and rep. Requires admin tier followed by member_types.manage permission; root admins bypass the permission check.
       tags:
         - members
       security:
@@ -53148,7 +54220,7 @@ paths:
           example: affiliate
       responses:
         '200':
-          description: Member type archived, or already archived with its original timestamp preserved.
+          description: Member type deleted (the member_type is as it was before the delete), archived, or already archived with its original timestamp preserved.
           content:
             application/json:
               example:
@@ -53162,6 +54234,7 @@ paths:
                     rep_style: true
                   archivable: true
                   archived_at: '2026-09-24T17:03:52Z'
+                  removal: null
                   pricing_tier:
                     id: 0192a4c1-7e2b-7e9a-a3c7-81d4f5b2e069
                     name: Wholesale
@@ -53169,12 +54242,13 @@ paths:
                     system: true
                     archived_at: null
                     member_type_count: 2
+                result: archived
                 status: 200
                 meta:
                   request_id: 8c3f5a17-4d2e-4b90-b7a1-6e0d9c2f5b33
                   timestamp: '2026-09-24T17:03:52Z'
               schema:
-                $ref: '#/components/schemas/ManagedMemberTypeResponse'
+                $ref: '#/components/schemas/ManagedMemberTypeDeleteResponse'
         '401':
           description: Missing or invalid credentials; the base controller returns a message without status or meta.
           content:
@@ -53194,7 +54268,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ManagedMemberTypeErrorResponse'
         '422':
-          description: System-defined member type or failed archival write; the service rejection envelope includes details.
+          description: Refused (details.type is in_use, default_shopper_required or system_defined) or a failed write; the service rejection envelope includes details.
           content:
             application/json:
               schema:
