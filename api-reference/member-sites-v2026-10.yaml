@@ -97,6 +97,9 @@ tags:
     whose rollout is paused. They do not access the static V1 database. For V1, declare `db/schema.json`,
     publish a bundle and use `fluid.db` in site code. See [The member site database](https://docs.fluid.app/member-sites-v1/database).
     The older backend operation contracts remain below for existing integrations.
+- name: site-widgets
+  x-fluid-section: Members
+  description: The widget library, every widget a member may add to a site, whatever its source. Not released yet; it answers 404 until Fluid turns it on for a company.
 - name: site-data
   x-fluid-section: Members
   description: The tables and rows of the database of one of the member's V1 (bundle) sites, read only, served to the site's owner's bearer so a builder such as member Mist can show them. The rows are the ones the owner can download whole with the database export.
@@ -2205,6 +2208,117 @@ components:
           description: The sha of the version, 7 to 40 hex characters, from `sha` in the versions listing.
       required:
       - sha
+    WidgetLibraryEntry:
+      type: object
+      description: One widget in the library. A company's or a Droplet's widget package lists it; recipes join later.
+      additionalProperties: false
+      required:
+      - kind
+      - id
+      - source
+      - name
+      - purpose
+      - publisher
+      - screenshots
+      - package
+      properties:
+        kind:
+          type: string
+          enum:
+          - package
+          description: What the widget is. A `package` widget is locked and runs its publisher's current version.
+        id:
+          type: string
+          description: The widget's id, which for a package widget is its type.
+          example: company.acme.product-showcase
+        source:
+          type: string
+          enum:
+          - company
+          - droplet
+          description: Where the widget comes from.
+        name:
+          type: string
+          description: The widget's name, as its package names it.
+        purpose:
+          type: string
+          description: What the widget is for, as its package describes it.
+        publisher:
+          type: object
+          description: Who publishes the widget.
+          additionalProperties: false
+          required:
+          - name
+          properties:
+            name:
+              type: string
+              description: The company's or the Droplet's name.
+        screenshots:
+          type: array
+          description: Screenshots of the widget. Empty for package widgets.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - url
+            - expiresAt
+            properties:
+              url:
+                type: string
+                format: uri
+                description: A short-lived URL of the screenshot.
+              expiresAt:
+                type: string
+                format: date-time
+                description: When the URL stops working.
+        package:
+          type: object
+          description: Which widget of which package it is.
+          additionalProperties: false
+          required:
+          - package
+          - type
+          properties:
+            package:
+              type: string
+              description: The package, `company.<key>` or `droplet.<key>`.
+            type:
+              type: string
+              description: The widget's type, the package's id, `.` and its name.
+        usedBySite:
+          type: boolean
+          description: Present when `site_id` was sent. Whether that site's published widget list includes the widget.
+    WidgetLibraryEnvelope:
+      type: object
+      description: A page of the widget library.
+      properties:
+        status:
+          type: integer
+          description: HTTP status code (mirrors the response status line).
+        data:
+          type: object
+          description: The page's widgets and the cursor of the next page.
+          additionalProperties: false
+          required:
+          - widgets
+          - nextCursor
+          properties:
+            widgets:
+              type: array
+              description: The widgets, the company's own package first, then its Droplets' in install order.
+              items:
+                "$ref": "#/components/schemas/WidgetLibraryEntry"
+            nextCursor:
+              type:
+              - string
+              - 'null'
+              description: The cursor of the next page, or null on the last page.
+        meta:
+          "$ref": "#/components/schemas/ResponseMeta"
+      required:
+      - status
+      - data
+      - meta
     SiteRestoredEnvelope:
       type: object
       description: What a restore did.
@@ -3312,13 +3426,20 @@ components:
             - own
             - shared
             - visited
-            description: The account-menu group the site is in for the member. `visited` is a site the member only visited, which no other group lists. A pin, the home or a feature decorates a site, and the member may remove it, only in `company`, `own` and `shared`.
+            description: The account-menu group the site is in for the member. `visited` is a site the member only visited or removed, which no other group lists. A pin, the home or a feature decorates a site only in `company`, `own` and `shared`. The member may remove a site in those groups (`removable`); on the `visited` tab a site they removed is `visited`, `removable`, with its `removal_id`, so it can be restored.
           home:
             type: boolean
             description: Whether the site is the member's home site.
+          visited_at:
+            type:
+            - string
+            - 'null'
+            format: date-time
+            description: When the member last opened the site, on the `visited` tab; null on the others.
         required:
         - group
         - home
+        - visited_at
       unevaluatedProperties: false
     SiteListEnvelope:
       type: object
@@ -7986,10 +8107,11 @@ paths:
       description: |
         The sites the member may list, by the rules of their account menu, a page at a time. `filter[tab]` picks the list:
 
-        - `all` (the default): the sites of `shared` and `yours`, and the sites the member visited that no other tab lists and that still open for them.
+        - `all` (the default): the sites of `shared` and `yours`, and the sites the member recently visited (the account menu's Recently visited) that neither lists and that still open for them.
         - `shared`: the company's sites and other members' sites a share matches the member for. A removed site leaves it, unless it is a required company site.
         - `yours`: the member's own sites, drafts included, not taken down.
         - `pinned`: the member's own pins in their order, then the sites a matching share pins for them, oldest pinning share first, paged in that order; `sort` and `q` do not apply.
+        - `visited`: every site the member opened, newest visit first, including the ones they removed (with their `removal_id`), each still checked against the access check. `sort` does not apply; each row carries `visited_at`. The newest 1,000 visits are kept.
 
         Each row is the site's account-menu entry, with the menu `group` it is in and whether it is the member's `home`. A site the member only visited is checked against the access check before it is listed, so a page may hold fewer rows than `page[limit]` and still have a `meta.pagination.next_cursor`: follow the cursor until it is null. No list is counted. The list is not cached (`max-age=0`) and can be revalidated with an ETag.
 
@@ -8011,6 +8133,7 @@ paths:
           - shared
           - yours
           - pinned
+          - visited
       - name: q
         in: query
         required: false
@@ -8101,6 +8224,7 @@ paths:
                     uses: []
                   group: shared
                   home: false
+                  visited_at:
                 meta:
                   request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
                   timestamp: '2026-11-24T15:08:21Z'
@@ -9907,6 +10031,77 @@ paths:
                 "$ref": "#/components/schemas/ErrorEnvelope"
         '503':
           description: The traffic cannot be read right now, from the site rollups or the gateway's counts (`details.error` is `traffic_unavailable`); try again shortly.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/member/v2026-10/widgets":
+    get:
+      summary: List the widget library
+      description: |
+        Not released yet: every request answers 404 until Fluid turns on the widget library for the member's company.
+
+        Every widget the member may add to a site, whatever its source: each widget of the company's own widget package, then of the packages of the Droplets the company installed. Recipes join this list later. Send `site_id` to have each widget say whether that site's published widget list includes it; the site must be one the member may edit. Adding a widget is the agent's work: this list changes nothing on a site.
+      operationId: member_widgets_index
+      tags:
+      - site-widgets
+      x-fluid-audience: member
+      parameters:
+      - name: site_id
+        in: query
+        required: false
+        description: The public id of a site the member may edit. Each widget then carries `usedBySite`.
+        schema:
+          type: string
+      - name: page[cursor]
+        in: query
+        required: false
+        description: The `nextCursor` of the previous page. A cursor this list did not give is refused with 422.
+        schema:
+          type: string
+      - name: page[limit]
+        in: query
+        required: false
+        description: Widgets per page, 1 to 100; 25 by default.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+      responses:
+        '200':
+          description: A page of the widget library.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/WidgetLibraryEnvelope"
+              example:
+                status: 200
+                data:
+                  widgets:
+                  - kind: package
+                    id: company.acme.product-showcase
+                    source: company
+                    name: Product showcase
+                    purpose: Shows three products in a row.
+                    publisher:
+                      name: Acme
+                    screenshots: []
+                    package:
+                      package: company.acme
+                      type: company.acme.product-showcase
+                  nextCursor:
+                meta:
+                  request_uuid: '0192f4c8-5b6c-7d74-a3e8-0f1a2b3c4d5e'
+                  timestamp: '2026-11-24T15:08:21Z'
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/SandboxTwinOrCookieMount"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '422':
+          description: The query holds an unknown parameter, a page limit outside 1 to 50, or a cursor this list did not give (`error.details.error` is `invalid_cursor`).
           content:
             application/json:
               schema:
