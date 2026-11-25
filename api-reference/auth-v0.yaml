@@ -207,6 +207,7 @@ components:
             - primary_domain_hostname
             - support_email
             - sign_in_path
+            - identity_offered
             - uuid
             - identity_email_step
           properties:
@@ -246,6 +247,9 @@ components:
                 - string
                 - 'null'
               format: uuid
+            identity_offered:
+              description: '`true` when the company signs in through the identity service, whether or not the request is from the office network (`sign_in_path` is `legacy` off the office unless the company is exempt from the office rule). For a caller that cannot see the visitor''s IP and applies the office rule itself.'
+              type: boolean
             identity_email_step:
               description: '`true` only when `sign_in_path` is `identity` and the company''s identity email step is on and its hosted login (`identity-fluid-hosted-login`) is not. The client then shows the email step first instead of handing back on load, because the answer to the email decides between the staff and the shopper sign-in. `false` otherwise, including when the hosted login is on: the client hands back on load and the hosted page asks for the email.'
               type: boolean
@@ -689,6 +693,161 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/identity/adopt_code/claim:
+    post:
+      operationId: auth_v0_identity_adopt_code_claim
+      summary: Take the single-use claim on a staff bearer
+      description: |
+        Takes the claim that lets one adopt redeem for a bearer across tabs and origins.
+        The answer is a `claim_id` to send to `/api/identity/adopt_code` and
+        `/api/identity/adopt_code/confirm`. A live claim answers 409 with its state.
+        Refused as `/api/identity/adopt_code` is. Behind the identity-legacy-adopt flag.
+      tags:
+        - authentication
+      x-fluid-audience: member
+      x-fluid-lint-exempt: Path is the fixed contract the apps call with their own bearer; it lives in the unversioned auth-v0 spec beside the adopt_code mint.
+      security:
+        - bearer_auth: []
+      responses:
+        '200':
+          description: Claim taken.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - claim_id
+                properties:
+                  claim_id:
+                    type: string
+              example:
+                claim_id: Zr1xWvB7nTqLk0pYdE5sHaUo9JgFiN3t
+        '401':
+          description: The desktop session presenting the bearer was signed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                  - message
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+        '403':
+          description: The U- token or bearer is refused as for `/api/identity/adopt_code` (not a current staff login, role-switched, bound to an identity session, membership locked or signed out, and so on).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+        '404':
+          description: Identity is not configured, no company can be read from the bearer, or adoption is not released for the bearer's company.
+        '409':
+          description: A claim is live. `pending` is a claim not yet redeemed; `done` is a confirmed session.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - pending
+                      - done
+              example:
+                status: pending
+        '503':
+          description: The claim store cannot answer (empty body).
+  /api/identity/adopt_code/confirm:
+    post:
+      operationId: auth_v0_identity_adopt_code_confirm
+      summary: Confirm the adopted session of a claim
+      description: |
+        Marks the claim redeemed once the adopted session is verified. Repeating the
+        confirm for a claim already redeemed answers `done` again. Refused as
+        `/api/identity/adopt_code` is. Behind the identity-legacy-adopt flag.
+      tags:
+        - authentication
+      x-fluid-audience: member
+      x-fluid-lint-exempt: Path is the fixed contract the apps call with their own bearer; it lives in the unversioned auth-v0 spec beside the adopt_code mint.
+      security:
+        - bearer_auth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              claim_id: Zr1xWvB7nTqLk0pYdE5sHaUo9JgFiN3t
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - claim_id
+              properties:
+                claim_id:
+                  type: string
+                  description: The claim id from `/api/identity/adopt_code/claim`.
+      responses:
+        '200':
+          description: Claim redeemed.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - done
+              example:
+                status: done
+        '401':
+          description: The desktop session presenting the bearer was signed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                  - message
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+        '403':
+          description: The U- token or bearer is refused as for `/api/identity/adopt_code` (not a current staff login, role-switched, bound to an identity session, membership locked or signed out, and so on).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+        '404':
+          description: Identity is not configured, no company can be read from the bearer, or adoption is not released for the bearer's company.
+        '409':
+          description: The claim is not redeeming for this claim id (empty body).
   /api/identity/adopt_code:
     post:
       operationId: auth_v0_identity_adopt_code_create
@@ -726,6 +885,9 @@ paths:
                   type: string
                   enum:
                     - S256
+                claim_id:
+                  type: string
+                  description: The claim id from `/api/identity/adopt_code/claim`. Without it the mint takes the claim itself.
       responses:
         '200':
           description: Code issued.
@@ -770,6 +932,45 @@ paths:
                     type: string
         '404':
           description: Identity is not configured. No company can be read from the bearer (missing, malformed, machine, customer or member JWT, or a U- token no row holds). Adoption is not released for the bearer's company.
+        '409':
+          description: A claim stands in the way, or the given claim id has no live claim. `pending` means a claim is live (the caller named a claim id that is not the live one, or the claim was already minted). `done` means the adopted session is confirmed. `gone` means a claim id was given and no claim is live; claim again.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - pending
+                      - done
+                      - gone
+              example:
+                status: pending
+        '503':
+          description: A claim is live and the caller gave no claim id (`status` is `pending`, with a Retry-After header in seconds), or the claim store cannot answer (empty body).
+          headers:
+            Retry-After:
+              description: Seconds until the live claim lapses.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - pending
+              example:
+                status: pending
   /api/member_handoffs:
     post:
       operationId: auth_v0_member_handoffs_create

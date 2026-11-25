@@ -439,6 +439,42 @@ components:
           - integer
           - 'null'
           description: The user id of the company admin who locked the site. Null when it is not locked, when that user was deleted, and for a reader that must not see staff identities. Absent for a caller without `application_themes.view`, such as an admin whose role can update themes but not view them, or a droplet whose attached role lacks it.
+        indexing:
+          type:
+          - object
+          - 'null'
+          description: How search engines may treat a member's site, or null for a company site, whose SEO settings decide. Absent for a droplet whose attached role lacks `application_themes.view`. A site is listed only while it is public, published and open to a signed-out visitor, and neither the company nor its live theme blocks indexing. Set the override with `PUT .../indexing-override` and clear it with `DELETE .../indexing-override`.
+          required:
+          - enabled
+          - locked
+          - override
+          - effective
+          - indexed
+          properties:
+            enabled:
+              type: boolean
+              description: The owner's own choice. It starts off, only the owner changes it, and an override leaves it as it is.
+            locked:
+              type: boolean
+              description: Whether an override is set, so the owner's switch is locked.
+            override:
+              type:
+              - boolean
+              - 'null'
+              description: The company admin's override. `true` always lets search engines list the site, `false` never does, and null leaves it to the owner. While it is set, the owner's switch is locked.
+            effective:
+              type: boolean
+              description: The switch after the override, the override when one is set, else the owner's choice.
+            indexed:
+              type:
+              - boolean
+              - 'null'
+              description: Whether search engines may list the site now, with every other condition counted, such as a private, draft, taken-down or locked site, or a company or theme that blocks indexing. A switch that is on does not make this true by itself. Null in a list of sites, which does not work it out for each one; read the site to get it.
+            override_by_user_id:
+              type:
+              - integer
+              - 'null'
+              description: The user id of the company admin who set the override. Null when there is no override, when that user was deleted, and for a reader that must not see staff identities. Absent for a caller without `application_themes.view`, such as an admin whose role can update themes but not view them, or a droplet whose attached role lacks it.
         required:
           type: boolean
           description: Whether members must have this site. Only a company site can be required.
@@ -1458,6 +1494,70 @@ components:
         functions:
           type: object
           description: Server functions, by name (at most 20, each name lowercase letters and digits in hyphen-separated runs, at most 40 characters). Each entry is the function's `config/functions.json` settings and its built ES module, with `module` (`sha256` and `size`, at most 10 MiB), `access` (`public`, `signed_in` or `key`), `cors` (exact origins), `schedule` (a five-field UTC cron line, or null) and `timeoutMs` (1 to 30000). Each module is uploaded as a blob like a file, so the answer's `uploads` include it when the site does not hold it yet. The publish deploys the functions, and is refused with `functions_not_available` where Fluid does not run functions yet. `{}` is none. Each answers at `/api/<name>` and `/api/<name>/<sub-path>` on the site's host (`fluid.fn.fetch`), so a bundle that declares functions may hold no file under `/api/` (`functions_api_path_taken`, naming the file in `details.path`); a bundle with none serves files there.
+        widgets:
+          type: object
+          description: "The site's `config/widgets.json`, the widgets the site uses: `version` 1 and `widgets`, at most 50 entries. Each entry is a recipe, with its `id`, `slug`, `prefix` (the slug, `_` and a 6-character hash) and the `version` the site was built from, or a package widget, with its `package` and `type`; each is listed once. Checked when the bundle starts and kept in the published manifest. Omit it for a site that uses no widgets."
+          required:
+          - version
+          - widgets
+          properties:
+            version:
+              const: 1
+            widgets:
+              type: array
+              maxItems: 50
+              description: Each recipe, and each package widget, once.
+              items:
+                oneOf:
+                - type: object
+                  description: A recipe the site uses. The site owns the code its agent rebuilt from it.
+                  additionalProperties: false
+                  required:
+                  - kind
+                  - id
+                  - slug
+                  - prefix
+                  - version
+                  properties:
+                    kind:
+                      const: recipe
+                    id:
+                      type: string
+                      format: uuid
+                      description: The recipe's id.
+                    slug:
+                      type: string
+                      pattern: "^[a-z][a-z0-9_]{0,23}$"
+                      description: The recipe's slug.
+                    prefix:
+                      type: string
+                      pattern: "^[a-z][a-z0-9_]{0,23}_[0-9a-f]{6}$"
+                      description: The recipe's slug, `_` and a 6-character hash; it names the recipe's tables. Rails also checks it starts with this entry's `slug`.
+                    version:
+                      type: integer
+                      minimum: 1
+                      description: The recipe version the site was built from.
+                - type: object
+                  description: A widget of the company's or a Droplet's widget package that the site places. It runs its publisher's current version, so it names no version.
+                  additionalProperties: false
+                  required:
+                  - kind
+                  - package
+                  - type
+                  properties:
+                    kind:
+                      const: package
+                    package:
+                      type: string
+                      pattern: "^(company|droplet)\\.[A-Za-z0-9._~-]+$"
+                      description: The package, `company.<key>` or `droplet.<key>`.
+                      example: company.acme
+                    type:
+                      type: string
+                      maxLength: 200
+                      pattern: "^(company|droplet)\\.[A-Za-z0-9._~-]+$"
+                      description: The widget, its package's id, `.` and its name. Rails also checks it starts with this entry's `package`.
+                      example: company.acme.product-showcase
         sourceCommit:
           type:
           - string
@@ -2301,7 +2401,7 @@ components:
       - message
     MemberSiteTraffic:
       type: object
-      description: "A site's traffic over a period. Visits, unique visitors, referrers and the series are human views counted from the site's page views in the site rollups; the top pages, errors and functions are counted by the sites gateway."
+      description: "A site's traffic over a period. Visits, unique visitors, referrers, the top pages and the series are human views counted from the site's page views in the site rollups; the errors and functions are counted by the sites gateway."
       additionalProperties: false
       properties:
         period:
@@ -3971,6 +4071,7 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing: null
                   required: true
                   position: 1
                   featured: true
@@ -4003,6 +4104,13 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: null
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4094,6 +4202,7 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing: null
                   required: true
                   position: 2
                   featured: false
@@ -4181,6 +4290,13 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: false
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4269,6 +4385,7 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing: null
                   required: true
                   position: 3
                   featured: false
@@ -4419,6 +4536,13 @@ paths:
                   company_lock: taken_down
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: false
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4517,6 +4641,13 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: false
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4612,6 +4743,13 @@ paths:
                   company_lock: made_private
                   made_private_at: '2026-11-04T15:00:00Z'
                   made_private_by_user_id: 1069114610
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: false
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4705,6 +4843,13 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing:
+                    enabled: false
+                    locked: false
+                    override: null
+                    effective: false
+                    indexed: false
+                    override_by_user_id: null
                   required: false
                   position: 0
                   featured: false
@@ -4750,6 +4895,221 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: The site is a company site, which cannot be locked, or a branch, which is locked and unlocked only with the site it was made from.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/company/v2026-10/member-sites/{id}/indexing-override:
+    put:
+      operationId: companyMemberSitesIndexingOverrideSet
+      x-fluid-audience: company
+      summary: Set a member site's indexing override
+      description: Overrides whether search engines may list a member's site, whatever its owner chose. `indexable` true always allows it and false never does. The owner's own choice is kept, and their switch is locked while the override is set. Records which admin set it. Setting the value the site already holds changes nothing and keeps the first admin; setting the other value replaces it and records the acting admin. The override cannot make a site listed that is private, a draft, taken down, locked or blocked by the company or its theme. Needs `application_themes.update` and a signed-in admin, so a company, partner or droplet token is refused. Answers 409 when the site changed while it was being changed; read it again and retry.
+      tags:
+      - member-sites
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The site's id.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        description: The override to set.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - indexable
+              properties:
+                indexable:
+                  type: boolean
+                  description: true always lets search engines list the site, false never does.
+            example:
+              indexable: false
+      responses:
+        '200':
+          description: The site, with its override set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteResponse'
+              example:
+                member_site:
+                  id: 019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+                  handle: riley-shop
+                  name: Riley's Shop
+                  image_url: null
+                  owner_kind: member
+                  owner_member:
+                    id: 019a1111-2222-7333-8444-555566667777
+                    display_name: Riley Rep
+                  copied_from_id: null
+                  access:
+                    declared: false
+                    uses: []
+                  visibility: public
+                  status: published
+                  taken_down_at: null
+                  taken_down_reason: null
+                  company_lock: none
+                  made_private_at: null
+                  made_private_by_user_id: null
+                  indexing:
+                    enabled: true
+                    locked: true
+                    override: false
+                    effective: false
+                    indexed: false
+                    override_by_user_id: 1069114610
+                  required: false
+                  position: 0
+                  featured: false
+                  feature_position: null
+                  layout_name: null
+                  settings: {}
+                  content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
+                  share_url: https://shop.example.com/home/sites/riley-shop
+                  site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
+                  lock_version: 3
+                  created_at: '2026-10-14T11:00:00Z'
+                  updated_at: '2026-10-23T14:05:12Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationError'
+        '403':
+          description: The caller lacks the permission, or has no signed-in admin.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, or member sites are not enabled for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site changed while it was being changed. Read it again and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The site is a company site, which has no override, or a branch, which is never indexed; or `indexable` is missing, is not a boolean, or the body holds an unknown field. Nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: companyMemberSitesIndexingOverrideClear
+      x-fluid-audience: company
+      summary: Clear a member site's indexing override
+      description: Clears the override and the admin who set it, so the owner's own choice decides again, as they last left it. Writes nothing else. Clearing a site that has no override changes nothing. Needs `application_themes.update` and a signed-in admin. Answers 409 when the site changed while it was being changed; read it again and retry.
+      tags:
+      - member-sites
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The site's id.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The site, with no override.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberSiteResponse'
+              example:
+                member_site:
+                  id: 019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+                  handle: riley-shop
+                  name: Riley's Shop
+                  image_url: null
+                  owner_kind: member
+                  owner_member:
+                    id: 019a1111-2222-7333-8444-555566667777
+                    display_name: Riley Rep
+                  copied_from_id: null
+                  access:
+                    declared: false
+                    uses: []
+                  visibility: public
+                  status: published
+                  taken_down_at: null
+                  taken_down_reason: null
+                  company_lock: none
+                  made_private_at: null
+                  made_private_by_user_id: null
+                  indexing:
+                    enabled: true
+                    locked: false
+                    override: null
+                    effective: true
+                    indexed: true
+                    override_by_user_id: null
+                  required: false
+                  position: 0
+                  featured: false
+                  feature_position: null
+                  layout_name: null
+                  settings: {}
+                  content_version: 019a2c4d-6f7a-7b8c-9d0e-1f2a3b4c5d6e
+                  share_url: https://shop.example.com/home/sites/riley-shop
+                  site_url: https://shop.example.com/sites/riley-shop
+                  url: https://shop.example.com/sites/riley-shop
+                  lock_version: 3
+                  created_at: '2026-10-14T11:00:00Z'
+                  updated_at: '2026-10-23T14:05:12Z'
+                status: 200
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-10-23T14:05:12Z'
+        '401':
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationError'
+        '403':
+          description: The caller lacks the permission, or has no signed-in admin.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AuthorizationError'
+                - $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such site in this company, or member sites are not enabled for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The site changed while it was being changed. Read it again and retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The site is a company site, which has no override, or a branch, which is never indexed.
           content:
             application/json:
               schema:
@@ -4811,6 +5171,7 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing: null
                   required: false
                   position: 0
                   featured: false
@@ -4896,6 +5257,7 @@ paths:
                   company_lock: none
                   made_private_at: null
                   made_private_by_user_id: null
+                  indexing: null
                   required: true
                   position: 1
                   featured: false
@@ -5921,7 +6283,9 @@ paths:
       x-fluid-audience: company
       summary: Make an earlier bundle of a company site current (roll back)
       description: |
-        Points the company site back at a bundle that was published before, so its files are served again. Nothing is uploaded and the sites gateway is not asked: the bundle's blobs and manifest are stored already. A bundle that was published after the current one can be made current the same way, which rolls forward again. The site's `status`, `visibility` and frame label do not change.
+        Points the company site back at a bundle that was published before, so its files are served again. Nothing is uploaded: the bundle's blobs and manifest are stored already. A bundle that was published after the current one can be made current the same way, which rolls forward again. The site's `status`, `visibility` and frame label do not change.
+
+        A bundle with server functions has them deployed again with every variable the site holds now, before the site points at it, so a rollback to it can take up to about 20 seconds; a bundle with none asks the sites gateway nothing. A redeploy that fails answers `502` and leaves the site on the version it served, so the same rollback can be sent again. A rollback to a bundle with server functions that comes while the site's variables are being changed or a bundle with functions is being published answers `409` (`busy`) and changes nothing; send it again.
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site that was taken down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
@@ -5973,7 +6337,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Nothing changed. `details.error` is `not_published` (the bundle is uploading or failed), `not_retained` (the bundle is older than the site's 25 newest published versions and is not its current one), `no_database` (the manifest has a `schema`, which cannot be restored yet) or `taken_down` (the site was taken down).
+          description: Nothing changed. `details.error` is `not_published` (the bundle is uploading or failed), `not_retained` (the bundle is older than the site's 25 newest published versions and is not its current one), `no_database` (the manifest has a `schema`, which cannot be restored yet), `taken_down` (the site was taken down) or `blobs_not_verified` (a server function's module is missing from storage, so its functions could not be deployed again; `details.function` names it).
           content:
             application/json:
               schema:
@@ -5987,6 +6351,27 @@ paths:
                 meta:
                   request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
                   timestamp: '2026-11-05T10:00:00Z'
+        '409':
+          description: "`busy`. The site's variables are being changed, or a bundle with functions is being published, so nothing changed and the sites gateway was not asked. Send it again."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  message: The site's functions or variables are being changed; try again
+                  details:
+                    error: busy
+                status: 409
+                meta:
+                  request_uuid: 3b8f1d27-6c4e-4a91-8e5d-2f7c9a1b0e64
+                  timestamp: '2026-11-05T10:00:00Z'
+        '502':
+          description: The sites gateway could not deploy the bundle's server functions again, because it was unreachable, refused, ran out of time or answered with something unexpected. `details.error` names which. The site still serves the version it served before; send the same rollback again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/company/v2026-10/member-sites/{id}/builds:
     post:
       operationId: companyMemberSiteBuildsCreate
@@ -7341,6 +7726,13 @@ paths:
                     company_lock: none
                     made_private_at: null
                     made_private_by_user_id: null
+                    indexing:
+                      enabled: false
+                      locked: false
+                      override: null
+                      effective: false
+                      indexed: null
+                      override_by_user_id: null
                     required: false
                     position: 0
                     featured: true
