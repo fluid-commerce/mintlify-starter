@@ -526,6 +526,12 @@ components:
           - 'null'
           format: uri
           description: Where the site's server functions answer, the site's own host followed by `/api/`, for example `https://primex-riley-shop.sites.fluid.app/api/`. A function named `rsvp` answers at that address followed by `rsvp`. Null until the site is first published under the sites gateway, and while the company is not on the gateway.
+        frame_origin:
+          type:
+          - string
+          - 'null'
+          format: uri
+          description: The exact origin of the frame the site's own code runs in, for example `https://primex-riley-shop.sites.fluid.app`, with no path and no trailing slash. A site keeps it once it has one, through a handle change, an unpublish or a take-down. Null until the site is first published under the sites gateway, and while the company is not on the gateway.
         lock_version:
           type: integer
           minimum: 0
@@ -3950,7 +3956,7 @@ paths:
       operationId: companyMemberSitesList
       x-fluid-audience: company
       summary: List member sites
-      description: Every site in the company, company-owned and member-owned, newest first unless `sort` says otherwise, except a branch, which is found through its site's branches and by its own id. `q` searches the sites and keeps the filters and the sort order. Needs `application_themes.view`, or a droplet token with the `website` scope.
+      description: Every site in the company, company-owned and member-owned, newest first unless `sort` says otherwise, except a branch, which is found through its site's branches and by its own id. `filter[tab]` picks `all`, `yours` (the sites `filter[created_by]=me` keeps), `company` or `shared` (members' sites), and the other filters narrow any tab. `q` searches the sites and keeps the filters and the sort order. `filter[featured]=true` lists the company's featured sites alone, in their order, on one page. Needs `application_themes.view`, or a droplet token with the `website` scope.
       tags:
       - member-sites
       parameters:
@@ -3976,9 +3982,10 @@ paths:
           - -updated_at
           - position
           - -position
+          - -published_at
           default: -created_at
         example: name
-        description: Sort key; prefix `-` for descending. Default `-created_at`, newest first. `position` lists company sites first, in the order members' menus list them, then members' own sites, which are all at position 0. Sites that tie are ordered by id, in the sort's direction. A cursor works only with the sort it was issued for.
+        description: Sort key; prefix `-` for descending. Default `-created_at`, newest first. `position` lists company sites first, in the order members' menus list them, then members' own sites, which are all at position 0. `-published_at` lists the last published first and sites never published last. Sites that tie are ordered by id, in the sort's direction. A cursor works only with the filters, search and sort it was issued for; another starts the list again from its first page.
       - name: page[cursor]
         in: query
         required: false
@@ -3994,6 +4001,43 @@ paths:
           maximum: 100
         example: 25
         description: Sites per page. Default 25, maximum 100.
+      - name: filter[tab]
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - all
+          - yours
+          - company
+          - shared
+          default: all
+        example: shared
+        description: Which sites to list. `all` is every site; `yours` the sites the caller made, as `filter[created_by]=me`; `company` the company's own sites; `shared` the sites members own.
+      - name: filter[featured]
+        in: query
+        required: false
+        schema:
+          type: boolean
+          enum:
+          - true
+        example: true
+        description: Only the company's featured sites, in their feature order, at most 20 on one page, with no cursor; `sort` does not apply, and `page[cursor]` or `page[limit]` with it is refused with `422`. Refused with `403` for a droplet whose role cannot view the company's themes.
+      - name: filter[id]
+        in: query
+        required: false
+        schema:
+          type: string
+        example: 019a2b3c-4d5e-7f6a-8b7c-9d0e1f2a3b4c,019a2c4d-5e6f-7a7b-8c9d-0e1f2a3b4c5d
+        description: Up to 100 site ids, separated by commas. Only those sites are listed.
+      - name: filter[handle]
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 40
+        example: primex-launch
+        description: Only the site with this handle.
       - name: filter[owner_kind]
         in: query
         required: false
@@ -4140,7 +4184,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthorizationError'
         '403':
-          description: The caller lacks the permission.
+          description: The caller lacks the permission, or asks for `filter[featured]` as a droplet whose role cannot view the company's themes.
           content:
             application/json:
               schema:
@@ -4152,7 +4196,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Invalid parameters, such as an unknown filter value or a bad cursor; a top-level `limit` or `cursor`, which the list does not read (`details` names the parameter to use instead, `page[limit]` or `page[cursor]`); or a key `page` or `filter` does not declare, such as `page[size]`, `page[after]` or `filter[owner]`. `details` reports every such error in one response.
+          description: Invalid parameters, such as an unknown filter value, more than 100 ids, or a bad cursor; a top-level `limit` or `cursor`, which the list does not read (`details` names the parameter to use instead, `page[limit]` or `page[cursor]`); or a key `page` or `filter` does not declare, such as `page[size]`, `page[after]` or `filter[owner]`. `details` reports every such error in one response.
           content:
             application/json:
               schema:
@@ -6285,7 +6329,7 @@ paths:
       description: |
         Points the company site back at a bundle that was published before, so its files are served again. Nothing is uploaded: the bundle's blobs and manifest are stored already. A bundle that was published after the current one can be made current the same way, which rolls forward again. The site's `status`, `visibility` and frame label do not change.
 
-        A bundle with server functions has them deployed again with every variable the site holds now, before the site points at it, so a rollback to it can take up to about 20 seconds; a bundle with none asks the sites gateway nothing. A redeploy that fails answers `502` and leaves the site on the version it served, so the same rollback can be sent again. A rollback to a bundle with server functions that comes while the site's variables are being changed or a bundle with functions is being published answers `409` (`busy`) and changes nothing; send it again.
+        A bundle with server functions has them deployed again with every variable the site holds now, before the site points at it, so a rollback to it can take up to about 20 seconds; a bundle with none asks the sites gateway nothing. A redeploy that fails answers `502`, or `422` (`functions_not_available`) when the sites gateway that answered runs no server functions, and leaves the site on the version it served, so the same rollback can be sent again. A rollback to a bundle with server functions that comes while the site's variables are being changed or a bundle with functions is being published answers `409` (`busy`) and changes nothing; send it again.
 
         Making the site's current bundle current again is safe: it answers the same `200`, with no change, so a request whose answer was lost can be sent again. A bundle that is uploading or failed was never published and is refused with `422` (`not_published`). A published bundle that is older than the site's 25 newest published versions and is not its current one is refused with `422` (`not_retained`), because the daily clean-up deletes the files of older versions. A bundle whose manifest has a database `schema` is refused with `422` (`no_database`), because restoring a site's database is not available yet. A site that was taken down is refused with `422` (`taken_down`): a rollback never lifts a take-down.
 
@@ -6337,7 +6381,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Nothing changed. `details.error` is `not_published` (the bundle is uploading or failed), `not_retained` (the bundle is older than the site's 25 newest published versions and is not its current one), `no_database` (the manifest has a `schema`, which cannot be restored yet), `taken_down` (the site was taken down) or `blobs_not_verified` (a server function's module is missing from storage, so its functions could not be deployed again; `details.function` names it).
+          description: Nothing changed. `details.error` is `not_published` (the bundle is uploading or failed), `not_retained` (the bundle is older than the site's 25 newest published versions and is not its current one), `no_database` (the manifest has a `schema`, which cannot be restored yet), `taken_down` (the site was taken down), `blobs_not_verified` (a server function's module is missing from storage, so its functions could not be deployed again; `details.function` names it) or `functions_not_available` (the bundle has server functions and the Fluid server that answered runs none, so they could not be deployed again; send the same request again).
           content:
             application/json:
               schema:
