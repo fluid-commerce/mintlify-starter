@@ -524,6 +524,7 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["reps/list-reps", "GET /api/v2025-06/reps"],
   ["reps/list-shared-assets-for-a-rep", "GET /api/v2025-06/reps/{rep_id}/shared_assets"],
   ["reps/update-a-rep", "PATCH /api/v2025-06/reps/{id}"],
+  ["sales_channels/list-the-companys-sales-channel-connections", "GET /api/v202506/sales-channel-connections"],
   ["shipping-methods/create-a-shipping-method", "POST /api/v2025-06/shipping_methods"],
   ["shipping-methods/create-a-shipping-method-rate", "POST /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates"],
   ["shipping-methods/delete-shipping-method-rates", "DELETE /api/v2025-06/shipping_methods/{shipping_method_id}/shipping_method_rates/{id}"],
