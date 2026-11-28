@@ -41,6 +41,9 @@ tags:
   - name: media-uploads
     description: Signed direct uploads that become the member's media.
     x-fluid-section: Members
+  - name: favorites
+    description: The signed-in member's favorited content, in the member's own order.
+    x-fluid-section: Members
 components:
   securitySchemes:
     MemberBearer:
@@ -1001,6 +1004,75 @@ components:
       properties:
         status: {type: integer, description: HTTP response status.}
         data: {$ref: '#/components/schemas/PhotoPreparation'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    FavoriteTarget:
+      type: object
+      description: Current summary of the favorited content.
+      additionalProperties: false
+      required: [kind, id, title, image_url]
+      properties:
+        kind:
+          type: string
+          description: Target kind.
+          enum: [media, playlist, product, enrollment_pack, page]
+        id:
+          type: string
+          format: uuid
+          description: Public id of the target.
+        title:
+          type: [string, 'null']
+          description: Target title.
+        image_url:
+          type: [string, 'null']
+          description: Target image, when it stores one.
+    Favorite:
+      type: object
+      description: One favorite.
+      additionalProperties: false
+      required: [id, position, target, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Public id of the favorite.
+        position:
+          type: [integer, 'null']
+          description: Place in the member's list; lower comes first.
+        target:
+          $ref: '#/components/schemas/FavoriteTarget'
+        created_at:
+          type: string
+          format: date-time
+          description: When the favorite was created.
+    FavoriteEnvelope:
+      type: object
+      description: One favorite.
+      required: [status, data, meta]
+      properties:
+        status: {type: integer, description: HTTP response status.}
+        data: {$ref: '#/components/schemas/Favorite'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    FavoritesEnvelope:
+      type: object
+      description: A page of favorites.
+      required: [status, data, meta]
+      properties:
+        status: {type: integer, description: HTTP response status.}
+        data:
+          type: array
+          description: The page's favorites, by position.
+          items: {$ref: '#/components/schemas/Favorite'}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+    FavoritesOrderEnvelope:
+      type: object
+      description: Every visible favorite in its new order.
+      required: [status, data, meta]
+      properties:
+        status: {type: integer, description: HTTP response status.}
+        data:
+          type: array
+          description: The member's visible favorites, in their new order.
+          items: {$ref: '#/components/schemas/Favorite'}
         meta: {$ref: '#/components/schemas/ResponseMeta'}
 paths:
   /api/member/v2026-10/photo-share-preparations:
@@ -2538,4 +2610,218 @@ paths:
           $ref: '#/components/responses/Invalid'
         '503':
           $ref: '#/components/responses/UploadUnavailable'
+      x-fluid-audience: member
+  /api/member/v2026-10/favorites:
+    get:
+      operationId: member_favorites_index
+      tags:
+        - favorites
+      summary: List the member's favorites
+      description: >-
+        Returns the member's favorites of media, playlists, products, enrollment packs and pages, ordered by
+        position. A favorite whose target the member can no longer see is left out. Responses are private and
+        must be revalidated. Available only while MEMBER_NATIVE_GAP_ROUTES is on; otherwise every operation
+        answers 404.
+      parameters:
+        - name: filter[kind]
+          in: query
+          description: Only favorites of this kind of target.
+          schema:
+            type: string
+            enum: [media, playlist, product, enrollment_pack, page]
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: A page of favorites.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoritesEnvelope'
+              example:
+                status: 200
+                data:
+                  - id: 0199a3f2-8a10-7b2c-9d31-4e5f6a7b8c91
+                    position: 1
+                    target:
+                      kind: product
+                      id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+                      title: Primex Wellness Kit
+                      image_url: https://ik.imagekit.io/fluid/primex/wellness-kit.jpg
+                    created_at: '2026-09-28T19:03:27.000000Z'
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+                  pagination:
+                    next_cursor: null
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadCursor'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      x-fluid-audience: member
+    post:
+      operationId: member_favorites_create
+      tags:
+        - favorites
+      summary: Favorite content
+      description: >-
+        Favorites a target the member may share. A target outside the member's reach, or another company's,
+        is 404. Favoriting the same target twice is 422. Without a position the favorite goes to the top.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind, id]
+              properties:
+                kind:
+                  type: string
+                  description: Target kind.
+                  enum: [media, playlist, product, enrollment_pack, page]
+                id:
+                  type: string
+                  format: uuid
+                  description: Public id of the target.
+                position:
+                  type: integer
+                  minimum: 1
+                  maximum: 2147483647
+                  description: Place in the member's list.
+            example:
+              kind: product
+              id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+      responses:
+        '201':
+          description: The created favorite.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteEnvelope'
+              example:
+                status: 201
+                data:
+                  id: 0199a3f2-8a10-7b2c-9d31-4e5f6a7b8c91
+                  position: 1
+                  target:
+                    kind: product
+                    id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+                    title: Primex Wellness Kit
+                    image_url: https://ik.imagekit.io/fluid/primex/wellness-kit.jpg
+                  created_at: '2026-09-28T19:03:27.000000Z'
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      x-fluid-audience: member
+  /api/member/v2026-10/favorites/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Public id of a favorite the signed-in member owns.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: member_favorites_destroy
+      tags:
+        - favorites
+      summary: Remove a favorite
+      description: Removes one favorite and closes the gap in the member's order; the content itself is untouched.
+      responses:
+        '204':
+          description: Removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+      x-fluid-audience: member
+  /api/member/v2026-10/favorites/reorder:
+    patch:
+      operationId: member_favorites_reorder
+      tags:
+        - favorites
+      summary: Reorder the favorites
+      description: >-
+        Replaces the order of every visible favorite at once. `ids` must name each favorite the list returns
+        exactly once, or nothing changes and the answer is 422. Favorites left out of the list because their
+        target is hidden keep their place.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  description: Every visible favorite id, in the new order.
+                  uniqueItems: true
+                  items:
+                    type: string
+                    format: uuid
+            example:
+              ids:
+                - 0199a3f2-8a10-7b2c-9d31-4e5f6a7b8c91
+      responses:
+        '200':
+          description: Every visible favorite in its new order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoritesOrderEnvelope'
+              example:
+                status: 200
+                data:
+                  - id: 0199a3f2-8a10-7b2c-9d31-4e5f6a7b8c91
+                    position: 1
+                    target:
+                      kind: product
+                      id: 0199a3f2-5c1e-7d4b-9a10-3b2c1d4e5f61
+                      title: Primex Wellness Kit
+                      image_url: https://ik.imagekit.io/fluid/primex/wellness-kit.jpg
+                    created_at: '2026-09-28T19:03:27.000000Z'
+                meta:
+                  request_uuid: 0199a3f2-7a10-7c3e-8f21-4d5e6f708192
+                  timestamp: '2026-09-30T18:24:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
       x-fluid-audience: member
