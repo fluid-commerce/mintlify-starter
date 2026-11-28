@@ -569,10 +569,12 @@ const ADMIN_V2025_06_PAGES = new Map([
   ["tokens/rotate-a-scoped-clients-secret", "POST /api/v2025-06/tokens/clients/{client_id}/rotate"],
   ["tokens/updates-a-partner-token", "PUT /api/v2025-06/tokens/partner/{id}"],
   ["transactions/export-csv-export-csv", "GET /api/v202506/transactions/export_csv"],
+  ["sales_channels/list-the-companys-sales-channel-connections", "GET /api/v202506/sales-channel-connections"],
 ]);
 
 const MEMBERS_V2025_06_PAGES = new Map([
   ["members/change-a-members-mysite-theme", "PUT /api/v2025-06/members/{member_id}/mysite-theme"],
+  ["members/change-a-members-saved-address", "PATCH /api/v2025-06/members/{member_id}/addresses/{id}"],
   ["members/change-a-members-type", "PUT /api/v2025-06/members/{member_id}/member-type"],
   ["members/create-a-member", "POST /api/v2025-06/members"],
   ["members/exchange-a-member-for-a-shopper-token", "POST /api/v2025-06/members/{member_id}/customer-token-exchange"],
@@ -580,9 +582,15 @@ const MEMBERS_V2025_06_PAGES = new Map([
   ["members/get-a-member", "GET /api/v2025-06/members/{member_id}"],
   ["members/get-a-members-mysite-theme", "GET /api/v2025-06/members/{member_id}/mysite-theme"],
   ["members/get-a-members-sponsor-genealogy", "GET /api/v2025-06/members/{member_id}/genealogy"],
+  ["members/get-member-headline-stats", "GET /api/v2025-06/members/stats"],
   ["members/list-a-members-payment-methods", "GET /api/v2025-06/members/{member_id}/payment_methods"],
+  ["members/list-a-members-saved-addresses", "GET /api/v2025-06/members/{member_id}/addresses"],
   ["members/list-members", "GET /api/v2025-06/members"],
+  ["members/look-up-members-for-a-picker", "GET /api/v2025-06/members/lookup"],
+  ["members/make-a-saved-address-the-members-default", "POST /api/v2025-06/members/{member_id}/addresses/{id}/default"],
   ["members/redeem-a-handoff-token-for-a-shopper-session", "POST /api/v2025-06/members/{member_id}/customer-token-exchange/redeem"],
+  ["members/remove-a-members-saved-address", "DELETE /api/v2025-06/members/{member_id}/addresses/{id}"],
+  ["members/save-an-address-for-a-member", "POST /api/v2025-06/members/{member_id}/addresses"],
   ["members/update-a-member", "PATCH /api/v2025-06/members/{member_id}"],
 ]);
 
